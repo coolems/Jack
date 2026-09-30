@@ -1,7 +1,7 @@
 # Jack — Private AI Agent for Your Company
 
 <p align="center">
-  <img src="./ScreenShot.png" width="99%" alt="Jack in action"/>
+  <img src="./utils/ScreenShot.png" width="99%" alt="Jack in action"/>
 </p>
 
 **Jack** is a local-first autonomous AI agent built on the **COOLEMS framework**. It runs entirely on your own hardware: local LLMs (llama.cpp backends) do the thinking, and Jack gives those models hands — file operations, Python execution, browser automation, OCR and image generation — inside a persistent agentic loop. Each Client chat can be set with a specific directory to work with and it will do a local work inside that folder. You can work on a file or on entire repo. Tools are delivered to Client from Server on each request and discarded after use without beeing saved loccaly. 
@@ -110,7 +110,8 @@ By default, no data leaves your local network: the relay only talks to the llama
 │       ├── .api_client_keys.json  # ← bookkeeping ONLY (email + date) - the real key is never stored here
 │       ├── settings.json          # ← which SERVER address(es) to connect to
 │       └── .working_root.json     # ← folder all file tools are locked into
-├── llama_server/           # Local LLM runtime binaries + models (binaries are NOT in git)
+├── utils/                  # Helper scripts (zzz_init.py, gen_ui_certs.py) + ScreenShot.png
+    ├── llama_server/           # Local LLM runtime binaries + models (binaries are NOT in git)
 ├── web_server_relay/       # Optional single-file pure-PHP internet relay (index.php; not part of the standard LAN deployment)
 └── tests/                  # Test suite
 ```
