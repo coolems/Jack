@@ -114,21 +114,19 @@ def _jps_setup():
     # (the parent attaches its last lines to heartbeats/timeouts), so a hang pinpoints the
     # exact patching stage. try/except pass: logging must never break the sandbox itself.
     def _jps_log(msg):
-        try:
-            import sys as _jps_sys2
-            print("[PYEXEC] " + msg, file=_jps_sys2.stderr, flush=True)
-        except Exception:
-            pass
-        # File part is OPT-IN only (JACK_PYEXEC_DEBUG=1, 2026-09-18 cleanup): default runs
-        # leave no .jack_pyexec_child.log behind in working_root; stderr markers always stay.
+        # ALL [PYEXEC] marker output is OPT-IN ONLY (JACK_PYEXEC_DEBUG=1 in the calling process env,
+        # 2026-09-30 client-console cleanup; file part since 2026-09-18): default runs are fully
+        # silent -- no stderr markers and no .jack_pyexec_child.log. python_exec forwards the flag.
         try:
             if _jps_os.environ.get("JACK_PYEXEC_DEBUG", "0") != "0":
+                import sys as _jps_sys2
+                print("[PYEXEC] " + msg, file=_jps_sys2.stderr, flush=True)
                 _ld = _jps_os.path.join(root, ".temp")  # user policy (2026-09-18): child debug log lives in .temp/
                 _jps_os.makedirs(_ld, exist_ok=True)
                 with open(_jps_os.path.join(_ld, ".jack_pyexec_child.log"), "a", encoding="utf-8") as _lf2:
                     _lf2.write("[PYEXEC] " + msg + chr(10))
         except Exception:
-            pass
+            pass  # logging must never break the sandbox itself
 
     _jps_log("B0: sandbox setup started (root resolved, %d read roots)" % len(READ_ROOTS))
 

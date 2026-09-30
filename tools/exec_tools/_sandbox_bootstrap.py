@@ -68,7 +68,7 @@ Live exploits that this revision closes (Windows, admin clean set):
   import-block alone cannot reach it.
 * ``nt.open(path, O_WRONLY|O_CREAT)`` write-flags were misread as READ mode by the
   "open" audit event (it assumed a string mode) -- fixed with flag-aware detection.
-* ``os.path.exists('<OTHER_DRIVE>:/')`` returned True and ``os.stat(r'<SYSTEM_DIR>\sensitive.txt').st_size``
+* ``os.path.exists('<OTHER_DRIVE>:/')`` returned True and ``os.stat(r'<SYSTEM_DIR>\\sensitive.txt').st_size``
   leaked real file metadata from outside working_root; nt.stat leaked the same way.
 
 Fixes (all in the child, all fail-closed):
@@ -147,10 +147,14 @@ is now closed at RUNTIME, for every profile:
   code runs there. A forked child inherits patched builtins but could still exec() in
   C; killing it at the Python level removes that vector (POSIX-only).
 * socket connect-family: connect, connect_ex, sendto, sendall, sendmsg and
-  create_connection are LOOPBACK ONLY (2026-09-15; extended 2026-09-16 after
+  create_connection are LOOPBACK ONLY by default (2026-09-15; extended 2026-09-16 after
   probes proved the .connect-only patch left unconnected-UDP sendto and
   connect_ex open); sendfile is denied outright (local-file exfiltration). Localhost
-  probes (health checks against a local service) keep working.
+  probes (health checks against a local service) keep working. ADMIN OPEN NETWORK
+  (2026-09-30): when the calling process's environment carries JACK_PYEXEC_NETWORK=1,
+  python_exec.py forwards it to the child and this stage installs NO socket
+  restrictions at all -- admins get full outbound network inside python_exec. The
+  default stays loopback-only (fail-closed).
 * IMPORT BLOCKS (child level): ctypes/_ctypes/cffi (native-code file APIs bypass every
   path check), multiprocessing + its submodules (spawned workers are unsandboxed OS
   processes; on macOS the DEFAULT start method is "spawn" -- verified escape class),
@@ -342,21 +346,19 @@ def _jps_setup():
     # (the parent attaches its last lines to heartbeats/timeouts), so a hang pinpoints the
     # exact patching stage. try/except pass: logging must never break the sandbox itself.
     def _jps_log(msg):
-        try:
-            import sys as _jps_sys2
-            print("[PYEXEC] " + msg, file=_jps_sys2.stderr, flush=True)
-        except Exception:
-            pass
-        # File part is OPT-IN only (JACK_PYEXEC_DEBUG=1, 2026-09-18 cleanup): default runs
-        # leave no .jack_pyexec_child.log behind in working_root; stderr markers always stay.
+        # ALL [PYEXEC] marker output is OPT-IN ONLY (JACK_PYEXEC_DEBUG=1 in the calling process env,
+        # 2026-09-30 client-console cleanup; file part since 2026-09-18): default runs are fully
+        # silent -- no stderr markers and no .jack_pyexec_child.log. python_exec forwards the flag.
         try:
             if _jps_os.environ.get("JACK_PYEXEC_DEBUG", "0") != "0":
+                import sys as _jps_sys2
+                print("[PYEXEC] " + msg, file=_jps_sys2.stderr, flush=True)
                 _ld = _jps_os.path.join(root, ".temp")  # user policy (2026-09-18): child debug log lives in .temp/
                 _jps_os.makedirs(_ld, exist_ok=True)
                 with open(_jps_os.path.join(_ld, ".jack_pyexec_child.log"), "a", encoding="utf-8") as _lf2:
                     _lf2.write("[PYEXEC] " + msg + chr(10))
         except Exception:
-            pass
+            pass  # logging must never break the sandbox itself
 
     _jps_log("B0: sandbox setup started (root resolved, %d read roots)" % len(READ_ROOTS))
 
@@ -1456,12 +1458,21 @@ def _jps_setup():
         pass
 
 
-    # socket.connect / create_connection -- LOOPBACK ONLY (2026-09-15): any outbound
-    # connection from inside python_exec is an exfiltration channel. Localhost probes
-    # keep working; everything else is denied at the moment of connect, before a byte
-    # leaves the machine.
+    # socket.connect / create_connection -- outbound policy: LOOPBACK ONLY by default
+    # (2026-09-15); ADMIN OPEN NETWORK via JACK_PYEXEC_NETWORK=1 (2026-09-30).
+    # The loopback-only rule was added after verified exfiltration probes and stays the
+    # fail-closed DEFAULT. Admins who need outbound network from inside python_exec
+    # (e.g. HuggingFace API checks, small file fetches) opt in per-run by setting
+    # JACK_PYEXEC_NETWORK=1 in the environment of the process that CALLS python_exec --
+    # the parent forwards it to this child and this stage then installs NO socket
+    # restrictions at all (full admin: every process available). Without the env var,
+    # behavior is byte-for-byte identical to before.
+    _NET_OPEN = False  # default policy; flipped inside the stage when the admin env is set
     try:
         import socket as _jps_sock
+
+        if (_jps_os.environ.get("JACK_PYEXEC_NETWORK", "0") or "").strip() in ("1", "true", "TRUE", "yes"):
+            _NET_OPEN = True  # admin open network -- no socket restrictions installed below
 
         def _is_loopback(addr):
             # Defensive: non-tuple "addresses" (caller errors) pass through to the
@@ -1476,99 +1487,105 @@ def _jps_setup():
         # defines _connect/_orig_connect in this SAME scope; Python closures resolve
         # free variables at call time, so a shared name would make the socket wrapper
         # call sqlite3.connect (verified bug 2026-09-15: broke asyncio/socketpair).
-        _sock_orig_connect = _jps_sock.socket.connect
-        def _sock_connect(self, address):
-            if not _is_loopback(address):
-                raise PermissionError(
-                    "python_exec sandbox: socket connect to %r is blocked -- only "
-                    "loopback (localhost) connections are allowed inside python_exec."
-                    % (address,)
-                )
-            return _sock_orig_connect(self, address)
-        _jps_sock.socket.connect = _sock_connect
-
-        # NOTE (audit 2026-09-16): socket.connect is a C method and connect_ex /
-        # sendto / sendall are SEPARATE methods -- the .connect-only patch left an
-        # unconnected-UDP sendto and a connect_ex fully open (verified probes V1/V2).
-        if hasattr(_jps_sock.socket, "connect_ex"):
-            _sock_orig_cex = _jps_sock.socket.connect_ex
-            def _sock_connect_ex(self, address):
+        if not _NET_OPEN:
+            _sock_orig_connect = _jps_sock.socket.connect
+            def _sock_connect(self, address):
                 if not _is_loopback(address):
                     raise PermissionError(
-                        "python_exec sandbox: socket connect_ex to %r is blocked -- only "
-                        "loopback (localhost) connections are allowed inside python_exec."
+                        "python_exec sandbox: socket connect to %r is blocked -- only "
+                        "loopback (localhost) connections are allowed inside python_exec. "
+                        "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
                         % (address,)
                     )
-                return _sock_orig_cex(self, address)
-            _jps_sock.socket.connect_ex = _sock_connect_ex
+                return _sock_orig_connect(self, address)
+            _jps_sock.socket.connect = _sock_connect
 
-        def _sock_find_addr(a):
-            # sendto data[, flags][, address] -- the first non-int positional arg
-            # after data is the address (flags are ints; addresses are tuples).
-            for x in a[1:]:
-                if not isinstance(x, int):
-                    return x
-            return None
+            # NOTE (audit 2026-09-16): socket.connect is a C method and connect_ex /
+            # sendto / sendall are SEPARATE methods -- the .connect-only patch left an
+            # unconnected-UDP sendto and a connect_ex fully open (verified probes V1/V2).
+            if hasattr(_jps_sock.socket, "connect_ex"):
+                _sock_orig_cex = _jps_sock.socket.connect_ex
+                def _sock_connect_ex(self, address):
+                    if not _is_loopback(address):
+                        raise PermissionError(
+                            "python_exec sandbox: socket connect_ex to %r is blocked -- only "
+                            "loopback (localhost) connections are allowed inside python_exec. "
+                            "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
+                            % (address,)
+                        )
+                    return _sock_orig_cex(self, address)
+                _jps_sock.socket.connect_ex = _sock_connect_ex
 
-        for _m in ("sendto", "sendall"):
-            if hasattr(_jps_sock.socket, _m):
-                _orig_m = getattr(_jps_sock.socket, _m)
-                def _make_send_guard(orig_fn, nm):
-                    def guarded(self, *a, **k):
-                        addr = k.get("address") if "address" in k else (k.get("addr") if "addr" in k else None)
-                        if addr is None:
-                            addr = _sock_find_addr(a) if nm == "sendto" else None
-                        if addr is not None and not _is_loopback(addr):
-                            raise PermissionError(
-                                "python_exec sandbox: socket %s to %r is blocked -- only "
-                                "loopback (localhost) addresses are allowed inside python_exec."
-                                % (nm, addr)
-                            )
-                        return orig_fn(self, *a, **k)
-                    guarded.__name__ = nm
-                    return guarded
-                setattr(_jps_sock.socket, _m, _make_send_guard(_orig_m, _m))
+            def _sock_find_addr(a):
+                # sendto data[, flags][, address] -- the first non-int positional arg
+                # after data is the address (flags are ints; addresses are tuples).
+                for x in a[1:]:
+                    if not isinstance(x, int):
+                        return x
+                return None
 
-        if hasattr(_jps_sock.socket, "sendmsg"):
-            _sock_orig_sm = _jps_sock.socket.sendmsg
-            def _sock_sendmsg(self, *a, **k):
-                addr = k.get("addr", a[1] if len(a) > 1 else None)
-                if isinstance(addr, tuple) and not _is_loopback(addr):
+            for _m in ("sendto", "sendall"):
+                if hasattr(_jps_sock.socket, _m):
+                    _orig_m = getattr(_jps_sock.socket, _m)
+                    def _make_send_guard(orig_fn, nm):
+                        def guarded(self, *a, **k):
+                            addr = k.get("address") if "address" in k else (k.get("addr") if "addr" in k else None)
+                            if addr is None:
+                                addr = _sock_find_addr(a) if nm == "sendto" else None
+                            if addr is not None and not _is_loopback(addr):
+                                raise PermissionError(
+                                    "python_exec sandbox: socket %s to %r is blocked -- only "
+                                    "loopback (localhost) addresses are allowed inside python_exec. "
+                                    "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
+                                    % (nm, addr)
+                                )
+                            return orig_fn(self, *a, **k)
+                        guarded.__name__ = nm
+                        return guarded
+                    setattr(_jps_sock.socket, _m, _make_send_guard(_orig_m, _m))
+
+            if hasattr(_jps_sock.socket, "sendmsg"):
+                _sock_orig_sm = _jps_sock.socket.sendmsg
+                def _sock_sendmsg(self, *a, **k):
+                    addr = k.get("addr", a[1] if len(a) > 1 else None)
+                    if isinstance(addr, tuple) and not _is_loopback(addr):
+                        raise PermissionError(
+                            "python_exec sandbox: socket sendmsg to %r is blocked -- only "
+                            "loopback (localhost) addresses are allowed inside python_exec. "
+                            "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
+                            % (addr,)
+                        )
+                    return _sock_orig_sm(self, *a, **k)
+                _jps_sock.socket.sendmsg = _sock_sendmsg
+
+            if hasattr(_jps_sock.socket, "sendfile"):
+                # sendfile streams a LOCAL FILE to the peer -- content exfiltration.
+                _sock_orig_sf = _jps_sock.socket.sendfile
+                def _sock_sendfile(self, *a, **k):
                     raise PermissionError(
-                        "python_exec sandbox: socket sendmsg to %r is blocked -- only "
-                        "loopback (localhost) addresses are allowed inside python_exec."
-                        % (addr,)
+                        "python_exec sandbox: socket sendfile is blocked -- it would stream "
+                        "a local file to a remote peer outside working_root."
                     )
-                return _sock_orig_sm(self, *a, **k)
-            _jps_sock.socket.sendmsg = _sock_sendmsg
+                    return _sock_orig_sf(self, *a, **k)
+                _jps_sock.socket.sendfile = _sock_sendfile
 
-        if hasattr(_jps_sock.socket, "sendfile"):
-            # sendfile streams a LOCAL FILE to the peer -- content exfiltration.
-            _sock_orig_sf = _jps_sock.socket.sendfile
-            def _sock_sendfile(self, *a, **k):
-                raise PermissionError(
-                    "python_exec sandbox: socket sendfile is blocked -- it would stream "
-                    "a local file to a remote peer outside working_root."
-                )
-                return _sock_orig_sf(self, *a, **k)
-            _jps_sock.socket.sendfile = _sock_sendfile
-
-        if hasattr(_jps_sock, "create_connection"):
-            _sock_orig_cc = _jps_sock.create_connection
-            def _sock_cc(address, *a, **k):
-                if not _is_loopback(address):
-                    raise PermissionError(
-                        "python_exec sandbox: socket create_connection to %r is blocked "
-                        "-- only loopback (localhost) connections are allowed inside python_exec."
-                        % (address,)
-                    )
-                return _sock_orig_cc(address, *a, **k)
-            _jps_sock.create_connection = _sock_cc
+            if hasattr(_jps_sock, "create_connection"):
+                _sock_orig_cc = _jps_sock.create_connection
+                def _sock_cc(address, *a, **k):
+                    if not _is_loopback(address):
+                        raise PermissionError(
+                            "python_exec sandbox: socket create_connection to %r is blocked "
+                            "-- only loopback (localhost) connections are allowed inside python_exec. "
+                            "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
+                            % (address,)
+                        )
+                    return _sock_orig_cc(address, *a, **k)
+                _jps_sock.create_connection = _sock_cc
     except Exception as _jps_stage_exc:
         _jps_log_exc("socket patch: %s" % repr(_jps_stage_exc))
 
     try:
-        _jps_log("B7: socket loopback-only policy installed")
+        _jps_log("B7: socket policy installed (%s)" % ("OPEN NETWORK (admin JACK_PYEXEC_NETWORK=1)" if _NET_OPEN else "loopback-only"))
     except Exception:
         pass
 

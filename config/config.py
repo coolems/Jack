@@ -19,7 +19,7 @@ from typing import Optional
 
 
 # --- Context / Token Limits ---
-CONTEXT_WINDOW_TOKENS: int = 184800             # Total token budget for model context def:131072
+CONTEXT_WINDOW_TOKENS: int = 151072             # Total token budget for model context def:131072
 # MUST equal the --ctx-size the deployed llama-server actually runs with (it is started from this
 # value by command_builder.py). Raising it here without a matching restart + VRAM check silently
 # desyncs client trim math / auth_ok context_window from reality - that drift caused the 2026-08-16

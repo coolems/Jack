@@ -72,7 +72,9 @@ RUNTIME SANDBOX (2026-08-31): unconditional working_root containment at RUNTIME.
         interpreters (python/node/perl/...) and network tools (curl/wget/scp/...) can
         never be spawned; shell-context strings must contain no shell operators
         (| & ; < > ...); os.popen/os.exec* denied outright, os.fork child dies at 97.
-      * socket.connect / create_connection: loopback-only (exfiltration channel closed).
+      * socket.connect / create_connection: loopback-only by default (exfiltration
+        channel closed); ADMIN opt-out via JACK_PYEXEC_NETWORK=1 in the calling process env
+        (2026-09-30) -- full outbound network for admins, forwarded to the child sandbox.
       * import blocks in the child: ctypes/_ctypes/cffi plus multiprocessing/pty/
         webbrowser/venv/ensurepip (unsandboxed-child escape classes).
       * non-audited primitives (os.open flag-aware, stat/lstat/access/truncate/
@@ -193,7 +195,9 @@ logger = logging.getLogger("COOLEMS.Tools.Exec")
 
 # ============================================================================
 # DEBUG MARKERS (2026-09-16): numbered checkpoints for hang diagnosis.
-# Every python_exec call prints [PYEXEC] #N lines to stderr AND appends them to
+# OPT-IN ONLY since 2026-09-30 (JACK_PYEXEC_DEBUG=1 in the calling process env -- client-console
+# cleanup: default runs are fully silent). When enabled, every python_exec call prints
+# [PYEXEC] #N lines to stderr AND appends them to
 # <working_root>/.temp/.jack_pyexec_debug.log -- so even when the tool call never
 # returns, the LAST printed number tells exactly which stage it stopped in:
 #   parent (this process): 1 entry -> 2 params ok -> 3 working_root resolved
@@ -211,24 +215,29 @@ logger = logging.getLogger("COOLEMS.Tools.Exec")
 #   itself, so they survive even when the parent captures stderr into a pipe and never
 #   returns it -- that is what made Mac hangs at #7 blind. After a hang, read that file:
 #   its LAST line says exactly where the child stopped (C1 = bootstrap stage, C4a N/M =
-#   your line N). File-based marker logging is OFF by default (2026-09-18 cleanup -- keep
-#   working_root free of log clutter); set env JACK_PYEXEC_DEBUG=1 to opt back in.
+#   your line N). ALL [PYEXEC] marker output (parent stderr + both .temp/ log files) is
+#   OFF by default (2026-09-18 file cleanup, 2026-09-30 stderr/client-console cleanup); set env
+#   JACK_PYEXEC_DEBUG=1 to opt back in.
 # ============================================================================
 
 def _pyexec_dbg(msg, working_dir=None):
-    """Emit a numbered debug marker: stderr (immediate) + append-only log file.
+    """Emit a numbered debug marker -- OPT-IN ONLY (2026-09-30 client-console cleanup).
 
-    The FILE part is OPT-IN only (2026-09-18 cleanup): it writes to
-    <working_root>/.temp/.jack_pyexec_debug.log ONLY when JACK_PYEXEC_DEBUG=1, so default
-    runs leave no trace files behind anywhere. The stderr marker always prints."""
+    OFF by default: normal runs print NOTHING to stderr and write no log file, keeping
+    the client console clean (the always-on [PYEXEC] #N stderr markers were needed while
+    fixing hang bugs but are pure noise now -- user request 2026-09-30). Set env
+    JACK_PYEXEC_DEBUG=1 in the CALLING process to opt back in: then every marker prints
+    to stderr AND appends to <working_root>/.temp/.jack_pyexec_debug.log (the LAST line =
+    where a hang stopped). The flag is forwarded to the child, so one switch re-enables
+    parent #N markers and child C*/B* file logs together."""
+    if os.environ.get("JACK_PYEXEC_DEBUG", "0") == "0":
+        return  # default: fully silent -- no stderr clutter, no log files (2026-09-30)
     import time as _t_dbg
     line = "[PYEXEC] %s | t=%.3f" % (msg, _t_dbg.time())
     try:
         print(line, file=sys.stderr, flush=True)
     except Exception:
         pass
-    if os.environ.get("JACK_PYEXEC_DEBUG", "0") == "0":
-        return  # file logging off by default -- stderr marker already printed above (2026-09-18)
     if working_dir:
         try:
             _logdir = os.path.join(working_dir, ".temp")  # user policy (2026-09-18): python_exec artifacts live in .temp/, not the working_root top level
@@ -243,6 +252,8 @@ def _pyexec_dbg(msg, working_dir=None):
 # Built from line LISTS joined with chr(10) -- no backslash escapes anywhere in this
 # source, so the delivered strings are byte-exact on every platform/loader.
 #
+# All [PYEXEC] marker output below (child C* stderr + .jack_pyexec_child.log) is OPT-IN ONLY
+# since 2026-09-30 (JACK_PYEXEC_DEBUG=1, client-console cleanup): default runs are fully silent.
 # The parent captures the child's stderr into a pipe: anything printed there is
 # invisible in the client console and only reaches us IF the run returns. When the
 # child hangs (the Mac case) that output never comes back -- the log stopped at #7
@@ -256,7 +267,8 @@ _CHILD_PREAMBLE_LINES = [
     "_JPSD_ROOT = _jps_os.environ.get('JACK_PYEXEC_ROOT') or ''",
     "def _jpsd_log(msg):",
     "    try:",
-    "        print('[PYEXEC] ' + msg, file=_jps_sys.stderr, flush=True)",
+    "        if _jps_os.environ.get('JACK_PYEXEC_DEBUG', '0') != '0':  # OPT-IN ONLY (2026-09-30 client-console cleanup)",
+    "            print('[PYEXEC] ' + msg, file=_jps_sys.stderr, flush=True)",
     "    except Exception:",
     "        pass",
     "    if _JPSD_ROOT and _jps_os.environ.get('JACK_PYEXEC_DEBUG', '0') != '0':",
@@ -288,7 +300,8 @@ _CHILD_ENTRY_LINES = [
     "def _jpsd_c1():",
     "    m = 'C1: child started, payload read (%d chars), stdin closed for spawned tools' % len(_JPSD_PAYLOAD)",
     "    try:",
-    "        print('[PYEXEC] ' + m, file=_jps_sys.stderr, flush=True)",
+    "        if _jps_os.environ.get('JACK_PYEXEC_DEBUG', '0') != '0':  # OPT-IN ONLY (2026-09-30 client-console cleanup)",
+    "            print('[PYEXEC] ' + m, file=_jps_sys.stderr, flush=True)",
     "    except Exception:",
     "        pass",
     "    _r = _jps_os.environ.get('JACK_PYEXEC_ROOT') or ''",
@@ -617,7 +630,8 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout):
     # entirely and works identically on Windows/macOS/Linux. PYTHONUTF8=1 pins all
     # child stdio to UTF-8 so non-ASCII payloads survive the pipe on every locale.
     env["PYTHONUTF8"] = "1"
-    env["JACK_PYEXEC_DEBUG"] = os.environ.get("JACK_PYEXEC_DEBUG", "0")  # file-based marker logging OFF by default (2026-09-18 cleanup); opt in with JACK_PYEXEC_DEBUG=1 -- stderr markers always remain
+    env["JACK_PYEXEC_DEBUG"] = os.environ.get("JACK_PYEXEC_DEBUG", "0")  # ALL [PYEXEC] marker output (parent stderr + log files) OFF by default; opt in with JACK_PYEXEC_DEBUG=1 (2026-09-30 client-console cleanup); forwarded to the child so one switch re-enables parent AND child markers
+    env["JACK_PYEXEC_NETWORK"] = os.environ.get("JACK_PYEXEC_NETWORK", "0")  # admin network opt-in (2026-09-30): forwarded to the child sandbox; with =1 its socket stage installs no outbound restrictions. Cleared above with all other JACK_PYEXEC_* state, so only THIS process's env counts.
 
     _t_dbg = time.time()
     _pyexec_dbg("#7 about to spawn child subprocess (timeout=%ss)" % effective_timeout, working_dir)
@@ -677,7 +691,7 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout):
             # reading) and everything after it is downstream of that stall.
             _pyexec_dbg("#7.3 stdin feed complete (%d chars delivered)" % len(payload), working_dir)
         except Exception as _fe:
-            print("[PYEXEC] #7.4 stdin feed error: %r" % (_fe,), file=sys.stderr, flush=True)
+            _pyexec_dbg("#7.4 stdin feed error: %r" % (_fe,), working_dir)  # gated like all other markers (2026-09-30)
 
     _out_chunks, _err_chunks = bytearray(), bytearray()
 

@@ -10,14 +10,17 @@ What it does (all steps in one run):
      to download it physically NOW or SKIP it for later - everything else is configured
      either way (resumable downloads with progress + size verification; re-run init any
      time to fetch a skipped model).
-  3. Optional MTP: renames the main model so "MTP" is in its filename - that is what our
+  3. Asks whether to download the VISION PROJECTOR (mmproj) from HuggingFace NOW or skip
+     it for later - same D/S approach as the main model. Without it the model cannot see
+     images; with it, image input works out of the box.
+  4. Optional MTP: renames the main model so "MTP" is in its filename - that is what our
       code (_is_mtp_model) looks for to auto-enable speculative decoding (>2x speedup).
       The MTP head itself is ALREADY baked into unsloth's GGUF, so nothing extra is
       downloaded or loaded (llama.cpp builds the draft context from the same file).
-  4. Optional GLM-OCR model from HuggingFace (needed by the transcribe_image tool).
-  5. llama.cpp binaries: auto-download of the PINNED build this codebase is written
+  5. Optional GLM-OCR model from HuggingFace (needed by the transcribe_image tool).
+  6. llama.cpp binaries: auto-download of the PINNED build this codebase is written
      against (b10441) - or you can download a newer one by hand and we wait for it.
-  6. Config wiring (the server<->client sync part): generates an API key that lands in
+  7. Config wiring (the server<->client sync part): generates an API key that lands in
      BOTH config/.api_keys.json AND CLIENT/config/.api_client_keys.json, rewrites all
      profile model/OCR paths to THIS machine's real folders, pre-seeds the last-loaded
      model so SERVER boots straight into it, and patches CONTEXT_WINDOW_TOKENS to a
@@ -50,6 +53,13 @@ MIN_PYTHON = (3, 10)
 
 HF_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF"
 HF_OCR_REPO = "ggml-org/GLM-OCR-GGUF"
+
+# Vision projector (mmproj) for the main model - lives in the SAME HF repo as the GGUFs.
+# Verified 2026-10-03 via the HF tree API; mmproj-F16.gguf is what our discovery code
+# (_find_generic_mmproj) prefers when it sits NEXT TO the model file (the model's own
+# folder is searched first), so init places it there.
+HF_MMPROJ_FILE = "mmproj-F16.gguf"
+MMPROJ_SIZE = 927_607_488
 
 LLAMA_BUILD = "b10441"   # PINNED build this codebase is written against (see llama_server/ docs)
 GH_RELEASE_BASE = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}"
@@ -177,16 +187,16 @@ def ask_yn(question: str, default_yes: bool = True) -> bool:
     return val in ("y", "yes")
 
 
-def ask_download_now(size: int) -> bool:
-    """Ask whether to download the (big) model file NOW or skip it for later.
+def ask_download_now(size: int, what: str = "model") -> bool:
+    """Ask whether to download the (big) *what* file NOW or skip it for later.
 
     Returns True = download now, False = skip (every other init step runs as usual).
     """
     print()
-    info(f"The chosen model file is ~{human(size)}.")
+    info(f"The chosen {what} file is ~{human(size)}.")
     while True:
         val = ask(
-            "Download the model physically NOW, or SKIP it for later?\n"
+            f"Download the {what} physically NOW, or SKIP it for later?\n"
             "      [D] Download now  (recommended - everything works out of the box)\n"
             "      [S] Skip for later  (init still does ALL other setup; re-run this init\n"
             "          any time to fetch the model - downloads resume where they stopped)",
@@ -564,11 +574,12 @@ def select_model(gpu_name: str | None, vram_mb: int | None) -> tuple[dict, dict]
 
 
 def download_model_files(ctx: dict) -> None:
-    """Downloads main model (+ optional OCR). Fills ctx keys.
+    """Downloads main model (+ optional vision projector + optional OCR). Fills ctx keys.
 
     With ctx['download_now'] False the big model file is NOT fetched - only its target
     name/path are computed so the config wiring works exactly as usual; re-running init
-    any time later fetches it (resumable). The OCR download is unaffected by that choice.
+    any time later fetches it (resumable). The mmproj download honors ctx['mmproj_now']
+    the same way, and the OCR download is unaffected by either choice.
     """
     quant, fname, size = ctx["quant_entry"]
     model_folder = ctx["model_folder"]
@@ -616,6 +627,19 @@ def download_model_files(ctx: dict) -> None:
             ctx["final_model_name"] = target_name
 
     ctx["model_path"] = os.path.join(model_folder, ctx["final_model_name"])
+
+    # ---- vision projector (mmproj) - lives NEXT TO the main model so the server's
+    # _find_generic_mmproj() picks it up from the model folder automatically.
+    if ctx.get("mmproj_now", True):
+        url = f"https://huggingface.co/{HF_MODEL_REPO}/resolve/main/{HF_MMPROJ_FILE}?download=true"
+        download_file(url, os.path.join(model_folder, HF_MMPROJ_FILE),
+                      expected_size=MMPROJ_SIZE, label=HF_MMPROJ_FILE)
+    else:
+        print()
+        info("Vision projector NOT downloaded (skipped for later). It will live at:")
+        info(f"   {os.path.join(model_folder, HF_MMPROJ_FILE)}")
+        warn("Image input will not work until it is fetched - re-run ZZZ_initial_init.bat "
+             "any time to download it (resumable).")
 
     # ---- OCR model ----
     if ctx["want_ocr"]:
@@ -950,8 +974,18 @@ def main() -> int:
             warn("Model download SKIPPED for later - everything else is set up as usual. "
                  "Re-run ZZZ_initial_init.bat any time to fetch it (resumable).")
 
-        # ---- STEP 2b: optional downloads + disk pre-check ---------------------
-        header("STEP 2b - OPTIONAL DOWNLOADS & DISK CHECK")
+        # ---- STEP 2b: vision projector (mmproj) now, or skip for later --------
+        header("STEP 2b - VISION PROJECTOR (MMPROJ): DOWNLOAD NOW OR SKIP FOR LATER")
+        info(f"Vision projector file: {HF_MMPROJ_FILE} from huggingface.co/{HF_MODEL_REPO}")
+        mmproj_now = ask_download_now(MMPROJ_SIZE, what="vision projector (mmproj)")
+        if mmproj_now:
+            ok(f"Will download the vision projector now (~{human(MMPROJ_SIZE)})")
+        else:
+            warn("Vision projector SKIPPED for later - image input will not work until it is fetched. "
+                 "Re-run ZZZ_initial_init.bat any time to fetch it (resumable).")
+
+        # ---- STEP 2c: optional downloads + disk pre-check ---------------------
+        header("STEP 2c - OPTIONAL DOWNLOADS & DISK CHECK")
         want_mtp = ask_yn(
             "Enable MTP speculative decoding (>2x generation speedup)?\n"
             "      (no extra download - the head is already inside unsloth's GGUF; the file just gets\n"
@@ -961,7 +995,8 @@ def main() -> int:
             f"Download the GLM-OCR model (+{human(sum(s for _f, s in OCR_FILES))}, needed by the transcribe_image tool)?",
             default_yes=True)
 
-        need = (q_size if download_now else 0) + sum(s for _f, s in OCR_FILES if want_ocr)
+        need = ((q_size if download_now else 0) + (MMPROJ_SIZE if mmproj_now else 0)
+                + sum(s for _f, s in OCR_FILES if want_ocr))
         need = int(need * 1.25) + (1_500_000_000 if not os.path.exists(os.path.join(ROOT, "llama_server", "llama-server.exe")) else 0)
         free = shutil.disk_usage(ROOT).free
         if free < need:
@@ -987,6 +1022,7 @@ def main() -> int:
             "want_mtp": want_mtp,
             "want_ocr": want_ocr,
             "download_now": download_now,
+            "mmproj_now": mmproj_now,
             "models_root": os.path.join(ROOT, "llama_server", "models"),
             "model_folder": os.path.join(ROOT, "llama_server", "models", f"qwen38-27b-{q_label.lower()}"),
         }
@@ -1010,6 +1046,10 @@ def main() -> int:
             warn(f"Model (SKIPPED for later):  {ctx['model_path']}")
         if want_mtp:
             ok("MTP spec decoding ENABLED - head is built into the model file (no extra weights loaded)")
+        if ctx.get("mmproj_now", True):
+            ok(f"Vision projector (mmproj):  {os.path.join(ctx['model_folder'], HF_MMPROJ_FILE)}")
+        else:
+            warn(f"Vision projector (SKIPPED for later): {ctx['model_folder']}\\{HF_MMPROJ_FILE}")
         if want_ocr:
             ok(f"OCR model:                  {ctx['ocr_folder']}")
         print()
@@ -1030,6 +1070,10 @@ def main() -> int:
         if not ctx.get("download_now", True):
             info(f"  {step}. Re-run ZZZ_initial_init.bat to download the model file you skipped")
             info("         (it picks up where it left off - everything else is already set up).")
+            step += 1
+        if not ctx.get("mmproj_now", True):
+            info(f"  {step}. Re-run ZZZ_initial_init.bat to download the vision projector (mmproj) you skipped")
+            info("         (image input stays disabled until it is in place - everything else already works).")
             step += 1
         info(f"  {step}. Run ZZZ_SERVER.bat   (first run creates the venv + installs deps - takes a few minutes)")
         if ctx["same_machine_client"]:
