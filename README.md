@@ -124,6 +124,16 @@ The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeF
 
 Follow the steps **in order**. After step 6 you have a fully working UI ↔ CLIENT ↔ SERVER ↔ local LLM chain.
 
+> ### TL;DR — quick start (Windows, ~5 minutes)
+>
+> The whole guide below is detail. For a fresh clone on Windows you only need:
+>
+> 1. **Download the repo** and double-click **`ZZZ_initial_init.bat`** at the root — it sets everything up in one go (checks Python, picks & downloads a model that fits your GPU, installs llama.cpp, generates the API key into both configs). **Do not close this window until you have added the API key in the UI (step 5 below).**
+> 2. Double-click **`ZZZ_SERVER.bat`** at the root — **leave it running**.
+> 3. In the `CLIENT/` folder, double-click **`ZZZ_CLIENT.bat`** — leave it running too.
+> 4. Open a browser and go to **https://127.0.0.1:8000/** (the "Not secure" warning is expected — self-signed local certificate).
+> 5. In the UI: **gear icon → Settings → Authentication** → paste the API key from the `ZZZ_initial_init.bat` window, enter your e-mail and click **Connect**. Done — start chatting.
+
 ### Fastest path: `ZZZ_initial_init.bat` (recommended for a fresh clone)
 
 On Windows, just **double-click `ZZZ_initial_init.bat`** at the repo root. It checks that you have
