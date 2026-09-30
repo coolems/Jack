@@ -41,8 +41,9 @@ async def check_url(url: str, timeout: int = 5000) -> str:
         return "❌ No page available."
 
     try:
-        # Normalize URL scheme before SSRF check
-        if not url.startswith(('http://', 'https://')):
+        # Normalize URL scheme (2026-07-15): file:// stays INTACT for the SSRF gate's
+        # consent classification; https:// auto-added only to bare hostnames.
+        if not url.startswith(('http://', 'https://', 'file://')):
             url = 'https://' + url
 
         # --- SSRF Protection (fail-closed, no fallbacks — 2026-08-28 hardening) ---

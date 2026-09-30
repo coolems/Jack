@@ -1,4 +1,4 @@
-# Jack — Private AI Agent for Your Company
+# Jack — Private AI Agent.
 
 <p align="center">
   <img src="./utils/ScreenShot.png" width="99%" alt="Jack in action"/>

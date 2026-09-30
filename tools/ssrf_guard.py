@@ -53,11 +53,16 @@ DELIVERY NOTE (server/client split)
 
 CLIENT usage requires aiohttp (listed in CLIENT/requirements.txt). Browser navigation
 tools do NOT need it -- they only use the sync-free validation gate above.
-"""
+
+    URL CONSENT (2026-07-15): consentable local targets (file:// inside working root,
+    loopback http(s)) may be passed after an explicit user Allow via grant_url() -- a
+    one-shot exact-match ledger consumed by validate/ensure on first use. All other
+    blocks remain hard and can never be consented into. See classify_blocked_url()."""
 
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -257,10 +262,18 @@ def validate_url_not_ssrff(
     Returns:
         Tuple of (is_safe, reason_string). is_safe=True means URL passed all checks.
     """
+    # --- Consent ledger (2026-07-15): an explicit one-shot user grant passes this exact URL.
+    # The consent decision itself was made in ToolExecutor via classify_blocked_url();
+    # here we only honour the recorded Allow -- once, for this exact string, then consumed.
+    if isinstance(url, str) and consume_grant(url):
+        logger.info(f"SSRF guard: one-shot user grant consumed for url={url}")
+        return True, "OK (user-approved local target)"
+
     # --- Layer 0: Protocol whitelist ---
     if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
         return False, "Only HTTP/HTTPS protocols allowed"
-
+    # NOTE (2026-07-15): file:// is deliberately NOT whitelisted here -- it can only pass
+    # through the consent ledger above (grant_url after an explicit user Allow).
     # --- Layer 1: Double-decode + substring block check ---
     decoded_url = unquote(unquote(url)).lower()
     for blocked in _BLOCKED_STRINGS:
@@ -314,6 +327,135 @@ def validate_url_not_ssrff(
             return False, f"Resolved to private/reserved IP: {ip_str} (hostname: {hostname})"
 
     return True, "OK"
+
+
+# ---------------------------------------------------------------------------
+# URL CONSENT (2026-07-15) -- user-permission flow for *consentable* local targets.
+# ---------------------------------------------------------------------------
+# Some blocked URLs are NOT SSRF risks: file:// paths INSIDE the working root and
+# loopback http(s) hosts (localhost / 127.x). Those are exactly what a user would
+# want to open in the browser during development (e.g. previewing an HTML file that
+# just got written), but the hard block above cannot ask -- it has no channel to the
+# local user. So:
+#   * ToolExecutor (CLIENT) pre-checks URL-bearing tools with validate_url_not_ssrff();
+#     when a failure is CONSENTABLE it shows the same approval card as python_exec and,
+#     on an explicit Allow, registers a ONE-SHOT grant below;
+#   * validate/ensure then pass THAT exact URL through (the grant is consumed on first
+#     match -- approving one file never opens another);
+#   * everything else stays HARD-blocked exactly as before: private/LAN IPs, link-local
+#     metadata ranges, CGNAT, multicast/reserved, and any other non-loopback target.
+# The fail-closed contract is untouched: when no grant exists, behavior is byte-identical
+# to the pre-consent module.
+
+_granted_urls: set = set()
+
+
+def grant_url(url: str) -> None:
+    """Register a ONE-SHOT navigation consent for *url* (exact string match).
+
+    The next validate/ensure call with this exact URL passes and CONSUMES the grant;
+    any other use -- different path, port, scheme or query -- is still blocked.
+    Grants are per-process in-memory state only: nothing is persisted, they expire on
+    first use or process restart, and there are no wildcards/prefixes/expiry windows.
+    """
+    if isinstance(url, str) and url.strip():
+        _granted_urls.add(url.strip())
+
+
+def consume_grant(url: str) -> bool:
+    """Return True (and remove the grant) when *url* exactly matches a pending consent."""
+    u = url.strip() if isinstance(url, str) else ""
+    if u in _granted_urls:
+        _granted_urls.discard(u)
+        return True
+    return False
+
+
+def _file_url_local_path(url: str):
+    """Map a file:// URL to its local path (None when it does not look like one).
+
+    Handles the Windows drive form ('file:///C:/x/y.html'), the rare 'localhost' netloc
+    form, and percent-encoding. Pure string work -- no disk access here; containment in
+    the working root is enforced by classify_blocked_url().
+    """
+    if not isinstance(url, str):
+        return None
+    from urllib.parse import urlparse as _urlparse
+    from urllib.request import url2pathname as _u2p
+    try:
+        parsed = _urlparse(unquote(url))
+    except Exception:
+        return None
+    if (parsed.scheme or '').lower() != 'file':
+        return None
+    netloc = (parsed.netloc or '')
+    path = unquote(parsed.path or '')
+    raw = (netloc + '/' + path) if netloc else path
+    try:
+        local = _u2p(raw)
+    except Exception:
+        return None
+    if not local:
+        return None
+    return os.path.normpath(os.path.abspath(local))
+
+
+def classify_blocked_url(url: str):
+    """Classify a BLOCKED url as consentable (user may be asked) or hard-blocked.
+
+    Returns (is_consentable, reason):
+      * file:// whose local path is INSIDE the current working root -> consentable
+        ('local_file');
+      * http(s) targeting loopback (localhost / 127.x / ::1)         -> consentable
+        ('loopback') -- e.g. a dev server started on this machine;
+      * everything else                                              -> hard block, the
+        user is NEVER asked (private LAN, link-local metadata IPs, CGNAT, multicast,
+        reserved ranges, foreign file:// paths, other schemes).
+
+    Never raises: any internal error degrades to a hard block.
+    """
+    try:
+        if not isinstance(url, str):
+            return False, "not a string"
+
+        local = _file_url_local_path(url)
+        if local is not None:
+            try:
+                from tools.utils import get_working_root
+                wr = os.path.realpath(os.path.abspath(get_working_root()))
+            except Exception as e:  # working root unavailable -> cannot prove containment
+                return False, f"working root unavailable ({type(e).__name__}) - file:// stays blocked"
+            # realpath (not just normpath): a symlink/junction INSIDE the root that points
+            # OUTSIDE must not count as "inside" -- same canonicalization the codebase's own
+            # tools/path_guard.guard_path_inside_working_root() uses. Nonexistent tail paths
+            # are resolved lexically, which is fine (the browser would fail to open them).
+            real_local = os.path.realpath(local)
+            try:
+                rel = os.path.relpath(real_local, wr)
+            except ValueError:
+                return False, "file path on a different drive than the working root"
+            if not (rel == os.curdir or rel.startswith('..' + os.sep)):
+                return True, f"local file inside working root: {real_local}"
+            return False, f"path is outside the working root: {real_local}"
+
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or '').lower()
+        if scheme in ('http', 'https'):
+            host = (parsed.hostname or '')
+            if not host:
+                return False, "no hostname"
+            if host.lower() == 'localhost':
+                return True, f"loopback target: {url}"
+            try:
+                lit = ipaddress.ip_address(host)
+                if lit.is_loopback:
+                    return True, f"loopback target: {url}"
+            except ValueError:
+                pass  # hostname -- DNS answer was private (hard block), or undecidable
+        return False, "non-consentable target"
+    except Exception as e:  # fail-closed by construction
+        logger.error(f"SSRF guard [consent]: classification error ({e!r}) - treating as hard block")
+        return False, f"classification error: {type(e).__name__}"
 
 
 def ensure_url_not_ssrff(

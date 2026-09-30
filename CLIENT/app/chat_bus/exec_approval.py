@@ -34,14 +34,27 @@ import uuid
 logger = logging.getLogger("COOLEMS.ChatBus.ExecApproval")
 
 
-def build_approval_frame(conv_id: str, request_id: str, code: str) -> dict:
-    """UI frame that renders the interactive approval card in the chat."""
-    return {
+def build_approval_frame(conv_id: str, request_id: str, code: str,
+                         title: str | None = None, description: str | None = None) -> dict:
+    """UI frame that renders the interactive approval card in the chat.
+
+    *code* is whatever payload the user must approve -- python_exec source by default,
+    or (2026-07-15 URL consent) a local URL string when title/description are provided.
+    The UI uses *title*/*description* for the card header when present and falls back to
+    the original "Run this Python code on your machine?" wording otherwise, so older
+    clients keep working with new frames (unknown keys are simply ignored).
+    """
+    frame = {
         "type": "exec_approval_request",
         "conv_id": conv_id,
         "request_id": request_id,
         "code": code,
     }
+    if title:
+        frame["title"] = title
+    if description:
+        frame["description"] = description
+    return frame
 
 
 class ExecApprovalState:

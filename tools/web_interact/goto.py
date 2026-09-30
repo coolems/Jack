@@ -36,8 +36,10 @@ async def goto(url: str, wait_until: str = "commit", timeout: int = 60000) -> st
     if not wi or wi.page is None:
         return "❌ No page available."
 
-    # Normalize URL scheme before SSRF check
-    if not url.startswith(('http://', 'https://')):
+    # Normalize URL scheme (2026-07-15): a proper file:// URL stays INTACT so the SSRF
+    # gate can classify it (user-consent flow in ToolExecutor); https:// is auto-added
+    # ONLY to bare hostnames. The old blanket prefix produced mangled 'https://file://' URLs.
+    if not url.startswith(('http://', 'https://', 'file://')):
         url = 'https://' + url
 
     # --- SSRF Protection (fail-closed, no fallbacks — 2026-08-28 hardening) ---

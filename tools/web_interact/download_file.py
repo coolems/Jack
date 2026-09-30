@@ -52,8 +52,9 @@ async def download_file(url: str, filename: str = None, download_dir: str = "", 
     """
     from ..utils import get_working_root, resolve_path_to_dir, validate_filename
 
-    # Normalize URL scheme before SSRF check
-    if not url.startswith(('http://', 'https://')):
+    # Normalize URL scheme (2026-07-15): file:// stays INTACT for the SSRF gate's
+    # consent classification; https:// auto-added only to bare hostnames.
+    if not url.startswith(('http://', 'https://', 'file://')):
         url = 'https://' + url
 
     # --- SSRF Protection (fail-closed, no fallbacks — 2026-08-28 hardening;

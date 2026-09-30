@@ -275,6 +275,8 @@
 /* ===== PYTHON_EXEC USER APPROVAL CARD (2026-09-24) ===== */
 .exec-approval-card { border-color: var(--warning); box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35); }
 .exec-approval-header { font-weight: 600; color: var(--warning); margin-bottom: 10px; font-size: 14px; }
+/* URL consent (2026-07-15): optional description line under the card header */
+.exec-approval-desc { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 8px; }
 .exec-approval-code {
     background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px;
     padding: 12px; margin: 0 0 10px 0; max-height: 320px; overflow: auto;

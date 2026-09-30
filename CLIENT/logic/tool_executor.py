@@ -129,6 +129,18 @@ def _sanitize_image_result(result_text: str) -> str:
 IMAGE_TOOLS = frozenset({"generate_image"})
 
 
+# ============================================================
+# URL CONSENT GATE (2026-07-15) - browser tools pointing at local targets.
+# The SSRF guard hard-blocks file:// and loopback URLs; those two categories are NOT
+# SSRF risks, so instead of a silent block the AI asks the LOCAL USER via the same
+# approval card as python_exec (allow / deny / "until task done"). On Allow, a ONE-SHOT
+# exact-match grant is registered in tools.ssrf_guard and this exact URL passes.
+# Only these URL-bearing navigation/fetch tools are gated; everything else (private LAN,
+# metadata IPs, CGNAT, foreign file:// paths) stays hard-blocked and is never asked.
+# ============================================================
+URL_CONSENT_TOOLS = frozenset({"goto", "check_url", "download_file"})
+
+
 def _extract_image_payloads(tool_result):
     """Pull viewable-image payloads out of a tool result (dict or list/tuple).
 
@@ -242,6 +254,28 @@ class ToolExecutor:
                              "to review/run manually, explain what it would do, or proceed with an alternative approach "
                              "that does not require running it.")
                 return deny_msg, ""
+
+        # ============================================================
+        # USER APPROVAL GATE for URL-bearing browser tools (2026-07-15).
+        # Pre-checks the SSRF guard BEFORE execution: when a blocked target is
+        # CONSENTABLE (file:// inside working root / loopback http(s)) it asks the
+        # local user; on Allow it registers the one-shot grant so the tool's own
+        # ensure_url_not_ssrff() passes for this exact URL. Hard-blocked targets and
+        # a declined question fail closed with an explanatory message (no execution).
+        # ============================================================
+        if tool_name in URL_CONSENT_TOOLS:
+            url_arg = (tool_args or {}).get("url") if isinstance(tool_args, dict) else None
+            if isinstance(url_arg, str) and url_arg.strip():
+                if await self._maybe_ask_url_consent(url_arg, websocket, conversation_id):
+                    pass  # allowed (grant registered / auto-consent active) -> fall through
+                else:
+                    logger.warning("[URL-CONSENT] %s NOT executed - blocked target declined or unconsentable", tool_name)
+                    deny_msg = ("USER DECISION: This URL was refused by the local user's browser-security gate. "
+                                f"The navigation to {url_arg[:200]} did NOT happen and must not be retried with the same URL. "
+                                "If it is a local file inside your working folder, tell the user to click Allow on the "
+                                "approval card (or ask them again in a new task). Otherwise use an alternative approach: "
+                                "serve the file over http://localhost, read it as text with the file tools, or explain what you intended.")
+                    return deny_msg, ""
 
         # Send tool start notification (skip if silent mode)
         if not silent:
@@ -455,4 +489,90 @@ class ToolExecutor:
 
         # 'deny' -> fail-closed (the only remaining decision).
         logger.info(f"[EXEC-APPROVAL] python_exec blocked by user decision: {decision}")
+        return False
+
+    # ------------------------------------------------------------------
+    # URL consent gate for browser tools (2026-07-15) - see app/chat_bus/exec_approval.py
+    # ------------------------------------------------------------------
+
+    async def _maybe_ask_url_consent(self, url: str, websocket: Any,
+                                     conversation_id: str = None) -> bool:
+        """Decide whether a URL-bearing browser tool may proceed to *url*.
+
+        Returns True when the SSRF guard already accepts the URL (normal public web -
+        no user interaction at all), or after an explicit user Allow for a CONSENTABLE
+        local target (file:// inside working root, loopback http(s)) -- in that case a
+        one-shot exact-match grant is registered so the tool's own ensure_url_not_ssrff()
+        passes. Returns False (fail-closed) when the target is hard-blocked by policy or
+        the user declined / could not be asked. Never raises.
+
+        "Run until task done" on a URL consent card behaves like python_exec: every later
+        consentable local target of THIS agentic run passes without asking; dangerous
+        (non-consentable) targets are still hard-blocked even under auto-consent.
+        """
+        try:
+            from tools.ssrf_guard import validate_url_not_ssrff, classify_blocked_url, grant_url
+        except Exception as e:  # guard unavailable -> let the tool's own check answer (it fails closed there)
+            logger.warning(f"[URL-CONSENT] ssrf_guard unavailable ({e!r}) - skipping pre-gate")
+            return True
+
+        safe, _reason = validate_url_not_ssrff(url)
+        if safe:
+            return True  # public web target -- normal path, no question asked
+
+        consentable, why = classify_blocked_url(url)
+        if not consentable:
+            logger.info(f"[URL-CONSENT] hard block (not consentable): {url} - {why}")
+            return False
+
+        from app.chat_bus import get_chat_bus, build_approval_frame
+        bus = get_chat_bus()
+        state = None
+        if bus is not None and conversation_id:
+            channel = bus.channels.get(conversation_id)
+            if channel is not None:
+                state = getattr(channel, "exec_approval", None)
+        # Fail-closed: no live approval state (non-bus context / stale channel) -> refuse.
+        if state is None or not hasattr(state, "wait_for_decision"):
+            logger.warning("[URL-CONSENT] no approval state for conv=%s - failing closed (not navigated)", conversation_id)
+            return False
+
+        if getattr(state, "auto_run_all", False):
+            # Auto-consent active for this run: consentable local targets pass without asking.
+            grant_url(url)
+            logger.info("[URL-CONSENT] auto-consent active - allowed %s without asking", url[:120])
+            return True
+
+        request_id = state.new_request_id()
+        try:
+            await websocket.send_text(json.dumps(build_approval_frame(
+                conversation_id, request_id, url,
+                title="Open this local target in the browser?",
+                description=("This URL points to THIS machine (a file inside your working "
+                             "folder or a localhost address). The SSRF guard blocked it by default; "
+                             "Allow opens exactly this one URL."),
+            )))
+        except Exception as e:
+            logger.warning(f"[URL-CONSENT] approval frame not delivered ({e}) - failing closed")
+            return False
+
+        decision = await state.wait_for_decision(request_id)
+
+        if decision == "run_all":
+            grant_url(url)  # this one now, plus auto-consent for the rest of the run
+            try:
+                await websocket.send_text(json.dumps({
+                    "type": "system",
+                    "content": "Auto-open enabled: local file/localhost targets will open without asking until this task ends.",
+                }))
+            except Exception:
+                pass  # dead socket - the grant still holds in state; card shows it client-side
+            return True
+
+        if decision == "allow":
+            grant_url(url)
+            logger.info(f"[URL-CONSENT] user allowed local target: {url[:120]}")
+            return True
+
+        logger.info(f"[URL-CONSENT] local target blocked by user decision: {decision} ({url[:120]})")
         return False

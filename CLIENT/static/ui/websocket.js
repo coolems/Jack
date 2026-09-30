@@ -471,6 +471,19 @@ function appendExecApprovalCard(data) {
         return;
     }
 
+    // (2026-07-15 URL consent): the frame may carry title/description for non-code
+    // consents (opening a local file / localhost target in the browser). When absent,
+    // fall back to the original python_exec wording -- old frames keep rendering as before.
+    const isUrlConsent = typeof data.title === 'string' && data.title.length > 0;
+    const headerText = isUrlConsent
+        ? '\u{1F517} ' + escapeHtml(data.title)
+        : '&#128273; Run this Python code on your machine?';
+    const descHtml = (typeof data.description === 'string' && data.description.length > 0)
+        ? '<div class="exec-approval-desc">' + escapeHtml(data.description) + '</div>'
+        : '';
+    const allowLabel = isUrlConsent ? '&#10003; Allow this URL' : '&#10003; Allow this run';
+    const runAllLabel = isUrlConsent ? '&#9889; Open local targets until task done' : '&#9889; Run until task done';
+
     const codeHtml = escapeHtml(String(data.code || ''));
     const card = document.createElement('div');
     card.className = 'message assistant';
@@ -483,13 +496,14 @@ function appendExecApprovalCard(data) {
     body.className = 'message-content exec-approval-card';
     if (data.request_id) body.setAttribute('data-request-id', data.request_id);
     body.innerHTML =
-        '<div class="exec-approval-header">&#128273; Run this Python code on your machine?</div>' +
+        '<div class="exec-approval-header">' + headerText + '</div>' +
+        descHtml +
         '<pre class="exec-approval-code"><code>' + codeHtml + '</code></pre>' +
         '<span class="exec-approval-status pending">Waiting for your decision (no time limit - answer whenever you are ready)</span>' +
         '<div class="exec-approval-actions">' +
-            '<button type="button" class="exec-btn exec-btn-allow" data-decision="allow">&#10003; Allow this run</button>' +
-            '<button type="button" class="exec-btn exec-btn-runall" data-decision="run_all">&#9889; Run until task done</button>' +
-            '<button type="button" class="exec-btn exec-btn-deny" data-decision="deny">&#10007; Do not run</button>' +
+            '<button type="button" class="exec-btn exec-btn-allow" data-decision="allow">' + allowLabel + '</button>' +
+            '<button type="button" class="exec-btn exec-btn-runall" data-decision="run_all">' + runAllLabel + '</button>' +
+            '<button type="button" class="exec-btn exec-btn-deny" data-decision="deny">&#10007; ' + (isUrlConsent ? 'Do not open' : 'Do not run') + '</button>' +
         '</div>';
 
     body.querySelectorAll('.exec-btn').forEach(btn => {
@@ -523,9 +537,14 @@ function submitExecApproval(data, clickedBtn) {
             card.dataset.answered = '1';
             if (!ok) throw new Error((d && d.message) || ('HTTP ' + (d && d.detail ? JSON.stringify(d.detail) : '')));
             let msg;
-            if (decision === 'allow') msg = '\u2705 Allowed - the code is running now.';
-            else if (decision === 'run_all') msg = '\u26A1 Auto-run enabled: python_exec will run without asking until this task ends.';
-            else msg = '\u274C Not run - you decided not to execute this code. The AI was told and will continue differently.';
+            const urlConsent = typeof data.title === 'string' && data.title.length > 0;
+            if (decision === 'allow') msg = urlConsent ? '\u2705 Allowed - opening this URL in the browser now.' : '\u2705 Allowed - the code is running now.';
+            else if (decision === 'run_all') msg = urlConsent
+                ? '\u26A1 Auto-open enabled: local file/localhost targets will open without asking until this task ends.'
+                : '\u26A1 Auto-run enabled: python_exec will run without asking until this task ends.';
+            else msg = urlConsent
+                ? '\u274C Not opened - you decided not to open this target. The AI was told and will continue differently.'
+                : '\u274C Not run - you decided not to execute this code. The AI was told and will continue differently.';
             if (statusEl) { statusEl.className = 'exec-approval-status done-' + decision; statusEl.textContent = msg; }
         })
         .catch(err => {
