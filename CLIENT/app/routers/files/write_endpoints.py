@@ -193,11 +193,8 @@ def register_write_endpoints(router: APIRouter):
         resolves through that same file via get_working_root(), so writing it
         here takes effect everywhere immediately - no propagation needed.
         """
-        # new directory - admin only (same rationale as run-python).
-        if _request_role(request) != "admin":
-            logger.warning(f"working_root SET denied for non-admin role from {request.client.host if request.client else 'unknown'}")
-            return {"success": False, "message": "Changing the working root requires an admin-role API key."}
-        # SECURITY (2026-08-25): retargeting working_root moves the whole file API to a
+        # No role gate (2026-09-30): changing the working root is a regular UI action available
+        # to ANY caller/role at any time - no admin restriction.
 
         try:
             from app.utils.common import set_working_root as _set_wr

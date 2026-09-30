@@ -133,6 +133,7 @@ Follow the steps **in order**. After step 6 you have a fully working UI ↔ CLIE
 > 3. In the `CLIENT/` folder, double-click **`ZZZ_CLIENT.bat`** — leave it running too.
 > 4. Open a browser and go to **https://127.0.0.1:8000/** (the "Not secure" warning is expected — self-signed local certificate).
 > 5. In the UI: **gear icon → Settings → Authentication** → paste the API key from the `ZZZ_initial_init.bat` window, enter your e-mail and click **Connect**. Done — start chatting.
+> 6. *(Optional)* Point Jack at any repo you like: in the header there is a **Working Folder** — click it and type/paste any directory path to change the working root for all file operations. It starts out as the folder where the code was launched; you can change it at any time from the UI.
 
 ### Fastest path: `ZZZ_initial_init.bat` (recommended for a fresh clone)
 
