@@ -88,6 +88,8 @@ By default, no data leaves your local network: the relay only talks to the llama
 - **Dev teams that want code-writing agents on their own stack** — the agent loop, file tools and Python execution run against your models, not a third-party API
 - **Organizations needing per-employee access control** — every connection is authenticated, every user gets exactly the models and tools their role allows, with rate limits and connection caps enforced server-side
 
+The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeForce RTX 5090 (32 GB VRAM)** GPU. The installer's default model recommendations and context-window sizing are tuned to this machine; weaker GPUs still work — `ZZZ_initial_init.bat` detects your card and picks a Qwen3.8-27B quant that fits its actual VRAM, and any laptop can run the CLIENT (even without GPU). Choosing to not load vision module will give enough space to work with up to 200K context window on 32GB VRAM.
+
 ## Repository layout
 
 ```
@@ -153,6 +155,8 @@ manual steps below describe what that script does, for reference / non-Windows m
 
    The *folder* is the model identity — profiles in step 3 reference these folders by absolute path. (Optional: a separate OCR model folder, e.g. `llama_server/models/glm_ocr/`, enables the `transcribe_image` tool.)
 
+   **Any GGUF works.** Drop any `.gguf` file you want to try into its own new folder under `llama_server/models/` — no code changes needed. Point a profile's `allowed_models_folders` at that folder (or use an admin profile) and the model shows up in the UI selector; switch to it from there, or let `ZZZ_initial_init.bat`'s pre-seeded startup pick it.
+
 ### Step 2 — Create your API keys (SERVER side)
 
 Open **`config/.api_keys.json`** in the repo root. On first start it is created automatically from the shipped `.api_keys.example.json` template, so a fresh checkout always has the file to edit. It contains one placeholder entry:
@@ -204,6 +208,7 @@ Profiles live in **`config/profiles.json`**: one JSON object per role name. The 
   }
 }
 ```
+
 
 | Field | Meaning |
 |---|---|
