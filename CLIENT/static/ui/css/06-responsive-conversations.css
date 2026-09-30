@@ -1,0 +1,247 @@
+/* =====================================================================
+   06-responsive-conversations.css — module of the former monolithic styles.css
+   Source: CLIENT/static/ui/styles.css lines L1610-L1852 (split 2026-09-18).
+   Load order is a contract: keep numbered import order in ../styles.css.
+   ===================================================================== */
+/* ===== RESPONSIVE ===== */
+@media (max-width: 1200px) {
+    .preview-panel:not(.collapsed) { width: 320px; }
+}
+
+@media (max-width: 768px) {
+    .sidebar { position: fixed; left: 0; top: 0; height: 100vh; z-index: 100; transform: translateX(-100%); }
+    .sidebar.open { transform: translateX(0); }
+    .menu-btn { display: block !important; }
+    .files-panel { position: fixed; right: 0; top: 0; height: 100vh; z-index: 100; transform: translateX(100%); width: var(--files-panel-width); }
+    .files-panel.open { transform: translateX(0); }
+    .preview-panel { position: fixed; right: 0; top: 0; height: 100vh; z-index: 99; transform: translateX(100%); width: 320px; transition: transform 0.3s ease; }
+    .preview-panel:not(.collapsed) { transform: translateX(0); width: 320px; }
+    .preview-panel.collapsed { transform: translateX(100%); }
+    .message-content { max-width: calc(100% - 50px); }
+    .scroll-indicator { bottom: 100px; right: 16px; }
+    .scroll-indicator button { width: 40px; height: 40px; }
+    
+    .current-time-display { display: none; }
+    .history-status-display { display: none; }
+    .diff-panel-header { font-size: 10px; padding: 6px 8px; }
+    .diff-line-number { width: 35px; font-size: 10px; }
+    .diff-btn span { display: none; }
+    .diff-stats { font-size: 9px; }
+    .diff-file-selector { min-width: 280px; padding: 16px; }
+    /* Mobile adjustments for block arrows */
+    .diff-block-arrow-left { left: -10px; }
+    .diff-block-arrow-right { right: -10px; }
+    .diff-block-arrow { width: 26px; height: 26px; font-size: 14px; }
+}
+
+.menu-btn {
+    display: none;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    cursor: pointer;
+    margin-right: 12px;
+}
+
+.streaming-code {
+    white-space: pre;
+    overflow-x: visible;
+    animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+/* ===== Python Run Button ===== */
+.tree-action-btn.run { background: var(--accent); border-color: var(--accent); color: white; }
+.tree-action-btn.run:hover { background: #2563eb; border-color: #2563eb; }
+
+/* ===== Python Output Display ===== */
+.python-output-container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    overflow-y: auto;
+}
+
+.python-output-status {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.python-output-status.status-success {
+    background: rgba(34, 197, 94, 0.1);
+    color: var(--success);
+}
+
+.python-output-status.status-error {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--danger);
+}
+
+.python-output-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+
+.python-output-section {
+    margin-bottom: 8px;
+}
+
+.python-output-label {
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.python-output-section.python-output-error .python-output-label {
+    color: var(--danger);
+}
+
+.python-output-text {
+    margin: 0;
+    padding: 8px 12px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.5;
+    font-size: 13px;
+}
+
+.python-output-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+
+/* ===== CONVERSATION SORT BAR ===== */
+.conversation-sort-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px 10px;
+    border-bottom: 1px solid var(--border);
+    margin-top: 4px;
+}
+
+.sort-select {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+    flex: 1;
+}
+
+.sort-select:hover {
+    border-color: var(--accent);
+}
+
+.sort-select option {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.sort-order-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.sort-order-btn:hover {
+    background: var(--border);
+    color: var(--text-primary);
+}
+
+/* ===== COLOR DOT INDICATOR ===== */
+.chat-color-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
+}
+
+.chat-color-dot-none {
+    background: var(--bg-quaternary);
+    border: 1px solid var(--border);
+}
+
+/* ===== COLOR PICKER POPUP ===== */
+.color-picker-popup {
+    display: grid;
+    grid-template-columns: repeat(4, 28px);
+    grid-template-rows: repeat(3, 28px);
+    gap: 4px;
+    padding: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.color-swatch {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    padding: 0;
+}
+
+.color-swatch:hover {
+    transform: scale(1.15);
+    box-shadow: 0 0 8px rgba(0, 0, 0, 0.3);
+}
+
+.color-swatch.selected {
+    border-color: white;
+    box-shadow: 0 0 6px rgba(255, 255, 255, 0.3);
+}
+
+/* ===== CHAT RENAME INPUT ===== */
+.chat-rename-input {
+    flex: 1;
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 14px;
+    padding: 2px 4px;
+    outline: none;
+}
+
+.chat-rename-input:focus {
+    border-color: var(--accent-hover);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+/* Mask API key input with dots - prevents Chrome password manager */
+.password-masked {
+  -webkit-text-security: disc;
+}
+

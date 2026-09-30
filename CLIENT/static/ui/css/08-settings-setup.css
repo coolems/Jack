@@ -1,0 +1,52 @@
+/* =====================================================================
+   08-settings-setup.css — module of the former monolithic styles.css
+   Source: CLIENT/static/ui/styles.css lines L2167-L2214 (split 2026-09-18).
+   Load order is a contract: keep numbered import order in ../styles.css.
+   ===================================================================== */
+/* ===== Search engine rows (Settings modal -> Web Search Engines) ===== */
+/* Web Search Engines - minimal on/off rows (name + toggle only) */
+    .se-list { display: flex; flex-direction: column; gap: 6px; }
+    .se-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 8px; transition: border-color .15s ease; }
+    .se-row:hover { border-color: var(--accent); }
+    .se-name { flex: 1; font-size: 13.5px; color: var(--text-primary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: opacity .15s ease, color .15s ease; }
+    .se-toggle { cursor: pointer; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+    .se-off .se-name { color: var(--text-secondary); opacity: .55; }
+
+
+
+    /* ===== Settings modal tabs (Authentication | Agent / Search) ===== */
+    .settings-tabs {
+        display: flex; gap: 6px; margin-bottom: 18px; border-bottom: 1px solid var(--border); padding-bottom: 0;
+    }
+
+    .settings-tab {
+        appearance: none; background: transparent; border: none; cursor: pointer;
+        font-size: 13.5px; font-family: inherit; color: var(--text-secondary);
+        padding: 8px 14px 10px 14px; margin-bottom: -1px; border-radius: 6px 6px 0 0;
+        border-bottom: 2px solid transparent; transition: color .15s ease, border-color .15s ease, background .15s ease;
+    }
+
+    .settings-tab:hover { color: var(--text-primary); background: rgba(255,255,255,0.04); }
+
+    .settings-tab.active {
+        color: var(--text-primary); border-bottom-color: var(--accent);
+        background: var(--bg-tertiary);
+    }
+
+    .settings-pane { display: none; }
+    .settings-pane.active { display: block; animation: settingsPaneIn .18s ease; }
+
+    @keyframes settingsPaneIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    
+
+/* ===== SETUP MODE (2026-09-01) ===== */
+/* While no API key is stored yet, #settingsModal gets class "setup-mode"
+   (toggled by applySetupModeUI() in api-key.js). Then ONLY the API key field +
+   "Set API Key" button stay visible - nobody can do anything there except set
+   the key. This mirrors the server-side lock: APIMiddleware rejects every
+   non-public request with 401 until POST /api/auth/set-key succeeds. */
+#settingsModal.setup-mode #serverAddressGroup { display: none; }
+#settingsModal.setup-mode #emailGroup { display: none; }
+#settingsModal.setup-mode #connectBtn { display: none; }
+#settingsModal.setup-mode #clearKeyBtn { display: none; }
+#settingsModal.setup-mode .settings-tab[data-pane="agent"] { display: none; }

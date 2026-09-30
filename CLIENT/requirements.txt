@@ -1,0 +1,33 @@
+# COOLEMS CLIENT Requirements
+# All packages needed for client-side operation (llama + coolems_client providers)
+# NO server secrets, no auth profiles - pure client dependencies
+#
+# PINNING POLICY (2026-09-22, fixes code-review finding #8):
+#   Every package is STRICTLY pinned (==) to the exact version verified working
+#   in CLIENT/venv. A fresh `pip install -r` must reproduce it bit-for-bit.
+#   To upgrade deliberately: pip install <pkg>==<newver>, test, then bump here.
+
+# aiohttp: required by the delivered SSRF-guarded HTTP tools (tools/ssrf_guard.py --
+# fetch_url + download_file run through PinnedConnector/safe_session; 2026-09 rewrite)
+aiohttp==3.14.3
+beautifulsoup4==4.12.2
+fastapi==0.115.14
+httpx==0.27.0
+playwright==1.63.0
+
+# pyautogui: UNMAINTAINED (last release 0.9.54, May 2023; no declared Python
+# >=3.12 support). Pinned by intent -- there is no newer version to move to.
+# All call sites lazy-import with a graceful fallback. Revisit only when
+# upstream ships a release (e.g. merged PR #955 for 3.12-era X11 fixes).
+pyautogui==0.9.54
+
+pillow==12.3.0   # image downscaling for attached vision images (encode_image_to_base64)
+pydantic==2.13.3
+pytest==9.0.3
+python-multipart==0.0.6
+pytz==2024.1
+requests==2.31.0
+starlette==0.46.2
+urllib3==2.6.3
+uvicorn[standard]==0.34.3
+websockets==12.0

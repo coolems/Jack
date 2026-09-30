@@ -1,0 +1,5 @@
+{
+  "name": "blocked_libs_admin",
+  "description": "ADMIN clean set: intentionally EMPTY. An empty 'modules' list disables ALL python_exec restrictions for profiles that use this file - admins can import and call anything.",
+  "modules": []
+}

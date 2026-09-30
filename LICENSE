@@ -1,0 +1,83 @@
+COOLEMS "JACK" SOURCE-AVAILABLE LICENCE
+Copyright (c) 2026 Coolems KG. All rights reserved.
+
+This is NOT an open-source licence (it is not OSI-approved). The software is
+source-available under the terms below. By downloading, copying, using or
+modifying this software you agree to these terms. If you do not agree, do not
+use it.
+
+1. DEFINITIONS
+   "Software" means this project in its entirety: source code, configuration
+   templates, documentation and all accompanying materials, as distributed by
+   Coolems KG (repository name: "Jack").
+   "Core Code" means ALL of the Software's own source code — every script,
+   module, service, client, tool, utility, batch file and configuration
+   template written or maintained by Coolems KG in this repository (including
+   but not limited to the app/, CLIENT/, tools/ and utils/ directories), as
+   well as any later version of it. It does NOT include third-party libraries,
+   which remain governed by their own licences. "Core Code" therefore covers
+   100% of Coolems KG's code in this project — not only a subset of it.
+   "Individual" means a natural person using the Software for personal,
+   non-commercial purposes.
+   "Company" means any legal entity (corporation, GmbH/KG/AG, partnership,
+   sole proprietorship, association, etc.). Commercial use by an individual
+   is treated as Company use under section 3.
+
+2. FREE INDIVIDUAL USE
+   Coolems KG grants Individuals a free, perpetual, worldwide, non-exclusive,
+   non-transferable licence to:
+     (a) download and install the Software;
+     (b) run and try it on their own hardware;
+     (c) study, modify and experiment with the source code;
+     (d) build personal projects based on the Software.
+   All of the above is limited to personal, non-commercial use — i.e. not for
+   sale, not offered as a service or product to third parties, and not used
+   in any business activity.
+
+3. COMPANY / COMMERCIAL USE REQUIRES A LICENCE FROM COOLEMS KG
+   Any Company, and any individual acting commercially (including using the
+   Software in a product, offering it as a service to customers, internal
+   business use within an organisation, or resale), MUST obtain a prior
+   written commercial licence from Coolems KG before such use. No right of
+   commercial use is granted by this file.
+
+4. COPYRIGHT, ATTRIBUTION & DERIVATIVE WORKS
+   The Software and all intellectual property rights in it remain the sole
+   property of Coolems KG. Copyright notices must be retained in any copy or
+   modified version of the Core Code, even for individual use; removing or
+   obscuring these notices is a breach of this licence.
+   Any modification, extension, fork or other work based on the Software (or
+   any part of it) remains subject to this same source-available licence: it
+   may be shared only under these identical terms, and commercial exploitation
+   of such derivative works still requires a written licence from Coolems KG.
+
+5. NO WARRANTY; LIMITATION OF LIABILITY; NO PATENT GRANT
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+   COOLEMS KG BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING
+   FROM THE USE OF THE SOFTWARE; AGGREGATE LIABILITY IS CAPPED AT THE AMOUNT
+   ACTUALLY PAID BY YOU FOR THIS SOFTWARE, OR ZERO (0) EUR IF NOTHING WAS PAID.
+   This licence grants no rights under any patent of Coolems KG; no patent
+   licence is granted by this file.
+
+6. TRADEMARKS
+   The name "Jack", the name and logo of Coolems KG, and all related marks are
+   trademarks of Coolems KG. Nothing in this licence permits you to use these
+   names or marks to endorse, promote, rebrand or market derivative works,
+   forks or competing products without separate prior written permission from
+   Coolems KG.
+
+7. TERMINATION
+   If you breach any term of this licence, your rights under it terminate
+   automatically and immediately; you must then cease all use of the Software.
+   Sections 4, 5 and 6 survive termination.
+
+8. GOVERNING LAW & JURISDICTION
+   This licence is governed by the laws of Austria (European Union), without
+   regard to its conflict-of-law rules. Any dispute arising from or in
+   connection with this licence shall be subject to the exclusive jurisdiction
+   of the competent courts at Coolems KG's registered office in Austria.
+
+For commercial licence enquiries and general contact:
+   Coolems KG — coolems.kg@gmail.com

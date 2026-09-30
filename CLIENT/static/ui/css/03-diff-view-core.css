@@ -1,0 +1,458 @@
+/* =====================================================================
+   03-diff-view-core.css — module of the former monolithic styles.css
+   Source: CLIENT/static/ui/styles.css lines L703-L1156 (split 2026-09-18).
+   Load order is a contract: keep numbered import order in ../styles.css.
+   ===================================================================== */
+/* ===== DIFF VIEW STYLES ===== */
+.diff-toolbar {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+}
+
+.diff-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s;
+}
+
+.diff-btn:hover {
+    background: var(--bg-quaternary);
+    color: var(--text-primary);
+}
+
+.diff-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.diff-separator {
+    width: 1px;
+    height: 24px;
+    background: var(--border);
+    margin: 0 4px;
+}
+
+.diff-action-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.diff-action-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+.diff-exit-btn {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    margin-left: auto;
+    transition: all 0.2s;
+}
+
+.diff-exit-btn:hover {
+    background: var(--danger);
+    color: white;
+}
+
+.diff-stats {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-left: auto;
+    font-size: 11px;
+}
+
+.diff-stat {
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.diff-stat.added {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+
+.diff-stat.removed {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.diff-stat.modified {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.diff-stat.total {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+/* Identical state for stats */
+.diff-stat.identical {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 16px;
+}
+
+.diff-container {
+    display: flex;
+    flex-direction: row;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+}
+
+.diff-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+}
+
+.diff-panel:last-child { border-right: none; }
+
+.diff-panel-header {
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-family: monospace;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.diff-header-path {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.diff-header-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+}
+
+.diff-content {
+    flex: 1;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.diff-unified-container {
+    flex: 1;
+    overflow-y: auto;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.diff-hunk-header {
+    background: var(--bg-tertiary);
+    color: var(--accent);
+    padding: 4px 12px;
+    font-family: monospace;
+    font-size: 11px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    margin: 8px 0;
+}
+
+.diff-line {
+    display: flex;
+    min-height: 22px;
+    position: relative;
+}
+
+.diff-line-number {
+    width: 45px;
+    text-align: right;
+    padding-right: 12px;
+    color: var(--text-muted);
+    user-select: none;
+    border-right: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--bg-secondary);
+}
+
+.diff-line-number-right {
+    border-right: none;
+    border-left: 1px solid var(--border);
+    margin-left: auto;
+}
+
+.diff-line-content {
+    flex: 1;
+    padding-left: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    overflow-x: auto;
+}
+
+/* Diff line types */
+.diff-line-equal { background: transparent; }
+.diff-line-added { background: rgba(34, 197, 94, 0.15); }
+.diff-line-added .diff-line-content { background: rgba(34, 197, 94, 0.08); }
+.diff-line-removed { background: rgba(239, 68, 68, 0.15); }
+.diff-line-removed .diff-line-content { background: rgba(239, 68, 68, 0.08); }
+.diff-line-modified { background: rgba(245, 158, 11, 0.15); }
+.diff-line-empty { background: var(--bg-secondary); opacity: 0.5; }
+.diff-line-empty .diff-line-content { color: var(--text-muted); font-style: italic; }
+.diff-line-context { background: transparent; }
+
+/* ===== BLOCK-LEVEL DIFF STYLES (NEW) ===== */
+.diff-block {
+    position: relative;
+    margin: 2px 0;
+}
+
+.diff-block-lines {
+    /* Container for lines inside a block */
+}
+
+/* Block-level arrow buttons - one per change block */
+.diff-block-arrow {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    border: 2px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.2s ease;
+    font-size: 18px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.diff-block:hover .diff-block-arrow {
+    opacity: 1;
+}
+
+.diff-block-arrow:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+    transform: translateY(-50%) scale(1.1);
+}
+
+/* Left-pointing arrow (←) - on right panel, pulls content to left */
+.diff-block-arrow-left {
+    left: -16px;
+}
+
+/* Right-pointing arrow (→) - on left panel, pushes content to right */
+.diff-block-arrow-right {
+    right: -16px;
+}
+
+/* ===== SAVE BUTTON IN DIFF HEADER ===== */
+.diff-save-btn {
+    padding: 4px 12px;
+    background: var(--success);
+    border: none;
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s;
+}
+
+.diff-save-btn:hover {
+    background: #16a34a;
+    transform: scale(1.02);
+}
+
+/* ===== MODIFIED BADGE ===== */
+.diff-modified-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 12px;
+    background: var(--warning);
+    color: var(--bg-primary);
+    margin-left: 8px;
+    animation: pulse 0.5s ease-in-out;
+}
+
+/* ===== DIFF FILE SELECTOR MODAL ===== */
+.diff-file-selector {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    min-width: 350px;
+    z-index: 10000;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+.diff-file-selector h4 {
+    margin-bottom: 16px;
+    color: var(--text-primary);
+}
+
+.diff-file-selector select {
+    width: 100%;
+    padding: 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 13px;
+    margin-bottom: 16px;
+    cursor: pointer;
+}
+
+.diff-file-selector select option { padding: 8px; }
+
+.diff-selector-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+.diff-selector-actions button {
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+
+.diff-selector-actions button:first-child {
+    background: var(--accent);
+    border: none;
+    color: white;
+}
+
+.diff-selector-actions button:first-child:hover { background: var(--accent-hover); }
+
+.diff-selector-actions button:last-child {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.diff-selector-actions button:last-child:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+/* Sync scroll button active state */
+#diffSyncScroll.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+/* Loading spinner */
+.loading-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 12px;
+}
+
+/* ===== PANEL RESIZE HANDLES ===== */
+.panel-resize-handle {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 12px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 100;
+    background: transparent;
+    transition: background 0.15s;
+}
+
+.panel-resize-handle:hover,
+.panel-resize-handle.active {
+    background: rgba(59, 130, 246, 0.4);
+}
+
+.panel-resize-handle::before,
+.panel-resize-handle::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 20px;
+    border-radius: 1px;
+    background: var(--text-muted);
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.panel-resize-handle::before { top: 40%; }
+.panel-resize-handle::after { top: 60%; }
+.panel-resize-handle:hover::before,
+.panel-resize-handle:hover::after { opacity: 0.8; }
+
+body.resizing-panel {
+    user-select: none;
+    cursor: col-resize !important;
+}
+
+body.resizing-panel * {
+    cursor: col-resize !important;
+    user-select: none;
+}

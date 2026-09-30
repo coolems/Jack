@@ -1,0 +1,38 @@
+# COOLEMS Requirements (SERVER + CLIENT)
+#
+# PINNING POLICY (2026-09-22, fixes code-review finding #8):
+#   Every package is STRICTLY pinned (==) to the exact version verified working
+#   in this project's venv. No >= / < ranges: a fresh `pip install -r` must
+#   reproduce the known-good environment bit-for-bit.
+#   To upgrade a package deliberately:
+#       pip install <pkg>==<newver>   # test it first
+#       then bump the pin below and commit both changes together.
+
+Pillow==12.3.0
+aiohttp==3.14.3
+beautifulsoup4==4.12.2
+cryptography==50.0.1
+ddgs==9.16.0
+fastapi==0.141.1
+httpx==0.27.0
+nest-asyncio==1.6.0
+playwright==1.63.0
+psutil==7.2.2
+
+# pyautogui: UNMAINTAINED (last release 0.9.54, May 2023; no declared Python
+# >=3.12 support). Pinned by intent -- there is no newer version to move to.
+# All call sites (tools/mouse_interact/*, screen_capture) lazy-import with a
+# graceful fallback, so if it ever breaks the tool returns an error string
+# instead of crashing SERVER/CLIENT. Revisit this pin only when upstream
+# ships a release (e.g. merged PR #955 for 3.12-era X11 fixes).
+pyautogui==0.9.54
+
+pydantic==2.13.3
+pytest==9.0.3
+python-multipart==0.0.32
+pytz==2024.1
+requests==2.31.0
+starlette==1.6.0
+urllib3==2.6.3
+uvicorn[standard]==0.50.1
+websockets==12.0

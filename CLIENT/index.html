@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COOLEMS - AI Agent Interface</title>
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20260924a">
+    <!-- jsdiff library for proper diff calculations -->
+    <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
+</head>
+<body>
+    <div class="drag-overlay" id="dragOverlay">
+        <div class="drag-overlay-content">
+            <div class="drag-plus-sign">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            </div>
+            <div class="drag-text">Drop files here</div>
+            <div class="drag-subtext">Any file type supported • Max 2GB per file</div>
+        </div>
+    </div>
+
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <button class="new-chat-btn" onclick="newChat()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                New Chat
+                <span style="margin-left: auto; opacity: 0.5; font-size: 12px;">Ctrl K</span>
+            </button>
+        </div>
+        <div class="sidebar-content" id="chatHistory"></div>
+    </aside>
+
+    <main class="main">
+        <header class="header">
+            <div class="header-left">
+                <button class="menu-btn" onclick="toggleSidebar()">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                </button>
+                <div class="logo">COOLEMS</div>
+                <div class="current-time-display" id="currentTimeDisplay">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+                    <span id="currentTimeText">--:--:--</span>
+                </div>
+                <div class="history-status-display" id="historyStatusDisplay">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
+                    <span id="historyStatusText">Loading...</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="connection-status" id="connectionStatus"><div class="status-dot"></div><span>Disconnected</span></div>
+                <button class="settings-btn" onclick="openSettings()" title="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l.06-.06a2 2 0 0 1 2.83-2.83l.06-.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0-1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                </button>
+                <button class="files-toggle-btn" id="filesToggleBtn" onclick="toggleFilesPanel()" title="Files">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                </button>
+
+                <!-- Working folder chip: always visible in header (moved out of Files tab, 2026-08-29).
+                     Shows last 20 chars of working_root; click to edit full path inline. -->
+                <div class="working-root-chip" id="workingRootChip" title="Working folder - click to change">
+                    <span class="working-root-chip-label" id="workingRootChipLabel">&hellip;</span>
+                    <input type="text" class="working-root-chip-input" id="workingRootInput" autocomplete="off" spellcheck="false">
+                </div>
+            </div>
+        </header>
+
+        <div class="chat-container" id="chatContainer">
+            <div class="welcome" id="welcome">
+                <h1>COOLEMS</h1>
+                <p>AI with multimodal capabilities. Powered by local LLM models.</p>
+
+            </div>
+        </div>
+
+        <div class="input-container">
+            <div class="input-wrapper" id="inputWrapper">
+                <div class="input-toolbar">
+                    <div class="input-actions">
+                        <input type="file" id="fileInput" style="display: none;" multiple onchange="handleFileSelect(event)">
+                        <button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="Attach file">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+                        </button>
+                        <button class="icon-btn" id="agentToggle" onclick="toggleAgent()" title="Agent Mode">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                        </button>
+                    </div>
+                    <select class="model-selector" id="modelSelector" onchange="switchModel(this.value)">
+                        <option value="">Loading models...</option>
+                    </select>
+                </div>
+                <textarea id="messageInput" placeholder="Message COOLEMS..." rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
+                <div class="input-footer">
+                    <div class="file-preview" id="filePreview"></div>
+                    <button class="think-toggle" id="thinkToggle" onclick="toggleThink()" title="Toggle thinking mode">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+                        <span>Think</span>
+                    </button>
+                    <button class="send-btn" id="sendBtn" onclick="handleSendClick()" title="Send message">
+                        <svg id="sendIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Preview Panel with Full Toolbar -->
+    <aside class="preview-panel collapsed" id="previewPanel">
+        <div class="panel-resize-handle" id="previewResizeHandle"></div>
+        <div class="preview-panel-header">
+            <span class="preview-panel-title">Preview</span>
+            <div class="preview-panel-actions">
+                <!-- Font size controls -->
+                <div class="preview-font-controls">
+                    <button class="font-size-btn" id="previewFontDecrease" title="Decrease font size">A−</button>
+                    <span class="preview-font-size" id="previewFontSize">14px</span>
+                    <button class="font-size-btn" id="previewFontIncrease" title="Increase font size">A+</button>
+                    <button class="font-size-btn" id="previewFontReset" title="Reset font size">↺</button>
+                </div>
+                <!-- Schema selector -->
+                <select class="schema-selector" id="schemaSelector" style="display: inline-block;">
+                    <option value="monokai">🎨 Monokai Pro</option>
+                    <option value="solarized">🎨 Solarized Dark</option>
+                    <option value="github">🎨 GitHub Dark</option>
+                    <option value="onedark">🎨 One Dark Pro</option>
+                    <option value="dracula">🎨 Dracula</option>
+                </select>
+                <!-- Action buttons -->
+                <button class="preview-panel-btn" id="previewEditBtn" title="Edit" style="display:none;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                </button>
+                <button class="preview-panel-btn" id="previewSaveBtn" title="Save" style="display:none;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8 15 21"></polyline></svg>
+                </button>
+                <button class="preview-panel-btn" id="previewCancelBtn" title="Cancel" style="display:none;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+                <button class="preview-panel-btn" id="previewCompareBtn" title="Compare with another file">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h3M16 3h3a2 2 0 0 1 2 2v14c0 1.1-.9 2-2 2h-3M12 8v8M8 12h8"/></svg>
+                </button>
+                <button class="preview-panel-btn" id="previewRunBtn" title="Run Python" style="display:none;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                </button>
+                <button class="preview-panel-btn" id="previewDownloadBtn" title="Download">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
+                </button>
+                <button class="preview-panel-btn" onclick="closePreview()" title="Close">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+        </div>
+        <div class="preview-filename" id="previewFilename"></div>
+        
+        <!-- Single preview content -->
+        <div class="preview-content" id="previewContent">
+            <div class="preview-empty">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                <p>Click a file to preview</p>
+            </div>
+        </div>
+        
+        <!-- Diff toolbar - ACCEPT LEFT/RIGHT BUTTONS REMOVED -->
+        <div class="diff-toolbar" id="diffToolbar" style="display: none;">
+            <button class="diff-btn" id="diffModeSideBySide">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="18" rx="1"></rect><rect x="13" y="3" width="8" height="18" rx="1"></rect></svg>
+                <span>Side by Side</span>
+            </button>
+            <button class="diff-btn" id="diffModeUnified">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="20" y2="18"></line></svg>
+                <span>Unified</span>
+            </button>
+            <span class="diff-separator"></span>
+            <button class="diff-action-btn" id="diffSyncScroll" title="Sync Scroll">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h3M16 3h3a2 2 0 0 1 2 2v14c0 1.1-.9 2-2 2h-3M12 8v8M8 12h8"/></svg>
+                <span>Sync Scroll</span>
+            </button>
+            <button class="diff-action-btn" id="diffToggleUnchanged" title="Hide unchanged lines (show only changed blocks with context)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+                <span>Show All</span>
+            </button>
+            <div class="diff-stats" id="diffStats"></div>
+            <button class="diff-exit-btn" id="diffExitBtn">
+                Exit Compare
+            </button>
+        </div>
+        
+        <!-- Side-by-side diff container -->
+        <div class="diff-container" id="diffContainer" style="display: none;">
+            <div class="diff-panel left">
+                <div class="diff-panel-header" id="diffHeaderLeft"></div>
+                <div class="diff-content" id="diffContentLeft"></div>
+            </div>
+            <div class="diff-panel right">
+                <div class="diff-panel-header" id="diffHeaderRight"></div>
+                <div class="diff-content" id="diffContentRight"></div>
+            </div>
+        </div>
+        
+        <!-- Unified diff container -->
+        <div class="diff-unified-container" id="diffUnifiedContainer" style="display: none;"></div>
+    </aside>
+
+    <!-- (2026-08-25: old diff file-selector popup removed; second file is now picked
+         directly in the Files panel via compare-select-mode.js) -->
+    <aside class="files-panel collapsed" id="filesPanel">
+        <div class="panel-resize-handle" id="filesResizeHandle"></div>
+        <div class="files-panel-header">
+            <span class="files-panel-title">Files</span>
+            <div class="files-panel-actions">
+                <button class="files-panel-btn" onclick="refreshFiles()" title="Refresh">
+                    <svg id="refreshIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
+                </button>
+                <button class="files-panel-btn" id="downloadSelectedBtn" style="display: none;" onclick="downloadSelected()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
+                    <span>Download Selected</span>
+                </button>
+            </div>
+        </div>
+        <div class="tree-breadcrumbs" id="treeBreadcrumbs"></div>
+        
+        <div class="files-list" id="filesList">
+            <div class="files-empty">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                <p>No files yet</p>
+                <p style="font-size: 11px; margin-top: 8px;">Generated files will appear here</p>
+            </div>
+        </div>
+    </aside>
+
+        <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button class="icon-btn" onclick="closeSettings()">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <!-- Settings tabs: each pane shows only its own info. Add new tabs by adding a
+                     .settings-tab button + matching .settings-pane div (data-pane must match). -->
+                <div class="settings-tabs" role="tablist">
+                    <button type="button" class="settings-tab active" data-pane="auth" onclick="switchSettingsTab('auth')">Authentication</button>
+                    <button type="button" class="settings-tab" data-pane="agent" onclick="switchSettingsTab('agent')">Agent / Search</button>
+                </div>
+
+                <!-- Tab: Authentication (server address + email + API key).
+                     SETUP MODE (2026-09-01): while no API key is stored, #settingsModal gets
+                     class "setup-mode" and CSS hides everything except the API key field +
+                     "Set API Key" button - nothing else is possible until a key exists. -->
+                <div id="settingsPaneAuth" class="settings-pane active" data-pane="auth">
+                <!-- (2026-09-23) CONNECTION MODE menu: how the CLIENT talks to the SERVER.
+                         Default is DIRECT (LAN, encrypted). Internet Web Relay routes through the
+                         public relay host; it needs a relay IP/domain + port and trusted TLS on the
+                         relay side. Saved via POST /api/settings -> settings.json, applied live by
+                         the next connection (no restart needed for the mode itself). -->
+                    <div class="form-group" id="connectionModeGroup">
+                        <label>Connection Mode</label>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                            Choose how this CLIENT communicates with the SERVER.
+                            <strong>Direct</strong> (default) connects straight to your SERVER over the LAN (encrypted).
+                            <strong>Internet Web Relay</strong> routes through the public relay server -
+                            use it when you are away from home and reach the SERVER via the internet.
+                        </p>
+                        <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="radio" name="connectionMode" id="connModeDirect" value="direct" onchange="saveConnectionMode()">
+                                Direct (default)
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="radio" name="connectionMode" id="connModeRelay" value="web_relay" onchange="saveConnectionMode()">
+                                Internet Web Relay
+                            </label>
+                        </div>
+                        <div id="relayFieldsGroup" style="display:none; margin-top: 8px;">
+                            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 8px;">
+                                Enter the web relay address - that is ALL the CLIENT needs. Your home SERVER is not
+                                involved here: it connects to this relay itself (SERVER config). Leave the port empty
+                                to use the default. The relay must serve a trusted TLS certificate (Let's Encrypt) or
+                                have its cert pin configured on this CLIENT.
+                            </p>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="text" id="relayHostInput" placeholder="e.g. your-relay.example.com" autocomplete="off"
+                                       style="flex:1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                              background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
+                                       onchange="saveConnectionMode()">
+                                <input type="text" id="relayPortInput" placeholder="port (default)" autocomplete="off" inputmode="numeric"
+                                       style="width: 130px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                              background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
+                                       onchange="saveConnectionMode()">
+                            </div>
+                        </div>
+                        <div id="connectionModeStatus" style="margin-top: 4px; font-size: 12px;"></div>
+                    </div>
+
+<div class="form-group" id="serverAddressGroup">
+                    <label>Server Address (Direct mode only)</label>
+                    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                        Your SERVER machine&apos;s IP address and port. Format: <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">IP:port</code>. Requires CLIENT restart to apply.
+                    </p>
+                    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                        <input type="text" id="serverAddressInput" placeholder="e.g. 192.168.1.100:55679" autocomplete="off" 
+                               style="flex:1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; 
+                                      background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
+                               onchange="saveServerAddress()">
+                        <button onclick="resetServerAddress()" style="padding: 6px 12px; 
+                                background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color); 
+                                border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap;" title="Reset to auto-detected LAN IP">
+                            Reset
+                        </button>
+                    </div>
+                    <div id="serverAddressStatus" style="margin-top: 4px; font-size: 12px;"></div>
+                </div>
+
+<div class="form-group" id="emailGroup" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                    <label>Email Address</label>
+                    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                        Please enter your validation e-mail.
+                    </p>
+                    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                        <input type="text" id="emailInput" placeholder="your@email.com" autocomplete="off" 
+                               style="flex:1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; 
+                                      background: var(--bg-tertiary); color: var(--text-primary); font-family: inherit;"
+                               oninput="saveEmail()">
+                    </div>
+                </div>
+
+<div class="form-group" id="apiKeyGroup" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                    <label>API Key</label>
+                    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                        Enter your API key and click Connect to validate your credentials. The key is kept in this
+                        browser only - it is never written to disk on this machine (the CLIENT stores just your e-mail +
+                        date here; the real key lives in the SERVER file).
+                    </p>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="apiKeyInput" class="password-masked" placeholder="Paste your API key here..." 
+                               style="flex:1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; 
+                                      background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
+                               oninput="saveApiKey()" autocomplete="off">
+                        <button class="icon-btn" id="apiKeyToggle" onclick="toggleApiKeyVisibility()" title="Show/Hide key"
+                                style="background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="apiKeyStatus" style="margin-top: 8px; font-size: 12px;"></div>
+                    <!-- SETUP MODE (2026-09-01): "Set API Key" is the ONLY button visible before a key
+                         exists - it stores the key locally AND writes it to the CLIENT backend via
+                         POST /api/auth/set-key, which is the one endpoint that works in setup mode. -->
+                    <button onclick="setApiKeyToBackend()" style="margin-top: 8px; padding: 6px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                        Set API Key
+                    </button>
+                    <button id="connectBtn" onclick="connectWithCredentials()" style="margin-top: 8px; margin-left: 8px; padding: 6px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                        Connect
+                    </button>
+                    <button id="clearKeyBtn" onclick="clearApiKey()" style="margin-top: 8px; margin-left: 8px; padding: 6px 16px; 
+                            background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); 
+                            border-radius: 6px; cursor: pointer; font-size: 13px;">
+                        Clear Key
+                    </button>
+                </div>
+                </div>
+
+                <!-- Tab: Agent / Search (agent mode + web search engines) -->
+                <div id="settingsPaneAgent" class="settings-pane" data-pane="agent">
+<div class="form-group">
+                    <label>Agent Mode</label>
+                    <div class="toggle" onclick="toggleAgentSwitch()">
+                        <div class="toggle-switch" id="agentSwitch"><div class="toggle-thumb"></div></div>
+                        <span style="color: var(--text-secondary); font-size: 14px;">Enable autonomous agent behavior</span>
+                    </div>
+                </div>
+
+<div class="form-group">
+                        <label>Web Search Engines</label>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                            Toggle each engine on or off - saves instantly. Top to bottom = priority order. To add, remove or fine-tune an engine edit <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">config/search_engines.json</code> (no restart needed).
+                        </p>
+                        <div id="searchEngineList" class="se-list"></div>
+                        <div id="searchEngineStatus" style="margin-top:8px; font-size: 12px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    </div>
+
+    <div id="scrollIndicator" class="scroll-indicator" style="display: none;">
+        <div class="generating-badge">⚡ Generating response...</div>
+        <button onclick="scrollToBottomAndResume()">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+        </button>
+    </div>
+
+    <!-- Load scripts in dependency order -->
+    <script src="/static/ui/api-key.js?v=20260923a">
+    </script>
+    <script src="/static/ui/app.js?v=20260830a">
+    </script>
+    <script src="/static/ui/scroll.js?v=20260830a">
+</script>
+<script src="/static/ui/conversation-manager.js?v=20260908a">
+    </script>
+    <script src="/static/ui/conversation.js?v=20260908a">
+    </script>
+
+<script src="/static/ui/chat-socket-pool.js?v=20260908a"></script>
+    <script src="/static/ui/websocket.js?v=20260924b">
+    </script>
+    <script src="/static/ui/message.js?v=20260908a">
+    
+    </script>
+<script src="/static/ui/setup-progress.js?v=20260922b"></script>
+    
+    <!-- Syntax Highlighting Modules (load in order) -->
+    <script src="/static/ui/syntax/base.js?v=20260830a">
+    </script>
+    <script src="/static/ui/syntax/schema_manager.js?v=20260830a">
+    </script>
+    <script src="/static/ui/syntax/text.js?v=20260830a">
+    </script>
+    <script src="/static/ui/syntax/python.js?v=20260830a">
+    </script>
+    <script src="/static/ui/syntax/java.js?v=20260830a">
+    </script>
+    <script src="/static/ui/syntax/cpp.js?v=20260830a">
+    </script>
+    <script src="/static/ui/syntax/html.js?v=20260830a">
+    </script>
+    <script src="/static/ui/syntax/index.js?v=20260830a">
+    
+    </script>
+    
+    <!-- Diff Modules (load in order) -->
+    <script src="/static/ui/diff/diff_core.js?v=20260830a">
+    </script>
+    <script src="/static/ui/diff/diff_engine.js?v=20260830a">
+    </script>
+    <script src="/static/ui/diff/sync_scroll.js?v=20260830a">
+    </script>
+    <script src="/static/ui/diff/diff_view.js?v=20260827g">
+    </script>
+    <script src="/static/ui/diff/diff_ui.js?v=20260827a">
+    
+    </script>
+    
+    <!-- Preview Manager (split into ES modules on 2026-09-18; depends on syntax and diff). -->
+    <!-- Module entry point: imports the whole preview/ group itself. Must stay BEFORE the files/* classic scripts below. -->
+    <script type="module" src="/static/ui/preview/preview-manager.js?v=20260918a"></script>
+    
+    <!-- File handler and UI controls -->
+    <!-- Compare-select mode (in-place second-file picker, replaces old popup) - 2026-08-25 -->
+    <script src="/static/ui/compare-select-mode.js?v=20260825a">
+    </script>
+<!-- File handler modules (split from file-handler.js on 2026-09-18). -->
+<!-- Load order matters: files-state first; files-panel LAST (its initPanelResize IIFE -->
+<!-- wraps window.toggleFilesPanel and window.previewFile, which must already exist). -->
+<script src="/static/ui/files/files-state.js?v=20260918a"></script>
+<script src="/static/ui/files/file-upload.js?v=20260918a"></script>
+<script src="/static/ui/files/tree-view.js?v=20260918a"></script>
+<script src="/static/ui/files/tree-render-items.js?v=20260918a"></script>
+<script src="/static/ui/files/tree-render-children.js?v=20260918a"></script>
+<script src="/static/ui/files/tree-actions.js?v=20260918a"></script>
+<script src="/static/ui/files/preview-core.js?v=20260918a"></script>
+<script src="/static/ui/files/preview-edit.js?v=20260918a"></script>
+<script src="/static/ui/files/file-chips.js?v=20260918a"></script>
+<script src="/static/ui/files/drop-to-folder.js?v=20260918a"></script>
+<script src="/static/ui/files/run-python.js?v=20260918a"></script>
+<script src="/static/ui/files/working-root-chip.js?v=20260918a"></script>
+<script src="/static/ui/files/files-panel.js?v=20260918a"></script>
+<script src="/static/ui/search-engine-settings.js?v=20260827e">
+    </script>
+    <script src="/static/ui/ui-controls.js?v=20260827e">
+    
+    </script>
+    
+    <!-- DIFF AND PREVIEW INITIALIZATION -->
+    <script>
+        (function() {
+            // Wait for DOM to be fully loaded
+            document.addEventListener('DOMContentLoaded', function() {
+                console.log('[Init] Starting module initialization...');
+                console.log('[Init] jsdiff library available:', typeof window.Diff !== 'undefined');
+                
+                // Initialize DiffUI
+                if (window.DiffUI && typeof window.DiffUI.init === 'function') {
+                    window.DiffUI.init();
+                    console.log('[Init] ✓ DiffUI initialized');
+                    
+                    // Connect DiffUI with PreviewManager for exit callback
+                    if (window.PreviewManager) {
+                        window.DiffUI.onExit(function() {
+                            console.log('[Init] DiffUI exit triggered, reloading preview');
+                            if (window.PreviewManager && window.PreviewManager.currentFile) {
+                                window.PreviewManager.loadFile(
+                                    window.PreviewManager.currentFile.path, 
+                                    window.PreviewManager.currentFile.name
+                                );
+                            }
+                        });
+                        
+                        // Connect file selection callback
+                        window.DiffUI.onFileSelected(async function(fileBPath) {
+                            console.log('[Init] DiffUI file selected for comparison:', fileBPath);
+                            if (window.PreviewManager && window.PreviewManager.currentFile) {
+                                await window.PreviewManager.performComparison(fileBPath);
+                            }
+                        });
+                        
+                        console.log('[Init] ✓ DiffUI callbacks connected with PreviewManager');
+                    }
+                } else {
+                    console.error('[Init] ✗ DiffUI not found or init method missing');
+                }
+                
+                // Initialize PreviewManager
+                if (window.PreviewManager && typeof window.PreviewManager.init === 'function') {
+                    window.PreviewManager.init();
+                    console.log('[Init] ✓ PreviewManager initialized');
+                } else {
+                    console.error('[Init] ✗ PreviewManager not found or init method missing');
+                }
+                
+                // Initialize SyntaxRegistry if not already initialized
+                if (window.SyntaxRegistry && !window.SyntaxRegistry.initialized) {
+                    window.SyntaxRegistry.init();
+                    console.log('[Init] ✓ SyntaxRegistry initialized');
+                }
+                
+                // Verify DiffEngine is loaded
+                if (window.DiffEngine) {
+                    console.log('[Init] ✓ DiffEngine loaded, jsdiff available:', window.DiffEngine.isAvailable ? window.DiffEngine.isAvailable() : 'unknown');
+                } else {
+                    console.warn('[Init] ⚠ DiffEngine not loaded');
+                }
+                
+                console.log('[Init] All modules initialized successfully');
+            });
+            
+            // Also handle dynamic loading for file preview integration
+            if (window.PreviewManager) {
+                // Override the previewFile function to use PreviewManager
+                const originalPreviewFile = window.previewFile;
+                if (originalPreviewFile && typeof originalPreviewFile === 'function') {
+                    window.previewFile = function(path) {
+                        const filename = path.split('/').pop() || path.split('\\').pop();
+                        if (window.PreviewManager && typeof window.PreviewManager.loadFile === 'function') {
+                            window.PreviewManager.loadFile(path, filename);
+                        } else {
+                            originalPreviewFile(path);
+                        }
+                    };
+                    console.log('[Init] ✓ previewFile function integrated with PreviewManager');
+                }
+            }
+        })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "web_search": [
+    {
+      "situation": "user asks to search for any website, company, or domain information",
+      "approach": "Step 0: Use to connect to real browser from web automation. Step 1: Search with the exact domain or company name first. Step 2: If no results, try variations including 'www.' and without. Step 3: Use fetch_url tool to directly visit the domain if web_search returns no clear results. Step 4: Extract key information: what the site is about, services offered, contact info, and social media links. Step 5: If the site exists, provide summary with title, description, and direct link. 6: use Web automation to connect to browser and use real browser to do your search.  If site doesn't exist, clearly state 'No website found' and suggest similar or related sites."
+    },
+    {
+      "situation": "user asks for properties",
+      "approach": "you must provide user with valid links of the property from the web automation browser that you open and tested the property link and you was in browser real information about that property. Only that link is valid for user"
+    },
+    {
+      "situation": "user asks for latest news or current events on a topic",
+      "approach": "Ute time tools to get cureent date. Use web_search with query + 'latest' or date filter. Fetch top 7 results with fetch_url. Extract headlines, dates, and key facts. Compare multiple sources for accuracy. Present as bullet points with sources and dates."
+    },
+    {
+      "situation": "user asks for information about a person (biography, background, relatives)",
+      "approach": "Step 1: Search full name in quotes. Step 2: Search on Wikipedia, LinkedIn, Social media, news sites. Step 3: Cross-reference information from at least 2-3 sources. Step4. Cross reference with firends and poeple that gave reviews or commented. Step 5: Extract: birth date, education, career, notable achievements, family if available. Step 6: Organize chronologically. Do NOT rely on a single source."
+    }
+  ]
+}

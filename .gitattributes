@@ -1,0 +1,12 @@
+# Jack repository — line-ending policy
+#
+# GitHub (and every other platform) stores text files with LF.
+# This makes that rule travel WITH the repo, overriding each machine's
+# local `core.autocrlf` setting, so all collaborators see identical
+# content and no spurious "line ending changed" diffs appear.
+
+* text=auto eol=lf
+
+# Windows batch launchers must keep CRLF — cmd.exe mis-parses LF-only scripts.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf

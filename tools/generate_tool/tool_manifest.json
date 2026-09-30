@@ -1,0 +1,38 @@
+{
+  "name": "generate_image",
+  "version": 11,
+  "runtime_name": "generate_tool",
+  "requirements": [
+    "torch==2.9.1+cu128",
+    "diffusers>=0.40",
+    "transformers",
+    "accelerate>=0.17.0"
+  ],
+  "notes": "Self-unpacking tool (2026-09-11): the SERVER ships only generate_image.py + this manifest. On first use the CLIENT unfolds its own runtime under <CLIENT_DIR>/tools/runtimes/generate_tool/ with a dedicated venv and reuses it across iterations (never deleted). torch is pinned to the cu128 CUDA build from pytorch.org because PyPI's Windows wheels are CPU-only; edit requirements.txt in your runtime folder for other platforms - the install marker invalidates automatically. Model weights come from Hugging Face (Apache 2.0, free for commercial use), cached inside the tool runtime folder (<runtime_dir>/hf_cache via HF_HOME). v4 (2026-09-12): before generation the tool runs snapshot_download inside its own venv so a first-run download on a fresh machine gets its own budget instead of dying inside IMAGE_SUBPROCESS_TIMEOUT. v5 (2026-09-12): model weights live INSIDE the tool runtime folder - one place to see or delete everything; a pre-existing default-cache copy is auto-migrated once. v6 (2026-09-12) GPU-ADAPTIVE TIERING: at every call the client probes its NVIDIA GPU via nvidia-smi and picks the pipeline that fits it. v7 (2026-09-13) SANA-SPRINT FOR SMALL CARDS - field fix for 'super slow' laptop 4080s: v6 put mid/low tiers on Z-Image-Turbo-FP8 + full cpu-offload, which streams an ~8 GB text encoder over PCIe at EVERY image (minutes per picture). Now: high tier (>= 24 GB VRAM, e.g. 5090/A6000): Tongyi-MAI/Z-Image-Turbo bf16 fully resident (~23 GB peak - the original fast path, kept only where a card can truly afford it; v6's 16 GB boundary would have OOM'd on a 4090, fixed); mid tier (12-23.9 GB, e.g. laptop 4080 / desktop 3070/3060): NVIDIA SANA-Sprint 1.6B (Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers, ~9.7 GB download) fully resident - sCM-distilled to EXACTLY 2 steps at native 1024px, ~11 GB peak, ZERO offload traffic; low tier (< 12 GB, e.g. laptop 4070/3060): same SANA-Sprint + enable_model_cpu_offload() (peak ~5.3 GB) with a resolution clamp (max_pixels). No NVIDIA GPU found -> legacy high path unchanged. The 'tier_models' table below is the single source of truth shipped to clients; generate_image.py carries an identical in-file fallback for legacy servers. v8 (2026-09-24) INT8 LOW TIER - the low tier (< 12 GB VRAM) now uses OUR int8 build of SANA-Sprint 1.6B instead of NVIDIA's bf16 repo: every nn.Linear weight is stored as true int8 + a per-channel scale sidecar, so the first-run download drops from ~9.7 GB to ~6 GB (text encoder 5.23->~3.2 GB: Linear weights int8-ified while embeddings stay bf16; transformer 3.22->~1.6 GB; VAE + tokenizer copied verbatim at ~1.3 GB - the builder prints the exact final size). Generation is UNCHANGED: the worker loads through the normal bf16 path and dequantizes in memory at load (w = w_int * scale), so VRAM peak (~5.3 GB offloaded), speed (2 sCM steps) and quality are exactly what the bf16 low tier had - only the download is smaller. The int8 build is produced by scripts/quantize_sana_int8.py from the Apache-2.0 bf16 repo; until it is published as an HF model repo (set _SANA_INT8_MODEL_ID in generate_image.py) the low tier transparently runs the bf16 SANA-Sprint instead, so nothing breaks before publication. The result JSON reports which files actually loaded ('model_loaded': 'int8'|'bf16') for A/B quality checks. v8.1 (2026-09-24) AUDIT FIX: the quantizer no longer copies the source text_encoder index.json over save_pretrained's int8 shard map (that would have pointed at bf16 shard names that no longer exist); size figures corrected to ~6 GB. v9 (2026-09-24) SMALLER LOW TIER: the user rejected the ~6 GB int8 1.6B download as still too big, so the low tier (< 12 GB VRAM) now targets OUR int8 build of SANA-Sprint 0.6B (~5 GB total: Gemma encoder int8 ~3.2 GB + 0.6B transformer int8 ~0.6 GB + VAE bf16 1.25 GB hard floor; the builder prints exact sizes). Same pipeline, same 2 sCM steps, peak VRAM ~4.3 GB offloaded; quality sits a notch below the 1.6B mid tier - the deliberate trade for the smallest possible low-tier download. Built with scripts/quantize_sana_int8.py --size 0.6 (the script now takes --size {1.6|0.6}); until it is published (set _SANA_INT8_06_MODEL_ID in generate_image.py) the low tier transparently runs the bf16 SANA-Sprint 1.6B, and a machine that already cached the v8 int8 1.6B build keeps it - both ids stay in KNOWN_MODEL_IDS so cache migration never touches them. v10.1 (2026-09-24) AUDIT FIX: while the int8 0.6B repo is unpublished, low tier falls back to bf16 SANA-Sprint 0.6B (~7.7 GB) instead of 1.6B (~9.7 GB); the worker's last-resort fallback likewise.",
+  "extra_index_urls": [
+    "https://download.pytorch.org/whl/cu128"
+  ],
+  "tier_models": {
+    "high": {
+      "model_id": "Tongyi-MAI/Z-Image-Turbo",
+      "dtype": "bf16",
+      "offload": false,
+      "max_pixels": null,
+      "pipeline": "zimage"
+    },
+    "mid": {
+      "model_id": "Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers",
+      "dtype": "bf16",
+      "offload": false,
+      "max_pixels": 1048576,
+      "pipeline": "sana_sprint"
+    },
+    "low": {
+      "model_id": "TODO/publish-then-set-owner/Sana_Sprint_0.6B_int8",
+      "dtype": "int8",
+      "offload": true,
+      "max_pixels": 393216,
+      "pipeline": "sana_sprint"
+    }
+  }
+}

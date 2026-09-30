@@ -1,0 +1,57 @@
+{
+  "engines": [
+    {
+      "id": "wikipedia",
+      "name": "Wikipedia",
+      "enabled": true,
+      "priority": 1,
+      "settings": {
+        "timeout": 15
+      }
+    },
+    {
+      "id": "ddgs",
+      "name": "DuckDuckGo (DDGS library)",
+      "enabled": true,
+      "priority": 2,
+      "settings": {
+        "default_results": 5
+      }
+    },
+    {
+      "id": "ddghtml",
+      "name": "DuckDuckGo HTML",
+      "enabled": true,
+      "priority": 3,
+      "settings": {
+        "timeout": 20
+      }
+    },
+    {
+      "id": "bing",
+      "name": "Bing",
+      "enabled": true,
+      "priority": 4,
+      "settings": {
+        "timeout": 15
+      }
+    },
+    {
+      "id": "searxng",
+      "name": "SearXNG",
+      "enabled": true,
+      "priority": 5,
+      "settings": {
+        "timeout": 15,
+        "instances": [
+          "https://searx.be",
+          "https://search.bus-hit.me",
+          "https://search.rowie.at",
+          "https://searx.fmac.xyz",
+          "https://searx.privacydev.net",
+          "https://searx.tiegeek.fr"
+        ]
+      }
+    }
+  ]
+}

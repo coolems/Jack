@@ -1,0 +1,29 @@
+{
+  "admin": {
+    "description": "Full system access - all models, all tools",
+    "allowed_models_folders": [
+      "C:\\PATH\\TO\\YOUR\\MODEL\\FOLDER"
+    ],
+    "ocr_model": "C:\\PATH\\TO\\OCR\\MODEL\\FOLDER",
+    "allowed_tools": null,
+    "python_exec_blocked_libs": "blocked_libs_admin.json",
+    "max_rate_limit": 1000,
+    "max_connections": 10
+  },
+  "user": {
+    "description": "Standard user - basic interaction only",
+    "allowed_models_folders": [
+      "C:\\PATH\\TO\\YOUR\\MODEL\\FOLDER"
+    ],
+    "ocr_model": null,
+    "allowed_tools": [
+      "get_current_time",
+      "get_time_for_city",
+      "web_search",
+      "fetch_url"
+    ],
+    "python_exec_blocked_libs": "blocked_libs_set01.json",
+    "max_rate_limit": 30,
+    "max_connections": 1
+  }
+}

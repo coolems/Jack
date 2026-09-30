@@ -1,0 +1,20 @@
+/* =====================================================================
+   COOLEMS UI stylesheet — split into modules on 2026-09-18.
+
+   The former single 2,213-line file now lives in ./css/ as numbered
+   modules. Import order below is a CASCADE CONTRACT: later modules may
+   intentionally override earlier ones (e.g. css/07-diff-rowtable-compare.css
+   overrides classic diff arrows from css/03-diff-view-core.css).
+
+   Do NOT reorder imports without a visual regression check.
+   Pre-split original kept at styles.css.bak-20260918 for reference/revert.
+   ===================================================================== */
+
+@import url("css/01-base-layout.css");
+@import url("css/02-tree-preview-editor.css");
+@import url("css/03-diff-view-core.css");
+@import url("css/04-chat-messages.css");
+@import url("css/05-input-modals-code.css");
+@import url("css/06-responsive-conversations.css");
+@import url("css/07-diff-rowtable-compare.css");
+@import url("css/08-settings-setup.css");
