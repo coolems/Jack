@@ -90,20 +90,32 @@ def _apply_port_override(port):
     logger.info("WebSocket port overridden via CLI: %s -> %s", original, cfg.COOLEMS_DIRECT_WS_PORT)
 
 
-async def _run_relay_async(provider_obj, final_api_url):
-    """Run the just relay server entirely on asyncio event loop - no threads."""
-    from config import COOLEMS_SERVER_HOST, COOLEMS_DIRECT_WS_PORT
+def _log_relay_banner(mode_note, final_api_url):
+    """Log the startup banner for a relay run mode (headless or + local CLIENT).
+
+    Reads host/port from the config MODULE via attribute access (not `from ... import`
+    value snapshots) so CLI --port overrides applied by _apply_port_override() are
+    always reflected — same live values the WS server binds in
+    server_provider._run_direct_ws_server(). Log-vs-bind agreement holds by
+    construction regardless of call ordering. Review fix: replaces two duplicated
+    banner blocks that each bound port snapshots at import time.
+    """
+    import config as cfg
 
     logger.info("=" * 60)
-    logger.info("COOLEMS Just Relay Server Starting")
+    logger.info("COOLEMS Just Relay Server%s Starting", mode_note)
     logger.info("=" * 60)
 
     logger.info("COOLEMS JUST RELAY SERVER started (no UI, no tools, no logic)")
-    import config as _cfg
-    backend = getattr(_cfg, "SERVER_BACKEND", "llama")
+    backend = getattr(cfg, "SERVER_BACKEND", "llama")
     logger.info("Local LLM Backend: %s (%s)", backend, final_api_url)
 
-    logger.info("Listening for client connections on %s:%s...", COOLEMS_SERVER_HOST, COOLEMS_DIRECT_WS_PORT)
+    logger.info("Listening for client connections on %s:%s...", cfg.COOLEMS_SERVER_HOST, cfg.COOLEMS_DIRECT_WS_PORT)
+
+
+async def _run_relay_async(provider_obj, final_api_url):
+    """Run the just relay server entirely on asyncio event loop - no threads."""
+    _log_relay_banner("", final_api_url)
 
     try:
         await provider_obj.start_all_servers()
@@ -116,18 +128,7 @@ CLIENT_UI_PORT = 8000  # HTTP port of the local CLIENT web UI (matches code_clie
 
 async def _run_relay_with_client_async(provider_obj, final_api_url):
     """Run just relay + launch CLIENT as subprocess for local UI."""
-    from config import COOLEMS_SERVER_HOST, COOLEMS_DIRECT_WS_PORT
-
-    logger.info("=" * 60)
-    logger.info("COOLEMS Just Relay Server + Local CLIENT Starting")
-    logger.info("=" * 60)
-
-    logger.info("COOLEMS JUST RELAY SERVER started (no UI, no tools, no logic)")
-    import config as _cfg
-    backend = getattr(_cfg, "SERVER_BACKEND", "llama")
-    logger.info("Local LLM Backend: %s (%s)", backend, final_api_url)
-
-    logger.info("Listening for client connections on %s:%s...", COOLEMS_SERVER_HOST, COOLEMS_DIRECT_WS_PORT)
+    _log_relay_banner(" + Local CLIENT", final_api_url)
 
     # Start relay task
     relay_task = asyncio.create_task(provider_obj.start_all_servers(), name="relay-server")

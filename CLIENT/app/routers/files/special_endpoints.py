@@ -4,7 +4,6 @@ import asyncio
 import os
 import io
 import sys
-import tempfile
 from typing import Dict
 from fastapi import APIRouter, Query, HTTPException
 
@@ -51,15 +50,28 @@ def register_special_endpoints(router: APIRouter):
 
     @router.post("/api/open-folder")
     async def open_folder(path: str = Query("", description="Relative path inside working_root folder")):
-        """Open the file/folder in system explorer."""
+        """Open a FOLDER in the system explorer (directories only).
+
+        SERVER-side limitation gate (2026-10-01): same as /api/run-file and /api/run-python -
+        spawning os.startfile / open / xdg-open is a child-process execution surface, so it
+        checks is_subprocess_allowed() first.
+
+        Directories only (2026-10-01): on Windows os.startfile() EXECUTES files (.bat/.exe/...),
+        and /api/upload keeps the basename - an un-gated startfile on a file inside working_root
+        would be a bypass of the exec policy. isdir() closes that surface.
+        """
         try:
             import subprocess as subproc
+            allowed, reason = is_subprocess_allowed()
+            if not allowed:
+                raise HTTPException(status_code=403, detail=reason)
             working_root_dir = _get_working_root_dir()
             safe_path = _safe_relative_path(working_root_dir, path) if path else working_root_dir
             if safe_path is None:
                 raise HTTPException(status_code=400, detail="Invalid path")
-            if not os.path.exists(safe_path):
-                raise HTTPException(status_code=404, detail="Path not found")
+            # Directories only - os.startfile() would EXECUTE a file (see docstring).
+            if not os.path.isdir(safe_path):
+                raise HTTPException(status_code=404, detail="Path is not a folder")
             if sys.platform == "win32":
                 os.startfile(safe_path)
             elif sys.platform == "darwin":
@@ -107,14 +119,13 @@ def register_special_endpoints(router: APIRouter):
             is_gui_app = any(kw in file_content.lower() for kw in gui_keywords)
             if sys.platform == "win32":
                 if is_gui_app:
-                    bat_path = os.path.join(tempfile.gettempdir(), f"run_py_{os.path.basename(safe_path)}.bat")
-                    safe_dir = os.path.dirname(safe_path)
-                    escaped_exe = python_exe.replace('"', '\\\"')
-                    escaped_path = safe_path.replace('"', '\\\"')
-                    bat_content = '@echo off\nchcp 65001 >nul\ncd /d "{safe_dir}"\n"{escaped_exe}" "{escaped_path}"\nif errorlevel 1 echo.\npause\n'.format(safe_dir=safe_dir, escaped_exe=escaped_exe, escaped_path=escaped_path)
-                    with open(bat_path, "w", encoding="utf-8") as bf:
-                        bf.write(bat_content)
-                    subproc.Popen(["cmd.exe", "/c", bat_path], creationflags=subproc.CREATE_NEW_CONSOLE)
+                    # (2026-10-01) Direct Popen instead of a temp .bat + cmd.exe /c: the bat embedded
+                    # the path in a batch file where cmd metacharacters are live - a filename with a
+                    # double quote (" is NOT an escape for cmd, only ^ is) terminated the quoted arg
+                    # and let "& calc.py"-style names run arbitrary batch. argv elements go to
+                    # CreateProcess verbatim: no shell, nothing to escape.
+                    subproc.Popen([python_exe, safe_path], creationflags=subproc.CREATE_NEW_CONSOLE,
+                                  cwd=os.path.dirname(safe_path))  # replaces the bat's 'cd /d'
                     return {"status": "launched", "stdout": f"GUI application launched in new terminal window.\nFile: {os.path.basename(safe_path)}\nCheck your desktop for the game window.", "stderr": "", "returncode": 0}
                 else:
                     startup_info = subproc.STARTUPINFO()

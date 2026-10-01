@@ -86,7 +86,7 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
 
     # ===== SETTINGS ENDPOINT =====
     @router.get("/api/settings")
-    async def get_settings(request: Request):
+    async def get_settings():
         """Return current client settings from settings.json.
 
         Returns the stored settings (server_address) plus the live-resolved address
@@ -275,7 +275,7 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
             return JSONResponse(status_code=500, content={"detail": f"Failed to save search engines: {str(e)}"})
 
     @router.get("/api/models")
-    async def get_models(request: Request):
+    async def get_models():
         """Return available models.
 
         Each model dict has:

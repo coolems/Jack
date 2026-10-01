@@ -157,9 +157,10 @@ def register_write_endpoints(router: APIRouter):
             if sys.platform == "win32":
                 startup_info = subprocess.STARTUPINFO()
                 startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                # SW_SHOWNORMAL is not defined in every CPython build (only SW_HIDE exists in 3.12) -
-                # fall back to the raw Win32 constant value (5), which is what SW_SHOWNORMAL means.
-                startup_info.wShowWindow = getattr(subprocess, "SW_SHOWNORMAL", 5)
+                # CPython's subprocess module only defines SW_HIDE (0) - it has never defined
+                # SW_SHOWNORMAL, so direct attribute access raised AttributeError on every Windows
+                # run. Use the raw Win32 value directly: SW_SHOWNORMAL == 1 (5 is SW_SHOW).
+                startup_info.wShowWindow = 1
                 # FIX (2026-08-29): blocking subprocess off the event loop - it used to freeze
                 # all HTTP endpoints (incl. /api/tree -> "Error loading files") for up to 30s.
                 result = await asyncio.to_thread(subprocess.run, [python_exe, safe_path], capture_output=True, text=True, timeout=30, startupinfo=startup_info)

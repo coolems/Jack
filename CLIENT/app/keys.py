@@ -289,14 +289,20 @@ def is_setup_mode() -> bool:
 
 
 def is_api_key_valid(key: str) -> bool:
-    """Check whether *key* is a real key this CLIENT can work with.
+    """Check whether *key* matches a real key this CLIENT process knows about.
 
-    NOTE (2026-09-29): the on-disk file no longer stores keys, so validation works as:
-      1. exact match against available sources (env / runtime / transitional legacy), OR
-      2. when NO local source exists yet (clean install after the migration): accept any
-         well-formed key (8..256 chars, not a placeholder) - the browser is the
-         credential holder in that state and the SERVER remains the authoritative
-         validator of every presented key.
+    STRICT MEMBERSHIP (2026-10-01 hardening): the key must be present in one of this
+    process's local sources - runtime in-memory key, COOLEMS_CLIENT_API_KEY env var, or
+    transitional legacy capture. When NO source exists yet (clean install), EVERY
+    presented key is rejected: that state IS SETUP MODE and both auth surfaces refuse
+    all non-setup traffic before reaching this function; the one unlocked endpoint
+    (POST /api/auth/set-key) validates length itself and populates runtime + env BEFORE
+    any other request can run. The previous fail-open branch ("accept any well-formed
+    key when no local source exists") was unreachable from live paths but made the
+    contract unsafe for future callers - removed.
+
+    The SERVER remains the authoritative validator of every presented key over
+    WebSocket; this function only gates which keys are worth presenting locally.
     """
     if not isinstance(key, str):
         return False
@@ -304,14 +310,8 @@ def is_api_key_valid(key: str) -> bool:
     if not key or _is_placeholder_key(key):
         return False
 
-    available = get_api_keys()
-    if key in available:
-        return True
+    return key in get_api_keys()  # fail-closed: unknown keys are never "valid" locally
 
-    if not available and 8 <= len(key) <= 256:
-        return True  # clean install: browser-held key, SERVER validates authoritatively
-
-    return False
 
 
 def note_presented_key(key: str) -> None:
