@@ -146,6 +146,18 @@ def setup_logging() -> tuple[logging.Logger, ...]:
     )
     errors_handler.setFormatter(logging.Formatter(log_format))
     errors_handler.setLevel(logging.ERROR)
+    # --- Sensitive-data redaction on FILE + CONSOLE handlers (2026-10-01 hardening) ---
+    # uvicorn.error / websockets records PROPAGATE up to the root logger and were written
+    # RAW into coolems.log/errors.log -- including ?api_key=... query params in WS connection
+    # lines. The stderr wrapper (entry.sensitive_filter.SensitiveStderr) and
+    # create_uvicorn_log_config() only covered console output, so raw keys accumulated on disk
+    # (~65 occurrences found by the 2026-10-01 audit). Lazy import keeps app/ free of a
+    # module-level dependency on entry/ (code_client.py is where both packages are wired).
+    from entry.sensitive_filter import SensitiveLogFilter
+
+    redact = SensitiveLogFilter()
+    coolems_handler.addFilter(redact)
+    errors_handler.addFilter(redact)
 
     # Configure root logger with ONLY file handlers (no StreamHandler
     # here to avoid duplicate console output)
@@ -180,6 +192,9 @@ def setup_logging() -> tuple[logging.Logger, ...]:
         ColoredFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
     console_handler.setLevel(logging.INFO)
+    # Same redaction on the console stream (2026-10-01): COOLEMS.* loggers write here
+    # directly and bypass the uvicorn stderr wrapper.
+    console_handler.addFilter(redact)
     logger.addHandler(console_handler)
 
     return logger, ws_logger, provider_logger, agent_logger, db_logger

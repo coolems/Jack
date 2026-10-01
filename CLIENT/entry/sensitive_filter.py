@@ -7,6 +7,7 @@ Used to filter both Python logging output and raw stderr from uvicorn/websockets
 """
 
 import re
+from urllib.parse import unquote
 import sys
 import logging
 
@@ -48,15 +49,22 @@ def redact_sensitive_data(text):
 
 
 def redact_email(text):
-    """Remove email=xxx@yyy.zzz patterns from URLs.
+    """Remove email=... parameters from URLs (2026-10-01 hardening).
+
+    Percent-decodes the text FIRST so both forms are caught:
+        ?email=bob@example.com   -> removed
+        ?email=bob%40example.com -> removed  (the encoded form leaked to disk -
+                                             found by the 2026-10-01 audit)
+    Only params prefixed with 'email=' are touched, so bare addresses inside
+    ordinary log text (chat echoes, docs) are intentionally left alone.
 
     Args:
         text: Text that may contain email parameters
 
     Returns:
-        str: Text with email patterns removed
+        str: Text with email= parameters removed
     """
-    return re.sub(r'email=[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+', '', text)
+    return re.sub(r'(?i)email=[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+', '', unquote(text))
 
 
 class SensitiveStderr:
@@ -95,11 +103,36 @@ class SensitiveLogFilter(logging.Filter):
     """
 
     def filter(self, record):
-        if hasattr(record, 'msg') and isinstance(record.msg, str):
-            msg = record.msg
-            filtered = redact_sensitive_data(msg)
-            filtered = redact_email(filtered)
-            record.msg = filtered
+        """Redact sensitive data from a log record before any handler sees it.
+
+        Runs BEFORE logging formats the message (lazy-logging design), so we format
+        early ourselves: a secret passed as a bare value -- logger.info("key=%s", KEY)
+-- is invisible in record.msg and unmatchable inside record.args (no param name to
+anchor on). Formatting first guarantees that whatever ends up on disk is exactly what
+gets redacted. Falls back to per-field redaction if formatting fails (weird args),
+which still covers the common inline-URL case.
+        """
+        msg = getattr(record, 'msg', None)
+        if isinstance(msg, str):
+            try:
+                formatted = record.getMessage()
+            except Exception:
+                formatted = None
+            if isinstance(formatted, str):
+                redacted = redact_email(redact_sensitive_data(formatted))
+                if redacted != formatted:
+                    record.msg = redacted
+                    record.args = None  # baked into msg; Formatter uses it directly
+            return True
+        # Fallback: redact the raw fields (pre-format shapes)
+        args = getattr(record, "args", None)
+        if isinstance(args, str):
+            record.args = redact_email(redact_sensitive_data(args))
+        elif isinstance(args, (tuple, list)):
+            record.args = tuple(
+                redact_email(redact_sensitive_data(a)) if isinstance(a, str) else a
+                for a in args
+            )
         return True
 
 
@@ -133,7 +166,9 @@ def create_uvicorn_log_config():
             },
         },
         "loggers": {
-            "uvicorn.access": {"level": 100, "handlers": [], "propagate": False}
+            # level 100 = off by default; if access logging is ever re-enabled, lines flow through
+            # the redacting "default" handler instead of bypassing it (2026-10-01).
+            "uvicorn.access": {"level": 100, "handlers": ["default"], "propagate": False}
         },
     }
 
