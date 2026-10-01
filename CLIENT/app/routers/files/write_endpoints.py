@@ -3,37 +3,19 @@
 import asyncio
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 from typing import Dict
-from fastapi import APIRouter, File, UploadFile, Query, HTTPException
+from fastapi import APIRouter, File, UploadFile, Query, HTTPException, Request
 
-from fastapi import Request
 
-from app.auth import _is_local_mode
-from app.keys import get_key_role
 from app.utils.common import is_text_file, is_image_file, read_text_file, MAX_FILE_SIZE, get_working_root
 from .middleware import _safe_relative_path, _get_working_root_dir, logger
 
+from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
 
 
-def _request_role(request: Request) -> str:
-    """Best-effort role of the caller (set by APIMiddleware on request.state).
-
-    LOCAL MODE callers are 'admin' (loopback only); keyed callers get their role from
-    CLIENT's local .api_client_keys.json entry. Used for the run-python gate below -
-    the SERVER remains the authoritative permission enforcer over WebSocket.
-    """
-    state = getattr(request, "state", None)
-    if state is not None and getattr(state, "api_role", None):
-        return str(getattr(state, "api_role"))
-    key = getattr(state, "api_key", None) if state is not None else None
-    if key:
-        try:
-            return get_key_role(key) or "user"
-        except Exception:
-            pass
-    return "admin" if _is_local_mode() else "user"
 def register_write_endpoints(router: APIRouter):
     """Register all POST/DELETE file modification endpoints on the given router."""
 
@@ -144,18 +126,20 @@ def register_write_endpoints(router: APIRouter):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/api/run-python")
-    async def run_python_file(request: Request, path: str = Query(..., description="Relative path inside working_root folder")):
+    async def run_python_file(path: str = Query(..., description="Relative path inside working_root folder")):
         """Run a Python file and return its output.
 
-        SECURITY (2026-08-25): requires an ADMIN-role caller. This endpoint executes
-        arbitrary .py files in working_root via subprocess; allowing any key role made
-        it a bypass of the SERVER's per-profile tool allowlists (e.g. roles without
-        python_exec). Local mode is loopback-only, so the local UI keeps full access.
+        SERVER-side limitation gate (2026-10-01): before spawning any child process the CLIENT
+        checks whether SUBPROCESS execution is allowed by the limitations the SERVER delivered
+        for this machine's profile - per-profile python_exec_blocked_libs plus the per-role tool
+        allowlist (app.keys.is_subprocess_allowed). No local role verification: whatever
+        restrictions the SERVER sent over WebSocket are enforced here too, so a direct HTTP
+        request cannot bypass what the agent channel is denied.
         """
-        if _request_role(request) != "admin":
-            logger.warning(f"run-python denied for non-admin role from {request.client.host if request.client else 'unknown'}")
-            raise HTTPException(status_code=403, detail="Python execution requires an admin-role API key.")
         try:
+            allowed, reason = is_subprocess_allowed()
+            if not allowed:
+                raise HTTPException(status_code=403, detail=reason)
             if not path:
                 raise HTTPException(status_code=400, detail="Missing path parameter")
             working_root_dir = _get_working_root_dir()
@@ -164,12 +148,18 @@ def register_write_endpoints(router: APIRouter):
                 raise HTTPException(status_code=400, detail="Invalid path")
             if not os.path.isfile(safe_path):
                 raise HTTPException(status_code=404, detail="File not found")
-            import subprocess
+            # 'subprocess' is imported at module level (audit fix 2026-10-01): the outer
+            # `except subprocess.TimeoutExpired` clause must resolve even when an error occurs
+            # BEFORE any spawn (e.g. working_root resolution failure) - a local import inside
+            # the try block left that name unbound in such cases and evaluating the except-chain
+            # raised NameError instead of returning the real 500 with the actual cause.
             python_exe = sys.executable or "python"
             if sys.platform == "win32":
                 startup_info = subprocess.STARTUPINFO()
                 startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startup_info.wShowWindow = subprocess.SW_SHOWNORMAL
+                # SW_SHOWNORMAL is not defined in every CPython build (only SW_HIDE exists in 3.12) -
+                # fall back to the raw Win32 constant value (5), which is what SW_SHOWNORMAL means.
+                startup_info.wShowWindow = getattr(subprocess, "SW_SHOWNORMAL", 5)
                 # FIX (2026-08-29): blocking subprocess off the event loop - it used to freeze
                 # all HTTP endpoints (incl. /api/tree -> "Error loading files") for up to 30s.
                 result = await asyncio.to_thread(subprocess.run, [python_exe, safe_path], capture_output=True, text=True, timeout=30, startupinfo=startup_info)

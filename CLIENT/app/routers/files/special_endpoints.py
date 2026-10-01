@@ -7,35 +7,14 @@ import sys
 import tempfile
 from typing import Dict
 from fastapi import APIRouter, Query, HTTPException
-from fastapi import Request
 
-from app.auth import _is_local_mode
-from app.keys import get_key_role
 from fastapi.responses import StreamingResponse
 
-from app.utils.common import read_text_file
 from .middleware import _safe_relative_path, _get_working_root_dir, logger
 
+from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
 
 
-def _request_role(request: Request) -> str:
-    """Best-effort role of the caller (set by APIMiddleware on request.state).
-
-    LOCAL MODE callers are 'admin' (loopback only); keyed callers get their role from
-    CLIENT's local .api_client_keys.json entry. The SERVER remains the authoritative
-    permission enforcer over WebSocket; this gate stops non-admin HTTP keys from
-    executing code on the client machine.
-    """
-    state = getattr(request, "state", None)
-    if state is not None and getattr(state, "api_role", None):
-        return str(getattr(state, "api_role"))
-    key = getattr(state, "api_key", None) if state is not None else None
-    if key:
-        try:
-            return get_key_role(key) or "user"
-        except Exception:
-            pass
-    return "admin" if _is_local_mode() else "user"
 def register_special_endpoints(router: APIRouter):
     """Register complex file operation endpoints on the given router."""
 
@@ -95,15 +74,20 @@ def register_special_endpoints(router: APIRouter):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/api/run-file")
-    async def run_file(request: Request, data: Dict):
-        """Run a Python file. GUI apps (pygame, tkinter) launch in new terminal window."""
-        # SECURITY (2026-08-25): same admin gate as /api/run-python - this endpoint
-        # executes arbitrary .py files on the client machine.
-        if _request_role(request) != "admin":
-            logger.warning(f"run-file denied for non-admin role from {request.client.host if request.client else 'unknown'}")
-            raise HTTPException(status_code=403, detail="File execution requires an admin-role API key.")
+    async def run_file(data: Dict):
+        """Run a Python file. GUI apps (pygame, tkinter) launch in new terminal window.
+
+        SERVER-side limitation gate (2026-10-01): before spawning any child process the CLIENT
+        checks whether SUBPROCESS execution is allowed by the limitations the SERVER delivered for
+        this machine's profile - per-profile python_exec_blocked_libs plus the per-role tool
+        allowlist (app.keys.is_subprocess_allowed). No local role verification: whatever
+        restrictions the SERVER sent over WebSocket are enforced here too, so a direct HTTP
+        request cannot bypass what the agent channel is denied."""
         try:
             import subprocess as subproc
+            allowed, reason = is_subprocess_allowed()
+            if not allowed:
+                raise HTTPException(status_code=403, detail=reason)
             path = data.get("path", "").strip()
             if not path:
                 raise HTTPException(status_code=400, detail="Missing path parameter")

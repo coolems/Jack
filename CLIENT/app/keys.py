@@ -468,3 +468,102 @@ def get_key_email(key: str = "") -> Optional[str]:
             if email:
                 return email
     return None
+
+
+# ===== Subprocess / code-execution permission (SERVER-delivered limitations) =====
+#
+# The SERVER is the single source of truth for what this CLIENT may execute. Its
+# per-profile restrictions arrive over WebSocket in tools_response and are cached by
+# RemoteToolOrchestrator at boot (fetched by app/providers/bootstrap.py, installed via
+# RemoteToolOrchestrator.install_from_response in app/initialization_client.py):
+#   * "python_exec_blocked_libs" - per-profile import blocklist ([] = admin clean set:
+#     allow everything; None = no profile set -> built-in defaults apply). Cached in the
+#     orchestrator's config constants as PYTHON_EXEC_BLOCKED_LIBS.
+#   * "allowed_tools"            - per-role TOOL ALLOWLIST (None = all tools allowed,
+#     list = only those tool names are available to this key/profile).
+# is_subprocess_allowed() below consults BOTH and fails CLOSED when neither has been
+# delivered yet (boot window before the first successful SERVER auth): a CLIENT that
+# cannot prove it was told "subprocess is fine" does not spawn child processes.
+
+
+def _get_tool_orchestrator():
+    """Return the process-wide RemoteToolOrchestrator singleton, or None.
+
+    code_client.py declares it as a module global (`tool_orchestrator = None`) and assigns
+    it under `if __name__ == "__main__":` only after the SERVER bootstrap succeeds (L149),
+    so by the time uvicorn serves any request that global exists on the __main__ module
+    - the CLIENT is always run as `python code_client.py`. We read it from
+    sys.modules['__main__'] instead of importing 'code_client' by name: that would
+    re-execute the entry-point file as a SECOND module object with real side effects
+    (setup_logging(), init_db(), double atexit registration). Read-only, no import.
+
+    Before boot completes (or in non-code_client hosts such as tests) this returns
+    None - callers then fail CLOSED for exec gates, which is the documented posture.
+    """
+    try:
+        import sys as _sys
+        main_mod = _sys.modules.get("__main__")
+        if main_mod is not None:
+            return getattr(main_mod, "tool_orchestrator", None)
+    except Exception:
+        pass
+    return None
+
+
+def is_subprocess_allowed() -> tuple[bool, str]:
+    """Decide whether this CLIENT may spawn child processes (run-file/run-python).
+
+    The decision uses ONLY limitations delivered by the SERVER - no local role
+    verification (the 2026-09-30 role-gate removal stands): whatever profile/role the
+    SERVER authenticated this machine as, its restrictions are what apply here.
+
+    Returns:
+        (True, "") when execution is allowed, or (False, reason) with a human-readable
+        denial message suitable for an HTTP 403 response body.
+
+    Denial rules (first match wins):
+      1. SERVER profile blocklist contains "subprocess" -> denied. The per-profile
+         python_exec_blocked_libs set is the SERVER's explicit statement that this
+         profile must not use subprocess; it applies to every execution surface on the
+         CLIENT, HTTP endpoints included. (An EMPTY list = admin clean set = allow all -
+         the documented server contract for that value.)
+      2. The SERVER's per-role tool ALLOWLIST is a non-None list that contains neither
+         "python_exec" nor "subprocess" -> denied: this profile was told it has no
+         execution tools at all, so an HTTP exec endpoint must not grant one either.
+      3. Neither limitation set has been delivered yet (boot window before the first
+         successful SERVER auth) -> fail CLOSED with an actionable message instead of
+         guessing "allowed".
+
+    Allow rules: blocklist available and subprocess-free -> allowed; or tool allowlist
+    explicitly lists python_exec/subprocess -> allowed. A missing/None field means
+    "SERVER did not restrict this dimension", never "SERVER forbade it".
+    """
+    orch = _get_tool_orchestrator()
+    if orch is None:
+        return False, ("Subprocess execution is unavailable - the SERVER has not delivered "
+                       "this CLIENT's tool configuration yet. Start the COOLEMS SERVER and "
+                       "let the CLIENT complete its bootstrap (check the [BOOTSTRAP] log lines), "
+                       "then retry.")
+
+    try:
+        blocked = orch._config_constants.get("PYTHON_EXEC_BLOCKED_LIBS")  # type: ignore[attr-defined]
+    except Exception:
+        blocked = None
+    if isinstance(blocked, list) and any(isinstance(m, str) and m.strip() == "subprocess" for m in blocked):
+        return False, ("Subprocess execution is forbidden by your SERVER-side profile "
+                       "(python_exec_blocked_libs contains 'subprocess'). Ask the server "
+                       "administrator to adjust this profile's restrictions if you need it.")
+
+    try:
+        allowed_tools = orch._cache.get_allowed_tools()  # type: ignore[attr-defined]
+    except Exception:
+        allowed_tools = None
+    if isinstance(allowed_tools, list) and "python_exec" not in allowed_tools and "subprocess" not in allowed_tools:
+        return False, ("Subprocess execution is not available for your role - the SERVER's "
+                       f"tool allowlist ({', '.join(sorted(str(t) for t in allowed_tools)) or 'empty'}) "
+                       "includes neither python_exec nor subprocess. Ask the server administrator to "
+                       "grant an execution tool to this profile if you need it.")
+
+    # At least one SERVER-delivered limitation set is present and does not forbid
+    # subprocess -> allowed (a None/absent dimension means "not restricted by SERVER").
+    return True, ""

@@ -291,8 +291,6 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
         During a model switch the SERVER is down/reloading - an empty list then
         is EXPECTED, so it is logged as INFO (one clean line) instead of an ERROR.
         """
-        role = getattr(request.state, 'api_role', 'unknown')
-
         try:
             # (2026-08-20) persistent control channel (async); role filtering still done on SERVER
             models = await provider.get_models_list_async()  # Already filtered by role on SERVER
@@ -303,10 +301,6 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
         if is_model_switching():
             # Expected state while the SERVER reloads - not an error. One clean INFO line, no traceback.
             logger.info(f"[MODELS] Model switch in progress - model list unavailable until the SERVER finishes reloading")
-        elif not models:
-            logger.warning(f"[MODELS] No models returned for role '{role}' (SERVER reachable but list empty)")
-        else:
-            logger.info(f"Role '{role}': {len(models)} model(s) available (server-filtered)")
 
         return models
 
