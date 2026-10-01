@@ -133,6 +133,20 @@ def setup_logging() -> tuple[logging.Logger, ...]:
     root.addHandler(coolems_handler)
     root.addHandler(errors_handler)
 
+    # 2026-10-01 FIX (log leak): the websockets library logs every sent/received frame at
+    # DEBUG ("websockets.client - DEBUG - > TEXT '{...}'"). The root logger runs at
+    # DEBUG, so without this pin auth frames (full API key) and ALL chat content were dumped
+    # raw into coolems.log on every reconnect (~70 leaked auth frames found by the audit).
+    # INFO keeps connection lifecycle lines; set websockets=DEBUG manually for protocol work.
+    logging.getLogger("websockets").setLevel(logging.INFO)
+
+    # 2026-10-01 FIX (log leak, follow-up): uvicorn's wsproto WebSocket implementation logs
+    # EVERY frame at TRACE through the "uvicorn.error" logger ("uvicorn.error - DEBUG - > TEXT '{...}'"),
+    # which the root DEBUG level also let into coolems.log. Pinning it to INFO stops WS frame dumps
+    # (auth keys, chat content) while keeping real uvicorn errors/warnings and connection lifecycle lines.
+    # Set uvicorn.error=TRACE/DEBUG manually for protocol work.
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+
     # --- Per-module loggers with DEFAULT INFO level ---
     logger = logging.getLogger("COOLEMS")
     logger.setLevel(logging.INFO)

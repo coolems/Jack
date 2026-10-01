@@ -1,7 +1,10 @@
 """Sensitive data redaction for COOLEMS CLIENT logs and stderr.
 
 Handles: API keys, URL-encoded values, base64 tokens, bearer tokens,
-access_tokens, secrets, Authorization headers, and email addresses.
+access_tokens, secrets, Authorization headers, and email addresses -- in BOTH
+URL-parameter form (api_key=...) and JSON form ("api_key": "..."). The JSON
+rules were added 2026-10-01 after the log audit found websockets frame dumps
+leaking auth handshakes raw to disk.
 
 Used to filter both Python logging output and raw stderr from uvicorn/websockets.
 """
@@ -16,7 +19,8 @@ def redact_sensitive_data(text):
     """Comprehensive sensitive data redaction for logs/stderr.
 
     Handles: standard keys, URL-encoded key/values, base64 tokens,
-    bearer tokens, access_tokens, secrets, and Authorization headers.
+    bearer tokens, access_tokens, secrets, Authorization headers -- in both
+    URL-parameter form (api_key=...) and JSON object form ("api_key": "...").
 
     Args:
         text: Raw text string that may contain sensitive data
@@ -44,6 +48,31 @@ def redact_sensitive_data(text):
 
     # 7. Authorization: Bearer xxx header format
     text = re.sub(r'(?i)Authorization:\s*Bearer\s+[A-Za-z0-9_\-.]+(?:={0,2})?', 'Authorization: Bearer [REDACTED]', text)
+
+    # --- JSON object form (2026-10-01 audit fix) -------------------------------------
+    # Rules 1-7 only matched URL-parameter shapes (api_key=...). The websockets library's
+    # DEBUG frame dumps log every sent/received message verbatim -- including the auth
+    # handshake {"type": "auth", "api_key": "..."} -- so ~70 raw keys accumulated in
+    # coolems.log before the websockets logger was pinned to INFO (app/logging_config.py).
+    # These rules are the defense-in-depth layer: if any frame ever reaches a handler
+    # again (verbose mode, new transport), its secrets still get redacted on disk.
+
+    # 8. "api_key": "..." / "apiKey": "..."
+    text = re.sub(r'(?i)("(?:api_?key|apikey)"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"[REDACTED]"', text)
+
+    # 9. token values -- composite names first so bare "token" cannot shadow them
+    text = re.sub(r'(?i)("(?:access_?token|refresh_?token|id_?token)"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"[REDACTED]"', text)
+    text = re.sub(r'(?i)("token"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"[REDACTED]"', text)
+
+    # 10. secret values ("secret", "client_secret", ...)
+    text = re.sub(r'(?i)("[a-z_]*secret[a-z_]*"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"[REDACTED]"', text)
+
+    # 11. "authorization": "Bearer xxx" (JSON header form of rule 7)
+    text = re.sub(r'(?i)("(?:authorization|auth)"\s*:\s*)"Bearer\s+[A-Za-z0-9._\-]+"', r'\1"Bearer [REDACTED]"', text)
+
+    # 12. "email": "user@host" (JSON form of the email= parameter rule, same audit)
+    text = re.sub(r'(?i)("(?:e-?mail)"\s*:\s*)"(?:[^"\\]|\\.)*"', r'\1"[REDACTED]"', text)
+
 
     return text
 
