@@ -185,8 +185,13 @@ async def save_current_image(filename: str = None, download_dir: str = "") -> st
             cookies = await wi.context.cookies()
             cookie_header = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
             
+            # Full browser-like headers (shared with download_file, 2026-09 debug): the old
+            # truncated UA ending at 'AppleWebKit/537.36' is a bot signature that WAFs block
+            # on many sites -- a complete Chrome UA passes those checks. Image Accept +
+            # session cookies kept here.
+            from .download_file import _BROWSER_HEADERS
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                **_BROWSER_HEADERS,
                 'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
                 'Referer': wi.page.url,
                 'Cookie': cookie_header

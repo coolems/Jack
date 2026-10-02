@@ -597,9 +597,12 @@ async def run_react_loop(
                     logger.debug(f"[AGENTIC.DEBUG] react_loop - Thinking step {len(temp_thinking)} accumulated (total chars: {sum(len(t) for t in temp_thinking)})")
 
 
-                    # Add to internal messages for context (merged with previous assistant if consecutive)
+                    # Add to internal messages for context (merged with previous assistant if consecutive).
+                    # None-safe: a pure tool-call assistant message carries content=None (OpenAI format),
+                    # so `+=` would raise TypeError when one sits at messages[-1] - use the same
+                    # `(content or "") + ...` merge rule as the truncation-resume path above.
                     if messages and messages[-1].get("role") == "assistant":
-                        messages[-1]["content"] += "\n\n" + ai_response
+                        messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
                         invalidate_message_tokens(messages[-1])  # content mutated in place -> refresh cached token count
                     else:
                         assistant_msg = {
