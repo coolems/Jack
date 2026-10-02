@@ -40,7 +40,7 @@ _CLIENT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 
 
 def create_app(db_path: str, provider, model_name: str, api_timeout: int,
-               agent, tool_orchestrator, stop_events, server_port=8000, use_https=False):
+               agent, tool_orchestrator, stop_events, server_port: int, use_https=False):
     """Create and configure the FastAPI application with all endpoints."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware

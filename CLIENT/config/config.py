@@ -34,6 +34,13 @@ PROVIDER: str = "coolems_client"
 # --- Default Role for API keys (used by tool_executor) ---
 DEFAULT_ROLE_NO_KEY: str = "user"
 
+# --- Local CLIENT Web UI Port ---
+# HTTP port the CLIENT web UI binds to. entry/cli_parser.py uses this as its --port
+# default and code_client.py passes it through create_app() / uvicorn. The SERVER root
+# keeps a mirror copy (config/config.py CLIENT_UI_PORT) because code.py launches this
+# process with the same port - change ONE, change the other.
+CLIENT_UI_PORT: int = 8000
+
 
 # ============================================================
 # Settings Persistence - MUST be defined BEFORE anything uses it
@@ -407,6 +414,47 @@ def get_web_relay_address() -> Optional[str]:
             port = 0
     return f"{host}:{port}" if port and 1 <= port <= 65535 else host
 
+
+# --- Runtime behavior settings (2026-10-02) -----------------------------------
+# The Settings UI "Runtime" tab stores these in settings.json via POST /api/settings:
+#   python_exec_auto_approve            : "manual" | "auto"  (default "manual")
+#       manual -> the python_exec approval dialog waits until the user decides
+#                 (the original behavior - there is NO timeout).
+#       auto   -> the dialog still opens, but after python_exec_auto_approve_seconds
+#                 it approves itself and the code runs without a click.
+#   python_exec_auto_approve_seconds    : int 1..3600 (default 5)
+# Both are read LIVE from settings.json on every access so a save in the UI applies
+# to the very next dialog - no restart needed.
+
+PYTHON_EXEC_AUTO_APPROVE_DEFAULT = "manual"
+PYTHON_EXEC_AUTO_APPROVE_SECONDS_DEFAULT = 5
+
+
+def get_runtime_settings() -> dict:
+    """Return the live Runtime-tab values from settings.json with safe defaults.
+
+    Always returns exactly two keys so callers never hit a missing key:
+      {"python_exec_auto_approve": "manual"|"auto",
+       "python_exec_auto_approve_seconds": int}
+    Bad/corrupt stored values fall back to the defaults (fail-closed = manual).
+    """
+    settings = _load_settings()
+
+    mode = str(settings.get("python_exec_auto_approve") or "").strip().lower()
+    if mode not in ("manual", "auto"):
+        mode = PYTHON_EXEC_AUTO_APPROVE_DEFAULT
+
+    try:
+        seconds = int(str(settings.get("python_exec_auto_approve_seconds") or "").strip())
+    except (TypeError, ValueError):
+        seconds = 0
+    if not (1 <= seconds <= 3600):
+        seconds = PYTHON_EXEC_AUTO_APPROVE_SECONDS_DEFAULT
+
+    return {
+        "python_exec_auto_approve": mode,
+        "python_exec_auto_approve_seconds": seconds,
+    }
 
 # Kept for backward compatibility: the module-level constant mirrors settings.json at
 # import time ONLY. Live code paths must use get_connection_mode() / get_web_relay_address().

@@ -460,6 +460,43 @@ function handleWebSocketMessage(data) {
 //   Allow this run / Run until task done (auto-run for the rest of this agentic run)
 //   / Do not run. The decision is POSTed to /api/exec-approval/<conv>/<request>;
 // on 'Do not run' the AI receives a message that the user declined and adapts.
+// (2026-10-02) Runtime tab: when the user picked "Auto-approve after N seconds",
+// a python_exec approval card starts this countdown as soon as it renders. At zero it
+// submits 'allow' itself - exactly what a manual click would do. URL-consent cards are
+// NEVER auto-approved (they need an explicit decision). Manual mode = no timer at all,
+// the original "wait until the user chooses" behavior.
+function startExecAutoApproveCountdown(card, data) {
+    const rt = (typeof COOLEMS !== 'undefined' && COOLEMS.runtimeSettings) ? COOLEMS.runtimeSettings : null;
+    if (!rt || rt.mode !== 'auto') return;                       // manual mode: wait forever
+    if (typeof data.title === 'string' && data.title.length > 0) return; // URL consent: never auto
+
+    let seconds = parseInt(rt.seconds, 10);
+    if (!Number.isFinite(seconds)) seconds = 5;
+    seconds = Math.min(3600, Math.max(1, seconds));
+
+    const statusEl = card.querySelector('.exec-approval-status');
+    if (statusEl) {
+        statusEl.className = 'exec-approval-status pending';
+        statusEl.textContent = '\u23F3 Auto-approve in ' + seconds + 's - click a button to decide sooner.';
+    }
+
+    let remaining = seconds;
+    const tickTimer = setInterval(() => {
+        if (card.dataset.answered === '1') { clearInterval(tickTimer); return; }
+        const allowBtn = card.querySelector('.exec-btn[data-decision="allow"]');
+        // Any button click disables all buttons immediately - once that happens the user
+        // has decided and the countdown must stop touching the dialog (no status overwrite).
+        if (!allowBtn || allowBtn.disabled) { clearInterval(tickTimer); return; }
+        remaining -= 1;
+        if (remaining > 0) {
+            if (statusEl) statusEl.textContent = '\u23F3 Auto-approve in ' + remaining + 's - click a button to decide sooner.';
+        } else {
+            clearInterval(tickTimer);
+            submitExecApproval(data, allowBtn);   // identical to the user clicking Allow
+        }
+    }, 1000);
+}
+
 function appendExecApprovalCard(data) {
     const container = document.getElementById('chatContainer');
     if (!container) return;
@@ -513,6 +550,8 @@ function appendExecApprovalCard(data) {
     card.appendChild(inner);
     card.appendChild(body);
     container.appendChild(card);
+
+    startExecAutoApproveCountdown(card, data); // Runtime tab: auto-approve timer (no-op in manual mode)
 
     if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
 }

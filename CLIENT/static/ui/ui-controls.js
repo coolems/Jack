@@ -50,6 +50,7 @@ function toggleThink() {
         applyStoredSettingsTab(); // restore last-used tab (default: Authentication)
         loadSettings();
         if (typeof loadSearchEngineSettings === 'function') loadSearchEngineSettings(); // config/search_engines.json -> Settings UI
+        if (typeof loadRuntimeSettings === 'function') loadRuntimeSettings(); // settings.json runtime keys -> Runtime tab
     }
 
 function closeSettings() {

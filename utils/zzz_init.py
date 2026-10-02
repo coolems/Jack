@@ -241,7 +241,7 @@ def detect_gpu() -> tuple[str | None, int | None]:
 
 
 # ---------------------------------------------------------------------------
-# CLIENT UI TLS certificates (https://127.0.0.1:8000/)
+# CLIENT UI TLS certificates (browser trust for the local UI URL, port from config.CLIENT_UI_PORT)
 # ---------------------------------------------------------------------------
 
 def _gen_ui_certs(certs_dir: str) -> bool:
@@ -249,7 +249,7 @@ def _gen_ui_certs(certs_dir: str) -> bool:
 
     Uses the 'cryptography' package - installed on demand (one small pip install,
     no venv needed). Returns True on success. The CA is imported into the browser
-    once and then https://127.0.0.1:8000/ is trusted automatically afterwards.
+    once and then the UI URL (https://127.0.0.1:<CLIENT_UI_PORT>/) is trusted automatically afterwards.
     """
     try:
         import subprocess as _sp
@@ -305,7 +305,7 @@ def ensure_ui_certs(root: str) -> bool:
     info(f"  1. Double-click {os.path.join(client_certs, 'ca.crt')} in File Explorer")
     info('     -> "Install Certificate" -> Local Machine -> "Trusted Root Certification Authorities".')
     info("  2. Restart the browser completely (close ALL windows).")
-    info("     Afterwards https://127.0.0.1:8000/ is trusted automatically - no more warnings.")
+    info(f"     Afterwards https://127.0.0.1:{_read_client_ui_port()}/ is trusted automatically - no more warnings.")
     return True
 
 
@@ -894,7 +894,7 @@ def wire_configs(ctx: dict) -> None:
         write_json(wr_path, data)
         ok(f"CLIENT .working_root.json -> {root}")
 
-    # ---- 6g. CLIENT UI TLS certificates (browser trust for https://127.0.0.1:8000/) ----
+    # ---- 6g. CLIENT UI TLS certificates (browser trust for the local UI URL, port from config.CLIENT_UI_PORT) ----
     ctx["ui_certs_ok"] = ensure_ui_certs(root)
 
 
@@ -923,7 +923,7 @@ def _print_portable_client_block() -> None:
 def _print_ca_note() -> None:
     """One-time browser trust for a SECOND PC when init generated the UI certificates."""
     info("     If UI certificates were generated, import CLIENT\\certs\\ca.crt ONCE on that PC")
-    info('         (Trusted Root CAs) so its browser trusts https://127.0.0.1:8000/ automatically.')
+    info(f"         (Trusted Root CAs) so its browser trusts https://127.0.0.1:{_read_client_ui_port()}/ automatically.")
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +931,28 @@ def _print_ca_note() -> None:
 # ---------------------------------------------------------------------------
 
 ROOT: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # <repo>/utils/zzz_init.py -> <repo>
+
+def _read_client_ui_port() -> int:
+    """Read CLIENT_UI_PORT from CLIENT/config/config.py as text - NO fallback value.
+
+    This script is stdlib-only and must not import either config package (the SERVER
+    "config" and the CLIENT "CLIENT/config" packages would mix in one process, and this
+    runs before any venv exists). Same pattern as the CONTEXT_WINDOW_TOKENS patch below:
+    parse the value out of the file. A missing constant or a non-integer value is a
+    configuration error - it raises instead of guessing a port (no-fallback contract).
+    """
+    cfg_path = os.path.join(ROOT, "CLIENT", "config", "config.py")
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        raise RuntimeError(f"Cannot read {cfg_path} to determine the CLIENT UI port: {e}") from e
+    m = re.search(r"^CLIENT_UI_PORT\s*(?::\s*\w+\s*)?=\s*(\d+)\b", text, flags=re.MULTILINE)
+    if not m:
+        raise RuntimeError(
+            "CLIENT_UI_PORT not found in CLIENT/config/config.py - cannot determine the UI port."
+        )
+    return int(m.group(1))
 
 
 def main() -> int:
@@ -1061,10 +1083,11 @@ def main() -> int:
         info(f"Context window set to {tier['ctx']} tokens (config/config.py) - matches your GPU tier.")
         if ctx.get("ui_certs_ok"):
             print()
-            info("UI certificates: CLIENT will serve https://127.0.0.1:8000/ with a locally trusted CA.")
+            info(f"UI certificates: CLIENT will serve https://127.0.0.1:{_read_client_ui_port()}/ with a locally trusted CA.")
             info("   One-time import of the CA (CLIENT\\certs\\ca.crt) was printed above - do it once per PC.")
         print()
-        ui_url = "https://127.0.0.1:8000/" if ctx.get("ui_certs_ok") else "http://127.0.0.1:8000/"
+        ui_port = _read_client_ui_port()
+        ui_url = f"https://127.0.0.1:{ui_port}/" if ctx.get("ui_certs_ok") else f"http://127.0.0.1:{ui_port}/"
         info("Next steps:")
         step = 1
         if not ctx.get("download_now", True):

@@ -29,6 +29,44 @@ from typing import Dict, Callable
 
 logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 
+def _resolve_cdp_url() -> str:
+    """Build the CDP endpoint URL from CHROME_CDP_PORT - NO hardcoded port, NO fallback.
+
+    Resolution order (2026-10-02 no-fallback contract):
+      1. Bare name ``CHROME_CDP_PORT`` in module globals -- on the CLIENT the SERVER
+         ships this constant via tools_response 'config_constants' and the loader injects
+         it into exec globals ('from config import ...' lines are neutralized there).
+      2. ``from config import CHROME_CDP_PORT`` -- normal import on the SERVER, where
+         config/config.py is the single source of truth.
+
+    If NEITHER provides the constant this raises RuntimeError instead of silently using a
+    hardcoded port - a missing value is a configuration error and must be fixed in
+    config, not papered over at runtime. (127.0.0.1 avoids IPv6 ::1 ECONNREFUSED.)
+    """
+    try:
+        port = CHROME_CDP_PORT  # noqa: F821 - injected exec global on the CLIENT (path 1)
+    except NameError:
+        pass
+    else:
+        return f"http://127.0.0.1:{port}"
+    try:
+        from config import CHROME_CDP_PORT as _port  # path 2 - SERVER; neutralized to 'pass' in delivered copies
+    except ImportError as e:
+        raise RuntimeError(
+            "WebInteract cannot determine the Chrome CDP port: the CHROME_CDP_PORT constant is "
+            "not available (SERVER did not ship it via config_constants and 'config' is not "
+            "importable). Set CHROME_CDP_PORT in config/config.py - no fallback port is used."
+        ) from e
+    try:
+        return f"http://127.0.0.1:{_port}"  # unbound when the import above was neutralized -> loud error below
+    except NameError as e:
+        raise RuntimeError(
+            "WebInteract cannot determine the Chrome CDP port: no injected CHROME_CDP_PORT constant "
+            "and 'from config import ...' is unavailable in this execution context. Set "
+            "CHROME_CDP_PORT in config/config.py - no fallback port is used."
+        ) from e
+
+
 
 class WebInteract:
     """
@@ -36,16 +74,12 @@ class WebInteract:
     using Chrome DevTools Protocol (CDP).
 
     Prerequisite: Chrome must be started with:
-    chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
+    chrome --remote-debugging-port=<CHROME_CDP_PORT from config> --user-data-dir=/tmp/chrome-debug
     """
 
     def __init__(self, cdp_url: str = None):
         if cdp_url is None:
-            try:
-                from config import CHROME_CDP_PORT
-                cdp_url = f"http://127.0.0.1:{CHROME_CDP_PORT}"  # 127.0.0.1 avoids IPv6 ::1 ECONNREFUSED (2026-09-10 fix)
-            except ImportError:
-                cdp_url = "http://127.0.0.1:9222"  # 127.0.0.1 avoids IPv6 ::1 ECONNREFUSED (2026-09-10 fix)
+            cdp_url = _resolve_cdp_url()
         self.cdp_url = cdp_url
         self.playwright = None
         self.browser = None

@@ -74,7 +74,13 @@ COOLEMS_RECONNECT_MAX_DELAY: float = 30.0     # Max delay between reconnect atte
 COOLEMS_DIRECT_WS_PORT: int = 8080               # Port for direct WebSocket server (TLS always ON)
 COOLEMS_DIRECT_WS_CERT_PATH: str = ""            # Path to SSL cert file (leave empty for auto-generated self-signed)
 COOLEMS_DIRECT_WS_KEY_PATH: str = ""             # Path to SSL key file (leave empty for auto-generated self-signed)
-LLAMA_URL: str = "http://localhost:5000"        # llama.cpp server base URL
+# --- Llama Server Port (single source of truth for the legacy single-instance port) ---
+# (2026-10-02 port-config fix) The port lives in EXACTLY ONE place: LLAMA_SERVER_PORT below.
+# LLAMA_URL is DERIVED from it so the two can never desync. Multi-instance setups
+# use config/llama_servers.json instead (see get_llama_server_instances()).
+LLAMA_SERVER_PORT: int = 5000                           # TCP port for auto-started llama-server (legacy single instance)
+
+LLAMA_URL: str = f"http://localhost:{LLAMA_SERVER_PORT}"  # llama.cpp server base URL - DERIVED from LLAMA_SERVER_PORT (single knob)
 # The loaded model is NO LONGER hardcoded here (the old value was a dead Ollama-style
 # reference that matched nothing on disk). Source of truth for the active model:
 # config/.last_model_loaded.json - written by app/providers/llama/model_persistence.py
@@ -83,6 +89,13 @@ MODEL_NAME: str = ""  # empty = "load whatever .last_model_loaded.json says"
 
 # --- Chrome CDP (Browser Debugging) ---
 CHROME_CDP_PORT: int = 9222                           # Chrome DevTools Protocol debugging port
+
+# --- Local CLIENT Web UI Port ---
+# HTTP port of the local CLIENT web UI. Defined in BOTH config packages on purpose:
+# SERVER root code.py launches CLIENT with it; CLIENT/entry/cli_parser.py uses it as its
+# --port default (CLIENT/config/config.py holds the client-side copy). Change ONE, change
+# the other - tests/test_port_single_source_of_truth.py fails if a stray literal appears.
+CLIENT_UI_PORT: int = 8000
 
 # --- Provider Defaults ---
 PROVIDER_DEFAULT_TIMEOUT: int = 9300                    # HTTP timeout (s) for provider API calls (single source of truth)
@@ -106,7 +119,6 @@ LLAMA_SERVER_GPU_LAYERS: int = 99                       # GPU layers to offload 
 # only serves as the FALLBACK default when that file is missing/corrupt, so a fresh checkout
 # behaves exactly like before. Edit llama_servers.json to add more instances (other ports on
 # this machine or remote LAN machines); changes take effect on the next SERVER boot.
-LLAMA_SERVER_PORT: int = 5000                           # Fallback TCP port for auto-started llama-server (legacy single instance)
 
 # --- Chat Request Queue (2026-09-08 multi-chat) ---
 # Every chat request from every client lands in one FIFO queue; free worker slots pick them up.

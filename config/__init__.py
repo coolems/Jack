@@ -51,6 +51,10 @@ from .config import (
     # Chrome CDP (Browser Debugging)
     CHROME_CDP_PORT,
 
+    # Local CLIENT Web UI Port (code.py launches the local CLIENT with it;
+    # mirror of CLIENT/config/config.py CLIENT_UI_PORT - change both together)
+    CLIENT_UI_PORT,
+
     # Provider Defaults
     PROVIDER_DEFAULT_TIMEOUT,
     PROFILE_DEFAULT_RATE_LIMIT,

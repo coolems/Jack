@@ -10,6 +10,7 @@ import subprocess
 import logging
 import asyncio
 from typing import Optional
+from config import LLAMA_SERVER_PORT  # single source of truth (config/config.py) - no hardcoded port literals in this package
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Server")
 
@@ -24,7 +25,7 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Server")
 # default local key and keeps old call sites working unchanged.
 from .model_state import key_for_api_url as _key_for_api_url  # noqa: E402  (same package, no cycle)
 
-_DEFAULT_KEY = ("127.0.0.1", 5000)  # legacy default; server.py always passes the real key now
+_DEFAULT_KEY = ("127.0.0.1", LLAMA_SERVER_PORT)  # legacy default (derived from config); server.py always passes the real key now
 _server_processes: dict[tuple, Optional[subprocess.Popen]] = {}
 # authoritative in-memory "which model is loaded" cache (used by the optimized
 # AUTO-SWITCH check). Do NOT reintroduce per-module copies.

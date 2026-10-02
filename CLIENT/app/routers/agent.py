@@ -93,7 +93,7 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
         values so the UI always shows the active one. Used by the Settings modal.
         """
         try:
-            from config import _load_settings, COOLEMS_CLIENT_SERVER_ADDRESS, _resolve_client_server_address, WEB_RELAY_UI_ENABLED
+            from config import _load_settings, COOLEMS_CLIENT_SERVER_ADDRESS, _resolve_client_server_address, WEB_RELAY_UI_ENABLED, get_runtime_settings
 
             settings = _load_settings()
 
@@ -108,6 +108,12 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
                 settings["connection_mode"] = "direct"
             settings.setdefault("relay_host", "")
             settings.setdefault("relay_port", "")
+
+            # (2026-10-02) Runtime tab: python_exec dialog behavior + auto-approve delay.
+            # Read live from settings.json so the UI always shows the current values.
+            runtime = get_runtime_settings()
+            settings["python_exec_auto_approve"] = runtime["python_exec_auto_approve"]
+            settings["python_exec_auto_approve_seconds"] = runtime["python_exec_auto_approve_seconds"]
 
             # Return both values:
             # 1. current_server_address - the value active at startup (module-level cached)
@@ -132,6 +138,10 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
           - server_address: str (IP:port format, e.g., "192.168.1.100:8080")
           - server_addresses: list[str] ordered failover addresses; index 0 is tried
             FIRST (put localhost there so local wins), the rest only when unreachable
+
+        Runtime tab fields (2026-10-02):
+          - python_exec_auto_approve: "manual" (default) | "auto" — python_exec dialog behavior
+          - python_exec_auto_approve_seconds: int 1..3600 — auto-approve delay in seconds
 
         NOTE: Changes to server address(es) apply from the NEXT connection onward
         (the failover list is re-read on every connect); boot-time display values
@@ -176,6 +186,25 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
                 if relay_host and (any(c.isspace() for c in relay_host) or "/" in relay_host):
                     return JSONResponse(status_code=400, content={"detail": f"Invalid relay host {relay_host!r}"})
                 current["relay_host"] = relay_host
+
+            # (2026-10-02) Runtime tab fields: python_exec dialog behavior.
+            #   python_exec_auto_approve        : "manual" (default, wait for the user) | "auto"
+            #   python_exec_auto_approve_seconds: 1..3600 (dialog auto-runs after this many seconds)
+            if "python_exec_auto_approve" in data:
+                mode = str(data["python_exec_auto_approve"]).strip().lower()
+                if mode not in ("manual", "auto"):
+                    return JSONResponse(status_code=400, content={"detail": "python_exec_auto_approve must be 'manual' or 'auto'"})
+                current["python_exec_auto_approve"] = mode
+
+            if "python_exec_auto_approve_seconds" in data:
+                raw_sec = str(data.get("python_exec_auto_approve_seconds") or "").strip()
+                try:
+                    sec = int(raw_sec)
+                except (TypeError, ValueError):
+                    return JSONResponse(status_code=400, content={"detail": "python_exec_auto_approve_seconds must be a whole number of seconds"})
+                if not (1 <= sec <= 3600):
+                    return JSONResponse(status_code=400, content={"detail": "python_exec_auto_approve_seconds must be between 1 and 3600"})
+                current["python_exec_auto_approve_seconds"] = sec
 
             if "relay_port" in data:
                 raw_port = str(data.get("relay_port") or "").strip()

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20260924a">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261002c">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -241,6 +241,8 @@
                 <div class="settings-tabs" role="tablist">
                     <button type="button" class="settings-tab active" data-pane="auth" onclick="switchSettingsTab('auth')">Authentication</button>
                     <button type="button" class="settings-tab" data-pane="agent" onclick="switchSettingsTab('agent')">Agent / Search</button>
+                    <button type="button" class="settings-tab" data-pane="runtime"
+                            onclick="switchSettingsTab('runtime')">Runtime</button>
                 </div>
 
                 <!-- Tab: Authentication (server address + email + API key).
@@ -292,94 +294,125 @@
                         <div id="connectionModeStatus" style="margin-top: 4px; font-size: 12px;"></div>
                     </div>
 
-<div class="form-group" id="serverAddressGroup">
-                    <label>Server Address (Direct mode only)</label>
-                    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
-                        Your SERVER machine&apos;s IP address and port. Format: <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">IP:port</code>. Requires CLIENT restart to apply.
-                    </p>
-                    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                        <input type="text" id="serverAddressInput" placeholder="e.g. 192.168.1.100:55679" autocomplete="off" 
-                               style="flex:1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; 
-                                      background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
-                               onchange="saveServerAddress()">
-                        <button onclick="resetServerAddress()" style="padding: 6px 12px; 
-                                background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color); 
-                                border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap;" title="Reset to auto-detected LAN IP">
-                            Reset
+                    <div class="form-group" id="serverAddressGroup">
+                        <label>Server Address (Direct mode only)</label>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                            Your SERVER machine&apos;s IP address and port. Format: <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">IP:port</code>. Requires CLIENT restart to apply.
+                        </p>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <input type="text" id="serverAddressInput" placeholder="e.g. 192.168.1.100:55679" autocomplete="off" 
+                                   style="flex:1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; 
+                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
+                                   onchange="saveServerAddress()">
+                            <button onclick="resetServerAddress()" style="padding: 6px 12px; 
+                                    background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color); 
+                                    border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap;" title="Reset to auto-detected LAN IP">
+                                Reset
+                            </button>
+                        </div>
+                        <div id="serverAddressStatus" style="margin-top: 4px; font-size: 12px;"></div>
+                    </div>
+
+                    <div class="form-group" id="emailGroup" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                        <label>Email Address</label>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                            Please enter your validation e-mail.
+                        </p>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <input type="text" id="emailInput" placeholder="your@email.com" autocomplete="off" 
+                                   style="flex:1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; 
+                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: inherit;"
+                                   oninput="saveEmail()">
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="apiKeyGroup" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                        <label>API Key</label>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                            Enter your API key and click Connect to validate your credentials. The key is kept in this
+                            browser only - it is never written to disk on this machine (the CLIENT stores just your e-mail +
+                            date here; the real key lives in the SERVER file).
+                        </p>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="apiKeyInput" class="password-masked" placeholder="Paste your API key here..." 
+                                   style="flex:1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; 
+                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
+                                   oninput="saveApiKey()" autocomplete="off">
+                            <button class="icon-btn" id="apiKeyToggle" onclick="toggleApiKeyVisibility()" title="Show/Hide key"
+                                    style="background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px;">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                </svg>
+                            </button>
+                        </div>
+                        <div id="apiKeyStatus" style="margin-top: 8px; font-size: 12px;"></div>
+                        <!-- SETUP MODE (2026-09-01): "Set API Key" is the ONLY button visible before a key
+                             exists - it stores the key locally AND writes it to the CLIENT backend via
+                             POST /api/auth/set-key, which is the one endpoint that works in setup mode. -->
+                        <button onclick="setApiKeyToBackend()" style="margin-top: 8px; padding: 6px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                            Set API Key
+                        </button>
+                        <button id="connectBtn" onclick="connectWithCredentials()" style="margin-top: 8px; margin-left: 8px; padding: 6px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+                            Connect
+                        </button>
+                        <button id="clearKeyBtn" onclick="clearApiKey()" style="margin-top: 8px; margin-left: 8px; padding: 6px 16px; 
+                                background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); 
+                                border-radius: 6px; cursor: pointer; font-size: 13px;">
+                            Clear Key
                         </button>
                     </div>
-                    <div id="serverAddressStatus" style="margin-top: 4px; font-size: 12px;"></div>
-                </div>
-
-<div class="form-group" id="emailGroup" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
-                    <label>Email Address</label>
-                    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
-                        Please enter your validation e-mail.
-                    </p>
-                    <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                        <input type="text" id="emailInput" placeholder="your@email.com" autocomplete="off" 
-                               style="flex:1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; 
-                                      background: var(--bg-tertiary); color: var(--text-primary); font-family: inherit;"
-                               oninput="saveEmail()">
-                    </div>
-                </div>
-
-<div class="form-group" id="apiKeyGroup" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
-                    <label>API Key</label>
-                    <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
-                        Enter your API key and click Connect to validate your credentials. The key is kept in this
-                        browser only - it is never written to disk on this machine (the CLIENT stores just your e-mail +
-                        date here; the real key lives in the SERVER file).
-                    </p>
-                    <div style="display: flex; gap: 8px;">
-                        <input type="text" id="apiKeyInput" class="password-masked" placeholder="Paste your API key here..." 
-                               style="flex:1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; 
-                                      background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
-                               oninput="saveApiKey()" autocomplete="off">
-                        <button class="icon-btn" id="apiKeyToggle" onclick="toggleApiKeyVisibility()" title="Show/Hide key"
-                                style="background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px;">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                                <circle cx="12" cy="12" r="3"></circle>
-                            </svg>
-                        </button>
-                    </div>
-                    <div id="apiKeyStatus" style="margin-top: 8px; font-size: 12px;"></div>
-                    <!-- SETUP MODE (2026-09-01): "Set API Key" is the ONLY button visible before a key
-                         exists - it stores the key locally AND writes it to the CLIENT backend via
-                         POST /api/auth/set-key, which is the one endpoint that works in setup mode. -->
-                    <button onclick="setApiKeyToBackend()" style="margin-top: 8px; padding: 6px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
-                        Set API Key
-                    </button>
-                    <button id="connectBtn" onclick="connectWithCredentials()" style="margin-top: 8px; margin-left: 8px; padding: 6px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
-                        Connect
-                    </button>
-                    <button id="clearKeyBtn" onclick="clearApiKey()" style="margin-top: 8px; margin-left: 8px; padding: 6px 16px; 
-                            background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); 
-                            border-radius: 6px; cursor: pointer; font-size: 13px;">
-                        Clear Key
-                    </button>
-                </div>
                 </div>
 
                 <!-- Tab: Agent / Search (agent mode + web search engines) -->
                 <div id="settingsPaneAgent" class="settings-pane" data-pane="agent">
-<div class="form-group">
-                    <label>Agent Mode</label>
-                    <div class="toggle" onclick="toggleAgentSwitch()">
-                        <div class="toggle-switch" id="agentSwitch"><div class="toggle-thumb"></div></div>
-                        <span style="color: var(--text-secondary); font-size: 14px;">Enable autonomous agent behavior</span>
+                    <div class="form-group">
+                        <label>Agent Mode</label>
+                        <div class="toggle" onclick="toggleAgentSwitch()">
+                            <div class="toggle-switch" id="agentSwitch"><div class="toggle-thumb"></div></div>
+                            <span style="color: var(--text-secondary); font-size: 14px;">Enable autonomous agent behavior</span>
+                        </div>
                     </div>
-                </div>
 
-<div class="form-group">
+                    <div class="form-group">
                         <label>Web Search Engines</label>
                         <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
                             Toggle each engine on or off - saves instantly. Top to bottom = priority order. To add, remove or fine-tune an engine edit <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">config/search_engines.json</code> (no restart needed).
                         </p>
                         <div id="searchEngineList" class="se-list"></div>
                         <div id="searchEngineStatus" style="margin-top:8px; font-size: 12px;"></div>
-                </div>
+                    </div>
+            </div>
+
+                <!-- Tab: Runtime (2026-10-02) - how local execution behaves. -->
+                <div id="settingsPaneRuntime" class="settings-pane" data-pane="runtime">
+                    <div class="form-group">
+                        <label>Python Dialog Behavior</label>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                            When the AI wants to run Python code on this machine, an approval dialog opens in the chat.
+                            Choose how it behaves:
+                        </p>
+                        <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="radio" name="pythonExecBehavior" id="pyExecManual" value="manual"
+                                       onchange="saveRuntimeSettings()">
+                                Wait for my decision (default)
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="radio" name="pythonExecBehavior" id="pyExecAuto" value="auto"
+                                       onchange="saveRuntimeSettings()">
+                                Auto-approve after
+                            </label>
+                        </div>
+                        <div id="pyExecAutoSecondsGroup" style="display:none; align-items:center; gap:8px;">
+                            <input type="number" id="pyExecAutoSeconds" min="1" max="3600" step="1" value="5"
+                                   autocomplete="off" onchange="saveRuntimeSettings()"
+                                   style="width: 90px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                            <span style="color: var(--text-secondary); font-size: 13px;">seconds (1 - 3600) - the dialog still opens, then runs by itself</span>
+                        </div>
+                        <p id="runtimeSettingsStatus" style="margin-top: 8px; font-size: 12px;"></p>
+                    </div>
             </div>
         </div>
     </div>
@@ -396,24 +429,24 @@
     </div>
 
     <!-- Load scripts in dependency order -->
-    <script src="/static/ui/api-key.js?v=20260923a">
+    <script src="/static/ui/api-key.js?v=20261002a">
     </script>
     <script src="/static/ui/app.js?v=20260830a">
     </script>
     <script src="/static/ui/scroll.js?v=20260830a">
-</script>
-<script src="/static/ui/conversation-manager.js?v=20260908a">
+    </script>
+    <script src="/static/ui/conversation-manager.js?v=20260908a">
     </script>
     <script src="/static/ui/conversation.js?v=20260908a">
     </script>
 
-<script src="/static/ui/chat-socket-pool.js?v=20260908a"></script>
-    <script src="/static/ui/websocket.js?v=20260924b">
+    <script src="/static/ui/chat-socket-pool.js?v=20260908a"></script>
+    <script src="/static/ui/websocket.js?v=20261002a">
     </script>
     <script src="/static/ui/message.js?v=20260908a">
     
     </script>
-<script src="/static/ui/setup-progress.js?v=20260922b"></script>
+    <script src="/static/ui/setup-progress.js?v=20260922b"></script>
     
     <!-- Syntax Highlighting Modules (load in order) -->
     <script src="/static/ui/syntax/base.js?v=20260830a">
@@ -455,24 +488,25 @@
     <!-- Compare-select mode (in-place second-file picker, replaces old popup) - 2026-08-25 -->
     <script src="/static/ui/compare-select-mode.js?v=20260825a">
     </script>
-<!-- File handler modules (split from file-handler.js on 2026-09-18). -->
-<!-- Load order matters: files-state first; files-panel LAST (its initPanelResize IIFE -->
-<!-- wraps window.toggleFilesPanel and window.previewFile, which must already exist). -->
-<script src="/static/ui/files/files-state.js?v=20260918a"></script>
-<script src="/static/ui/files/file-upload.js?v=20260918a"></script>
-<script src="/static/ui/files/tree-view.js?v=20260918a"></script>
-<script src="/static/ui/files/tree-render-items.js?v=20260918a"></script>
-<script src="/static/ui/files/tree-render-children.js?v=20260918a"></script>
-<script src="/static/ui/files/tree-actions.js?v=20260918a"></script>
-<script src="/static/ui/files/preview-core.js?v=20260918a"></script>
-<script src="/static/ui/files/preview-edit.js?v=20260918a"></script>
-<script src="/static/ui/files/file-chips.js?v=20260918a"></script>
-<script src="/static/ui/files/drop-to-folder.js?v=20260918a"></script>
-<script src="/static/ui/files/run-python.js?v=20260918a"></script>
-<script src="/static/ui/files/working-root-chip.js?v=20260918a"></script>
-<script src="/static/ui/files/files-panel.js?v=20260918a"></script>
-<script src="/static/ui/search-engine-settings.js?v=20260827e">
+    <!-- File handler modules (split from file-handler.js on 2026-09-18). -->
+    <!-- Load order matters: files-state first; files-panel LAST (its initPanelResize IIFE -->
+    <!-- wraps window.toggleFilesPanel and window.previewFile, which must already exist). -->
+    <script src="/static/ui/files/files-state.js?v=20260918a"></script>
+    <script src="/static/ui/files/file-upload.js?v=20260918a"></script>
+    <script src="/static/ui/files/tree-view.js?v=20260918a"></script>
+    <script src="/static/ui/files/tree-render-items.js?v=20260918a"></script>
+    <script src="/static/ui/files/tree-render-children.js?v=20260918a"></script>
+    <script src="/static/ui/files/tree-actions.js?v=20260918a"></script>
+    <script src="/static/ui/files/preview-core.js?v=20260918a"></script>
+    <script src="/static/ui/files/preview-edit.js?v=20260918a"></script>
+    <script src="/static/ui/files/file-chips.js?v=20260918a"></script>
+    <script src="/static/ui/files/drop-to-folder.js?v=20260918a"></script>
+    <script src="/static/ui/files/run-python.js?v=20260918a"></script>
+    <script src="/static/ui/files/working-root-chip.js?v=20260918a"></script>
+    <script src="/static/ui/files/files-panel.js?v=20260918a"></script>
+    <script src="/static/ui/search-engine-settings.js?v=20260827e">
     </script>
+    <script src="/static/ui/runtime-settings.js?v=20261002b"></script>
     <script src="/static/ui/ui-controls.js?v=20260827e">
     
     </script>

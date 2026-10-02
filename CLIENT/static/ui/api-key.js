@@ -56,6 +56,10 @@ function applySetupModeUI() {
     const agentTab = modal.querySelector('.settings-tab[data-pane="agent"]');
     if (agentTab) agentTab.style.display = inSetup ? 'none' : '';
 
+    // Runtime tab: same - it configures local execution, which needs an unlocked backend.
+    const runtimeTab = modal.querySelector('.settings-tab[data-pane="runtime"]');
+    if (runtimeTab) runtimeTab.style.display = inSetup ? 'none' : '';
+
     // Force the Authentication pane while locked down.
     if (inSetup && typeof switchSettingsTab === 'function') {
         switchSettingsTab('auth');

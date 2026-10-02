@@ -124,10 +124,11 @@ async def _run_relay_async(provider_obj, final_api_url):
         await provider_obj.stop_all_servers()
 
 
-CLIENT_UI_PORT = 8000  # HTTP port of the local CLIENT web UI (matches code_client.py --port default; unrelated to the WS relay port)
 
 async def _run_relay_with_client_async(provider_obj, final_api_url):
     """Run just relay + launch CLIENT as subprocess for local UI."""
+    from config import CLIENT_UI_PORT  # single source of truth (config/config.py); mirrors code_client.py --port default; unrelated to the WS relay port
+
     _log_relay_banner(" + Local CLIENT", final_api_url)
 
     # Start relay task

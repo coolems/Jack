@@ -26,6 +26,10 @@ from .config import (
     # --- Default Role ---
     DEFAULT_ROLE_NO_KEY,
 
+    # --- Local CLIENT Web UI Port (default for entry/cli_parser.py --port;
+    # mirror of SERVER config/config.py CLIENT_UI_PORT - change both together) ---
+    CLIENT_UI_PORT,
+
     # --- Coolems Client Connection Settings ---
     COOLEMS_CLIENT_SERVER_ADDRESS,
     USE_WEB_SERVER,
@@ -107,6 +111,8 @@ from .config import (
     # (2026-09-01 sticky failover) known-good server memory
     get_good_server,
     _remember_good_server,
+    # (2026-10-02) Runtime tab - python_exec dialog behavior (live reader)
+    get_runtime_settings,
 )
 
 # --- Search engines (search_engines.json - single source of truth) ---

@@ -8,16 +8,18 @@ tasks are only run through the web UI now. See plan_20260823_1133.md in working_
 
 import sys
 
+from config import CLIENT_UI_PORT  # single source of truth for the default UI port (CLIENT/config/config.py)
+
 
 def parse_args():
     """Parse command line arguments.
 
     Returns:
         tuple: (port, provider_arg)
-            - port (int): Server port (default 8000)
+            - port (int): Server port (default from config.CLIENT_UI_PORT)
             - provider_arg (str or None): Provider override from CLI
     """
-    port = 8000
+    port = CLIENT_UI_PORT
     provider_arg = None
 
     args = sys.argv[1:]

@@ -208,9 +208,26 @@ Total Pages: {len(wi.context.pages) if wi.context else 0}"""
         if ("connect" in error_msg.lower() or "refused" in error_msg.lower()) \
                 and _attempts < 2:
             try:
+                # CDP port comes from config (CHROME_CDP_PORT) - no hardcoded literal. On the
+                # CLIENT the SERVER ships it via config_constants (injected exec global); on the
+                # SERVER "from config import ..." works normally. If neither provides it, fail
+                # loudly instead of guessing a port (2026-10-02 no-fallback contract).
+                _cdp_port = globals().get("CHROME_CDP_PORT")  # injected exec global on the CLIENT (path 1)
+                if _cdp_port is None:
+                    try:
+                        from config import CHROME_CDP_PORT as _imported_cdp_port  # path 2 - SERVER; neutralized to 'pass' in delivered copies
+                        _cdp_port = _imported_cdp_port
+                    except (ImportError, NameError):
+                        pass  # UnboundLocalError is a NameError subclass: covers the neutralized-import case
+                if _cdp_port is None:
+                    raise RuntimeError(
+                        "Cannot determine the Chrome CDP port for auto-launch: CHROME_CDP_PORT is not "
+                        "available (SERVER did not ship it via config_constants and 'config' is not "
+                        "importable). Set CHROME_CDP_PORT in config/config.py - no fallback port is used."
+                    )
                 chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
                 args = [chrome_path,
-                        "--remote-debugging-port=9222",
+                        f"--remote-debugging-port={_cdp_port}",
                         r"--user-data-dir=C:\chrome-debug-profile",
                         "--no-first-run",
                         "--no-default-browser-check"]
