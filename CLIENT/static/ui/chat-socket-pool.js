@@ -264,13 +264,13 @@ const ChatSocketPool = {
         const span = el.querySelector('span');
         if (!span) return;
         // strip a previous multi-chat suffix before appending the new one
-        let text = span.textContent.replace(/\s*·\s*(\d+(?: gen)?(?: · \d+ queued)?|\d+ chats live)$/, '');
+        let text = span.textContent.replace(/\s*·\s*(\d+(?: gen)?(?: · \d+ queued)?|(\d+ (?:chats|workspaces) live))$/, '');
         let suffix = '';
         if (generating || queued) {
             suffix = ` · ${generating} gen`;
             if (queued) suffix += ` · ${queued} queued`;
         } else if (Object.keys(this.sockets).length > 1) {
-            suffix = ` · ${Object.keys(this.sockets).length} chats live`;
+            suffix = ` · ${Object.keys(this.sockets).length} workspaces live`;
         }
         span.textContent = text + suffix;
     },

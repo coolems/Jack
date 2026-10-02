@@ -65,7 +65,7 @@ let stopAbortController = null;
 
 function stopGeneration() {
     if (!COOLEMS.currentConversation) {
-        showNotification('No active conversation', 'warning');
+        showNotification('No active workspace', 'warning');
         return;
     }
 
@@ -643,6 +643,6 @@ window.forceReconnect = function() {
         ChatSocketPool.close(COOLEMS.currentConversation, true);
         connectWebSocket(COOLEMS.currentConversation);
     } else {
-        showNotification('No active conversation to reconnect to', 'warning');
+        showNotification('No active workspace to reconnect to', 'warning');
     }
 };

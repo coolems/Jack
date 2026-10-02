@@ -23,11 +23,12 @@
         <div class="sidebar-header">
             <button class="new-chat-btn" onclick="newChat()">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-                New Chat
+                New Workspace
                 <span style="margin-left: auto; opacity: 0.5; font-size: 12px;">Ctrl K</span>
             </button>
         </div>
-        <div class="sidebar-content" id="chatHistory"></div>
+        <!-- Workspaces sidebar: each item is a WORKSPACE (its own folder + conversation history). -->
+        <div class="sidebar-content workspace-list" id="chatHistory"></div>
     </aside>
 
     <main class="main">

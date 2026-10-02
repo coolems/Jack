@@ -48,7 +48,7 @@ def _ensure_conversation_exists(cursor, conv_id: str) -> None:
             conv_id,
         )
         cursor.execute(
-            "INSERT INTO conversations (id, title) VALUES (?, 'New Chat')",
+            "INSERT INTO conversations (id, title) VALUES (?, 'New Workspace')",
             (conv_id,),
         )
 
@@ -147,7 +147,7 @@ def save_user_message(
         content: Message text.
         media_urls: Optional list of media file URLs.
         file_contents: Optional list of file content dicts.
-        auto_title: If True and conversation title is "New Chat", update it.
+        auto_title: If True and workspace title is "New Workspace" (or legacy "New Chat"), update it.
     """
     conn = get_db_connection()
     try:
@@ -173,11 +173,11 @@ def save_user_message(
         )
         _sync_conversation_working_root(cursor, conv_id)
 
-        # Auto-title if "New Chat"
+        # Auto-title if the default placeholder ("New Workspace"; legacy rows may still say "New Chat")
         if auto_title:
             cursor.execute("SELECT title FROM conversations WHERE id = ?", (conv_id,))
             row = cursor.fetchone()
-            if row and row[0] == "New Chat":
+            if row and row[0] in ("New Workspace", "New Chat"):  # (2026-10-02) workspace rename: keep auto-titling legacy rows too
                 new_title = content.strip()[:30]
                 if len(content.strip()) > 30:
                     new_title += "..."

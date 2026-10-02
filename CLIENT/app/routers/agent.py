@@ -603,7 +603,7 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
             return JSONResponse(
                 status_code=409,
                 content={"status": "error",
-                         "message": "No pending python_exec approval for this chat."}
+                         "message": "No pending python_exec approval for this workspace."}
             )
 
         if not state.resolve(request_id, decision):

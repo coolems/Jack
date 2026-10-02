@@ -420,7 +420,7 @@ async def connect_to_web_relay(server_provider):
                             if not _client_user_info:
                                 await _relay_send(ws, {
                                     "type": "error",
-                                    "message": (f"Chat request denied for relayed client "
+                                    "message": (f"Request denied for relayed client "
                                                 f"{(msg.get('_relay_from') or 'unknown')!r} (unresolvable profile)."),
                                 }, msg.get("_relay_from") or "")
                                 continue

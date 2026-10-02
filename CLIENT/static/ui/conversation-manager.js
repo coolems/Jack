@@ -79,7 +79,7 @@ class ConversationManager {
         const sortBar = document.createElement('div');
         sortBar.className = 'conversation-sort-bar';
         sortBar.innerHTML = `
-            <select class="sort-select" id="convSortBy" title="Sort conversations by">
+            <select class="sort-select" id="convSortBy" title="Sort workspaces by">
                 <option value="created">📅 Creation Time</option>
                 <option value="color">🎨 Color</option>
                 <option value="name">🔤 Name</option>
@@ -166,7 +166,7 @@ class ConversationManager {
         if (!this.container) return;
 
         if (conversations.length === 0) {
-            this.container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px;">No conversations yet<br><br>Click "New Chat" to start</div>';
+            this.container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px;">No workspaces yet<br><br>Click "New Workspace" to start</div>';
             return;
         }
 
@@ -334,7 +334,7 @@ class ConversationManager {
         input.select();
 
         const finishRename = async () => {
-            const newTitle = input.value.trim() || 'New Chat';
+            const newTitle = input.value.trim() || 'New Workspace';
             if (newTitle !== currentTitle) {
                 try {
                     await fetch(`/api/conversations/${convId}/update`, {

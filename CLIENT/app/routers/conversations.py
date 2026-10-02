@@ -40,14 +40,14 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO conversations (id, title, model, ip_address) VALUES (?, ?, ?, ?)",
-                (conv_id, "New Chat", model_name, current_ip)
+                (conv_id, "New Workspace", model_name, current_ip)
             )
             conn.commit()
         finally:
             close_db_connection(conn)
 
         logger.info(f"Created conversation {conv_id} for client {current_ip}")
-        return {"id": conv_id, "title": "New Chat"}
+        return {"id": conv_id, "title": "New Workspace"}
 
     @router.get("")
     async def list_conversations(
@@ -91,7 +91,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             "conversations": [
                 {
                     "id": row[0],
-                    "title": row[1] or "New Chat",
+                    "title": row[1] or "New Workspace",
                     "model": row[2],
                     "agent_mode": bool(row[3]),
                     "created_at": row[4],

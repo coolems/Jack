@@ -39,7 +39,7 @@ let isSwitchingConversation = false;
 
 async function newChat() {
     if (isSwitchingConversation) {
-        showNotification('Please wait, switching conversation...', 'warning');
+        showNotification('Please wait, switching workspace...', 'warning');
         return;
     }
 
@@ -72,10 +72,10 @@ async function newChat() {
         // socket is left untouched — it keeps streaming/generating in the background.
         ChatSocketPool.ensure(COOLEMS.currentConversation);
 
-        showNotification('New conversation created', 'success');
+        showNotification('New workspace created', 'success');
     } catch (e) {
-        showNotification('Failed to create new chat', 'error');
-        console.error('New chat error:', e);
+        showNotification('Failed to create new workspace', 'error');
+        console.error('New workspace error:', e);
     }
 }
 
@@ -105,12 +105,12 @@ async function deleteConversation(id) {
                 container.innerHTML = `<div class="welcome" id="welcome"><h1>COOLEMS</h1><p>Your workspace</p></div>`;
             }
             await loadConversations();
-            showNotification('Conversation deleted', 'success');
+            showNotification('Workspace deleted', 'success');
         } else {
             throw new Error();
         }
     } catch (e) {
-        showNotification('Failed to delete conversation', 'error');
+        showNotification('Failed to delete workspace', 'error');
         console.error('Delete error:', e);
     }
 }
@@ -118,7 +118,7 @@ async function deleteConversation(id) {
 async function loadConversation(id) {
     // Prevent switching while already switching
     if (isSwitchingConversation) {
-        showNotification('Please wait, already switching conversation...', 'warning');
+        showNotification('Please wait, already switching workspace...', 'warning');
         return;
     }
 
@@ -165,7 +165,7 @@ async function loadConversation(id) {
                     currentWorkingRoot = wrData.working_root;
                     // 2026-08-29: working folder now lives in the header chip - refresh its display.
                     if (typeof updateWorkingRootChip === 'function') updateWorkingRootChip();
-                    showNotification('Working folder restored for this chat: ' + currentWorkingRoot, 'success');
+                    showNotification('Working folder restored for this workspace: ' + currentWorkingRoot, 'success');
                     // Refresh file tree to the restored folder (existing helpers)
                     expandedFolders.clear();
                     selectedItems.clear();
@@ -173,10 +173,10 @@ async function loadConversation(id) {
                     setTimeout(() => loadTree(''), 100);
                 } else {
                     // Saved folder no longer exists / not allowed -> keep current working root
-                    showNotification('Chat folder unavailable (' + (wrData.message || 'error') + ') - keeping current working folder', 'warning');
+                    showNotification('Workspace folder unavailable (' + (wrData.message || 'error') + ') - keeping current working folder', 'warning');
                 }
             } catch (e) {
-                console.warn('Failed to restore chat working root:', e);
+                console.warn('Failed to restore workspace working root:', e);
             }
         }
 
@@ -247,7 +247,7 @@ async function loadConversation(id) {
 
     } catch (e) {
         logError('Failed to load conversation:', e);
-        showNotification('Failed to load conversation: ' + (e.message || 'Unknown error'), 'error');
+        showNotification('Failed to load workspace: ' + (e.message || 'Unknown error'), 'error');
 
         // Revert on error - restore old conversation
         COOLEMS.currentConversation = oldConvId;
@@ -286,7 +286,7 @@ async function loadConversations() {
         } else {
             // Fallback: legacy inline rendering
             if (data.conversations.length === 0) {
-                historyEl.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px;">No conversations yet<br><br>Click "New Chat" to start</div>';
+                historyEl.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px;">No workspaces yet<br><br>Click "New Workspace" to start</div>';
             } else {
                 historyEl.innerHTML = data.conversations.map(conv => `
                     <div class="chat-history-item ${conv.id === COOLEMS.currentConversation ? 'active' : ''}"
@@ -320,7 +320,7 @@ async function loadConversations() {
             } else if (container && container.children.length === 0) {
                 container.innerHTML = `<div class="welcome" id="welcome">
                     <h1>COOLEMS</h1>
-                    <p>Your workspace - Start a new conversation to begin</p>
+                    <p>Start a new workspace to begin</p>
                 </div>`;
             }
         } else if (welcome) {
@@ -330,7 +330,7 @@ async function loadConversations() {
         return data;
     } catch (e) {
         logError('Failed to load conversations:', e);
-        showNotification('Failed to load conversations', 'error');
+        showNotification('Failed to load workspaces', 'error');
         return null;
     }
 }
@@ -340,7 +340,7 @@ async function loadConversations() {
  */
 async function editAndResend(messageIndex, newContent) {
     if (!COOLEMS.currentConversation) {
-        showNotification('No conversation selected', 'error');
+        showNotification('No workspace selected', 'error');
         return;
     }
 
@@ -355,7 +355,7 @@ async function editAndResend(messageIndex, newContent) {
     }
 
     if (isSwitchingConversation) {
-        showNotification('Please wait, conversation is loading...', 'warning');
+        showNotification('Please wait, workspace is loading...', 'warning');
         return;
     }
 
@@ -399,7 +399,7 @@ async function editAndResend(messageIndex, newContent) {
 
         const response = await fetch(`/api/conversations/${COOLEMS.currentConversation}/messages`);
         if (!response.ok) {
-            throw new Error(`Failed to load conversation: ${response.status}`);
+            throw new Error(`Failed to load workspace: ${response.status}`);
         }
         const data = await response.json();
 
