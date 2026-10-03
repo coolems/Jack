@@ -775,13 +775,64 @@ TIER_MIN_VRAM_MIB = {
 }
 
 
-def _tier_override() -> str:
-    """The user's pinned model line from config (IMAGE_GEN_TIER_OVERRIDE), or 'auto'.
+def _client_image_gen_tier() -> str:
+    """The per-machine tier pick from the CLIENT Settings UI (2026-10-03), or ''.
 
-    Delivered by the SERVER via config_constants (injected exec global on the CLIENT,
-    imported directly in local dev). Anything that is not a known tier name is treated
-    as 'auto' with a warning - a typo must never break generation.
+    The Runtime tab writes 'image_gen_tier' into <CLIENT>/config/settings.json via
+    POST /api/settings. This reads that file LIVE on every call - same live-read
+    pattern web_search.py uses for search_engines.json - so a pick in the UI applies
+    to the very next generation without any restart or SERVER round-trip.
+
+    Path resolution (the CLIENT owns this file):
+      1. <CWD>/config/settings.json        - normal CLIENT run (CWD = CLIENT dir)
+      2. <local_ai>/CLIENT/config/...       - SERVER-side layout (module at local_ai/tools/generate_tool)
+
+    Returns '' when the key is absent or not a known tier name, so callers fall back
+    to the SERVER-shipped constant below. A read problem must never break generation.
     """
+    try:
+        candidates = [os.path.join(os.getcwd(), "config", "settings.json")]
+        try:
+            module_dir = os.path.dirname(os.path.abspath(__file__))
+            local_ai_root = os.path.dirname(os.path.dirname(module_dir))  # generate_tool -> tools -> local_ai
+            candidates.append(os.path.join(local_ai_root, "CLIENT", "config", "settings.json"))
+        except Exception:
+            pass
+
+        path = None
+        for candidate in candidates:
+            try:
+                if os.path.isfile(candidate):
+                    path = candidate
+                    break
+            except Exception:
+                continue
+        if path is None:
+            return ""
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        tier = str(data.get("image_gen_tier") or "").strip().lower() if isinstance(data, dict) else ""
+        return tier if tier in ("auto", "high", "mid", "low") else ""
+    except Exception as e:
+        logger.debug(f"  Could not read CLIENT settings.json image_gen_tier: {e}")
+        return ""
+
+
+def _tier_override() -> str:
+    """The user's pinned model line, or 'auto'.
+
+    Priority (2026-10-03): the per-machine pick from the CLIENT Settings UI Runtime tab
+    ('image_gen_tier' in <CLIENT>/config/settings.json - read live on every call) wins;
+    when that key is absent/invalid it falls back to IMAGE_GEN_TIER_OVERRIDE, delivered
+    by the SERVER via config_constants (injected exec global on the CLIENT, imported
+    directly in local dev). Anything that is not a known tier name is treated as 'auto'
+    with a warning - a typo must never break generation.
+    """
+    client_tier = _client_image_gen_tier()
+    if client_tier:
+        return client_tier
+
     v = globals().get("IMAGE_GEN_TIER_OVERRIDE")  # noqa: B009 - injected symbol by design
     if isinstance(v, str):
         t = v.strip().lower()

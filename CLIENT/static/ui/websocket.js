@@ -160,6 +160,16 @@ function appendGeneratedImage(data) {
     }
 }
 
+// (2026-08-23 session stats) format seconds as MM:SS (or H:MM:SS past one hour).
+function formatSessionTime(totalSec) {
+    if (!isFinite(totalSec) || totalSec < 0) return '0:00';
+    const s = Math.floor(totalSec % 60);
+    const m = Math.floor((totalSec / 60) % 60);
+    const h = Math.floor(totalSec / 3600);
+    const mm = (h > 0 ? String(m).padStart(2, '0') : String(m));
+    return (h > 0 ? h + ':' : '') + mm + ':' + String(s).padStart(2, '0');
+}
+
 /**
  * Update the history status bar with token statistics.
  * Called from WebSocket token_stats messages (live, per-user, after every chat_stream call).
@@ -230,6 +240,21 @@ function updateHistoryStatusBar(data) {
         }
     }
     
+// (2026-08-23 session stats) cumulative generated tokens + active session times.
+    // Shown in BOTH normal and agentic mode whenever the server includes the fields:
+    //   📝 N.NK gen  - total provider output for THIS turn (loop 1 -> current, summed live)
+    //   ⏱ MM:SS     - ACTIVE time of this turn so far (approval/consent menu pauses excluded)
+    //   ↩ MM:SS last- settled duration of the PREVIOUS completed turn ("last session")
+    if (data.session_generated_tokens !== undefined && data.session_generated_tokens > 0) {
+        text += ` | 📝 ${(data.session_generated_tokens / 1024).toFixed(1)}K gen`;
+    }
+    if (data.session_elapsed_sec !== undefined && data.session_elapsed_sec >= 0) {
+        text += ` | ⏱ ${formatSessionTime(data.session_elapsed_sec)}`;
+    }
+    if (data.last_session_sec !== undefined && data.last_session_sec > 0) {
+        text += ` | ↩ ${formatSessionTime(data.last_session_sec)} last`;
+    }
+
     // Update the display
     el.textContent = text;
     

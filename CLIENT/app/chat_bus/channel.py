@@ -42,6 +42,11 @@ class ChatChannel:
         self.stop_event = asyncio.Event()
         self.task: "asyncio.Task | None" = None          # running generation task (if any)
         self.queue_position: int = 0                      # >1 while waiting in the SERVER queue
+        # (2026-08-23 session stats) duration of the PREVIOUS completed turn, in ACTIVE seconds
+        # (approval-menu pauses excluded - see logic.base_mode.SessionTimer). The next turn's
+        # config reads this so the UI status bar can show "last session" time. 0 = no previous
+        # turn yet on this channel.
+        self.last_session_duration_sec: float = 0.0
         self._answer_persisted = False          # (2026-09-09 audit) set by the turn runner after
                                                # the final answer hits the DB -> stale buffer tail may be dropped
 

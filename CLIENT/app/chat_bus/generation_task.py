@@ -30,6 +30,7 @@ from app.websocket.message_types import (
 from app.websocket.db_ops import save_assistant_message, _sync_conversation_working_root
 from app.db_manager import get_db_connection, close_db_connection
 from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_config
+from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
 from logic.normal import get_ollama_status_message
 import app.prompts as _app_prompts
 from utils.retry import retry_with_backoff
@@ -119,142 +120,168 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     # python_exec in this new loop asks the user again. The channel holds it for the
     # whole turn; ToolExecutor picks it up via conversation_id -> ChatBus.
     channel.exec_approval = ExecApprovalState()
-    conversation_history = list(prepared.get("history", []))
-    final_response = ""
 
-    async def _dispatch_ai_request():
-        """Dispatch to the correct mode (extracted verbatim from the old handler)."""
-        if agent_mode:
-            agent_config = build_agentic_config(
+    # (2026-08-23 session stats) FRESH active-time timer for THIS turn. It counts only
+    # real working time: ToolExecutor pauses it while a user-decision menu is open
+    # (python_exec approval / URL consent), so the reported 'current session time' in
+    # the UI never includes the minutes the AI spends waiting for a click. The previous
+    # turn's settled duration rides along as last_session_sec for the 'last session' stat.
+    session_timer = SessionTimer()
+    session_timer.start()
+    last_session_sec = float(getattr(channel, "last_session_duration_sec", 0.0) or 0.0)
+
+    try:
+        conversation_history = list(prepared.get("history", []))
+        final_response = ""
+
+        async def _dispatch_ai_request():
+            """Dispatch to the correct mode (extracted verbatim from the old handler)."""
+            if agent_mode:
+                agent_config = build_agentic_config(
+                    model=model,
+                    enable_thinking=enable_thinking,
+                    provider=provider,
+                    agent_name=agent.get_name(),
+                    dna_content=dna_content,
+                    generic_tool_prompt=_app_prompts.GENERIC_TOOL_PROMPT,
+                    image_data=image_data,
+                    image_paths=image_paths,
+                    file_contents=file_contents,
+                    websocket=sink,  # streamed content captured for partial persistence + routed via channel
+                    conversation_id=conv_id,
+                    stop_event=stop_event,
+                    tool_orchestrator=tool_orchestrator,
+                    ollama_tools=ollama_tools,
+                    api_key=ws_key,
+                    session_timer=session_timer,
+                    last_session_sec=last_session_sec,
+                )
+                result = await agentic_mode(agent_config, conversation_history, enhanced_message, media_files)
+                conversation_history.append({"role": "assistant", "content": result})
+                return result
+
+            normal_config = build_normal_config(
                 model=model,
                 enable_thinking=enable_thinking,
                 provider=provider,
                 agent_name=agent.get_name(),
                 dna_content=dna_content,
-                generic_tool_prompt=_app_prompts.GENERIC_TOOL_PROMPT,
                 image_data=image_data,
                 image_paths=image_paths,
                 file_contents=file_contents,
-                websocket=sink,  # streamed content captured for partial persistence + routed via channel
+                websocket=sink,
                 conversation_id=conv_id,
                 stop_event=stop_event,
-                tool_orchestrator=tool_orchestrator,
-                ollama_tools=ollama_tools,
-                api_key=ws_key,
+                session_timer=session_timer,
+                last_session_sec=last_session_sec,
             )
-            result = await agentic_mode(agent_config, conversation_history, enhanced_message, media_files)
-            conversation_history.append({"role": "assistant", "content": result})
-            return result
+            return await normal_mode(normal_config, conversation_history, enhanced_message, media_files)
 
-        normal_config = build_normal_config(
-            model=model,
-            enable_thinking=enable_thinking,
-            provider=provider,
-            agent_name=agent.get_name(),
-            dna_content=dna_content,
-            image_data=image_data,
-            image_paths=image_paths,
-            file_contents=file_contents,
-            websocket=sink,
-            conversation_id=conv_id,
-            stop_event=stop_event,
-        )
-        return await normal_mode(normal_config, conversation_history, enhanced_message, media_files)
+        try:
+            final_response, succeeded = await retry_with_backoff(
+                func=_dispatch_ai_request,
+                websocket=sink,
+                stop_event=stop_event,
+                provider_name=provider.name,
+                auto_restart_provider=provider,
+                recovery_callback=send_recovery_warning,
+            )
 
-    try:
-        final_response, succeeded = await retry_with_backoff(
-            func=_dispatch_ai_request,
-            websocket=sink,
-            stop_event=stop_event,
-            provider_name=provider.name,
-            auto_restart_provider=provider,
-            recovery_callback=send_recovery_warning,
-        )
-
-        # --- user cancellation: graceful stop (same behaviour as the old handler) ---
-        if _is_user_cancelled(final_response):
-            logger.info(f"[CHATBUS] User cancelled generation for conv={conv_id}")
-            try:
-                await send_system(sink, "Generation stopped. Type new message to continue.")
-            except Exception:
-                pass
-            final_response = ""
-
-            # FIX (2026-08-30): keep the working_root sync on cancel (carried over verbatim)
-            try:
-                conn = get_db_connection()
+            # --- user cancellation: graceful stop (same behaviour as the old handler) ---
+            if _is_user_cancelled(final_response):
+                logger.info(f"[CHATBUS] User cancelled generation for conv={conv_id}")
                 try:
-                    _sync_conversation_working_root(conn.cursor(), conv_id)
-                    conn.commit()
-                finally:
-                    close_db_connection(conn)
-            except Exception as sync_err:
-                logger.warning(f"[CHATBUS] working_root sync after cancel failed: {sync_err}")
+                    await send_system(sink, "Generation stopped. Type new message to continue.")
+                except Exception:
+                    pass
+                final_response = ""
 
-            channel.set_status(ChannelStatus.CANCELLED)
+                # FIX (2026-08-30): keep the working_root sync on cancel (carried over verbatim)
+                try:
+                    conn = get_db_connection()
+                    try:
+                        _sync_conversation_working_root(conn.cursor(), conv_id)
+                        conn.commit()
+                    finally:
+                        close_db_connection(conn)
+                except Exception as sync_err:
+                    logger.warning(f"[CHATBUS] working_root sync after cancel failed: {sync_err}")
+
+                channel.set_status(ChannelStatus.CANCELLED)
+                try:
+                    await send_done(sink)
+                except Exception:
+                    pass
+                return
+
+            if not succeeded:
+                # All retries exhausted or non-retryable error (NOT user cancellation)
+                logger.error(f"[CHATBUS] Provider error after retries for conv={conv_id}: {final_response}")
+                status_msg = get_ollama_status_message(final_response, model, api_timeout, provider=provider)
+                try:
+                    await send_provider_error(sink, type(final_response).__name__, str(final_response))
+                    await send_execution_fail(sink, -1, type(final_response).__name__, str(final_response))
+                except Exception as e:
+                    logger.debug(f"[CHATBUS] error frames not delivered (UI may be gone): {e}")
+                final_response = status_msg
+                channel.set_status(ChannelStatus.ERROR)
+
+        except Exception as e:
+            logger.error(f"[CHATBUS] Unexpected error for conv={conv_id}: {e}", exc_info=True)
+            final_response = f"**Unexpected Error**\n\nAn unexpected error occurred: {str(e)}"
             try:
-                await send_done(sink)
+                await send_execution_fail(sink, -1, type(e).__name__, str(e))
             except Exception:
                 pass
-            return
-
-        if not succeeded:
-            # All retries exhausted or non-retryable error (NOT user cancellation)
-            logger.error(f"[CHATBUS] Provider error after retries for conv={conv_id}: {final_response}")
-            status_msg = get_ollama_status_message(final_response, model, api_timeout, provider=provider)
-            try:
-                await send_provider_error(sink, type(final_response).__name__, str(final_response))
-                await send_execution_fail(sink, -1, type(final_response).__name__, str(final_response))
-            except Exception as e:
-                logger.debug(f"[CHATBUS] error frames not delivered (UI may be gone): {e}")
-            final_response = status_msg
             channel.set_status(ChannelStatus.ERROR)
 
-    except Exception as e:
-        logger.error(f"[CHATBUS] Unexpected error for conv={conv_id}: {e}", exc_info=True)
-        final_response = f"**Unexpected Error**\n\nAn unexpected error occurred: {str(e)}"
+        # --- persist the assistant answer (the bus guarantees this even when nobody was looking) ---
+        if final_response and not stop_event.is_set():
+            try:
+                save_assistant_message(db_path, conv_id, final_response)
+                channel._answer_persisted = True  # (2026-09-09 audit) answer is now in the DB
+                agent.learn_lesson(
+                    f"Completed interaction: {user_msg[:50]}...",
+                    "Handled user request successfully",
+                )
+            except Exception as e:
+                logger.error(f"[CHATBUS] Failed to persist assistant message for conv={conv_id}: {e}")
+
+            # (2026-09-08 multi-chat UI fix): mark the persisted answer on the wire. A re-attaching
+            # client replays this frame BEFORE its replay_end marker, so it knows the streamed text
+            # of this turn is already in the DB history and must not be rendered again (no duplicate
+            # bubble) while still showing that a generation happened here.
+            try:
+                await sink.send_text(json.dumps({
+                    "type": "answer_persisted",
+                    "content_length": len(final_response),
+                }))
+            except Exception:
+                pass  # dead channel — the frame is buffered or dropped, never fatal
+
+        # --- search suggestion for plain (non-tool) queries, same as the old handler ---
+        if not requires_tools and not agent_mode:
+            try:
+                await send_search_web_suggestion(sink, user_msg, "Search same question on internet")
+            except Exception as ws_err:
+                logger.warning(f"[CHATBUS] search suggestion not delivered: {ws_err}")
+
+        channel.set_status(ChannelStatus.DONE)
         try:
-            await send_execution_fail(sink, -1, type(e).__name__, str(e))
+            await send_done(sink)
         except Exception:
             pass
-        channel.set_status(ChannelStatus.ERROR)
 
-    # --- persist the assistant answer (the bus guarantees this even when nobody was looking) ---
-    if final_response and not stop_event.is_set():
+    finally:
+        # (2026-08-23 session stats) settle this turn's ACTIVE time on EVERY exit path
+        # (done / cancel / error - the early 'return' after a user Stop included) and hand it
+        # to the NEXT turn as 'last session'. Paused time (approval menus) is excluded.
         try:
-            save_assistant_message(db_path, conv_id, final_response)
-            channel._answer_persisted = True  # (2026-09-09 audit) answer is now in the DB
-            agent.learn_lesson(
-                f"Completed interaction: {user_msg[:50]}...",
-                "Handled user request successfully",
-            )
-        except Exception as e:
-            logger.error(f"[CHATBUS] Failed to persist assistant message for conv={conv_id}: {e}")
-
-        # (2026-09-08 multi-chat UI fix): mark the persisted answer on the wire. A re-attaching
-        # client replays this frame BEFORE its replay_end marker, so it knows the streamed text
-        # of this turn is already in the DB history and must not be rendered again (no duplicate
-        # bubble) while still showing that a generation happened here.
-        try:
-            await sink.send_text(json.dumps({
-                "type": "answer_persisted",
-                "content_length": len(final_response),
-            }))
-        except Exception:
-            pass  # dead channel — the frame is buffered or dropped, never fatal
-
-    # --- search suggestion for plain (non-tool) queries, same as the old handler ---
-    if not requires_tools and not agent_mode:
-        try:
-            await send_search_web_suggestion(sink, user_msg, "Search same question on internet")
-        except Exception as ws_err:
-            logger.warning(f"[CHATBUS] search suggestion not delivered: {ws_err}")
-
-    channel.set_status(ChannelStatus.DONE)
-    try:
-        await send_done(sink)
-    except Exception:
-        pass
+            _elapsed = float(session_timer.stop())
+            channel.last_session_duration_sec = round(_elapsed, 1)
+            logger.info(f"[CHATBUS] Session time settled for conv={conv_id}: {_elapsed:.1f}s active (approval-menu pauses excluded)")
+        except Exception as e:  # pragma: no cover - stats must never break the turn
+            logger.debug(f"Session timer settle failed for conv={conv_id}: {e}")
 
 
 def register_stop_event(stop_events: dict, conv_id: str, event: asyncio.Event) -> None:

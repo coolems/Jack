@@ -5,13 +5,17 @@
  *   manual (default) -> the dialog waits until the user decides (original behavior, no timeout).
  *   auto             -> the dialog still opens, but after N seconds it approves itself and runs.
  *
+ * Second setting (2026-10-03): IMAGE GENERATOR TIER for generate_image().
+ *   auto (default) -> classify by probed GPU VRAM (high / mid / low).
+ *   high | mid | low -> pin that model line (falls back to the auto tier if the card can't afford it).
+ *
  * Values live in settings.json via GET/POST /api/settings (keys: python_exec_auto_approve,
- * python_exec_auto_approve_seconds) and are read LIVE by websocket.js when a new approval
- * card appears - so a save applies to the very next dialog without any restart.
+ * python_exec_auto_approve_seconds, image_gen_tier) and are read LIVE by websocket.js /
+ * generate_image() on every use - so a save applies immediately without any restart.
  */
 
 // Live view of the saved values; websocket.js reads this when rendering an approval card.
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5 };
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto' };
 
 function _runtimeStatusEl() {
     return document.getElementById('runtimeSettingsStatus');
@@ -43,8 +47,22 @@ async function loadRuntimeSettings() {
     const secInput = document.getElementById('pyExecAutoSeconds');
     if (secInput) secInput.value = String(seconds);
 
+    // (2026-10-03) Image Generator Tier radios - restore the saved pick.
+    const tier = (data && ['auto', 'high', 'mid', 'low'].indexOf(data.image_gen_tier) !== -1)
+        ? data.image_gen_tier : 'auto';
+    setImageGenTierRadio(tier);
+
     toggleRuntimeSecondsGroup(mode === 'auto');
-    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds };
+    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier };
+}
+
+// (2026-10-03) Check the ONE image-tier radio matching *tier* and uncheck the rest, so the
+// UI can never show two tiers selected at once. Returns nothing; safe if pane not in DOM.
+function setImageGenTierRadio(tier) {
+    ['imgTierAuto', 'imgTierHigh', 'imgTierMid', 'imgTierLow'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.checked = (el.value === tier);
+    });
 }
 
 function toggleRuntimeSecondsGroup(show) {
@@ -60,6 +78,13 @@ async function saveRuntimeSettings() {
 
     const mode = (autoRadio.checked) ? 'auto' : 'manual';
     toggleRuntimeSecondsGroup(mode === 'auto');
+
+    // (2026-10-03) Read the selected image-gen tier radio ('auto' when none is checked).
+    let imageGenTier = 'auto';
+    ['imgTierAuto', 'imgTierHigh', 'imgTierMid', 'imgTierLow'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el && el.checked) imageGenTier = el.value;
+    });
 
     // Clamp the seconds value to 1..3600 before sending.
     const secInput = document.getElementById('pyExecAutoSeconds');
@@ -82,16 +107,19 @@ async function saveRuntimeSettings() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 python_exec_auto_approve: mode,
-                python_exec_auto_approve_seconds: seconds
+                python_exec_auto_approve_seconds: seconds,
+                image_gen_tier: imageGenTier
             })
         });
 
         if (response.ok) {
-            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds };
+            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier };
             if (statusEl) {
-                statusEl.textContent = (mode === 'auto')
-                    ? ('\u2713 Saved. python_exec dialogs will auto-approve after ' + seconds + 's.')
-                    : '\u2713 Saved. python_exec dialogs wait for your decision.';
+                statusEl.textContent = '\u2713 Saved. ' +
+                    ((mode === 'auto')
+                        ? ('python_exec dialogs will auto-approve after ' + seconds + 's.')
+                        : 'python_exec dialogs wait for your decision.') +
+                    ' Image tier: ' + imageGenTier;
                 statusEl.style.color = 'var(--success)';
             }
         } else {

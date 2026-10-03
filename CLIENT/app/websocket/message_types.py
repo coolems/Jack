@@ -170,6 +170,16 @@ async def send_token_stats(websocket: Any, stats: TokenStats, loop_stats: Option
         if loop_stats:
             payload["loop_tools"] = loop_stats.get("loop_tools", 0)
             payload["loop_no_tools"] = loop_stats.get("loop_no_tools", 0)
+
+            # (2026-08-23 session stats) additive per-turn fields, present in BOTH modes:
+            #   session_generated_tokens - cumulative provider output for this whole turn
+            #                              (agentic: summed over all loops; normal: the one call)
+            #   session_elapsed_sec      - ACTIVE seconds of this turn so far (user-decision
+            #                              menu pauses excluded, see logic.base_mode.SessionTimer)
+            #   last_session_sec         - settled duration of the PREVIOUS completed turn
+            for _key in ("session_generated_tokens", "session_elapsed_sec", "last_session_sec"):
+                if loop_stats.get(_key) is not None:
+                    payload[_key] = loop_stats[_key]
         # Send to WebSocket
         await websocket.send_text(json.dumps(payload))
         

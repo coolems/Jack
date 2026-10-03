@@ -114,6 +114,8 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
             runtime = get_runtime_settings()
             settings["python_exec_auto_approve"] = runtime["python_exec_auto_approve"]
             settings["python_exec_auto_approve_seconds"] = runtime["python_exec_auto_approve_seconds"]
+            # (2026-10-03) Runtime tab: image generator tier selector.
+            settings["image_gen_tier"] = runtime["image_gen_tier"]
 
             # Return both values:
             # 1. current_server_address - the value active at startup (module-level cached)
@@ -142,6 +144,11 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
         Runtime tab fields (2026-10-02):
           - python_exec_auto_approve: "manual" (default) | "auto" — python_exec dialog behavior
           - python_exec_auto_approve_seconds: int 1..3600 — auto-approve delay in seconds
+
+        Runtime tab fields (2026-10-03):
+          - image_gen_tier: "auto" (default) | "high" | "mid" | "low" — which model line
+            generate_image() uses. 'auto' = classify by probed GPU VRAM; the others pin that
+            tier (same semantics as SERVER config IMAGE_GEN_TIER_OVERRIDE, but per-machine).
 
         NOTE: Changes to server address(es) apply from the NEXT connection onward
         (the failover list is re-read on every connect); boot-time display values
@@ -205,6 +212,15 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
                 if not (1 <= sec <= 3600):
                     return JSONResponse(status_code=400, content={"detail": "python_exec_auto_approve_seconds must be between 1 and 3600"})
                 current["python_exec_auto_approve_seconds"] = sec
+
+            # (2026-10-03) Runtime tab field: image generator tier. generate_image reads this
+            # LIVE from settings.json on every run, so the pick applies to the very next
+            # generation - no restart needed.
+            if "image_gen_tier" in data:
+                tier = str(data["image_gen_tier"]).strip().lower()
+                if tier not in ("auto", "high", "mid", "low"):
+                    return JSONResponse(status_code=400, content={"detail": "image_gen_tier must be one of 'auto', 'high', 'mid', 'low'"})
+                current["image_gen_tier"] = tier
 
             if "relay_port" in data:
                 raw_port = str(data.get("relay_port") or "").strip()

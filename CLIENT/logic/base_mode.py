@@ -14,12 +14,77 @@ import logging
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 import asyncio
+import time
 
 from config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE
 from app.providers import BaseProvider
 
 
 logger = logging.getLogger("COOLEMS.Logic.Base")
+
+
+class SessionTimer:
+    """Active-time timer for one chat turn (2026-08-23 session stats).
+
+    Measures how long a generation turn has actually been WORKING. Time spent waiting
+    on user-decision menus (python_exec approval cards, URL consent dialogs) is PAUSED
+    and does not count toward the reported session duration - that is what makes
+    "current session time" honest: a 20-minute approval wait adds zero seconds to the
+    number shown in the UI status bar.
+
+    Usage (single event loop, no locks needed):
+        t = SessionTimer()          # created at turn start (generation_task)
+        t.start()                   # begin counting active time
+        ...
+        t.pause()                   # before awaiting a user decision
+        decision = await wait_for_decision(rid)
+        t.resume()                  # after the decision arrived
+
+    pause()/resume() are idempotent: only the first pause stops the clock, and resume
+    is a no-op until start() has been called. elapsed() never goes negative.
+    """
+
+    def __init__(self):
+        self._ever_started = False  # True once start() ran at least once
+        self._started_at = None     # monotonic ts of the current running segment
+        self._accumulated = 0.0     # seconds accumulated over finished segments
+        self._running = False
+
+    def start(self) -> None:
+        """Begin counting active time (idempotent while already running)."""
+        if not self._running:
+            self._ever_started = True
+            self._started_at = time.monotonic()
+            self._running = True
+
+    def pause(self) -> None:
+        """Stop counting (e.g. a user decision menu is open). Idempotent."""
+        if self._running and self._started_at is not None:
+            self._accumulated += time.monotonic() - self._started_at
+            self._started_at = None
+            self._running = False
+
+    def resume(self) -> None:
+        """Resume counting after a pause. No-op before start()."""
+        if self._ever_started and not self._running:
+            self._started_at = time.monotonic()
+            self._running = True
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def elapsed(self) -> float:
+        """Total ACTIVE seconds so far (paused time excluded). Never negative."""
+        total = self._accumulated
+        if self._running and self._started_at is not None:
+            total += time.monotonic() - self._started_at
+        return max(0.0, total)
+
+    def stop(self) -> float:
+        """Finalize the timer; returns the final elapsed seconds."""
+        self.pause()
+        return self.elapsed()
 
 
 @dataclass
@@ -42,6 +107,12 @@ class BaseModeConfig:
     conversation_id: str = None
     stop_event: Optional[asyncio.Event] = None
 
+    # (2026-08-23 session stats) active-time timer for THIS turn. Created by the chat bus
+    # before dispatch; paused while user-decision menus are open so reported session time
+    # only counts real working time. last_session_sec carries the PREVIOUS turn's duration
+    # (read from the channel) so the UI can show "last session" alongside the live one.
+    session_timer: Optional["SessionTimer"] = None
+    last_session_sec: float = 0.0
 
 def build_messages(
     system_prompt: str,
@@ -222,3 +293,26 @@ def check_stop_event(config: Any) -> Optional[str]:
     if config.stop_event and config.stop_event.is_set():
         return "Generation stopped by user."
     return None
+
+
+def build_session_stats(config: Any) -> Dict[str, float]:
+    """Collect the per-turn session stats for the UI status bar (2026-08-23).
+
+    Returns a dict with:
+        - "session_elapsed_sec": active seconds of the CURRENT turn so far
+          (approval-menu pauses excluded; 0.0 when no timer was attached)
+        - "last_session_sec": duration of the PREVIOUS completed turn
+
+    The cumulative generated-token counter lives in react_loop.py (agentic mode,
+    where multiple provider calls happen per turn); normal mode reports its single
+    call's tokens directly from TokenStats.
+    """
+    elapsed = 0.0
+    timer = getattr(config, "session_timer", None)
+    if timer is not None:
+        try:
+            elapsed = max(0.0, timer.elapsed())
+        except Exception:
+            elapsed = 0.0
+    last_sec = float(getattr(config, "last_session_sec", 0.0) or 0.0)
+    return {"session_elapsed_sec": round(elapsed, 1), "last_session_sec": round(last_sec, 1)}

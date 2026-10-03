@@ -146,12 +146,13 @@ RULES:
         logger.error("[AGENTIC.DEBUG] CRITICAL BUG: tool_orchestrator is None! Will cause execute_tool error.")
     
     tool_executor = ToolExecutor(
-        config.tool_orchestrator,
-        None,
-        provider=config.provider,
-        current_model=config.model,
-        api_key=config.api_key
-    )
+            config.tool_orchestrator,
+            None,
+            provider=config.provider,
+            current_model=config.model,
+            api_key=config.api_key,
+            session_timer=getattr(config, "session_timer", None),  # (2026-08-23) pause clock while user menus are open
+        )
 
     # Run the ReAct loop
     try:

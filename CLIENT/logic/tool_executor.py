@@ -188,12 +188,14 @@ class ToolExecutor:
     def __init__(self, orchestrator: Any, lesson_manager: Any = None,
                  provider: BaseProvider = None,
                  current_model: str = MODEL_NAME,
-                 api_key: str = None):
+                 api_key: str = None,
+                 session_timer=None):  # (2026-08-23) active-time timer; paused while user menus are open
         self.orchestrator = orchestrator
         self.lesson_manager = lesson_manager
         self.provider = provider
         self.current_model = current_model
         self.api_key = api_key
+        self.session_timer = session_timer  # may be None (non-bus / legacy callers)
 
         # Detect if orchestrator uses async execute_tool (RemoteToolOrchestrator)
         self._is_async_orchestrator = inspect.iscoroutinefunction(
@@ -471,7 +473,16 @@ class ToolExecutor:
             logger.warning(f"[EXEC-APPROVAL] approval frame not delivered ({e}) - failing closed")
             return False
 
-        decision = await state.wait_for_decision(request_id)
+        # (2026-08-23 session stats) a user-decision menu is now open: PAUSE the
+        # session clock so the wait for this click never counts as working time.
+        if self.session_timer is not None:
+            self.session_timer.pause()
+        try:
+            decision = await state.wait_for_decision(request_id)
+        finally:
+            # (2026-08-23 session stats) the menu is closed again - resume counting.
+            if self.session_timer is not None:
+                self.session_timer.resume()
 
         if decision == "run_all":
             # Grant is now active for the REST OF THIS RUN (state.auto_run_all=True).
@@ -556,7 +567,16 @@ class ToolExecutor:
             logger.warning(f"[URL-CONSENT] approval frame not delivered ({e}) - failing closed")
             return False
 
-        decision = await state.wait_for_decision(request_id)
+        # (2026-08-23 session stats) a user-decision menu is now open: PAUSE the
+        # session clock so the wait for this click never counts as working time.
+        if self.session_timer is not None:
+            self.session_timer.pause()
+        try:
+            decision = await state.wait_for_decision(request_id)
+        finally:
+            # (2026-08-23 session stats) the menu is closed again - resume counting.
+            if self.session_timer is not None:
+                self.session_timer.resume()
 
         if decision == "run_all":
             grant_url(url)  # this one now, plus auto-consent for the rest of the run

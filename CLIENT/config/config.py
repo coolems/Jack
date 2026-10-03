@@ -423,20 +423,26 @@ def get_web_relay_address() -> Optional[str]:
 #       auto   -> the dialog still opens, but after python_exec_auto_approve_seconds
 #                 it approves itself and the code runs without a click.
 #   python_exec_auto_approve_seconds    : int 1..3600 (default 5)
-# Both are read LIVE from settings.json on every access so a save in the UI applies
-# to the very next dialog - no restart needed.
+#   image_gen_tier                      : "auto" | "high" | "mid" | "low"  (2026-10-03, default "auto")
+#       Which model line generate_image() uses. 'auto' = classify by probed GPU VRAM;
+#       the other three pin that tier (same semantics as SERVER config IMAGE_GEN_TIER_OVERRIDE).
+# All are read LIVE from settings.json on every access so a save in the UI applies to the
+# very next dialog / image generation - no restart needed.
 
 PYTHON_EXEC_AUTO_APPROVE_DEFAULT = "manual"
 PYTHON_EXEC_AUTO_APPROVE_SECONDS_DEFAULT = 5
+IMAGE_GEN_TIER_DEFAULT = "auto"
+IMAGE_GEN_TIERS = ("auto", "high", "mid", "low")
 
 
 def get_runtime_settings() -> dict:
     """Return the live Runtime-tab values from settings.json with safe defaults.
 
-    Always returns exactly two keys so callers never hit a missing key:
+    Always returns exactly three keys so callers never hit a missing key:
       {"python_exec_auto_approve": "manual"|"auto",
-       "python_exec_auto_approve_seconds": int}
-    Bad/corrupt stored values fall back to the defaults (fail-closed = manual).
+       "python_exec_auto_approve_seconds": int,
+       "image_gen_tier": "auto"|"high"|"mid"|"low"}
+    Bad/corrupt stored values fall back to the defaults (fail-closed = manual/auto).
     """
     settings = _load_settings()
 
@@ -451,9 +457,14 @@ def get_runtime_settings() -> dict:
     if not (1 <= seconds <= 3600):
         seconds = PYTHON_EXEC_AUTO_APPROVE_SECONDS_DEFAULT
 
+    tier = str(settings.get("image_gen_tier") or "").strip().lower()
+    if tier not in IMAGE_GEN_TIERS:
+        tier = IMAGE_GEN_TIER_DEFAULT
+
     return {
         "python_exec_auto_approve": mode,
         "python_exec_auto_approve_seconds": seconds,
+        "image_gen_tier": tier,
     }
 
 # Kept for backward compatibility: the module-level constant mirrors settings.json at

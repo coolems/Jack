@@ -39,6 +39,8 @@ def build_normal_config(
     websocket: Any = None,
     conversation_id: str | None = None,
     stop_event: Optional[asyncio.Event] = None,
+    session_timer=None,   # (2026-08-23) active-time timer for this turn (pauses on user menus)
+    last_session_sec: float = 0.0,  # previous turn's duration for the UI "last session" stat
 ) -> "NormalModeConfig":
     """
     Build a NormalModeConfig with defaults from config.py.
@@ -75,6 +77,8 @@ def build_normal_config(
         websocket=websocket,
         conversation_id=conversation_id,
         stop_event=stop_event,
+        session_timer=session_timer,
+        last_session_sec=last_session_sec,
     )
 
 
@@ -96,6 +100,8 @@ def build_agentic_config(
     tool_orchestrator: Any = None,
     ollama_tools: List[Dict] | None = None,
     api_key: str | None = None,
+    session_timer=None,   # (2026-08-23) active-time timer for this turn (pauses on user menus)
+    last_session_sec: float = 0.0,  # previous turn's duration for the UI "last session" stat
 ) -> "AgenticModeConfig":
     """
     Build an AgenticModeConfig with defaults from config.py.
@@ -140,4 +146,6 @@ def build_agentic_config(
         tool_orchestrator=tool_orchestrator,
         ollama_tools=ollama_tools or [],
         api_key=api_key,
+        session_timer=session_timer,
+        last_session_sec=last_session_sec,
     )
