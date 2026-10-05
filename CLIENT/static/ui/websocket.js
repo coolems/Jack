@@ -557,7 +557,18 @@ function handleWebSocketMessage(data) {
 // submits 'allow' itself - exactly what a manual click would do. URL-consent cards are
 // NEVER auto-approved (they need an explicit decision). Manual mode = no timer at all,
 // the original "wait until the user chooses" behavior.
-function startExecAutoApproveCountdown(card, data) {
+/**
+ * (2026-10-05 first-run fix) ASYNC on purpose: before reading the saved mode it awaits
+ * ensureRuntimeSettingsLoaded() so COOLEMS.runtimeSettings already holds the real
+ * settings.json values - even when this is the very first python_exec dialog of a fresh
+ * page load and the user never opened Settings > Runtime. Without that await the card
+ * would render with the placeholder 'manual' default and show "no time limit".
+ */
+async function startExecAutoApproveCountdown(card, data) {
+    // Saved settings first (one /api/settings sync per page session; instant afterwards).
+    if (typeof ensureRuntimeSettingsLoaded === 'function') {
+        try { await ensureRuntimeSettingsLoaded(); } catch (e) { /* keep current values */ }
+    }
     const rt = (typeof COOLEMS !== 'undefined' && COOLEMS.runtimeSettings) ? COOLEMS.runtimeSettings : null;
     if (!rt || rt.mode !== 'auto') return;                       // manual mode: wait forever
     if (typeof data.title === 'string' && data.title.length > 0) return; // URL consent: never auto
@@ -643,7 +654,8 @@ function appendExecApprovalCard(data) {
     card.appendChild(body);
     container.appendChild(card);
 
-    startExecAutoApproveCountdown(card, data); // Runtime tab: auto-approve timer (no-op in manual mode)
+    void startExecAutoApproveCountdown(card, data).catch(e => console.error('[EXEC-APPROVAL] auto-approve countdown failed:', e));
+    // ^ now async (2026-10-05): awaits the saved runtime settings before starting the timer
 
     if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
 }

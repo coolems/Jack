@@ -21,50 +21,91 @@
  */
 
 // Live view of the saved values; websocket.js reads this when rendering an approval card.
+// (2026-10-05 first-run fix) The defaults below are only a PLACEHOLDER for the first moments
+// after page load - refreshRuntimeSettingsFromApi() replaces them with the real settings.json
+// values, and websocket.js awaits that sync (ensureRuntimeSettingsLoaded) BEFORE deciding
+// whether to start an auto-approve countdown. Before this fix COOLEMS.runtimeSettings stayed
+// 'manual' until the user opened Settings > Runtime, so on a fresh page load the FIRST
+// python_exec dialog showed "no time limit" even when settings.json said "auto after 5s".
 COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400 };
+COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
+let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
-/** Fill the Runtime tab UI from a /api/settings response (called on every openSettings). */
-async function loadRuntimeSettings() {
-    const manualRadio = document.getElementById('pyExecManual');
-    const autoRadio = document.getElementById('pyExecAuto');
-    if (!manualRadio || !autoRadio) return; // pane not in DOM yet
-
+/**
+ * Sync COOLEMS.runtimeSettings from GET /api/settings and, when the Runtime tab is open,
+ * fill its controls. Returns true on a successful backend read, false otherwise - on
+ * failure the LAST KNOWN GOOD values are kept (never reset to defaults mid-session).
+ */
+async function refreshRuntimeSettingsFromApi() {
     let data = null;
     try {
         const r = await fetch('/api/settings');
-        if (r.ok) data = await r.json();
+        if (!r.ok) return false;
+        data = await r.json();
     } catch (e) {
         console.error('[RUNTIME SETTINGS] Failed to load:', e);
+        return false;
     }
 
+    // python_exec dialog behavior (manual | auto + delay in seconds).
     const mode = (data && data.python_exec_auto_approve === 'auto') ? 'auto' : 'manual';
     let seconds = 5;
     if (data && Number.isFinite(parseInt(data.python_exec_auto_approve_seconds, 10))) {
         seconds = parseInt(data.python_exec_auto_approve_seconds, 10);
     }
 
-    manualRadio.checked = (mode === 'manual');
-    autoRadio.checked = (mode === 'auto');
-
-    const secInput = document.getElementById('pyExecAutoSeconds');
-    if (secInput) secInput.value = String(seconds);
-
-
-    // (2026-10-03) Image Generator radios - restore the saved pick.
+    // Image Generator values (tier + default resolution).
     const tier = (data && ['auto', 'high', 'mid', 'low'].indexOf(data.image_gen_tier) !== -1)
         ? data.image_gen_tier : 'auto';
-    setImageGenTierRadio(tier);
-
-    // (2026-10-03) Default resolution inputs - restore the saved values (defaults 600x400).
     let imgWidth = _coerceImageGenSize(data && data.image_gen_width, 600);
     let imgHeight = _coerceImageGenSize(data && data.image_gen_height, 400);
-    const widthInput = document.getElementById('imgGenWidth');
-    const heightInput = document.getElementById('imgGenHeight');
-    if (widthInput) widthInput.value = String(imgWidth);
-    if (heightInput) heightInput.value = String(imgHeight);
 
-    toggleRuntimeSecondsGroup(mode === 'auto');
     COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight };
+    COOLEMS._runtimeSettingsLoaded = true;
+
+    // Fill the Runtime tab controls when they are in the DOM (openSettings path).
+    const manualRadio = document.getElementById('pyExecManual');
+    const autoRadio = document.getElementById('pyExecAuto');
+    if (manualRadio && autoRadio) {
+        manualRadio.checked = (mode === 'manual');
+        autoRadio.checked = (mode === 'auto');
+
+        const secInput = document.getElementById('pyExecAutoSeconds');
+        if (secInput) secInput.value = String(seconds);
+
+        setImageGenTierRadio(tier);
+
+        const widthInput = document.getElementById('imgGenWidth');
+        const heightInput = document.getElementById('imgGenHeight');
+        if (widthInput) widthInput.value = String(imgWidth);
+        if (heightInput) heightInput.value = String(imgHeight);
+
+        toggleRuntimeSecondsGroup(mode === 'auto');
+    }
+
+    return true;
+}
+
+/**
+ * (2026-10-05 first-run fix) Await ONE successful /api/settings sync before the caller reads
+ * COOLEMS.runtimeSettings. websocket.js calls this right before rendering a python_exec
+ * approval card, so the SAVED auto-approve setting is honored even on the very first dialog
+ * of a fresh page load - without the user ever opening Settings > Runtime. Concurrent
+ * callers share one in-flight fetch; after success it resolves immediately (no re-fetch).
+ */
+function ensureRuntimeSettingsLoaded() {
+    if (COOLEMS._runtimeSettingsLoaded) return Promise.resolve(true);
+    if (!_runtimeRefreshInFlight) {
+        _runtimeRefreshInFlight = refreshRuntimeSettingsFromApi().finally(() => {
+            _runtimeRefreshInFlight = null;   // cleared on settle -> a failed sync is retried next time
+        });
+    }
+    return _runtimeRefreshInFlight;
+}
+
+/** Fill the Runtime tab UI from a /api/settings response (called on every openSettings). */
+async function loadRuntimeSettings() {
+    await refreshRuntimeSettingsFromApi(); // openSettings path: always take the freshest values from the backend
 }
 
 // (2026-10-03) Check the ONE image-tier radio matching *tier* and uncheck the rest, so the
