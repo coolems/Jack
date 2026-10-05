@@ -50,6 +50,9 @@ from app.keys import (
     get_key_role,
 )
 
+# SECURITY (2026-10-05): the ONLY endpoints that accept short-lived media tokens (?t=).
+from app.media_tokens import MEDIA_TOKEN_PATHS
+
 logger = logging.getLogger("COOLEMS")
 
 # ---------- Public paths (no authentication required) ----------
@@ -204,6 +207,11 @@ class APIMiddleware:
       - Authorization: Bearer <key>
       - X-API-Key: <key>
 
+    Sub-resource exception (SECURITY 2026-10-05): /api/download and /api/open also accept
+    ?t=<media token> - a short-lived, single-use, path-bound capability minted by the UI
+    through POST /api/auth/media-token AFTER header auth passed. <img>/<iframe>/anchor tags
+    cannot send headers; before this fix they carried the master key as ?api_key=...&email=...
+    which exposed it in browser history, Referer headers and logging hops.
     Skips public paths (/, /static/). Everything else (/api/*, /files/*) requires auth.
     Reloads keys from file on every request.
     """
@@ -310,20 +318,39 @@ class APIMiddleware:
             if api_key_header:
                 key = api_key_header.strip()
 
-        # SECURITY (2026-08-25): query-param fallback for sub-resource URLs. <img>/<iframe>
-        # tags cannot carry custom headers, so the UI passes ?api_key=...&email=... on
-        # /api/download. The key is still validated locally via is_api_key_valid() below -
-        # this only changes HOW it arrives, never WHETHER it's checked (same mechanism as
-        # the existing WebSocket auth).
+        # SECURITY (2026-10-05): ?api_key=... is NO LONGER accepted anywhere. Sub-resource
+        # URLs (<img>/<iframe>/anchor cannot send headers) now use short-lived, single-use,
+        # path-bound capability tokens: the UI proves itself once via normal header auth
+        # (POST /api/auth/media-token) and passes ?t=<token> on MEDIA_TOKEN_PATHS. The
+        # master key therefore never appears in any URL - not in browser history, Referer
+        # headers or logging hops (it used to, as ?api_key=... since 2026-08-25).
+        # Token hits EARLY-RETURN below: they must never reach is_api_key_valid() /
+        # note_presented_key(), so a leaked token can't fill the outbound-provider runtime
+        # credential store.
         if not key:
             try:
                 from urllib.parse import parse_qs as _parse_qs
                 qs = dict(_parse_qs(scope.get("query_string", b"").decode("utf-8", errors="replace")))
-                qkey = (qs.get("api_key") or [""])[0].strip()
-                if qkey:
-                    key = qkey
+                media_token = (qs.get("t") or [""])[0].strip()
+                qpath = (qs.get("path") or qs.get("filename") or [""])[0]
             except Exception:
-                pass
+                media_token, qpath = "", ""
+
+            if media_token and path in MEDIA_TOKEN_PATHS:
+                from app.media_tokens import consume_token as _consume_media_token
+                if _consume_media_token(media_token, qpath):
+                    logger.info(f"Media token accepted for {qpath}")
+                    # Sentinel state only - the real key never enters request.state here.
+                    _set_request_state(
+                        scope,
+                        api_key="<media-token>",   # sentinel: display/logging, never a credential
+                        api_role="user",           # media surfaces are read-only; SERVER enforces more
+                        allowed_tools=None,
+                        allowed_models=None,
+                    )
+                    await self.app(scope, receive, send)
+                    return
+                logger.warning(f"Media token rejected for {path} (expired/exhausted/path mismatch)")
 
         if not key:
             response = JSONResponse(
@@ -352,15 +379,11 @@ class APIMiddleware:
         except Exception:
             pass
     
-        # Email is MANDATORY for all authenticated requests (header or ?email= query param)
+        # Email is MANDATORY for all authenticated requests - header ONLY.
+        # SECURITY (2026-10-05): the ?email= query fallback was removed together with
+        # ?api_key=: sub-resource URLs now use media tokens (?t=) which carry no identity,
+        # so nothing legitimate needs email in a URL anymore.
         email_header = headers.get(b"x-user-email", b"").decode("utf-8", errors="replace")
-        if not email_header:
-            try:
-                from urllib.parse import parse_qs as _parse_qs2
-                qs2 = dict(_parse_qs2(scope.get("query_string", b"").decode("utf-8", errors="replace")))
-                email_header = (qs2.get("email") or [""])[0].strip()
-            except Exception:
-                pass
         if not email_header:
             response = JSONResponse(
                 status_code=HTTP_401_UNAUTHORIZED,

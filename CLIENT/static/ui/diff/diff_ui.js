@@ -372,7 +372,7 @@ class DiffUI {
         // preview panel (the 'close sometimes reopens' bug).
         if (window.PreviewManager && window.PreviewManager.isDiffMode) {
             this.isActive = false;
-            window.PreviewManager.exitDiffMode();
+            void window.PreviewManager.exitDiffMode().catch(e => console.error('[Preview] exitDiffMode failed:', e));
             return;
         }
         this.isActive = false;

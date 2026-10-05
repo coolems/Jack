@@ -46,7 +46,7 @@ Object.assign(PreviewManager.prototype, {
                 this.currentContent = null;
                 this.originalContent = null;
                 this.currentHighlighter = null;
-                this.renderPreview(null, filename);
+                await this.renderPreview(null, filename);  // 2026-10-03: async now (media token)
                 this.updatePreviewUI(filename);
                 this.showPreviewPanel();
                 this.isDiffMode = false;
@@ -80,7 +80,7 @@ Object.assign(PreviewManager.prototype, {
                 this.currentHighlighter = window.SyntaxRegistry.getHighlighterForFile(filename);
             }
             
-            this.renderPreview(this.currentContent, filename);
+            await this.renderPreview(this.currentContent, filename);  // 2026-10-03: async now (media token)
             this.updatePreviewUI(filename);
             this.showPreviewPanel();
             this.isDiffMode = false;

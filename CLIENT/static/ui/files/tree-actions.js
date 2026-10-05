@@ -43,38 +43,43 @@ function updateDownloadSelectedBtn() {
 
 
 
-function downloadSingle(path) {
+async function downloadSingle(path) {
 
-    const a = document.createElement('a');
+    // SECURITY fix 2026-10-05: anchor clicks cannot send headers, so the old code put the
+    // master key + email in ?api_key=...&email=. Now we mint a short-lived, single-use,
+    // path-bound media token via header auth (window.getMediaToken) and pass ?t=<token> -
+    // the master key no longer appears in any URL. The 2026-08-23 mandatory-email gap is
+    // gone with it: tokens carry no identity, so no ?email= round-trip either.
 
-    const apiKey = localStorage.getItem('coolems_api_key') || '';
+    try {
 
-    const separator = path ? '&' : '?';
+        if (typeof window.getMediaToken !== 'function') throw new Error('media token helper unavailable');
 
-    const url = new URL('/api/download', window.location.origin);
+        const token = await window.getMediaToken(path);
 
-    url.searchParams.set('path', path);
+        const url = new URL('/api/download', window.location.origin);
 
-    if (apiKey) url.searchParams.set('api_key', apiKey);
+        url.searchParams.set('path', path);
 
-    // FIX (2026-08-23): the auth middleware REQUIRES an email on every
-    // authenticated request. Anchor clicks cannot send headers, so it must
-    // travel as ?email= - without it /api/download answered 401 and Chrome
-    // showed a 'download.json File wasn't available' error page instead of
-    // saving the file. Same pattern openFileTree() already uses.
-    const email = localStorage.getItem('coolems_email') || '';
+        url.searchParams.set('t', token);
 
-    if (email) url.searchParams.set('email', email);
+        const a = document.createElement('a');
 
-    a.href = url.toString();
+        a.href = url.toString();
 
-    a.download = '';
+        a.download = '';
 
-    document.body.appendChild(a);
+        document.body.appendChild(a);
 
-    a.click();
+        a.click();
 
-    document.body.removeChild(a);
+        document.body.removeChild(a);
+
+    } catch (e) {
+
+        showNotification('Download failed: ' + e.message, 'error');
+
+    }
 
 }
 
@@ -168,25 +173,36 @@ async function deleteItem(path) {
 
 
 
-function openFileTree(path) {
+async function openFileTree(path) {
 
-        // SECURITY (2026-08-25): /files/ is no longer public - open through the
+    // SECURITY (2026-08-25): /files/ is no longer public - open through the
+    // authenticated download endpoint with inline=true so the browser renders it.
+    // SECURITY fix 2026-10-05: short-lived path-bound media token (?t=) instead of
+    // ?api_key=...&email= - the master key no longer appears in any URL.
 
-        // authenticated download endpoint with inline=true so the browser renders it.
+    try {
 
-        const apiKey = localStorage.getItem('coolems_api_key') || '';
+        if (typeof window.getMediaToken !== 'function') throw new Error('media token helper unavailable');
 
-        const email = localStorage.getItem('coolems_email') || '';
+        const token = await window.getMediaToken(path);
 
-        let fileUrl = '/api/download?path=' + encodeURIComponent(path) + '&inline=true';
+        const url = new URL('/api/download', window.location.origin);
 
-        if (apiKey) fileUrl += '&api_key=' + encodeURIComponent(apiKey);
+        url.searchParams.set('path', path);
 
-        if (email) fileUrl += '&email=' + encodeURIComponent(email);
+        url.searchParams.set('inline', 'true');
 
-        window.open(fileUrl, '_blank');
+        url.searchParams.set('t', token);
+
+        window.open(url.toString(), '_blank');
+
+    } catch (e) {
+
+        showNotification('Could not open file: ' + e.message, 'error');
 
     }
+
+}
 
 
 
@@ -234,47 +250,70 @@ function refreshFiles() {
 
 
 
-function openFile(filename) { 
+async function openFile(filename) {
 
-    const apiKey = localStorage.getItem('coolems_api_key') || '';
+    // BUG FIX (2026-10-05): the old URL /api/open/<filename> matched NO server route
+    // (only GET /api/open?path=... exists in read_endpoints.py) - every click 404'd.
+    // SECURITY fix 2026-10-05: media token (?t=) instead of ?api_key=...
 
-    const url = new URL(`/api/open/${encodeURIComponent(filename)}`, window.location.origin);
+    try {
 
-    if (apiKey) url.searchParams.set('api_key', apiKey);
+        if (typeof window.getMediaToken !== 'function') throw new Error('media token helper unavailable');
 
-    window.open(url.toString(), '_blank'); 
+        const token = await window.getMediaToken(filename);
+
+        const url = new URL('/api/open', window.location.origin);
+
+        url.searchParams.set('path', filename);
+
+        url.searchParams.set('t', token);
+
+        window.open(url.toString(), '_blank');
+
+    } catch (e) {
+
+        showNotification('Could not open file: ' + e.message, 'error');
+
+    }
 
 }
 
 
 
-function downloadFile(filename) { 
+async function downloadFile(filename) {
 
-    const a = document.createElement('a'); 
+    // SECURITY fix 2026-10-05: media token (?t=) instead of ?api_key=...&email=
+    // (the mandatory-email gap from the 2026-08-23 fix is gone - tokens carry no identity).
 
-    const apiKey = localStorage.getItem('coolems_api_key') || '';
+    try {
 
-    const url = new URL('/api/download', window.location.origin);
+        if (typeof window.getMediaToken !== 'function') throw new Error('media token helper unavailable');
 
-    url.searchParams.set('path', filename);
+        const token = await window.getMediaToken(filename);
 
-    if (apiKey) url.searchParams.set('api_key', apiKey);
+        const url = new URL('/api/download', window.location.origin);
 
-    // FIX (2026-08-23): same mandatory-email gap as downloadSingle -
-    // without ?email= the middleware rejects with 401.
-    const email = localStorage.getItem('coolems_email') || '';
+        url.searchParams.set('path', filename);
 
-    if (email) url.searchParams.set('email', email);
+        url.searchParams.set('t', token);
 
-    a.href = url.toString(); 
+        const a = document.createElement('a');
 
-    a.download = filename; 
+        a.href = url.toString();
 
-    document.body.appendChild(a); 
+        a.download = filename;
 
-    a.click(); 
+        document.body.appendChild(a);
 
-    document.body.removeChild(a); 
+        a.click();
+
+        document.body.removeChild(a);
+
+    } catch (e) {
+
+        showNotification('Download failed: ' + e.message, 'error');
+
+    }
 
 }
 

@@ -203,7 +203,8 @@ async function loadConversation(id) {
 
         // Append all messages from server data
         for (const msg of data.messages) {
-            appendMessage(msg.role, msg.content, false, msg.media_urls, msg.file_contents);
+            // SECURITY fix 2026-10-05: appendMessage is async (media tokens are minted via header auth).
+            await appendMessage(msg.role, msg.content, false, msg.media_urls, msg.file_contents);
         }
 
         log('Loaded', data.messages.length, 'messages for conversation', newConvId);
@@ -420,7 +421,8 @@ async function editAndResend(messageIndex, newContent) {
         }
 
         for (const msg of data.messages) {
-            appendMessage(msg.role, msg.content, false, msg.media_urls, msg.file_contents);
+            // SECURITY fix 2026-10-05: appendMessage is async (media tokens are minted via header auth).
+            await appendMessage(msg.role, msg.content, false, msg.media_urls, msg.file_contents);
         }
 
         // Update UI settings
@@ -436,7 +438,7 @@ async function editAndResend(messageIndex, newContent) {
         COOLEMS._baselineAssistant = _countAssistantBubbles();
 
         // STEP 5: Append the edited user message as a NEW message
-        appendMessage('user', newContent, false);
+        await appendMessage('user', newContent, false);
         log('[EDIT] Appended edited message to UI');
 
         // STEP 6: Make sure this chat's pooled socket is open (it was never closed — ensure() reuses it)

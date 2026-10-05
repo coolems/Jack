@@ -138,7 +138,8 @@ textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.val
             hideScrollIndicator();
             
             const fileContentsForDisplay = COOLEMS.selectedFiles.filter(f => f.content).map(f => ({ filename: f.name, content: f.content, type: 'text' }));
-            appendMessage('user', message, false, COOLEMS.selectedFiles.map(f => f.url), fileContentsForDisplay);
+            // SECURITY fix 2026-10-05: appendMessage is async (media tokens minted via header auth).
+            await appendMessage('user', message, false, COOLEMS.selectedFiles.map(f => f.url), fileContentsForDisplay);
             input.value = ''; input.style.height = 'auto'; document.getElementById('filePreview').innerHTML = '';
             // (2026-09-08 multi-chat UI fix) a user send is always LIVE: leave replay mode so
             // the incoming stream of THIS turn renders normally.
@@ -179,32 +180,46 @@ textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.val
 
 
         // Build an authenticated inline URL for a saved media file (working_root-relative).
-            // Mirrors the pattern used by preview.js: key/email travel as query params because
-            // <img> tags cannot send auth headers; server validates them either way.
-            function buildMediaUrl(url) {
-                const rel = String(url || '').replace(/^\/files\//, '');
-                let src = '/api/download?path=' + encodeURIComponent(rel) + '&inline=true';
-                const apiKey = localStorage.getItem('coolems_api_key') || '';
-                const email = localStorage.getItem('coolems_email') || '';
-                if (apiKey) src += '&api_key=' + encodeURIComponent(apiKey);
-                if (email) src += '&email=' + encodeURIComponent(email);
-                return src;
+        // SECURITY fix 2026-10-05: <img> tags cannot send auth headers, so instead of the
+        // master key travelling as ?api_key=...&email=..., we mint a short-lived, single-use,
+        // path-bound media token via header auth (window.getMediaToken, from the preview
+        // module) and pass ?t=<token>. The master key no longer appears in ANY URL.
+        async function buildMediaUrl(url) {
+            const rel = String(url || '').replace(/^\/files\//, '');
+            if (typeof window.getMediaToken !== 'function') throw new Error('media token helper unavailable');
+            const token = await window.getMediaToken(rel);
+            return '/api/download?path=' + encodeURIComponent(rel) + '&inline=true&t=' + encodeURIComponent(token);
+        }
+
+        // Click handler: open the full-size image in a new tab.
+        // SECURITY fix 2026-10-05: mint a FRESH token on click - tokens are short-lived
+        // (60 s TTL, max 3 uses) and the <img> only stores data-path, never a URL.
+        async function openMessageImage(img) {
+            try {
+                // The <img> carries data-path (working_root-relative, /files/-stripped by buildMediaUrl callers).
+                const rel = String(img.dataset.path || '').replace(/^\/files\//, '');
+                const token = await window.getMediaToken(rel);
+                const u = new URL('/api/download', window.location.origin);
+                u.searchParams.set('path', rel);
+                u.searchParams.set('inline', 'true');
+                u.searchParams.set('t', token);
+                window.open(u.toString(), '_blank');
+            } catch (e) {
+                showNotification('Could not open image', 'error');
             }
+        }
 
-            // Click handler: open the full-size image in a new tab.
-            function openMessageImage(img) { window.open(img.getAttribute('data-full-src'), '_blank'); }
-
-            // Fallback when the file is missing/unauthorized: degrade to a small file tag
-            // (path+name visible) instead of a broken-image icon.
-            function messageImageError(img) {
-                const div = document.createElement('div');
-                div.className = 'file-tag';
-                div.textContent = '\u{1F5BC}\uFE0F ' + (img.getAttribute('data-name') || 'image');
-                if (img.parentNode) img.parentNode.replaceChild(div, img);
-            }
+        // Fallback when the file is missing/unauthorized: degrade to a small file tag
+        // (path+name visible) instead of a broken-image icon.
+        function messageImageError(img) {
+            const div = document.createElement('div');
+            div.className = 'file-tag';
+            div.textContent = '\u{1F5BC}\uFE0F ' + (img.getAttribute('data-name') || 'image');
+            if (img.parentNode) img.parentNode.replaceChild(div, img);
+        }
 
 
-            function appendMessage(role, content, streaming = false, mediaUrls = [], fileContents = null) {
+        async function appendMessage(role, content, streaming = false, mediaUrls = [], fileContents = null) {
             const container = document.getElementById('chatContainer');
             const welcome = document.getElementById('welcome');
             if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
@@ -213,16 +228,24 @@ textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.val
             if (streaming) messageDiv.dataset.streaming = 'true';
             messageDiv.dataset.messageIndex = container.querySelectorAll('.message').length;
             let mediaHtml = '';
+
+            // BUG FIX (2026-10-03): declared OUTSIDE the if-block on purpose - the
+            // token loop below runs unconditionally, so a text-only message (empty
+            // mediaUrls) used to hit `imageEntries is not defined` and killed the whole
+            // workspace load ('Failed to load workspace').
+            const imageEntries = [];
             if (mediaUrls && mediaUrls.length > 0) {
                 // SECURITY (2026-08-25): /files/ is no longer public - render message images
-                // through the authenticated download endpoint (same pattern as preview.js).
-                // History stores "/files/<name>" or plain "<name>"; both normalize to a
-                // working_root-relative path for ?path=...
+                // through the authenticated download endpoint. History stores "/files/<name>"
+                // or plain "<name>"; both normalize to a working_root-relative path.
+                // SECURITY fix 2026-10-05: tokens are minted ASYNC (header auth) - the <img>
+                // starts with an empty src and gets its ?t= URL once the token arrives. No
+                // credential ever sits in the DOM or in a static URL.
                 mediaHtml = '<div class="message-images">' + mediaUrls.map(url => {
                     const name = String(url).split('/').pop();
                     if (url.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
-                        const src = buildMediaUrl(url);
-                        return '<img src="' + src + '" data-full-src="' + src + '" data-name="' + escapeHtml(name) + '" class="message-image" onclick="openMessageImage(this)" onerror="messageImageError(this)" title="Click to open full size">';
+                        imageEntries.push({ rel: url, name });
+                        return '<img data-path="' + escapeHtml(url) + '" data-name="' + escapeHtml(name) + '" class="message-image message-image-pending" onclick="openMessageImage(this)" onerror="messageImageError(this)" title="Click to open full size">';
                     }
                     return '<div class="file-tag">' + escapeHtml(name) + '</div>';
                 }).join('') + '</div>';
@@ -242,8 +265,24 @@ textarea.focus(); textarea.setSelectionRange(textarea.value.length, textarea.val
             const editIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg> Edit';
             messageDiv.innerHTML = '<div class="avatar">' + (role === 'user' ? 'U' : 'AI') + '</div><div class="message-content">' + (role === 'user' ? '<button class="edit-btn copy-top" onclick="startEditMessage(this)">' + editIcon + '</button>' : '') + '<button class="copy-btn copy-top" onclick="copyMessage(this)">' + copyIcon + '</button>' + mediaHtml + fileContentHtml + '<div class="content-text">' + contentHtml + '</div>' + (role === 'user' ? '<button class="edit-btn copy-bottom" onclick="startEditMessage(this)">' + editIcon + '</button>' : '') + '<button class="copy-btn copy-bottom" onclick="copyMessage(this)">' + copyIcon + '</button></div>';
             messageDiv.querySelector('.message-content').setAttribute('data-raw-content', content);
+
+            // SECURITY fix 2026-10-05: mint media tokens now (appendMessage is async; every
+            // caller already awaits or fire-and-forgets it). Each <img> gets its ?t= URL as
+            // soon as its token arrives - no master key in any URL, ever.
+            if (imageEntries.length > 0) {
+                await Promise.all(imageEntries.map(async entry => {
+                    const imgEl = messageDiv.querySelector('img.message-image-pending[data-path="' + CSS.escape(entry.rel) + '"]');
+                    if (!imgEl) return;
+                    try {
+                        const token = await window.getMediaToken(String(entry.rel).replace(/^\/files\//, ''));
+                        imgEl.src = '/api/download?path=' + encodeURIComponent(String(entry.rel).replace(/^\/files\//, '')) + '&inline=true&t=' + encodeURIComponent(token);
+                    } catch (e) {
+                        messageImageError(imgEl);
+                    }
+                }));
+            }
             container.appendChild(messageDiv);
-            
+
             if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) { scrollToBottom(); }
         }
 

@@ -36,6 +36,13 @@ import time
 
 logger = logging.getLogger("COOLEMS.Provider.Bootstrap")
 
+# (2026-10-05 KEY-DRIFT DX) One-shot diagnostics for the auth-rejection loop: how many
+# consecutive attempts were rejected by SERVER with an *auth* error, and whether the
+# actionable "key mismatch" hint has already been printed. Reset on every successful
+# delivery so a later re-auth failure starts counting fresh.
+_auth_reject_count = 0
+_key_mismatch_hint_printed = False
+
 
 def _target_display() -> str:
     """Human-readable target for log messages (shows the full failover order)."""
@@ -65,6 +72,29 @@ def _classify_failure(e: Exception) -> tuple[str, str]:
     if isinstance(e, OSError):
         return "warning", f"{name}: {e}"
     return "warning", f"{name}: {e}"
+
+
+def _classify_auth_failure(auth_resp) -> str:
+    """Map a non-auth_ok SERVER response to a short failure class (2026-10-05 KEY-DRIFT DX).
+
+    'auth_rejected'  - SERVER refused the presented key ("Authentication failed or no
+                       valid profile"): the CLIENT is presenting a key that does not match
+                       config/.api_keys.json on the SERVER, OR it has no key at all (setup
+                       mode) and nothing will ever succeed until one is configured.
+    'protocol'       - explicit protocol version mismatch (fatal - retrying never helps).
+    'other'          - anything else (empty-key error frames, malformed responses...).
+
+    The class drives the wait-loop diagnostics: 3 consecutive 'auth_rejected' attempts
+    print ONE actionable key-mismatch hint instead of an identical ERROR line forever.
+    """
+    if not isinstance(auth_resp, dict):
+        return "other"
+    msg = str(auth_resp.get("message", ""))
+    if "Authentication failed or no valid profile" in msg:
+        return "auth_rejected"
+    if "Protocol version mismatch" in msg:
+        return "protocol"
+    return "other"
 
 
 async def _bootstrap_fetch_once() -> dict | None:
@@ -186,6 +216,11 @@ async def _bootstrap_fetch_once() -> dict | None:
             auth_raw = await asyncio.wait_for(ws.recv(), timeout=WS_HANDSHAKE_TIMEOUT)
             auth_resp = json.loads(auth_raw)
             if not isinstance(auth_resp, dict) or auth_resp.get("type") != "auth_ok":
+                # (2026-10-05 KEY-DRIFT DX): record the failure class so the wait loop can
+                # tell "SERVER is up but rejects our key" apart from "still booting".
+                global _auth_reject_count, _key_mismatch_hint_printed
+                if _classify_auth_failure(auth_resp) == "auth_rejected":
+                    _auth_reject_count += 1
                 logger.error(f"[BOOTSTRAP] Auth failed: {auth_resp!r}")
                 return None
             _check_protocol(auth_resp, "bootstrap")
@@ -268,6 +303,26 @@ async def bootstrap_framework() -> dict | None:
     target = _target_display()
     logger.info(f"[BOOTSTRAP] Waiting for COOLEMS SERVER at {target} to deliver tools/DNA (budget: {int(budget)}s)")
 
+    # One-time startup diagnostic (2026-10-05 KEY-DRIFT DX): show WHICH outbound key will be
+    # presented so "SERVER rejects auth" is diagnosable from the CLIENT log alone - no key
+    # material ever printed, only a fingerprint + source. Setup mode says it plainly: nothing
+    # can authenticate until a key exists (UI Settings -> API key, or COOLEMS_CLIENT_API_KEY).
+    from app.keys import load_coolems_api_key as _lck
+    _key_now = _lck()
+    if not _key_now:
+        logger.warning(
+            "[BOOTSTRAP] No API key available for outbound auth - SETUP MODE. Every SERVER "
+            "auth attempt will be rejected until a key is configured (UI Settings -> API key, "
+            "or set COOLEMS_CLIENT_API_KEY on this machine)."
+        )
+    else:
+        import hashlib as _hashlib
+        logger.info(
+            f"[BOOTSTRAP] Outbound auth key ready (source=runtime/env; fingerprint "
+            f"{_hashlib.sha256(_key_now.encode()).hexdigest()[:12]}). If SERVER keeps rejecting it, "
+            "the presented key does not match config/.api_keys.json on the SERVER."
+        )
+
     deadline = time.monotonic() + budget
     delay = BOOTSTRAP_RETRY_INITIAL_DELAY
     attempt = 0
@@ -280,7 +335,11 @@ async def bootstrap_framework() -> dict | None:
         except ConnectionError as e:
             logger.error(f"[BOOTSTRAP] FATAL: {e}")
             raise
+        global _auth_reject_count, _key_mismatch_hint_printed
         if response is not None:
+            # Successful delivery - clear any accumulated auth-rejection diagnostics.
+            _auth_reject_count = 0
+            _key_mismatch_hint_printed = False
             waited = time.monotonic() - (deadline - budget)
             logger.info(
                 f"[BOOTSTRAP] SERVER delivered tools/DNA on attempt {attempt}"
@@ -292,6 +351,18 @@ async def bootstrap_framework() -> dict | None:
         remaining = deadline - now
         if remaining <= 0:
             break
+
+        # (2026-10-05 KEY-DRIFT DX): SERVER is UP but rejects our key -> after 3 consecutive
+        # auth rejections print ONE actionable hint (the retry loop itself stays - the user may
+        # fix the key while we wait, and we must succeed on that attempt).
+        if _auth_reject_count >= 3 and not _key_mismatch_hint_printed:
+            _key_mismatch_hint_printed = True
+            logger.warning(
+                f"[BOOTSTRAP] SERVER is reachable but has rejected our API key {_auth_reject_count}x in a row - "
+                "this will NOT fix itself by waiting. The CLIENT's outbound key (COOLEMS_CLIENT_API_KEY / UI) "
+                "does not match config/.api_keys.json on the SERVER. Fix: re-set your API key in UI Settings, or "
+                "run `setx COOLEMS_CLIENT_API_KEY <key-from-config\\.api_keys.json>` and restart this CLIENT."
+            )
 
         # Progress log on a steady cadence - the user must see "still waiting", not silence.
         if now >= next_progress_log or attempt == 1:

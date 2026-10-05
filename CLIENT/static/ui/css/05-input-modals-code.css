@@ -223,6 +223,8 @@ p:last-child { margin-bottom: 0; }
 .generated-image { max-width: 100%; border-radius: 8px; cursor: pointer; transition: transform 0.2s; }
 .generated-image:hover { transform: scale(1.02); }
 .generated-image-meta { font-size: 12px; color: var(--text-muted); margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
+/* Always-visible setup/tier report line under every generated image (2026-10-04): which tier served it, on which GPU, model line, and what was installed/downloaded this run - or the honest "already cached" note. */
+.generated-image-setup { font-family: monospace; font-size: 12px; color: var(--text-secondary, #9ca3af); margin-top: 8px; padding: 6px 10px; background: var(--bg-tertiary); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; line-height: 1.5; word-break: break-word; }
 
 /* ===== SCROLLBARS ===== */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

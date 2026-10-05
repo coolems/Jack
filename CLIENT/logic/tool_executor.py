@@ -167,13 +167,21 @@ def _extract_image_payloads(tool_result):
             continue
         if cand.get("status", "ok") != "ok":
             continue
-        payloads.append({
+        # (2026-10-04) Carry the per-run setup/tier report too: generate_image attaches a
+        # compact 'setup' dict to EVERY successful result (tier used, GPU, model line, what
+        # was installed/downloaded this run - or an honest "already cached" note). Without it
+        # in the frame, a fully-cached machine shows NO setup/tier info at all in chat.
+        payload = {
             "image_base64": b64,
             "filename": cand.get("filename"),
             "file_path": cand.get("file_path"),
             "width": cand.get("width"),
             "height": cand.get("height"),
-        })
+        }
+        for _k in ("setup", "pipeline", "model_id", "dtype"):
+            if isinstance(cand.get(_k), (dict, str)):
+                payload[_k] = cand.get(_k)
+        payloads.append(payload)
     return payloads
 
 
@@ -390,6 +398,11 @@ class ToolExecutor:
                         "filename": _img.get("filename"),
                         "width": _img.get("width"),
                         "height": _img.get("height"),
+                        # (2026-10-04) always-visible setup/tier report for the image card.
+                        "setup": _img.get("setup"),
+                        "pipeline": _img.get("pipeline"),
+                        "model_id": _img.get("model_id"),
+                        "dtype": _img.get("dtype"),
                     }))
                     logger.info(
                         f"[AGENTIC.DEBUG] ToolExecutor.execute() - Pushed 'image_generated' UI frame for '{tool_name}'"

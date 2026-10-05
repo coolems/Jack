@@ -5,10 +5,12 @@
  * Entry point of the group: preview-manager.js (loaded as <script type="module"> in index.html).
  */
 import { PreviewManager } from './preview-class.js';
-import { buildAuthedUrl } from './preview-utils.js';
+import { buildAuthedUrl } from './preview-utils.js?v=20261005a';
 
 Object.assign(PreviewManager.prototype, {
-    renderPreview(content, filename) {
+    // SECURITY fix 2026-10-05: ASYNC on purpose - the image/PDF branches must await
+    // buildAuthedUrl() (it mints a short-lived media token). Every caller already awaits.
+    async renderPreview(content, filename) {
         if (!this.previewContent) return;
         
         const schema = window.SchemaManager ? window.SchemaManager.getCurrentSchema() : null;
@@ -22,8 +24,10 @@ Object.assign(PreviewManager.prototype, {
         const isPdf = this.pdfExtensions.includes(ext);
         
         if (isPdf) {
-            // Render PDF as iframe - use the download endpoint with inline=true
-            const pdfUrl = buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}&inline=true`);
+            // Render PDF as iframe - use the download endpoint with inline=true.
+            // SECURITY fix 2026-10-05: ?t=<media token> instead of ?api_key=... (the master
+            // key no longer appears in any URL; see preview-utils.js buildAuthedUrl()).
+            const pdfUrl = await buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}&inline=true`);
             html = `
                 <div style="width:100%; height:100%; min-height: 600px;">
                     <iframe src="${pdfUrl}" 
@@ -33,9 +37,10 @@ Object.assign(PreviewManager.prototype, {
             `;
         } else if (isImage) {
             // SECURITY (2026-08-25): /files/ is no longer public - serve images through
-            // the authenticated download endpoint instead (<img> can't send headers,
-            // so key/email travel as query params; still validated server-side).
-            const imgUrl = buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}&inline=true`);
+            // the authenticated download endpoint. <img> can't send headers, so since 2026-10-05 it
+            // carries a short-lived path-bound media token (?t=) minted via header auth -
+            // never the master key (which used to travel as ?api_key=...&email=...).
+            const imgUrl = await buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}&inline=true`);
             html = `
                 <div style="width:100%; text-align:center; padding: 20px;">
                     <img src="${imgUrl}" alt="${this.escapeHtml(filename)}" 
@@ -98,7 +103,9 @@ Object.assign(PreviewManager.prototype, {
      */
     reapplyHighlighting() {
         if (this.currentContent && this.currentFile && !this.isDiffMode && !this.isEditing) {
-            this.renderPreview(this.currentContent, this.currentFile.name);
+            // 2026-10-03: renderPreview is async (media token mint); callers are sync
+            // event handlers -> fire-and-forget with a catch.
+            void this.renderPreview(this.currentContent, this.currentFile.name).catch(e => console.error('[Preview] reapplyHighlighting render failed:', e));
         }
     },
     

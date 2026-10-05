@@ -100,7 +100,7 @@ Object.assign(PreviewManager.prototype, {
     /**
      * Cancel edit mode
      */
-    cancelEdit() {
+    async cancelEdit() {  // 2026-10-03: async - renderPreview mints a media token
         this.isEditing = false;
         
         const editBtn = document.getElementById('previewEditBtn');
@@ -113,8 +113,8 @@ Object.assign(PreviewManager.prototype, {
         
         // Get current scroll position before rendering
         const scrollTop = this.previewContent.scrollTop;
-        
-        this.renderPreview(this.currentContent, this.currentFile.name);
+
+        await this.renderPreview(this.currentContent, this.currentFile.name);  // 2026-10-03: async now
         
         // Restore scroll position after render
         setTimeout(() => {
@@ -158,8 +158,8 @@ Object.assign(PreviewManager.prototype, {
             if (editBtn) editBtn.style.display = 'flex';
             if (saveBtn) saveBtn.style.display = 'none';
             if (cancelBtn) cancelBtn.style.display = 'none';
-            
-            this.renderPreview(this.currentContent, this.currentFile.name);
+
+            await this.renderPreview(this.currentContent, this.currentFile.name);  // 2026-10-03: async now
             
             // Restore scroll position
             setTimeout(() => {

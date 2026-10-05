@@ -84,6 +84,36 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
                 content={"detail": f"Failed to save API key: {str(e)}"}
             )
 
+    # ===== MEDIA TOKEN ENDPOINT (SECURITY 2026-10-05) =====
+    @router.post("/api/auth/media-token")
+    async def issue_media_token(data: Dict):
+        """Mint a short-lived, single-use media token for ONE exact file path.
+
+        Reached only AFTER the APIMiddleware passed header auth (X-API-Key + X-User-Email),
+        so it grants nothing beyond what the caller already proved. The returned ?t= token is
+        bound to that exact path, expires in 60 s and allows at most 3 uses - a leaked URL is
+        useless afterwards (replaces the old ?api_key=...&email=... sub-resource pattern).
+
+        Body: {"path": "<working_root-relative file path>"}
+        Returns: {"token": "...", "expires_in": 60}
+        """
+        try:
+            from app.media_tokens import issue_token as _issue_media_token, TTL_S
+
+            rel_path = str((data or {}).get("path") or "").strip()
+            if not rel_path:
+                return JSONResponse(status_code=400, content={"detail": "Missing path"})
+            token = _issue_media_token(rel_path)
+            # Log the PATH only - never the token (it is a credential).
+            logger.info(f"Media token issued for {rel_path} (ttl={int(TTL_S)}s, max 3 uses)")
+            return {"token": token, "expires_in": int(TTL_S)}
+        except Exception as e:
+            logger.error(f"Failed to issue media token: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"Failed to issue media token: {str(e)}"}
+            )
+
     # ===== SETTINGS ENDPOINT =====
     @router.get("/api/settings")
     async def get_settings():

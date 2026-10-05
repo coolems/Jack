@@ -88,7 +88,7 @@ Object.assign(PreviewManager.prototype, {
         // toast) and fed the stale-async-load race that re-opened the panel after Close.
         // Only bind as a fallback when DiffUI failed to load.
         if (exitBtn && !(window.DiffUI && window.DiffUI.initialized)) {
-            exitBtn.onclick = () => this.exitDiffMode();
+            exitBtn.onclick = () => void this.exitDiffMode().catch(e => console.error('[Preview] exitDiffMode failed:', e));
         }
         
         if (sideBySideBtn) sideBySideBtn.classList.add('active');
@@ -97,7 +97,7 @@ Object.assign(PreviewManager.prototype, {
     /**
      * Exit diff mode and return to single preview
      */
-    exitDiffMode() {
+    async exitDiffMode() {  // 2026-10-03: async - renderPreview mints a media token
         this.isDiffMode = false;
         
         const previewContent = document.getElementById('previewContent');
@@ -130,9 +130,9 @@ Object.assign(PreviewManager.prototype, {
         
         // Restore original preview
         if (this.currentFile) {
-            this.renderPreview(this.currentContent, this.currentFile.name);
+            await this.renderPreview(this.currentContent, this.currentFile.name);  // 2026-10-03: async now
         }
-        
+
         this.showNotification('Exited comparison mode', 'info');
     }
 });

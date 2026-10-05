@@ -117,20 +117,31 @@ class AuthGateway:
         if self._should_reload():
             self._reload_databases()
 
+        # (2026-10-05 DIAGNOSTICS): distinguish "no key sent at all" from "wrong key".
+        # The old single warning made credential-drift bugs (e.g. a stale
+        # COOLEMS_CLIENT_API_KEY after a key rotation) nearly impossible to diagnose -
+        # the log looked identical for an empty handshake and a rejected real key.
         if not api_key:
+            logger.warning("[AUTH] No API key provided in auth request")
             return None
 
         # Find user by API key
         user_entry = None
+        inactive_match = False
         for entry in self._api_keys_db:
-            if (isinstance(entry, dict)
-                and _keys_equal(entry.get("key"), api_key)
-                and entry.get("is_active", True)):
-                user_entry = entry
-                break
+            if isinstance(entry, dict) and _keys_equal(entry.get("key"), api_key):
+                if entry.get("is_active", True):
+                    user_entry = entry
+                    break
+                inactive_match = True
 
         if not user_entry:
-            logger.warning("[AUTH] Invalid or inactive API key provided")
+            # (2026-10-05 DIAGNOSTICS): name the exact failure mode - a key that EXISTS
+            # but is deactivated reads differently from one that matches no entry.
+            if inactive_match:
+                logger.warning("[AUTH] API key exists but its entry is marked inactive")
+            else:
+                logger.warning("[AUTH] Invalid or inactive API key provided")
             return None
 
         role = user_entry.get("role", "user")

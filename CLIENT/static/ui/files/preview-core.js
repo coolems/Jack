@@ -153,9 +153,26 @@ async function legacyPreviewFile(path) {
 
     if (isImageFile(filename)) {
 
-        const apiKey = localStorage.getItem('coolems_api_key') || '';
+        // SECURITY fix 2026-10-05: media token (?t=) via header auth - no key/email in URL.
 
-        const imgUrl = `/api/download?path=${encodeURIComponent(path)}${apiKey ? '&api_key=' + encodeURIComponent(apiKey) : ''}`;
+        // AUDIT FIX (2026-10-05): guarded like the text branch below - a failed mint must
+        // not leave the preview panel half-rendered with an unhandled promise rejection.
+
+        let imgUrl;
+
+        try {
+
+            const _imgToken = await window.getMediaToken(path);
+
+            imgUrl = `/api/download?path=${encodeURIComponent(path)}&t=${encodeURIComponent(_imgToken)}`;
+
+        } catch (e) {
+
+            contentEl.innerHTML = `<div class="preview-empty"><p style="color:var(--danger);">Failed to get media token for image</p></div>`;
+
+            return;
+
+        }
 
         contentEl.innerHTML = `
 
@@ -209,9 +226,26 @@ async function legacyPreviewFile(path) {
 
     if (isPdfFile(filename)) {
 
-        const apiKey = localStorage.getItem('coolems_api_key') || '';
+        // SECURITY fix 2026-10-05: media token (?t=) via header auth - no key/email in URL.
 
-        const pdfUrl = `/api/download?path=${encodeURIComponent(path)}&inline=true${apiKey ? '&api_key=' + encodeURIComponent(apiKey) : ''}`;
+        // AUDIT FIX (2026-10-05): guarded like the text branch below - a failed mint must
+        // not leave the preview panel half-rendered with an unhandled promise rejection.
+
+        let pdfUrl;
+
+        try {
+
+            const _pdfToken = await window.getMediaToken(path);
+
+            pdfUrl = `/api/download?path=${encodeURIComponent(path)}&inline=true&t=${encodeURIComponent(_pdfToken)}`;
+
+        } catch (e) {
+
+            contentEl.innerHTML = `<div class="preview-empty"><p style="color:var(--danger);">Failed to get media token for PDF</p></div>`;
+
+            return;
+
+        }
 
         contentEl.innerHTML = `
 

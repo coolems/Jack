@@ -121,13 +121,78 @@ function stopGeneration() {
         });
 }
     
-function appendGeneratedImage(data) {
+    // (2026-10-04) ALWAYS-VISIBLE SETUP/TIER REPORT: every generated-image card now carries a
+    // compact one-liner telling which TIER served the image, on which GPU, with which model
+    // line, and what was installed/downloaded THIS run - or an honest "already cached" note.
+    // The data arrives in the 'image_generated' frame (setup/pipeline/model_id/dtype keys),
+    // filled by CLIENT/logic/tool_executor.py from generate_image's per-run setup block. On a
+    // fully-cached machine nothing was downloaded, so instead of staying silent this line says
+    // exactly that - the process is visible even when it "passes in a blink".
+    function _formatSetupLine(data) {
+        if (!data || typeof data !== 'object') return '';
+        const s = (data.setup && typeof data.setup === 'object') ? data.setup : null;
+        const parts = [];
+
+        // Tier + how it was chosen.
+        let tierTxt = '';
+        if (s && s.tier) {
+            tierTxt = String(s.tier);
+            if (s.tier_note) tierTxt += ' (' + s.tier_note + ')';
+        } else if (data.pipeline || data.model_id) {
+            // No setup block (older server / error path): fall back to the top-level keys.
+            tierTxt = String(data.pipeline || '');
+        }
+        if (tierTxt) parts.push('\u2699\ufe0f tier ' + tierTxt);
+
+        // GPU.
+        if (s && s.gpu) parts.push(String(s.gpu));
+
+        // Model line: prefer the setup block, fall back to top-level model_id/dtype/pipeline.
+        const model = (s && s.model) || data.model_id;
+        const dtype = (s && s.dtype) || data.dtype;
+        if (model) parts.push(model + (dtype ? ' ' + dtype : ''));
+
+        // What was installed / downloaded THIS run (or the honest cached note).
+        if (s) {
+            if (s.note) {
+                parts.push(s.note);
+            } else {
+                const bits = [];
+                if (s.venv === 'created this run') bits.push('venv created');
+                else if (s.venv) bits.push(String(s.venv));
+                if (typeof s.pip_packages === 'number' && s.pip_packages > 0) {
+                    bits.push(s.pip_packages + ' pip package' + (s.pip_packages > 1 ? 's' : '') + ' installed');
+                }
+                const mf = String(s.model_files || '');
+                if (mf && mf !== '0') {
+                    let m = 'model files ' + mf;
+                    if (typeof s.model_bytes === 'number' && s.model_bytes > 0) m += ' (~' + _fmtGB(s.model_bytes) + ')';
+                    bits.push(m);
+                }
+                if (bits.length) parts.push(bits.join(' \u00b7 '));
+            }
+        }
+        return parts.join('  \u00b7  ');
+    }
+
+    // Small GB/MB formatter for the setup line.
+    function _fmtGB(bytes) {
+        const gb = bytes / (1024 * 1024 * 1024);
+        if (gb >= 1) return gb.toFixed(1).replace(/\.0$/, '') + ' GB';
+        const mb = bytes / (1024 * 1024);
+        return Math.round(mb) + ' MB';
+    }
+
+    function appendGeneratedImage(data) {
     const container = document.getElementById('chatContainer');
     const welcome = document.getElementById('welcome');
     if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
     
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message assistant';
+
+    // Always-visible setup/tier line (2026-10-04) - rendered for EVERY image, cached or not.
+    const setupLine = _formatSetupLine(data);
     
     const imageHtml = `
         <div class="avatar">AI</div>
@@ -141,6 +206,7 @@ function appendGeneratedImage(data) {
                      onclick="window.open('${data.file_path}')"
                      alt="${data.filename || 'Generated image'}"
                      title="Click to open file">
+                ${setupLine ? `<div class="generated-image-setup">${escapeHtml(setupLine)}</div>` : ''}
                 <div class="generated-image-meta">
                     <span>📁 ${data.file_path || 'Saved'}</span>
                     ${data.width && data.height ? `<span>📐 ${data.width}×${data.height}</span>` : ''}
@@ -363,7 +429,8 @@ function handleWebSocketMessage(data) {
             if (messageContent) messageContent.setAttribute('data-raw-content', COOLEMS.streamingBuffer);
         } else {
             COOLEMS.streamingBuffer = data.content;
-            appendMessage('assistant', COOLEMS.streamingBuffer, true);
+            // SECURITY fix 2026-10-05: appendMessage is async - fire-and-forget in this sync handler (DOM mutation happens synchronously inside).
+            void appendMessage('assistant', COOLEMS.streamingBuffer, true).catch(e => console.error('[WS] appendMessage failed:', e));
         }
 
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) {
@@ -392,7 +459,7 @@ function handleWebSocketMessage(data) {
                 }
             }
         } else {
-            appendMessage('assistant', '', true);
+            void appendMessage('assistant', '', true).catch(e => console.error('[WS] appendMessage failed:', e));
             lastMsg = chatContainer.lastElementChild;
             messageContent = lastMsg.querySelector('.message-content');
             thinkingBlock = document.createElement('div');
@@ -452,7 +519,7 @@ function handleWebSocketMessage(data) {
         // formatOllamaError() div card ('Provider Error' + generic 'restart the
         // provider' suggestions) looked like a broken widget and was useless for real
         // errors such as 'vision is not available (no mmproj)'. Plain text bubble = clean.
-        appendMessage('assistant', data.content, false);
+        void appendMessage('assistant', data.content, false).catch(e => console.error('[WS] appendMessage failed:', e));
         COOLEMS.isStreaming = false; setButtonState(false); COOLEMS.streamingBuffer = '';
         updateConnectionStatus('error', 'Provider Error');
     } else if (data.type === 'done') {

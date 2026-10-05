@@ -5,21 +5,22 @@
  * Entry point of the group: preview-manager.js (loaded as <script type="module"> in index.html).
  */
 import { PreviewManager } from './preview-class.js';
-import { buildAuthedUrl } from './preview-utils.js';
+import { buildAuthedUrl } from './preview-utils.js?v=20261005a';
 
 Object.assign(PreviewManager.prototype, {
     /**
      * Download current file
      */
-    download() {
-        if (this.currentFile && typeof window.downloadSingle === 'function') {
-            window.downloadSingle(this.currentFile.path);
-        } else if (this.currentFile) {
+    // SECURITY fix 2026-10-05: ASYNC - both branches mint a short-lived media token
+    // (?t=) first; the master key no longer appears in any URL (see preview-utils.js).
+    async download() {
+        if (!this.currentFile) return;
+        if (typeof window.downloadSingle === 'function') {
+            await window.downloadSingle(this.currentFile.path);
+        } else {
+            const dlUrl = await buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}`);
             const a = document.createElement('a');
-                // SECURITY (2026-08-25): /files/ is no longer public - use the
-                // authenticated download endpoint with key/email query params.
-                const dlUrl = buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}`);
-                a.href = dlUrl;
+            a.href = dlUrl;
             a.download = '';
             document.body.appendChild(a);
             a.click();

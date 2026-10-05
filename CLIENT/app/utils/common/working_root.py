@@ -9,12 +9,17 @@ CONTRACT (2026-08-19, moved to config/ on 2026-08-27):
   * There is exactly ONE in-memory variable holding the value per process:
     ``_WORKING_ROOT_CACHE``. No other module may keep its own copy of the
     working root - they must call :func:`get_working_root`.
-  * If ``.working_root.json`` is missing, empty, corrupt, or points at a
-    directory that no longer exists (e.g. the CLIENT tree was moved to another
-    machine), it is RE-CREATED on the spot with the current directory
-    (``os.getcwd()``) as its value and that value is used. There are NO other
-    fallbacks: nothing else in this codebase may substitute a different
-    directory for the working root.
+  * If ``.working_root.json`` is missing, empty or corrupt, it is RE-CREATED on
+    the spot with the current directory (``os.getcwd()``) as its value and that
+    value is used.
+  * If the persisted path NO LONGER EXISTS (the whole tree was moved/renamed -
+    e.g. ``C:\...\Jack`` became ``C:\...\Jack_bad``), the file is re-pointed at
+    THIS tree's own root instead: ``<repo>`` normally, or ``<repo>/CLIENT`` when
+    the saved value pointed at the CLIENT subtree itself (2026-10-03 fix - a blind
+    CWD fallback made moved installs silently work against the wrong folder until
+    someone noticed). A loud warning tells the user to re-select in the UI if they
+    meant a different folder. There are NO other fallbacks: nothing else in this
+    codebase may substitute a different directory for the working root.
 
 The file lives INSIDE THE CLIENT SUBTREE so the whole tree can be moved to
 other machines; SERVER code never hardcodes it - it resolves the same file.
@@ -80,17 +85,69 @@ def _load_persisted_working_root() -> str | None:
         return None
 
 
+
+def _read_saved_value() -> str | None:
+    """Return the raw persisted value even when the directory no longer exists.
+
+    Unlike :func:`_load_persisted_working_root` (which only accepts existing
+    directories), this returns whatever string the file holds - so a VANISHED path
+    can be distinguished from a missing/empty/corrupt file and fed to
+    :func:`_self_heal_candidate`. Returns ``None`` for every no-usable-value case.
+    Never raises.
+    """
+    try:
+        if not os.path.isfile(_WORKING_ROOT_FILE):
+            return None
+        with open(_WORKING_ROOT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        saved_path = (data.get("working_root") or "").strip()
+        return saved_path or None
+    except Exception:
+        return None
+
+
+def _self_heal_candidate(saved_path: str) -> str | None:
+    """Guess where a vanished working root moved to.
+
+    The tree is designed to be relocated (the config file travels with it), so when
+    the persisted path no longer exists the most likely cause is that the whole repo
+    was renamed/moved on this machine. Re-point at THIS tree's own root instead of
+    blindly falling back to CWD:
+
+      * saved value pointed at a repo root   -> ``<repo>`` (parent of CLIENT/)
+      * saved value pointed at CLIENT itself (basename 'client') -> ``<repo>/CLIENT``
+
+    Returns an existing directory different from *saved_path*, or ``None`` when no
+    sensible candidate exists. Never raises.
+    """
+    try:
+        saved = os.path.normpath(os.path.abspath(saved_path))
+        repo_root = os.path.dirname(_CLIENT_DIR)  # <repo> containing this CLIENT/
+        if os.path.basename(saved).lower() == "client":
+            candidate = os.path.join(repo_root, "CLIENT")
+        else:
+            candidate = repo_root
+        candidate = os.path.normpath(candidate)
+        if candidate != saved and os.path.isdir(candidate):
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
 def get_working_root() -> str:
     """Return the current working root (always from ``.working_root.json``).
 
     Resolution order:
       1. ``_WORKING_ROOT_CACHE`` when it still points at an existing directory.
       2. Re-read ``.working_root.json`` and use its value when valid.
-      3. Otherwise CREATE/REWRITE the file with the current directory
+      3. When the saved path VANISHED (tree moved/renamed): re-point the file at
+         this tree's own root via :func:`_self_heal_candidate` (loud warning).
+      4. Otherwise CREATE/REWRITE the file with the current directory
          (``os.getcwd()``) as its value and use that value.
 
-    The returned path is ALWAYS a real, existing directory - this function
-    never substitutes any other folder for the working root.
+    The returned path is ALWAYS a real, existing directory - this function never
+    substitutes any other folder for the working root without logging it.
     """
     global _WORKING_ROOT_CACHE
     if _WORKING_ROOT_CACHE:
@@ -105,6 +162,28 @@ def get_working_root() -> str:
         _WORKING_ROOT_CACHE = persisted
         logger.info("Working root loaded from %s: %s", _WORKING_ROOT_FILE, persisted)
         return _WORKING_ROOT_CACHE
+
+    # FIX (2026-10-03): the saved path vanished - the tree was most likely moved or
+    # renamed on this machine. Re-point at THIS tree's own root instead of blindly
+    # falling back to CWD, so a relocated install keeps working against its project
+    # folder (the old behavior silently pointed tools at whatever CWD happened to be).
+    saved_raw = _read_saved_value()
+    if saved_raw:
+        healed = _self_heal_candidate(saved_raw)
+        if healed is not None:
+            try:
+                _write_working_root_file(healed)
+                logger.warning(
+                    "Persisted working root %s no longer exists - the tree appears to have "
+                    "been moved/renamed. Re-pointed %s at %s. If you meant a different "
+                    "folder, re-select it in the UI (Working Folder field).",
+                    saved_raw, _WORKING_ROOT_FILE, healed,
+                )
+            except Exception as e:
+                logger.error("Self-heal could not rewrite %s (%s) - using %s for this process.",
+                             _WORKING_ROOT_FILE, e, healed)
+            _WORKING_ROOT_CACHE = healed
+            return healed
 
     # File missing/invalid -> create it with the current directory (single rule).
     created = os.path.abspath(os.getcwd())

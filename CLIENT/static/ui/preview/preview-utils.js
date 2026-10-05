@@ -8,19 +8,45 @@
 import { PreviewManager } from './preview-class.js';
 
 /**
- * Build an authenticated /api/download URL.
- * <img>/<iframe> can't send headers, so key/email travel as query params;
- * still validated server-side (SECURITY 2026-08-25: /files/ is no longer public).
- * @param {string} baseUrl - e.g. `/api/download?path=...&inline=true`
- * @returns {string} URL with api_key/email appended when present in localStorage
+ * Mint a short-lived media token for ONE exact file path (SECURITY fix 2026-10-05).
+ *
+ * The POST goes through the global fetch override (static/ui/api-key.js), which injects
+ * X-API-Key / X-User-Email - so proving identity happens in TLS-protected HEADERS. The
+ * returned token is single-use-ish (3 uses), expires in 60 s and is bound to that exact
+ * path; the server rejects it against any other file.
+ * @param {string} path - working_root-relative file path
+ * @returns {Promise<string>} opaque ?t= token
  */
-function buildAuthedUrl(baseUrl) {
-    const apiKey = localStorage.getItem('coolems_api_key') || '';
-    const userEmail = localStorage.getItem('coolems_email') || '';
-    let url = baseUrl;
-    if (apiKey) url += '&api_key=' + encodeURIComponent(apiKey);
-    if (userEmail) url += '&email=' + encodeURIComponent(userEmail);
-    return url;
+async function getMediaToken(path) {
+    const r = await fetch('/api/auth/media-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path })
+    });
+    if (!r.ok) throw new Error('Failed to obtain media token (HTTP ' + r.status + ')');
+    const data = await r.json();
+    return data.token;
+}
+
+/**
+ * Build an authenticated /api/download URL using a short-lived media token.
+ * <img>/<iframe> can't send headers, so instead of shipping the master key as
+ * ?api_key=...&email=... (which leaked it into browser history, Referer headers and
+ * logging hops), we mint a path-bound 60 s token via header auth and pass ?t=<token>.
+ * SECURITY fix 2026-10-05: the master key no longer appears in ANY URL.
+ * @param {string} baseUrl - e.g. `/api/download?path=...&inline=true` (must already contain '?')
+ * @returns {Promise<string>} URL with ?t=<token> appended
+ */
+async function buildAuthedUrl(baseUrl) {
+    const m = baseUrl.match(/[?&]path=([^&]*)/);
+    if (!m) throw new Error('buildAuthedUrl: baseUrl must carry a path= query param');
+    const token = await getMediaToken(decodeURIComponent(m[1]));
+    return baseUrl + '&t=' + encodeURIComponent(token);
+}
+
+// Expose for the classic (non-module) scripts in static/ui/files/* - they cannot import.
+if (typeof window !== 'undefined') {
+    window.getMediaToken = getMediaToken;
 }
 
 Object.assign(PreviewManager.prototype, {
@@ -38,7 +64,7 @@ Object.assign(PreviewManager.prototype, {
     
     /**
      * Format file size
-     * @param {number} bytes - Size in bytes
+     * @param {number} bytes - File size in bytes
      * @returns {string} Formatted size
      */
     formatFileSize(bytes) {
@@ -51,8 +77,8 @@ Object.assign(PreviewManager.prototype, {
     
     /**
      * Show notification
-     * @param {string} message - Notification message
-     * @param {string} type - 'success', 'error', 'info', 'warning'
+     * @param {string} message - Message to show
+     * @param {string} type - Notification type: success/error/info/warning
      */
     showNotification(message, type = 'info') {
         if (typeof window.showNotification === 'function') {
@@ -72,4 +98,4 @@ Object.assign(PreviewManager.prototype, {
     }
 });
 
-export { buildAuthedUrl };
+export { buildAuthedUrl, getMediaToken };

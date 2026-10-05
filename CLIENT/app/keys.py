@@ -377,16 +377,37 @@ def set_client_api_key(key: str = "", email: str = "") -> dict:
 
     import datetime as _datetime
 
-    # Idempotent: same email already recorded -> nothing to do (keeps original date).
+    # Idempotent: same email already recorded -> the bookkeeping file keeps its
+    # original date. (2026-10-05 KEY-DRIFT FIX): this branch must still sync ALL
+    # credential sources with the freshly presented key - runtime store, this
+    # process's env AND the per-user registry (setx) that every FUTURE headless
+    # boot reads via COOLEMS_CLIENT_API_KEY. The old code skipped setx here: a key
+    # rotation done in Settings while an email row already existed left the
+    # registry holding the OLD key forever, so SERVER rejected bootstrap auth on
+    # every restart ("Invalid or inactive API key provided") while the browser UI
+    # kept working (its localStorage key is injected per-request). Same best-effort
+    # setx as the fresh-row path below.
     if email:
         for entry in entries:
             if isinstance(entry, dict) and entry.get("email") == email:
                 _runtime_key = key  # outbound auth follows the freshly presented key
                 os.environ[_ENV_KEY_VAR] = key  # (2026-09-30) keep this process's env consistent too
+                try:
+                    if os.name == "nt":
+                        import subprocess as _sp
+                        r = _sp.run(["setx", _ENV_KEY_VAR, key], capture_output=True, text=True, timeout=15)
+                        if r.returncode == 0:
+                            logger.info("[CLIENT] COOLEMS_CLIENT_API_KEY refreshed for future CLIENT starts (new shells)")
+                        else:
+                            logger.warning("[CLIENT] setx failed (%s) - headless startup keeps using the previous env value", (r.stderr or "").strip()[:120])
+                except Exception as e:  # pragma: no cover - best effort only
+                    logger.debug("[CLIENT] Could not persist COOLEMS_CLIENT_API_KEY via setx: %s", e)
                 return {"ok": True, "message": "API key bookkeeping is already set."}
 
-    # Drop placeholder/template rows so the file holds only real records. An unlabeled
-    # record from a previous key-set (empty email) is replaced, not piled up.
+    # Drop placeholder/template rows so the file holds only real records. A row with
+    # an empty email but a date_acquired is a REAL credential ("key set before entering
+    # an email"): it survives re-set WITH an email, and when re-setting WITHOUT one it is
+    # replaced by the new unlabeled record (documented intent: "replaced, not piled up").
     def _is_stale_row(e):
         """Legacy placeholder row OR an empty bookkeeping row (no email AND no date)."""
         if not isinstance(e, dict):

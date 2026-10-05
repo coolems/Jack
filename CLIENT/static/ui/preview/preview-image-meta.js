@@ -9,7 +9,6 @@
  */
 
 import { PreviewManager } from './preview-class.js';
-import { buildAuthedUrl } from './preview-utils.js';
 
 Object.assign(PreviewManager.prototype, {
     /**
@@ -28,10 +27,9 @@ Object.assign(PreviewManager.prototype, {
         container.innerHTML = '<div class="img-meta-loading">Loading metadata…</div>';
 
         try {
-            const url = buildAuthedUrl(`/api/file-metadata?path=${encodeURIComponent(filePath)}`);
-            // Auth: the global fetch override (static/ui/api-key.js) injects X-API-Key /
-            // X-User-Email for every /api/ request; buildAuthedUrl additionally carries
-            // them as query params, mirroring how <img> loads work in preview-render.js.
+            // SECURITY fix 2026-10-05: plain URL - auth travels in HEADERS via the global
+            // fetch override (static/ui/api-key.js), never in the query string.
+            const url = `/api/file-metadata?path=${encodeURIComponent(filePath)}`;
             const response = await fetch(url);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const meta = await response.json();

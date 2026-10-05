@@ -53,17 +53,17 @@ class PreviewManager {
         
         const saveBtn = document.getElementById('previewSaveBtn');
         if (saveBtn) {
-            saveBtn.onclick = () => this.saveEdit();
+            saveBtn.onclick = () => void this.saveEdit().catch(e => console.error('[Preview] saveEdit failed:', e));
         }
         
         const cancelBtn = document.getElementById('previewCancelBtn');
         if (cancelBtn) {
-            cancelBtn.onclick = () => this.cancelEdit();
+            cancelBtn.onclick = () => void this.cancelEdit().catch(e => console.error('[Preview] cancelEdit failed:', e));
         }
         
         const downloadBtn = document.getElementById('previewDownloadBtn');
         if (downloadBtn) {
-            downloadBtn.onclick = () => this.download();
+            downloadBtn.onclick = () => void this.download().catch(e => console.error('[Preview] download failed:', e));
         }
         
         const runBtn = document.getElementById('previewRunBtn');

@@ -132,10 +132,13 @@ def register_read_endpoints(router: APIRouter):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/api/open")
-    async def open_file(filename: str):
+    async def open_file(path: str = Query(..., description="Relative path inside working_root folder")):
+        # FIX (2026-10-05): query param renamed filename -> path to match /api/download.
+        # The old UI URL (/api/open/<name> as a PATH segment) matched no route and always 404'd;
+        # the tree UI now calls GET /api/open?path=...&t=<media token>.
         try:
             working_root_dir = _get_working_root_dir()
-            safe_path = _safe_relative_path(working_root_dir, filename)
+            safe_path = _safe_relative_path(working_root_dir, path)
             if safe_path is None:
                 raise HTTPException(status_code=400, detail="Invalid path - access denied")
             if not os.path.isfile(safe_path):
