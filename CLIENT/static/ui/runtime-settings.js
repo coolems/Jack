@@ -5,21 +5,23 @@
  *   manual (default) -> the dialog waits until the user decides (original behavior, no timeout).
  *   auto             -> the dialog still opens, but after N seconds it approves itself and runs.
  *
- * Second setting (2026-10-03): IMAGE GENERATOR TIER for generate_image().
- *   auto (default) -> classify by probed GPU VRAM (high / mid / low).
- *   high | mid | low -> pin that model line (falls back to the auto tier if the card can't afford it).
+ * Second setting (2026-10-03): IMAGE GENERATOR for generate_image().
+ *   Model line: auto (default) -> classify by probed GPU VRAM (high / mid / low);
+ *               high | mid | low -> pin that model line (falls back to the auto tier if
+ *               the card can't afford it).
+ *   Default resolution: image_gen_width x image_gen_height pixels (defaults 600x400) -
+ *   used whenever no explicit size is requested; read LIVE by generate_image() on every
+ *   call. The worker snaps values down to multiples of 32 and clamps them to the tier's
+ *   max_pixels budget, so oversized values degrade gracefully instead of breaking.
  *
  * Values live in settings.json via GET/POST /api/settings (keys: python_exec_auto_approve,
- * python_exec_auto_approve_seconds, image_gen_tier) and are read LIVE by websocket.js /
- * generate_image() on every use - so a save applies immediately without any restart.
+ * python_exec_auto_approve_seconds, image_gen_tier, image_gen_width, image_gen_height)
+ * and are read LIVE by websocket.js / generate_image() on every use - so a save applies
+ * immediately without any restart.
  */
 
 // Live view of the saved values; websocket.js reads this when rendering an approval card.
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto' };
-
-function _runtimeStatusEl() {
-    return document.getElementById('runtimeSettingsStatus');
-}
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400 };
 
 /** Fill the Runtime tab UI from a /api/settings response (called on every openSettings). */
 async function loadRuntimeSettings() {
@@ -47,13 +49,22 @@ async function loadRuntimeSettings() {
     const secInput = document.getElementById('pyExecAutoSeconds');
     if (secInput) secInput.value = String(seconds);
 
-    // (2026-10-03) Image Generator Tier radios - restore the saved pick.
+
+    // (2026-10-03) Image Generator radios - restore the saved pick.
     const tier = (data && ['auto', 'high', 'mid', 'low'].indexOf(data.image_gen_tier) !== -1)
         ? data.image_gen_tier : 'auto';
     setImageGenTierRadio(tier);
 
+    // (2026-10-03) Default resolution inputs - restore the saved values (defaults 600x400).
+    let imgWidth = _coerceImageGenSize(data && data.image_gen_width, 600);
+    let imgHeight = _coerceImageGenSize(data && data.image_gen_height, 400);
+    const widthInput = document.getElementById('imgGenWidth');
+    const heightInput = document.getElementById('imgGenHeight');
+    if (widthInput) widthInput.value = String(imgWidth);
+    if (heightInput) heightInput.value = String(imgHeight);
+
     toggleRuntimeSecondsGroup(mode === 'auto');
-    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier };
+    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight };
 }
 
 // (2026-10-03) Check the ONE image-tier radio matching *tier* and uncheck the rest, so the
@@ -63,6 +74,13 @@ function setImageGenTierRadio(tier) {
         const el = document.getElementById(id);
         if (el) el.checked = (el.value === tier);
     });
+}
+
+// (2026-10-03) Coerce a default-resolution value to an int in 32..4096, else *fallback*.
+function _coerceImageGenSize(value, fallback) {
+    const v = parseInt(value, 10);
+    if (!Number.isFinite(v)) return fallback;
+    return Math.min(4096, Math.max(32, v));
 }
 
 function toggleRuntimeSecondsGroup(show) {
@@ -93,11 +111,13 @@ async function saveRuntimeSettings() {
     seconds = Math.min(3600, Math.max(1, seconds));
     if (secInput && String(seconds) !== secInput.value.trim()) secInput.value = String(seconds);
 
-    const statusEl = _runtimeStatusEl();
-    if (statusEl) {
-        statusEl.textContent = 'Saving...';
-        statusEl.style.color = 'var(--text-secondary)';
-    }
+    // (2026-10-03) Read the default resolution inputs, clamped to 32..4096 px.
+    let imgWidth = _coerceImageGenSize(document.getElementById('imgGenWidth') && document.getElementById('imgGenWidth').value, 600);
+    let imgHeight = _coerceImageGenSize(document.getElementById('imgGenHeight') && document.getElementById('imgGenHeight').value, 400);
+    const widthInput = document.getElementById('imgGenWidth');
+    const heightInput = document.getElementById('imgGenHeight');
+    if (widthInput) widthInput.value = String(imgWidth);
+    if (heightInput) heightInput.value = String(imgHeight);
 
     try {
         const response = await fetch('/api/settings', {
@@ -108,32 +128,20 @@ async function saveRuntimeSettings() {
             body: JSON.stringify({
                 python_exec_auto_approve: mode,
                 python_exec_auto_approve_seconds: seconds,
-                image_gen_tier: imageGenTier
+                image_gen_tier: imageGenTier,
+                image_gen_width: imgWidth,
+                image_gen_height: imgHeight
             })
         });
 
+        // Silent by design: the Runtime tab shows no save feedback in the UI.
         if (response.ok) {
-            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier };
-            if (statusEl) {
-                statusEl.textContent = '\u2713 Saved. ' +
-                    ((mode === 'auto')
-                        ? ('python_exec dialogs will auto-approve after ' + seconds + 's.')
-                        : 'python_exec dialogs wait for your decision.') +
-                    ' Image tier: ' + imageGenTier;
-                statusEl.style.color = 'var(--success)';
-            }
+            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight };
         } else {
             const errData = await response.json().catch(() => ({}));
-            if (statusEl) {
-                statusEl.textContent = 'Not saved: ' + (errData.detail || 'Unknown error');
-                statusEl.style.color = 'var(--error)';
-            }
+            console.error('[RUNTIME SETTINGS] Save rejected:', errData.detail || 'Unknown error');
         }
     } catch (e) {
-        if (statusEl) {
-            statusEl.textContent = 'Failed to save runtime settings';
-            statusEl.style.color = 'var(--error)';
-        }
         console.error('[RUNTIME SETTINGS] Failed to save:', e);
     }
 }

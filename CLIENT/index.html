@@ -411,41 +411,58 @@
                                 background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
                             <span style="color: var(--text-secondary); font-size: 13px;">seconds (1 - 3600) - the dialog still opens, then runs by itself</span>
                         </div>
-                        <p id="runtimeSettingsStatus" style="margin-top: 8px; font-size: 12px;"></p>
-                    </div>
+                                            </div>
 
-                    <!-- (2026-10-03) Image Generator Tier - which model line generate_image() uses.
-                         Saved to settings.json via POST /api/settings and read LIVE by the tool on
-                         every generation, so a pick applies to the very next image - no restart. -->
-                    <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
-                        <label>Image Generator Tier</label>
-                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
-                            Choose which model line image generation runs on this machine. Auto picks it from your GPU's VRAM; the others pin that tier (if your card can't afford a pinned tier, generation safely falls back to the auto tier).
-                        </p>
-                        <div style="display: flex; flex-direction: column; gap: 8px;">
-                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                <input type="radio" name="imageGenTier" id="imgTierAuto" value="auto"
-                                onchange="saveRuntimeSettings()">
-                            Auto (default) - pick by GPU VRAM
-                            </label>
-                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                <input type="radio" name="imageGenTier" id="imgTierHigh" value="high"
-                                onchange="saveRuntimeSettings()">
-                            High - Z-Image-Turbo bf16 (needs a &ge; 24 GB card)
-                            </label>
-                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                <input type="radio" name="imageGenTier" id="imgTierMid" value="mid"
-                                onchange="saveRuntimeSettings()">
-                            Mid - SANA-Sprint 1.6B, 2 steps (needs a &ge; 12 GB card)
-                            </label>
-                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                <input type="radio" name="imageGenTier" id="imgTierLow" value="low"
-                                onchange="saveRuntimeSettings()">
-                            Low - SANA-Sprint + CPU offload (smallest, fits any card)
-                            </label>
+                    <!-- (2026-10-03) Image Generator - model line + default resolution for generate_image().
+                             Saved to settings.json via POST /api/settings and read LIVE by the tool on
+                             every generation, so a save applies to the very next image - no restart. -->
+                        <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                            <label>Image Generator</label>
+                            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                Choose which model line image generation runs on this machine. Auto picks it from your GPU's VRAM; the others pin that tier (if your card can't afford a pinned tier, generation safely falls back to the auto tier).
+                            </p>
+                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                    <input type="radio" name="imageGenTier" id="imgTierAuto" value="auto"
+                                    onchange="saveRuntimeSettings()">
+                                Auto (default) - pick by GPU VRAM
+                                </label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                    <input type="radio" name="imageGenTier" id="imgTierHigh" value="high"
+                                    onchange="saveRuntimeSettings()">
+                                High - Z-Image-Turbo bf16 (needs a &ge; 24 GB card)
+                                </label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                    <input type="radio" name="imageGenTier" id="imgTierMid" value="mid"
+                                    onchange="saveRuntimeSettings()">
+                                Mid - SANA-Sprint 1.6B, 2 steps (needs a &ge; 12 GB card)
+                                </label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                    <input type="radio" name="imageGenTier" id="imgTierLow" value="low"
+                                    onchange="saveRuntimeSettings()">
+                                Low - SANA-Sprint + CPU offload (smallest, fits any card)
+                                </label>
+                            </div>
+
+                            <!-- (2026-10-03) Default resolution: the size used when no explicit width/height is asked for. -->
+                            <p style="color: var(--text-secondary); font-size: 13px; margin: 14px 0 8px;">
+                                Default resolution (will be trimmed to closest multiple of 32)
+                            </p>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <input type="number" id="imgGenWidth" min="32" max="4096" step="32" value="600"
+                                autocomplete="off" onchange="saveRuntimeSettings()" title="Default width in pixels (32 - 4096)"
+                                style="width: 100px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                    background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                                <span style="color: var(--text-secondary); font-size: 13px;">&times;</span>
+                                <input type="number" id="imgGenHeight" min="32" max="4096" step="32" value="400"
+                                autocomplete="off" onchange="saveRuntimeSettings()" title="Default height in pixels (32 - 4096)"
+                                style="width: 100px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                    background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                                <span style="color: var(--text-secondary); font-size: 13px;">pixels (32 - 4096 each)</span>
+                            </div>
+
                         </div>
                     </div>
-                </div>
         </div>
     </div>
 

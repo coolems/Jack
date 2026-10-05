@@ -109,11 +109,11 @@ __tool_description__ = {
                 },
                 "height": {
                     "type": "integer",
-                    "description": "Height of the image in pixels (default: 400)"
+                    "description": "Height of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 16 on high tier (Z-Image), 32 on mid/low (SANA-Sprint) - and clamps to the tier's max-pixel budget)"
                 },
                 "width": {
                     "type": "integer",
-                    "description": "Width of the image in pixels (default: 600)"
+                    "description": "Width of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 16 on high tier (Z-Image), 32 on mid/low (SANA-Sprint) - and clamps to the tier's max-pixel budget)"
                 },
                 "num_inference_steps": {
                     "type": "integer",
@@ -234,24 +234,30 @@ def _validate_filename(filename):
     return name
 
 
-def _clamp_resolution(task):
-    """Clamp width/height to the tier's max_pixels budget, preserving aspect ratio.
+def _clamp_resolution(task, snap=32):
+    """Clamp width/height to a tier-safe multiple (snap), then to the max_pixels budget.
 
-    Returns (width, height) actually used for generation. The DiT works on 32px
-    patches and the VAE upscales 8x - multiples of 32 are always safe.
+    Returns (width, height) actually used for generation. Every pipeline this tool can
+    load validates its resolution BEFORE generating: Z-Image requires both dimensions
+    divisible by vae_scale_factor * 2 = 16, SANA-Sprint requires divisibility by 32 - so
+    the caller passes snap=16 for the high tier (Z-Image) and snap=32 for mid/low
+    (SANA-Sprint). The user's dimensions are snapped to the nearest LOWER multiple of
+    snap FIRST; the max_pixels budget loop below then only ever subtracts whole snaps,
+    so the returned pair can never break that validation. (2026-10-05: high tier no
+    longer forced to multiples of 32 - Z-Image accepts any multiple of 16.)
     """
-    width = int(task.get("width", 600))
-    height = int(task.get("height", 400))
+    width = int(task.get("width", 600)) // snap * snap
+    height = int(task.get("height", 400)) // snap * snap
     max_pixels = task.get("max_pixels")
     if not max_pixels or max_pixels <= 0:
-        return width, height
+        return max(width, snap), max(height, snap)
     target = float(max_pixels)
-    while width * height > target and (width > 32 or height > 32):
-        if width >= height and width > 32:
-            width -= 32
-        elif height > 32:
-            height -= 32
-    return max(width, 32), max(height, 32)
+    while width * height > target and (width > snap or height > snap):
+        if width >= height and width > snap:
+            width -= snap
+        elif height > snap:
+            height -= snap
+    return max(width, snap), max(height, snap)
 
 
 def _sana_steps():
@@ -454,7 +460,9 @@ def generate_text_to_image(task):
     pipeline_name = str(task.get("pipeline") or "zimage").lower()
 
     prompt = task["prompt"]
-    width, height = _clamp_resolution(task)
+    # Tier-aware snap (2026-10-05): Z-Image (high tier) validates multiples of 16;
+    # SANA-Sprint (mid/low) hard-requires multiples of 32.
+    width, height = _clamp_resolution(task, snap=16 if pipeline_name == "zimage" else 32)
     task["_used_width"], task["_used_height"] = width, height
 
     if pipeline_name == "sana_sprint":
@@ -503,7 +511,9 @@ def generate_image_to_image(task):
 
     prompt = task["prompt"]
     reference_image_path = task["reference_image"]
-    width, height = _clamp_resolution(task)
+    # Tier-aware snap (2026-10-05): Z-Image (high tier) validates multiples of 16;
+    # SANA-Sprint (mid/low) hard-requires multiples of 32.
+    width, height = _clamp_resolution(task, snap=16 if pipeline_name == "zimage" else 32)
     task["_used_width"], task["_used_height"] = width, height
     strength = task.get("strength", 0.6)
 
@@ -599,7 +609,7 @@ if __name__ == "__main__":
 
 _DEFAULT_MANIFEST = {
         "name": "generate_image",
-        "version": 19,  # v9 + audit fix (2026-09-24): low tier -> int8 SANA-Sprint 0.6B; bf16 0.6B fallbacks
+        "version": 20,  # v20 (2026-10-05): high-tier Z-Image snaps to multiples of 16 instead of forced 32 (its real VAE requirement); mid/low SANA-Sprint keep 32
         "runtime_name": "generate_tool",
         "requirements": ["torch==2.9.1+cu128", "diffusers>=0.40", "transformers", "accelerate>=0.17.0"],
         "extra_index_urls": ["https://download.pytorch.org/whl/cu128"],
@@ -775,20 +785,13 @@ TIER_MIN_VRAM_MIB = {
 }
 
 
-def _client_image_gen_tier() -> str:
-    """The per-machine tier pick from the CLIENT Settings UI (2026-10-03), or ''.
+def _load_client_settings() -> dict:
+    """The CLIENT's config/settings.json as a dict, or {} when unavailable.
 
-    The Runtime tab writes 'image_gen_tier' into <CLIENT>/config/settings.json via
-    POST /api/settings. This reads that file LIVE on every call - same live-read
-    pattern web_search.py uses for search_engines.json - so a pick in the UI applies
-    to the very next generation without any restart or SERVER round-trip.
-
-    Path resolution (the CLIENT owns this file):
-      1. <CWD>/config/settings.json        - normal CLIENT run (CWD = CLIENT dir)
-      2. <local_ai>/CLIENT/config/...       - SERVER-side layout (module at local_ai/tools/generate_tool)
-
-    Returns '' when the key is absent or not a known tier name, so callers fall back
-    to the SERVER-shipped constant below. A read problem must never break generation.
+    (2026-10-03) Shared by the Runtime-tab readers below (_client_image_gen_tier and
+    _client_image_gen_resolution). Path resolution: 1. <CWD>/config/settings.json -
+    normal CLIENT run (CWD = CLIENT dir); 2. <local_ai>/CLIENT/config/settings.json -
+    SERVER-side layout. A read problem must never break generation.
     """
     try:
         candidates = [os.path.join(os.getcwd(), "config", "settings.json")]
@@ -799,24 +802,55 @@ def _client_image_gen_tier() -> str:
         except Exception:
             pass
 
-        path = None
         for candidate in candidates:
             try:
                 if os.path.isfile(candidate):
-                    path = candidate
-                    break
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    return data if isinstance(data, dict) else {}
             except Exception:
                 continue
-        if path is None:
-            return ""
-
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        tier = str(data.get("image_gen_tier") or "").strip().lower() if isinstance(data, dict) else ""
-        return tier if tier in ("auto", "high", "mid", "low") else ""
     except Exception as e:
-        logger.debug(f"  Could not read CLIENT settings.json image_gen_tier: {e}")
+        logger.debug(f"  Could not read CLIENT settings.json: {e}")
+    return {}
+
+
+def _client_image_gen_tier() -> str:
+    """The per-machine tier pick from the CLIENT Settings UI (2026-10-03), or ''.
+
+    The Runtime tab writes 'image_gen_tier' into <CLIENT>/config/settings.json via
+    POST /api/settings. This reads that file LIVE on every call - same live-read
+    pattern web_search.py uses for search_engines.json - so a pick in the UI applies
+    to the very next generation without any restart or SERVER round-trip.
+
+    Returns '' when the key is absent or not a known tier name, so callers fall back
+    to the SERVER-shipped constant below. A read problem must never break generation.
+    """
+    data = _load_client_settings()
+    if not data:
         return ""
+    tier = str(data.get("image_gen_tier") or "").strip().lower()
+    return tier if tier in ("auto", "high", "mid", "low") else ""
+
+
+def _client_image_gen_resolution():
+    """(width, height) the user set as DEFAULT in Settings > Runtime, or None.
+
+    (2026-10-03) The Runtime tab stores 'image_gen_width' / 'image_gen_height' (px,
+    32..4096, validated by POST /api/settings) in <CLIENT>/config/settings.json. Read
+    LIVE on every call - a save applies to the very next generation without restart.
+    Returns None for any missing/invalid value so callers keep their own defaults
+    (600x400). A read problem must never break generation.
+    """
+    try:
+        data = _load_client_settings()
+        w = int(str(data.get("image_gen_width") or "").strip())
+        h = int(str(data.get("image_gen_height") or "").strip())
+    except (TypeError, ValueError):
+        return None
+    if not (32 <= w <= 4096 and 32 <= h <= 4096):
+        return None
+    return w, h
 
 
 def _tier_override() -> str:
@@ -2094,8 +2128,8 @@ def _bootstrap_timeout() -> int:
 
 def generate_image(
     prompt: str,
-    height: int = 400,
-    width: int = 600,
+    height: int = None,
+    width: int = None,
     num_inference_steps: int = 9,
     guidance_scale: float = 0.0,
     output_filename: str = "generated_image",
@@ -2112,6 +2146,12 @@ def generate_image(
         low  (< 12 GB) : int8 SANA-Sprint 0.6B (v9, ~5 GB download; dequantized to the
                          same bf16 tensors at load) + cpu offload, resolution-clamped.
 
+    DEFAULT RESOLUTION (2026-10-03): when width/height are omitted (None) they come from
+    the user's Settings > Runtime tab ('image_gen_width'/'image_gen_height' in the CLIENT
+    settings.json - read LIVE on every call, default 600x400); an explicit caller value
+    always wins. The worker still snaps to tier-safe multiples (16 on high tier / Z-Image,
+    32 on mid/low / SANA-Sprint) and clamps to the tier's max_pixels budget either way.
+
     The user can pin any line regardless of hardware via config IMAGE_GEN_TIER_OVERRIDE
     ('auto'|'high'|'mid'|'low') - see the module docstring for semantics and safety.
 
@@ -2123,6 +2163,17 @@ def generate_image(
         # Generic self-unpacking bootstrap (shared module tools.tool_bootstrap):
         # rewritten by the loader to 'ensure_tool_runtime = tool_bootstrap.ensure_tool_runtime'.
         from ..tool_bootstrap import ensure_tool_runtime
+
+        # (2026-10-03) Default resolution from Settings > Runtime tab: an explicit caller
+        # value wins; otherwise the per-machine pick in settings.json applies LIVE.
+        if width is None or height is None:
+            client_res = _client_image_gen_resolution()
+            if client_res:
+                cw, ch = client_res
+                width = cw if width is None else width
+                height = ch if height is None else height
+        width = int(width) if width is not None else 600
+        height = int(height) if height is not None else 400
 
         logger.info("generate_image called - starting subprocess execution")
         logger.info(f"  prompt: {prompt}")

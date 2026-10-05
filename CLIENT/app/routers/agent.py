@@ -144,8 +144,10 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
             runtime = get_runtime_settings()
             settings["python_exec_auto_approve"] = runtime["python_exec_auto_approve"]
             settings["python_exec_auto_approve_seconds"] = runtime["python_exec_auto_approve_seconds"]
-            # (2026-10-03) Runtime tab: image generator tier selector.
+            # (2026-10-03) Runtime tab: image generator - model line + default resolution.
             settings["image_gen_tier"] = runtime["image_gen_tier"]
+            settings["image_gen_width"] = runtime["image_gen_width"]
+            settings["image_gen_height"] = runtime["image_gen_height"]
 
             # Return both values:
             # 1. current_server_address - the value active at startup (module-level cached)
@@ -179,6 +181,10 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
           - image_gen_tier: "auto" (default) | "high" | "mid" | "low" — which model line
             generate_image() uses. 'auto' = classify by probed GPU VRAM; the others pin that
             tier (same semantics as SERVER config IMAGE_GEN_TIER_OVERRIDE, but per-machine).
+          - image_gen_width / image_gen_height: int pixels 32..4096 — the DEFAULT resolution
+            generate_image() uses when no explicit size is passed. The worker snaps values down
+            to multiples of 32 and clamps them to the tier's max_pixels budget, so oversized
+            values degrade gracefully instead of breaking generation.
 
         NOTE: Changes to server address(es) apply from the NEXT connection onward
         (the failover list is re-read on every connect); boot-time display values
@@ -251,6 +257,21 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
                 if tier not in ("auto", "high", "mid", "low"):
                     return JSONResponse(status_code=400, content={"detail": "image_gen_tier must be one of 'auto', 'high', 'mid', 'low'"})
                 current["image_gen_tier"] = tier
+
+            # (2026-10-03) Runtime tab fields: default image resolution. generate_image reads
+            # these LIVE from settings.json on every run, so a save applies to the very next
+            # generation - no restart needed. 32..4096 px per dimension; the worker snaps down
+            # to multiples of 32 and clamps to the tier's max_pixels budget anyway.
+            for _size_key in ("image_gen_width", "image_gen_height"):
+                if _size_key in data:
+                    raw_size = str(data.get(_size_key) or "").strip()
+                    try:
+                        size_val = int(raw_size)
+                    except (TypeError, ValueError):
+                        return JSONResponse(status_code=400, content={"detail": f"{_size_key} must be a whole number of pixels"})
+                    if not (32 <= size_val <= 4096):
+                        return JSONResponse(status_code=400, content={"detail": f"{_size_key} must be between 32 and 4096 pixels"})
+                    current[_size_key] = size_val
 
             if "relay_port" in data:
                 raw_port = str(data.get("relay_port") or "").strip()

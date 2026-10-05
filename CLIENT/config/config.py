@@ -426,6 +426,12 @@ def get_web_relay_address() -> Optional[str]:
 #   image_gen_tier                      : "auto" | "high" | "mid" | "low"  (2026-10-03, default "auto")
 #       Which model line generate_image() uses. 'auto' = classify by probed GPU VRAM;
 #       the other three pin that tier (same semantics as SERVER config IMAGE_GEN_TIER_OVERRIDE).
+#   image_gen_width / image_gen_height  : int pixels (2026-10-03, defaults 600 / 400)
+#       The DEFAULT resolution generate_image() uses when the caller does not pass an
+#       explicit size. Stored per-machine; read LIVE by the tool on every generation -
+#       a save in the UI applies to the very next image (no restart). The worker still
+#       snaps values down to multiples of 32 and clamps them to the tier's max_pixels
+#       budget, so an oversized value degrades gracefully instead of breaking.
 # All are read LIVE from settings.json on every access so a save in the UI applies to the
 # very next dialog / image generation - no restart needed.
 
@@ -433,15 +439,23 @@ PYTHON_EXEC_AUTO_APPROVE_DEFAULT = "manual"
 PYTHON_EXEC_AUTO_APPROVE_SECONDS_DEFAULT = 5
 IMAGE_GEN_TIER_DEFAULT = "auto"
 IMAGE_GEN_TIERS = ("auto", "high", "mid", "low")
+#: (2026-10-03) Default image resolution for the Runtime tab - matches the tool's own
+#: defaults so an untouched settings.json behaves exactly like before this setting existed.
+IMAGE_GEN_WIDTH_DEFAULT = 600
+IMAGE_GEN_HEIGHT_DEFAULT = 400
+#: Inclusive pixel bounds accepted by POST /api/settings (the worker snaps to multiples of 32).
+IMAGE_GEN_SIZE_MIN, IMAGE_GEN_SIZE_MAX = 32, 4096
 
 
 def get_runtime_settings() -> dict:
     """Return the live Runtime-tab values from settings.json with safe defaults.
 
-    Always returns exactly three keys so callers never hit a missing key:
+    Always returns exactly five keys so callers never hit a missing key:
       {"python_exec_auto_approve": "manual"|"auto",
        "python_exec_auto_approve_seconds": int,
-       "image_gen_tier": "auto"|"high"|"mid"|"low"}
+       "image_gen_tier": "auto"|"high"|"mid"|"low",
+       "image_gen_width": int (default 600),
+       "image_gen_height": int (default 400)}
     Bad/corrupt stored values fall back to the defaults (fail-closed = manual/auto).
     """
     settings = _load_settings()
@@ -461,11 +475,33 @@ def get_runtime_settings() -> dict:
     if tier not in IMAGE_GEN_TIERS:
         tier = IMAGE_GEN_TIER_DEFAULT
 
+    # (2026-10-03) Default resolution - out-of-range / corrupt values fall back to the
+    # tool's own defaults so a bad settings.json can never break generation.
+    width = _coerce_image_gen_size(settings.get("image_gen_width"), IMAGE_GEN_WIDTH_DEFAULT)
+    height = _coerce_image_gen_size(settings.get("image_gen_height"), IMAGE_GEN_HEIGHT_DEFAULT)
+
     return {
         "python_exec_auto_approve": mode,
         "python_exec_auto_approve_seconds": seconds,
         "image_gen_tier": tier,
+        "image_gen_width": width,
+        "image_gen_height": height,
     }
+
+
+def _coerce_image_gen_size(value, default: int) -> int:
+    """Coerce a stored image-gen dimension to an int inside IMAGE_GEN_SIZE_MIN..MAX.
+
+    (2026-10-03) Used by get_runtime_settings() - any non-int / out-of-range value in
+    settings.json degrades to the default instead of propagating into generation.
+    """
+    try:
+        v = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return default
+    if not (IMAGE_GEN_SIZE_MIN <= v <= IMAGE_GEN_SIZE_MAX):
+        return default
+    return v
 
 # Kept for backward compatibility: the module-level constant mirrors settings.json at
 # import time ONLY. Live code paths must use get_connection_mode() / get_web_relay_address().
