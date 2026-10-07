@@ -55,14 +55,6 @@ function toggleThink() {
 
 function closeSettings() {
     document.getElementById('settingsModal').classList.remove('active');
-    if (COOLEMS.currentConversation) 
-        fetch('/api/conversations/' + COOLEMS.currentConversation + '/update', { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ 
-                agent_mode: COOLEMS.agentMode 
-            }) 
-        }).catch(() => {});
 }
 
 /**

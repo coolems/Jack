@@ -8,10 +8,12 @@
 
     SECURITY MODEL (2026-09-29): NO CONFIDENTIAL DATA ON CLIENT DISK.
       * The on-disk file ``CLIENT/config/.api_client_keys.json`` stores ONLY
-        non-confidential bookkeeping per entry: {"email", "date_acquired"}.
-        It NEVER contains the API key itself, nor role/is_active/max_connections/
-        last_used (those are SERVER-side concepts owned by config/.api_keys.json
-        and profiles.json).
+        non-confidential bookkeeping: {"email", "date_acquired"}. It NEVER contains
+        the API key itself, nor role/is_active/max_connections/last_used (those are
+        SERVER-side concepts owned by config/.api_keys.json and profiles.json).
+      * SINGLE-KEY CONTRACT (2026-10-07): the file holds exactly ONE entry at a time.
+        set_client_api_key() replaces every previous row with the new record - this
+        machine has one credential, so there is never ambiguity about which to use.
       * The real key lives in exactly two places:
           1. The UI browser (localStorage 'coolems_api_key') - the UI injects it
              into every request/WebSocket via static/ui/api-key.js, so ALL
@@ -71,6 +73,26 @@ _ENV_KEY_VAR = "COOLEMS_CLIENT_API_KEY"
 # In-memory (process lifetime) real key for OUTBOUND provider auth. Never written to
 # disk. Filled by set_client_api_key() or note_presented_key(); see module docstring.
 _runtime_key: str = ""
+
+# DEFERRED BOOT FLAG (2026-10-07 setup-mode UI fix): True while the CLIENT's provider/agent
+# boot is still running in the BACKGROUND after the UI has already started (setup mode).
+# The auth middleware turns this into a 503 "still starting, retry" on keyed requests so a
+# request that arrives in the tiny window right AFTER set-key but BEFORE the deferred boot
+# finished never reaches routers with provider/agent still None. code_client.py sets it True
+# before uvicorn starts and False (finally) when the deferred boot task completes.
+_boot_pending: bool = False
+
+
+def mark_boot_pending(value: bool) -> None:
+    """Set/clear the deferred-boot flag (see _boot_pending docstring)."""
+    global _boot_pending
+    _boot_pending = bool(value)
+
+
+def is_boot_pending() -> bool:
+    """True while the background provider/agent boot has not finished yet."""
+    return _boot_pending
+
 
 # Transitional legacy keys captured from a PRE-migration file at import time.
 _legacy_keys: list = []
@@ -270,22 +292,23 @@ def get_api_keys() -> set:
 
 
 def is_setup_mode() -> bool:
-    """True while the CLIENT has nothing configured yet (SETUP MODE).
+    """True while NO usable outbound credential exists for THIS process (SETUP MODE).
 
-    Setup mode ends when ANY of these exists: a real key source (env / runtime /
-    legacy) OR bookkeeping recorded by POST /api/auth/set-key (an entry with a real
-    email or date_acquired - proves the user ran setup on this machine). The seeded
-    placeholder example row counts as "not configured".
+    Setup mode ends when a real key source exists: runtime in-memory key, the
+    COOLEMS_CLIENT_API_KEY env var, or transitional legacy capture. The bookkeeping
+    file (.api_client_keys.json) is deliberately IRRELEVANT here (2026-10-07 fix):
+    rows with only {email, date_acquired} prove that setup was RUN on some machine at
+    some point - they carry no credential. A CLIENT copied to another PC keeps those
+    rows but has no key source, and the bootstrap cannot authenticate without one;
+    treating bookkeeping as "configured" made code_client.py take the blocking boot
+    path there while the UI (the only place a key can be entered) never started - a
+    deadlock. This also matches APIMiddleware._is_local_mode(), which gates on
+    get_api_keys() being empty, so both surfaces agree on what setup mode means.
     """
-    if get_api_keys():
-        return False
-    entries = _read_key_entries()
-    if not entries:
-        return True
-    for entry in entries:
-        if isinstance(entry, dict) and (entry.get("email") or entry.get("date_acquired")):
-            return False
-    return True
+    # The ONLY thing that matters is whether outbound SERVER auth can succeed right
+    # now - i.e. whether a real key source exists for this process. Bookkeeping rows
+    # (email/date_acquired only) never count; see the docstring above.
+    return len(get_api_keys()) == 0
 
 
 def is_api_key_valid(key: str) -> bool:
@@ -336,6 +359,32 @@ def note_presented_key(key: str) -> None:
 
 # ===== Setting API Key Bookkeeping (2026-09-01 SETUP MODE, 2026-09-29 no-key-on-disk) =====
 
+def _sync_outbound_credential_sources(key: str) -> None:
+    """Point every outbound-auth source at *key* for this machine (2026-10-05 KEY-DRIFT FIX).
+
+    Three sources, all in one place so no rotation path can miss one of them:
+      1. the runtime in-memory store - outbound provider auth for THIS process;
+      2. os.environ[COOLEMS_CLIENT_API_KEY] - every env-var reader in this run sees the
+         fresh value immediately (setx alone would leave it stale until a restart);
+      3. the per-user registry via setx on Windows - every FUTURE headless CLIENT start
+         authenticates with exactly this key. Best effort: a failed setx is logged, not
+         fatal (the env var can be exported manually; the UI flow never depends on it).
+    """
+    global _runtime_key
+    _runtime_key = key  # outbound auth follows the freshly presented key
+    os.environ[_ENV_KEY_VAR] = key
+    try:
+        if os.name == "nt":
+            import subprocess as _sp
+            r = _sp.run(["setx", _ENV_KEY_VAR, key], capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                logger.info("[CLIENT] COOLEMS_CLIENT_API_KEY refreshed for future CLIENT starts (new shells)")
+            else:
+                logger.warning("[CLIENT] setx failed (%s) - headless startup keeps using the previous env value", (r.stderr or "").strip()[:120])
+    except Exception as e:  # pragma: no cover - best effort only
+        logger.debug("[CLIENT] Could not persist COOLEMS_CLIENT_API_KEY via setx: %s", e)
+
+
 def set_client_api_key(key: str = "", email: str = "") -> dict:
     """Record {email, date_acquired} in .api_client_keys.json and return a result dict.
 
@@ -352,9 +401,9 @@ def set_client_api_key(key: str = "", email: str = "") -> dict:
 
     Behavior:
       * validates the key (non-empty string after trim, 8..256 chars) -> error dict
-      * replaces any placeholder/template row instead of piling up rows
-      * if a bookkeeping row with the same email already exists it keeps its original
-        date_acquired (idempotent re-set from another browser on this machine)
+      * SINGLE-KEY CONTRACT (2026-10-07): writes exactly ONE row {email, date_acquired},
+        replacing every previous row - this machine holds one credential at a time
+      * an idempotent re-set for the same email keeps that row's original date_acquired
 
     Returns:
         {"ok": True,  "message": ...} on success
@@ -375,86 +424,43 @@ def set_client_api_key(key: str = "", email: str = "") -> dict:
         logger.warning("[CLIENT] Key bookkeeping file missing or unparseable - recreating it")
         entries = []
 
-    import datetime as _datetime
-
-    # Idempotent: same email already recorded -> the bookkeeping file keeps its
-    # original date. (2026-10-05 KEY-DRIFT FIX): this branch must still sync ALL
-    # credential sources with the freshly presented key - runtime store, this
-    # process's env AND the per-user registry (setx) that every FUTURE headless
-    # boot reads via COOLEMS_CLIENT_API_KEY. The old code skipped setx here: a key
-    # rotation done in Settings while an email row already existed left the
-    # registry holding the OLD key forever, so SERVER rejected bootstrap auth on
-    # every restart ("Invalid or inactive API key provided") while the browser UI
-    # kept working (its localStorage key is injected per-request). Same best-effort
-    # setx as the fresh-row path below.
+    # Idempotent re-set (same email already recorded): refresh ALL credential sources with
+    # the freshly presented key - runtime store, this process's env AND the per-user registry
+    # (setx) that every FUTURE headless boot reads via COOLEMS_CLIENT_API_KEY. The old code
+    # skipped setx here: a key rotation done in Settings while an email row already existed
+    # left the registry holding the OLD key forever, so SERVER rejected bootstrap auth on
+    # every restart ("Invalid or inactive API key provided") while the browser UI kept working.
     if email:
         for entry in entries:
             if isinstance(entry, dict) and entry.get("email") == email:
-                _runtime_key = key  # outbound auth follows the freshly presented key
-                os.environ[_ENV_KEY_VAR] = key  # (2026-09-30) keep this process's env consistent too
-                try:
-                    if os.name == "nt":
-                        import subprocess as _sp
-                        r = _sp.run(["setx", _ENV_KEY_VAR, key], capture_output=True, text=True, timeout=15)
-                        if r.returncode == 0:
-                            logger.info("[CLIENT] COOLEMS_CLIENT_API_KEY refreshed for future CLIENT starts (new shells)")
-                        else:
-                            logger.warning("[CLIENT] setx failed (%s) - headless startup keeps using the previous env value", (r.stderr or "").strip()[:120])
-                except Exception as e:  # pragma: no cover - best effort only
-                    logger.debug("[CLIENT] Could not persist COOLEMS_CLIENT_API_KEY via setx: %s", e)
+                _sync_outbound_credential_sources(key)
+                # SINGLE-KEY CONTRACT (2026-10-07): the file holds exactly ONE row. The
+                # idempotent re-set refreshes that single row in place (original date kept,
+                # any stray extra rows from older builds disappear).
+                if not _write_key_entries([{"email": email, "date_acquired": entry.get("date_acquired")}]):
+                    return {"ok": False, "error": f"Could not write {os.path.basename(_KEYS_FILE)} - check file permissions."}
+                logger.info("[CLIENT] API key bookkeeping refreshed via /api/auth/set-key (same email; single row kept)")
                 return {"ok": True, "message": "API key bookkeeping is already set."}
 
-    # Drop placeholder/template rows so the file holds only real records. A row with
-    # an empty email but a date_acquired is a REAL credential ("key set before entering
-    # an email"): it survives re-set WITH an email, and when re-setting WITHOUT one it is
-    # replaced by the new unlabeled record (documented intent: "replaced, not piled up").
-    def _is_stale_row(e):
-        """Legacy placeholder row OR an empty bookkeeping row (no email AND no date)."""
-        if not isinstance(e, dict):
-            return True
-        if _is_placeholder_key(e.get("key")):
-            return True
-        return not (e.get("email") or e.get("date_acquired"))
+    # SINGLE-KEY CONTRACT (2026-10-07): exactly ONE entry at a time. Every previous row
+    # (placeholder/template rows included) is REPLACED by this record - no pile-up, and
+    # never any ambiguity about which credential belongs to this machine.
+    import datetime as _datetime
 
-    cleaned = [e for e in entries if not _is_stale_row(e)]
-    if not email:
-        cleaned = [e for e in cleaned if isinstance(e, dict) and e.get("email")]
-    cleaned.append({
+    single = {
         "email": email,  # may be "" when the user sets the key before entering an email
         "date_acquired": _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
-    })
+    }
 
-    if not _write_key_entries(cleaned):
+    if not _write_key_entries([single]):
         return {"ok": False, "error": f"Could not write {os.path.basename(_KEYS_FILE)} - check file permissions."}
 
-    # Explicit UI action overrides the runtime credential (key change from Settings).
-    _runtime_key = key
+    # Explicit UI action overrides the runtime credential (key change from Settings) and
+    # keeps headless boot auth in sync: bootstrap_framework() authenticates to the SERVER
+    # BEFORE any browser exists, so it reads COOLEMS_CLIENT_API_KEY. setx persists it for
+    # FUTURE processes; os.environ covers THIS one (2026-10-05 KEY-DRIFT FIX).
+    _sync_outbound_credential_sources(key)
 
-    # Keep headless boot auth in sync: bootstrap_framework() authenticates to the SERVER
-    # BEFORE any browser exists, so it reads COOLEMS_CLIENT_API_KEY. Best-effort persist
-    # via setx on Windows (per-user registry - outside the repo) so a later CLIENT start
-    # uses exactly this key. Non-Windows or failed setx is not fatal: the env var can be
-    # exported manually and the UI flow never depends on it.
-    try:
-        if os.name == "nt":
-            import subprocess as _sp
-            r = _sp.run(["setx", _ENV_KEY_VAR, key], capture_output=True, text=True, timeout=15)
-            if r.returncode == 0:
-                logger.info("[CLIENT] COOLEMS_CLIENT_API_KEY refreshed for future CLIENT starts (new shells)")
-            else:
-                logger.warning("[CLIENT] setx failed (%s) - headless startup keeps using the previous env value", (r.stderr or "").strip()[:120])
-    except Exception as e:  # pragma: no cover - best effort only
-        logger.debug("[CLIENT] Could not persist COOLEMS_CLIENT_API_KEY via setx: %s", e)
-
-    # (2026-09-30 fix) sync the CURRENT process's environment too. setx only updates
-    # the registry for FUTURE processes - without this line os.environ would keep the
-    # OLD value for the whole lifetime of THIS client, so any env-var reader would see
-    # stale credentials until a restart (the "first refresh after setting a key is
-    # broken" bug). load_coolems_api_key() prefers the runtime key now anyway; this
-    # keeps every source consistent within one run.
-    os.environ[_ENV_KEY_VAR] = key
-
-    logger.info("[CLIENT] API key bookkeeping set via /api/auth/set-key (setup mode left; key itself stays in browser + SERVER)")
     return {"ok": True, "message": "API key saved. You can now connect."}
 
 

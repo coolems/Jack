@@ -7,6 +7,7 @@ Route modules:
   - files.py         : /api/upload, /api/tree, /api/download, /api/file-content, /api/open
   - agent.py         : /api/models, /api/status, /api/agent/*, /api/stop/*, /api/my-permissions
   - downloads.py     : /api/setup/status?tool=... (live venv/pip/model setup progress)
+  - this module      : GET /api/setup/boot (live boot status, public read-only)
 
 UPDATED (2025-06-25):
     - Added init_db_manager() call in startup for safe DB pooling with WAL mode
@@ -40,8 +41,18 @@ _CLIENT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 
 
 def create_app(db_path: str, provider, model_name: str, api_timeout: int,
-               agent, tool_orchestrator, stop_events, server_port: int, use_https=False):
-    """Create and configure the FastAPI application with all endpoints."""
+               agent, tool_orchestrator, stop_events, server_port: int, use_https=False,
+               deferred_boot=None):
+    """Create and configure the FastAPI application with all endpoints.
+
+        deferred_boot (2026-10-07 setup-mode UI fix): an async callable that performs the
+        provider/agent boot in the BACKGROUND on this app's event loop. Setup mode (no API key
+        configured yet) passes it so the UI starts IMMEDIATELY instead of blocking for up to
+        30 minutes behind a bootstrap that cannot authenticate without a key; every non-public
+        /api/* stays locked by APIMiddleware until a key exists, and while the boot task is
+        still running keyed requests get 503 "retry shortly" (see app.auth + keys.is_boot_pending).
+        Normal boots pass None - behavior is exactly as before.
+        """
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles
@@ -132,7 +143,31 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
     async def root():
         return FileResponse(os.path.join(_CLIENT_ROOT, "index.html"))
 
+    # ===== LIVE BOOT STATUS (2026-10-07 setup-mode UI fix) =====
+    # Public read-only route (APIMiddleware whitelists GET /api/setup/boot in EVERY mode):
+    # while setup mode locks every other /api/* path, the Settings modal polls this to
+    # show what boot is doing RIGHT NOW ("waiting for your API key" vs "connecting to
+    # SERVER..." with attempt count + budget left). No credential material ever leaves.
+    @app.get("/api/setup/boot")
+    async def setup_boot_status():
+        from app.keys import get_api_keys, is_setup_mode
+        try:
+            from app.providers.bootstrap import bootstrap_status as _bs
+            boot = _bs()
+        except Exception:  # pragma: no cover - status must never break the UI
+            boot = {"phase": "idle", "attempts": 0, "last_error": "", "budget_sec": 0.0, "remaining_sec": 0.0}
+        return {
+            "setup_mode": is_setup_mode(),          # credential-level: True while no usable key source exists
+            "has_key_source": len(get_api_keys()) > 0,  # what the auth middleware actually gates on
+            **boot,
+        }
+
     # ===== STARTUP =====
+    # (2026-10-07 setup-mode UI fix): deferred-boot mode runs the provider/agent boot as a
+    # background task on THIS loop; startup_event only starts it and skips every
+    # provider/agent access while those are still None. Normal boots: unchanged behavior.
+    _boot_state = {"task": None}
+
     @app.on_event("startup")
     async def startup_event():
         api_keys = get_api_keys()
@@ -143,8 +178,11 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info(f"Local URL (click to open): {scheme}://127.0.0.1:{server_port}/")
         logger.info(f"Bind Address: {os.environ.get('COOLEMS_CLIENT_HOST', '127.0.0.1')}:{server_port}")
         logger.info(f"CORS: allowed origins={_cors_origins} (extend via COOLEMS_CORS_ORIGINS, comma-separated); credentials=off")
-        logger.info(f"Provider: {provider.name} at {provider.api_url}")
-        logger.info(f"Target Model: {model_name}")
+        if provider is not None:
+            logger.info(f"Provider: {provider.name} at {provider.api_url}")
+        else:
+            logger.info("Provider: starting in background (setup mode - live status on GET /api/setup/boot)")
+        logger.info(f"Target Model: {model_name or '<auto-selected after boot>'}")
         logger.info(f"Timeout: {api_timeout}s")
         logger.info("STREAMING MODE ENABLED - Responses will stream in real-time!")
         # (2026-09-29) the disk file no longer stores keys - this reports available sources
@@ -155,42 +193,75 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info("Model access: Configurable per ROLE (from profiles.json)")
         logger.info("=" * 60)
 
-        agent_identity = agent.get_identity()
-        first_line = agent_identity.split("\n")[0] if agent_identity else agent.get_name()
-        logger.info(f"DNA loaded: AI name is {agent.get_name()}.")
+        if agent is not None:
+            agent_identity = agent.get_identity()
+            first_line = agent_identity.split("\n")[0] if agent_identity else agent.get_name()
+            logger.info(f"DNA loaded: AI name is {agent.get_name()}.")
+        else:
+            logger.info("DNA: loading in background (setup mode - delivered by SERVER after key auth)")
         logger.info("=" * 60)
 
         # Start periodic stop_events cleanup task
         chat_bus.start_cleanup()
         logger.info("ChatBus stale-session cleanup task started (runs every 10 minutes)")
 
-        
-        logger.info(f"Checking {provider.name} service status...")
-        # (2026-08-20) async control channel: one persistent WS instead of a fresh
-        # connect+auth per call. We are inside startup_event() -- the loop is running.
-        is_healthy, error_msg, models = await provider.health_check_async(force=True)
+        # ===== DEFERRED BOOT (2026-10-07 setup-mode UI fix) =====
+        # The provider/agent boot runs as a background task on THIS event loop. It keeps
+        # retrying the SERVER bootstrap until it succeeds or its budget expires; the phase
+        # flips waiting_key -> bootstrapping automatically once the user sets a key in the
+        # UI (bootstrap._refresh_phase re-reads the key source every attempt). Routers are
+        # safe with provider/agent = None: APIMiddleware blocks every non-public /api/*
+        # while no key exists, and returns 503 "retry shortly" until this task finishes.
+        if deferred_boot is not None:
+            async def _run_deferred():
+                try:
+                    await deferred_boot()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # One actionable line - the UI stays alive so the user can fix the key /
+                    # SERVER address and restart. bootstrap_framework already logged details.
+                    logger.error(f"[FATAL] Background provider boot failed: {e}")
 
-        if is_healthy:
-            logger.info(f"{provider.name} is running. Available models: {models}")
-        else:
-            logger.warning(f"{provider.name} check failed: {error_msg}")
-            logger.info(f"Attempting to start {provider.name} server automatically...")
-            started = provider.start_server()
-            if started:
-                is_healthy, error_msg, models = await provider.health_check_async(force=True)
-                if is_healthy:
-                    logger.info(f"{provider.name} started successfully. Available models: {models}")
-                else:
-                    logger.error(f"{provider.name} started but health check still failing: {error_msg}")
+            _boot_state["task"] = asyncio.create_task(_run_deferred(), name="deferred-provider-boot")
+            logger.info("Deferred provider/agent boot started as background task (setup mode)")
+
+        if provider is not None:
+            logger.info(f"Checking {provider.name} service status...")
+            # (2026-08-20) async control channel: one persistent WS instead of a fresh
+            # connect+auth per call. We are inside startup_event() -- the loop is running.
+            is_healthy, error_msg, models = await provider.health_check_async(force=True)
+
+            if is_healthy:
+                logger.info(f"{provider.name} is running. Available models: {models}")
             else:
-                logger.error(f"Failed to start {provider.name} server automatically.")
-                logger.error(f"  Please start {provider.name} service manually.")
+                logger.warning(f"{provider.name} check failed: {error_msg}")
+                logger.info(f"Attempting to start {provider.name} server automatically...")
+                started = provider.start_server()
+                if started:
+                    is_healthy, error_msg, models = await provider.health_check_async(force=True)
+                    if is_healthy:
+                        logger.info(f"{provider.name} started successfully. Available models: {models}")
+                    else:
+                        logger.error(f"{provider.name} started but health check still failing: {error_msg}")
+                else:
+                    logger.error(f"Failed to start {provider.name} server automatically.")
+                    logger.error(f"  Please start {provider.name} service manually.")
         logger.info("=" * 60)
 
     # ===== SHUTDOWN (2026-08-20) =====
     @app.on_event("shutdown")
     async def shutdown_event():
         """Tear down the persistent control channel cleanly."""
+        # (2026-10-07 setup-mode UI fix): stop a still-running deferred boot task first so
+        # it cannot outlive the loop ("Task was destroyed" noise / late framework install).
+        _bt = _boot_state.get("task") if isinstance(_boot_state, dict) else None
+        if _bt is not None and not _bt.done():
+            _bt.cancel()
+            try:
+                await asyncio.wait({_bt}, timeout=5.0)
+            except Exception as e:  # pragma: no cover - shutdown must never raise
+                logger.debug(f"Deferred boot task cancel wait failed (non-fatal): {e}")
         # (2026-09-10 stale-task fix, user contract): when the CLIENT backend goes away,
         # EVERY live chat session must be stopped - no zombie turns keep streaming after
         # the window is gone. stop_all() is bounded and cross-loop safe; it runs BEFORE
@@ -201,10 +272,11 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
             logger.warning(f"stop_all on shutdown failed (non-fatal): {e}")
         # (2026-09-08 multi-chat) stop the bus' cleanup task first
         chat_bus.stop_cleanup()
-        try:
-            await provider.close_control_channel()
-        except Exception as e:
-            logger.debug(f"Control channel close on shutdown: {e}")
+        if provider is not None:
+            try:
+                await provider.close_control_channel()
+            except Exception as e:
+                logger.debug(f"Control channel close on shutdown: {e}")
 
     # ===== SHUTDOWN-ALL ENDPOINT (2026-09-10 stale-task fix) ======================
     # The UI calls this from beforeunload/pagehide: "anytime we close the UI, all tasks

@@ -192,7 +192,6 @@ class ConversationManager {
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                     </svg>
                     <span class="chat-title" style="flex:1;overflow:hidden;text-overflow:ellipsis;">${this._escapeHtml(conv.title)}</span>
-                    ${conv.agent_mode ? '<span style="color:var(--accent);font-size:10px;">AGENT</span>' : ''}
                     <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${conv.id}')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>

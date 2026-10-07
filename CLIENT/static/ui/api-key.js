@@ -125,8 +125,10 @@ async function setApiKeyToBackend() {
 
         // Key accepted by the backend - setup mode is over. Unlock the Settings UI.
         applySetupModeUI();
-        updateConnectStatus('API key saved.', 'success');
-        showNotification('API key set - you can now connect.', 'success');
+        // (2026-10-07) provider/agent boot may still be running in the background:
+        // keep showing live status until it reports ready.
+        updateConnectStatus('API key saved - CLIENT is starting its provider...', 'info');
+        showNotification('API key set - connecting to SERVER.', 'success');
 
         // If an email was already entered, run the normal validation right away.
         if (getStoredEmail()) {
@@ -147,6 +149,8 @@ function clearApiKey() {
     updateConnectStatus('API key cleared.', 'info');
     showNotification('API key removed. Please enter a new key.', 'warning');
     // Back to setup mode: only "Set API Key" stays available in the UI.
+    // Re-enter live boot-status polling (browser is back in setup mode).
+    pollSetupBootStatus();
     applySetupModeUI();
 }
 
@@ -212,6 +216,10 @@ async function connectWithCredentials() {
         } else if (response.status === 401) {
             updateConnectStatus("Your data can't be validated. Please contact support for API key.", 'error');
             showNotification("Your data can't be validated. Please contact support for API key.", 'error');
+        } else if (response.status === 503) {
+            // (2026-10-07) deferred boot still running in the background - NOT an error:
+            // the live boot-status poller below keeps updating with real progress.
+            updateConnectStatus('CLIENT is still starting its provider - this happens automatically, no action needed.', 'info');
         } else {
             updateConnectStatus('Server error (' + response.status + ').', 'error');
             showNotification('Server error', 'error');
@@ -484,6 +492,67 @@ async function saveConnectionMode() {
     }
 }
 
+// ===== LIVE BOOT STATUS (2026-10-07 setup-mode UI fix) =====
+    // While no key is stored yet the CLIENT backend locks every /api/* path except
+    // POST /api/auth/set-key and GET /api/setup/boot. The latter exposes the live boot
+    // phase, so Settings shows what is happening instead of a dead 401 wall:
+    //   waiting_key    -> 'enter your key below'
+    //   bootstrapping  -> 'Connecting to SERVER... (attempt N, ~Xs budget left)'
+    //   ready          -> stop polling; the provider/agent boot finished
+    //   failed         -> show last_error
+    let _setupPollTimer = null;
+
+    async function pollSetupBootStatus() {
+        if (_setupPollTimer) return; // already running - never double-start
+
+        const tick = async () => {
+            try {
+                const response = await fetch('/api/setup/boot');
+                if (!response.ok) throw new Error('status ' + response.status);
+                const data = await response.json();
+
+                if (data.phase === 'ready') {
+                    stopSetupBootPolling();
+                    updateConnectStatus('API key saved - CLIENT is ready.', 'success');
+                    return;
+                }
+
+                let msg, type = 'info';
+                if (!data.has_key_source) {
+                    msg = 'Waiting for your API key - enter it below and click Set API Key.';
+                    type = 'warning';
+                } else if (data.phase === 'bootstrapping') {
+                    const left = Math.max(0, Math.round(data.remaining_sec || 0));
+                    msg = 'Connecting to SERVER... (attempt ' + (data.attempts || 1) + ', ~' + left + 's budget left)';
+                    if (data.last_error) msg += ' - ' + data.last_error;
+                } else if (data.phase === 'failed') {
+                    msg = 'CLIENT boot failed: ' + (data.last_error || 'unknown reason') + ' - check the SERVER, then restart the CLIENT.';
+                    type = 'error';
+                } else {
+                    // idle / waiting_key with a key source present: between attempts.
+                    msg = 'Waiting for the CLIENT to start its provider...';
+                }
+                updateConnectStatus(msg, type);
+            } catch (e) {
+                const el = document.getElementById('apiKeyStatus');
+                if (el && !el.dataset.customized) {
+                    el.textContent = 'Waiting for the CLIENT backend...';
+                    el.style.color = 'var(--text-secondary)';
+                }
+            }
+        };
+
+        await tick(); // immediate first read so the status is never empty
+        _setupPollTimer = setInterval(tick, 5000);
+    }
+
+    function stopSetupBootPolling() {
+        if (_setupPollTimer) {
+            clearInterval(_setupPollTimer);
+            _setupPollTimer = null;
+        }
+    }
+
     // ===== INJECT API KEY INTO ALL REQUESTS =====
 
 // Override fetch to automatically add API key header
@@ -552,6 +621,9 @@ document.addEventListener('DOMContentLoaded', function () {
     applySetupModeUI();
 
     if (!getStoredApiKey()) {
+        // (2026-10-07) live boot status in Settings; keeps running after Set API Key
+        // until the background provider boot reports phase=ready.
+        pollSetupBootStatus();
         showNotification('No API key set yet - open Settings and set your API key.', 'warning');
     }
 

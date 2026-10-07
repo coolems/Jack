@@ -2,7 +2,7 @@
 
 Creates the conversations/messages tables on first run (anchored to
 config.DB_PATH) and applies additive column migrations (file_contents,
-agent_mode, ip_address, color). All connections go through app.db_manager
+ip_address, color). All connections go through app.db_manager
 (WAL mode, busy timeout, foreign keys enabled).
 """
 
@@ -45,7 +45,6 @@ def init_db(db_path: str):
                     title TEXT,
                     model TEXT DEFAULT {model_default},
                     system_prompt TEXT DEFAULT 'You are an AI assistant.',
-                    agent_mode BOOLEAN DEFAULT 0,
                     ip_address TEXT DEFAULT 'unknown',
                     working_root TEXT DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -73,9 +72,11 @@ def init_db(db_path: str):
                 logger.info("Added file_contents column to messages")
             cursor.execute("PRAGMA table_info(conversations)")
             conv_cols = [c[1] for c in cursor.fetchall()]
-            if "agent_mode" not in conv_cols:
-                cursor.execute("ALTER TABLE conversations ADD COLUMN agent_mode BOOLEAN DEFAULT 0")
-                logger.info("Added agent_mode column to conversations")
+            # Legacy per-conversation agent mode was removed (2026-08-24): it is now a
+            # global UI toggle, so drop the old column from pre-existing databases.
+            if "agent_mode" in conv_cols:
+                cursor.execute("ALTER TABLE conversations DROP COLUMN agent_mode")
+                logger.info("Dropped legacy per-conversation agent_mode column (now a global UI toggle)")
             if "ip_address" not in conv_cols:
                 cursor.execute("ALTER TABLE conversations ADD COLUMN ip_address TEXT DEFAULT 'unknown'")
                 logger.info("Added ip_address column to conversations")

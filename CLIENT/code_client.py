@@ -130,37 +130,71 @@ if __name__ == "__main__":
         logger.error(f"Provider resolution failed: {e}")
         sys.exit(1)
 
+    # 2b. SETUP MODE (2026-10-07 UI fix): no outbound key configured on this machine yet?
+    # Start the UI IMMEDIATELY and run the provider/agent boot in the BACKGROUND: the old
+    # order blocked here for up to BOOTSTRAP_MAX_WAIT_SEC behind a bootstrap that cannot
+    # authenticate without a key, while the ONLY way to provide one (the UI Settings modal)
+    # did not exist yet - a deadlock on any fresh machine. Now: UI comes up in seconds,
+    # shows live boot status (GET /api/setup/boot), and the very next bootstrap attempt
+    # after "Set API Key" authenticates - no restart needed for the first key.
+    from app.keys import is_setup_mode as _is_setup_mode
+    setup_boot = _is_setup_mode()
+    if setup_boot:
+        logger.info("SETUP MODE detected (no API key configured yet) - starting UI immediately; provider boot runs in background")
+
     # 3. Initialize provider, tool orchestrator, and agent (DNA delivered from SERVER here).
     # bootstrap_framework() WAITS for the SERVER while it boots / loads its model (see
     # BOOTSTRAP_MAX_WAIT_SEC in config/config.py) - so "server still starting" is NOT a crash.
     # A failure that survives the wait budget exits cleanly with ONE actionable message,
     # not a wall of traceback (2026-08-26).
     #
-    # (2026-09 threadless refactor): init_provider_and_app() is async now - the ENTIRE
-    # boot sequence (framework fetch + provider build + agent init + health check) runs in
-    # ONE top-level asyncio.run(_boot()) below, on a single event loop. This is the only
-    # asyncio.run left in the CLIENT: it sits at the true program entry point, exactly like
-    # code.py does for the SERVER. uvicorn then starts its own loop afterwards; nothing
-    # from boot outlives that loop (no lingering tasks/sockets).
+    # (2026-09 threadless refactor): init_provider_and_app() is async now - in NORMAL boots the
+    # ENTIRE boot sequence runs in ONE top-level asyncio.run(_boot()) below, on a single event
+    # loop. In SETUP MODE it instead becomes a background task on uvicorn's own loop (see the
+    # deferred_boot= argument of create_app) - no second asyncio.run is ever needed.
     async def _boot():
         return await init_provider_and_app(final_provider_name, final_api_url)
 
-    try:
-        provider, tool_orchestrator, agent, MODEL_NAME, DB_PATH = asyncio.run(_boot())
-    except KeyboardInterrupt:
-        logger.info("Client startup cancelled by user (Ctrl+C)")
-        sys.exit(130)
-    except RuntimeError as e:
-        # The message is already actionable and names the root cause (e.g. SERVER never
-        # came up, stale SERVER build, agent init failure). No traceback dump.
-        logger.error(f"[FATAL] {e}")
-        sys.exit(1)
+    if setup_boot:
+        # ===== DEFERRED BOOT (2026-10-07) - the core deadlock fix =====
+        # The UI starts immediately below; this coroutine runs on uvicorn's loop as a background
+        # task and does exactly what steps 3-4 did in normal boots. bootstrap_framework() keeps
+        # retrying while it waits for the SERVER; its phase flips waiting_key -> bootstrapping
+        # automatically once "Set API Key" fills the runtime key (keys._sync_outbound_credential_
+        # sources), so the very next attempt authenticates. While it runs, keyed requests get a
+        # 503 "retry shortly" from APIMiddleware (is_boot_pending gate) - no router ever sees a
+        # None provider/agent.
+        from app.keys import mark_boot_pending as _mark_bp
 
-    # Agent DNA is now available (delivered from SERVER via WebSocket)
-    logger.info(f"{agent.get_name()} DNA system initialized from SERVER")
+        async def _deferred_boot():
+            global provider, tool_orchestrator, agent, MODEL_NAME, DB_PATH
+            try:
+                provider, tool_orchestrator, agent, MODEL_NAME, DB_PATH = await _boot()
+                # Same post-boot bookkeeping as the normal path (DNA log + goodbye message).
+                logger.info(f"{agent.get_name()} DNA system initialized from SERVER")
+                atexit.register(lambda: logger.info(f"{agent.get_name()} says goodbye. Until next time!"))
+            finally:
+                _mark_bp(False)   # open the 503 gate - routers are fully wired now (or boot failed)
 
-    # Register goodbye message with agent name now that it's available
-    atexit.register(lambda: logger.info(f"{agent.get_name()} says goodbye. Until next time!"))
+        deferred_boot = _deferred_boot
+    else:
+        try:
+            provider, tool_orchestrator, agent, MODEL_NAME, DB_PATH = asyncio.run(_boot())
+        except KeyboardInterrupt:
+            logger.info("Client startup cancelled by user (Ctrl+C)")
+            sys.exit(130)
+        except RuntimeError as e:
+            # The message is already actionable and names the root cause (e.g. SERVER never
+            # came up, stale SERVER build, agent init failure). No traceback dump.
+            logger.error(f"[FATAL] {e}")
+            sys.exit(1)
+
+        # Agent DNA is now available (delivered from SERVER via WebSocket)
+        logger.info(f"{agent.get_name()} DNA system initialized from SERVER")
+
+        # Register goodbye message with agent name now that it's available
+        atexit.register(lambda: logger.info(f"{agent.get_name()} says goodbye. Until next time!"))
+        deferred_boot = None
 
     # ===== HTTPS Configuration (detected BEFORE create_app so the CORS scheme and
     # startup log reflect reality) =====
@@ -174,6 +208,9 @@ if __name__ == "__main__":
         logger.warning("No SSL certificates found in CLIENT/certs/ - running HTTP only")
 
     # Create FastAPI app with the correct provider (coolems_client only)
+    if setup_boot:
+        from app.keys import mark_boot_pending as _mark_bp2
+        _mark_bp2(True)   # 503 gate: keyed requests wait for the deferred boot to finish
     app = create_app(
         db_path=DB_PATH,
         provider=provider,
@@ -184,6 +221,7 @@ if __name__ == "__main__":
         stop_events=stop_events,
         server_port=port,
         use_https=has_ssl,
+        deferred_boot=deferred_boot,   # None in normal boots; background boot task in setup mode
     )
     # ===== Bind Address (SECURITY 2026-08-25) =====
     # Default: loopback only (127.0.0.1). The CLIENT UI is a local tool; binding all

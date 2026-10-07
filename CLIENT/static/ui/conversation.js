@@ -148,8 +148,6 @@ async function loadConversation(id) {
 
         const data = await response.json();
 
-        // Update UI with conversation settings
-        COOLEMS.agentMode = !!data.agent_mode;
         // Per-chat working root (2026-08-29): restore the folder this chat was used with.
         // Legacy chats have working_root=null -> keep whatever is currently active (no-op).
         if (data.working_root && typeof currentWorkingRoot !== 'undefined'
@@ -179,9 +177,6 @@ async function loadConversation(id) {
                 console.warn('Failed to restore workspace working root:', e);
             }
         }
-
-        try { localStorage.setItem('coolems_agent_mode', COOLEMS.agentMode ? '1' : '0'); } catch (e) {}
-        updateAgentUI();
 
         // COMPLETELY REBUILD UI from fresh data
         const container = document.getElementById('chatContainer');
@@ -299,7 +294,6 @@ async function loadConversations() {
                             ? `<span class="chat-status-dot status-${ChatSocketPool.statuses[conv.id] || 'idle'}"></span>`
                             : ''}
                         <span style="flex:1;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(conv.title)}</span>
-                        ${conv.agent_mode ? '<span style="color:var(--accent);font-size:10px;">AGENT</span>' : ''}
                         <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${conv.id}')">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="3 6 5 6 21 6"></polyline>
@@ -362,9 +356,6 @@ async function editAndResend(messageIndex, newContent) {
 
     log('[EDIT] Starting edit at index:', messageIndex, 'new content:', newContent.substring(0, 50));
 
-    // Save current UI state - user stays in same conversation
-    const savedAgentMode = COOLEMS.agentMode;
-
     // Clear any UI state from previous streaming
     COOLEMS.streamingBuffer = '';
     COOLEMS.userScrolledUp = false;
@@ -424,11 +415,6 @@ async function editAndResend(messageIndex, newContent) {
             // SECURITY fix 2026-10-05: appendMessage is async (media tokens are minted via header auth).
             await appendMessage(msg.role, msg.content, false, msg.media_urls, msg.file_contents);
         }
-
-        // Update UI settings
-        COOLEMS.agentMode = savedAgentMode;
-        try { localStorage.setItem('coolems_agent_mode', COOLEMS.agentMode ? '1' : '0'); } catch (e) {}
-        updateAgentUI();
 
         log('[EDIT] UI rebuilt with', data.messages.length, 'messages');
 

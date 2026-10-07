@@ -303,7 +303,7 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
 
 1. Open **https://127.0.0.1:8000/** (plain `http://` only in the certificate-less standalone mode — see the note in step 5).
 2. Click the **gear icon** (top right) → **Settings** → **Authentication** tab.
-3. On a fresh machine you're in **SETUP MODE**: everything is hidden except the *API Key* field and the **Set API Key** button — by design, nothing else works until a key exists.
+3. On a fresh machine you're in **SETUP MODE**: everything is hidden except the *API Key* field and the **Set API Key** button — by design, nothing else works until a key exists. The CLIENT starts its UI **immediately** (no waiting for the SERVER) and Settings shows live boot status: *Waiting for your API key...* while you're still in setup mode, then "Connecting to SERVER... (attempt N, ~Xs budget left)" once the key is set — no restart needed.
 4. Paste the API key you created in step 2 into **API Key** and click **Set API Key**. This:
    - stores the key in your browser (localStorage) — it is NEVER written to disk on this machine, and
    - records `{email, date_acquired}` in `CLIENT/config/.api_client_keys.json` via `POST /api/auth/set-key` (bookkeeping only).
@@ -314,7 +314,7 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
 5. In **Email Address**, enter the e-mail from step 2 — use the same one you recorded next to your key in `config/.api_keys.json`, since that's how the SERVER identifies you (it returns the registered e-mail on a successful handshake). The e-mail is mandatory for every request; without it nothing works. (What actually gates access is the API key — but keep both consistent so logs and status match.)
 6. Click **Connect**. A green **"Connected successfully."** means the full chain validated: UI → CLIENT → SERVER WebSocket auth → profile applied. The connection status dot in the header switches from *Disconnected* to connected, and the model selector now lists exactly the models your profile allows.
 
-> 🔁 Where things are stored: the real key lives in your browser localStorage (`coolems_api_key`) and on the SERVER (`config/.api_keys.json`) only. The CLIENT disk file `.api_client_keys.json` holds non-confidential bookkeeping (`email`, `date_acquired`) plus nothing else; `COOLEMS_CLIENT_API_KEY` (env var) feeds headless startup. A second machine or a second browser repeats step 6 with its own copy of the key. **Clear Key** in Settings removes the local key and drops you back into setup mode.
+> 🔁 Where things are stored: the real key lives in your browser localStorage (`coolems_api_key`) and on the SERVER (`config/.api_keys.json`) only. The CLIENT disk file `.api_client_keys.json` holds exactly **ONE** entry of non-confidential bookkeeping (`email`, `date_acquired`) at a time — every re-set replaces all previous rows (single-key contract, 2026-10-07) — plus nothing else; `COOLEMS_CLIENT_API_KEY` (env var) feeds headless startup. A second machine or a second browser repeats step 6 with its own copy of the key. **Clear Key** in Settings removes the local key and drops you back into setup mode.
 
 ### Step 7 — Connect a remote CLIENT (optional): server on a powerful workstation, client on any laptop
 
@@ -351,7 +351,8 @@ Notes:
 
 | Symptom | Fix |
 |---|---|
-| Banner *"No API key set yet - open Settings and set your API key"* | You're in setup mode — do step 6 first; nothing else is reachable until then (by design) |
+| Banner *"No API key set yet - open Settings and set your API key"* | You're in setup mode — the UI starts immediately anyway; Settings shows live boot status. Do step 6 first; nothing else is reachable until then (by design) |
+| SERVER log shows *sent empty API key -- rejecting* on every client retry | The CLIENT has no key yet (fresh machine, `COOLEMS_CLIENT_API_KEY` unset): open the CLIENT UI → Settings and set the key — or `setx COOLEMS_CLIENT_API_KEY <key>`. The next bootstrap attempt authenticates automatically; the SERVER rejection is correct behavior |
 | Connect says *Your data can't be validated* / 401 | The key isn't found or inactive on the SERVER: check `config/.api_keys.json` for an exact match and `"is_active": true`; check `logs/coolems.log` on the SERVER for the rejection reason |
 | *"Authentication failed or no valid profile"* | The key's `role` has no matching entry in `config/profiles.json` — add the profile (step 3) or fix the role name; both files hot-reload, just retry Connect |
 | Model selector empty / model missing | The folder path in `allowed_models_folders` doesn't exist on disk (exact folder = exact model). Fix the absolute path in `profiles.json`; wait for reload and refresh the UI |

@@ -42,6 +42,23 @@ logger = logging.getLogger("COOLEMS.Provider.Bootstrap")
 # delivery so a later re-auth failure starts counting fresh.
 _auth_reject_count = 0
 _key_mismatch_hint_printed = False
+_lan_hint_printed = False   # (2026-10-07) one-time hint when only local addresses are configured
+
+# ---------------------------------------------------------------------------
+# LIVE BOOT STATUS (2026-10-07 SETUP-MODE UI FIX)
+# The CLIENT may now start its UI BEFORE bootstrap succeeds (setup mode: no key yet).
+# GET /api/setup/boot reads this dict so the Settings modal can show what boot is
+# doing RIGHT NOW instead of a dead page. Updated by _bootstrap_fetch_once() and
+# bootstrap_framework(); consumed read-only - never mutated from outside this module.
+# ---------------------------------------------------------------------------
+_status = {
+    "phase": "idle",            # idle | waiting_key | bootstrapping | ready | failed
+    "attempts": 0,              # framework-fetch attempts made so far
+    "last_error": "",           # short human-readable reason of the last attempt
+    "budget_sec": 0.0,          # total wait budget for this run
+    "remaining_sec": 0.0,       # seconds left in the budget (0 when done/failed)
+}
+
 
 
 def _target_display() -> str:
@@ -52,6 +69,19 @@ def _target_display() -> str:
     addrs = get_server_address_list() or ["<unset>"]
     return "direct " + ", ".join(addrs)
 
+
+def bootstrap_status() -> dict:
+    """Live snapshot of the boot-time framework fetch (for GET /api/setup/boot).
+
+    Read-only copy - callers must not mutate the module state. Phases:
+      "waiting_key"   - no outbound API key configured yet; every SERVER auth attempt is
+                        rejected with 'Empty API key'. Set one in UI Settings -> Authentication
+                        (or COOLEMS_CLIENT_API_KEY) and the NEXT attempt authenticates.
+      "bootstrapping" - a key exists; waiting for the SERVER to deliver tools/DNA.
+      "ready"         - framework delivered, boot can proceed to provider/agent init.
+      "failed"        - wait budget exhausted without delivery (actionable message in log).
+    """
+    return dict(_status)
 
 def _classify_failure(e: Exception) -> tuple[str, str]:
     """Map a failed bootstrap attempt to (log_level, short_reason).
@@ -79,24 +109,28 @@ def _classify_auth_failure(auth_resp) -> str:
 
     'auth_rejected'  - SERVER refused the presented key ("Authentication failed or no
                        valid profile"): the CLIENT is presenting a key that does not match
-                       config/.api_keys.json on the SERVER, OR it has no key at all (setup
-                       mode) and nothing will ever succeed until one is configured.
+                       config/.api_keys.json on the SERVER.
+    'empty_key'      - (2026-10-07) SERVER rejected an EMPTY api_key: this machine has no
+                       outbound credential configured yet (SETUP MODE). Waiting never helps
+                       by itself - a key must be entered in UI Settings -> Authentication or
+                       set as COOLEMS_CLIENT_API_KEY. The wait loop keeps retrying so the
+                       very next attempt after the user sets the key succeeds.
     'protocol'       - explicit protocol version mismatch (fatal - retrying never helps).
-    'other'          - anything else (empty-key error frames, malformed responses...).
+    'other'          - anything else (malformed responses...).
 
-    The class drives the wait-loop diagnostics: 3 consecutive 'auth_rejected' attempts
-    print ONE actionable key-mismatch hint instead of an identical ERROR line forever.
+    The class drives the wait-loop diagnostics: repeated 'auth_rejected' attempts print ONE
+    actionable key-mismatch hint; a single 'empty_key' attempt prints the setup-mode hint.
     """
     if not isinstance(auth_resp, dict):
         return "other"
     msg = str(auth_resp.get("message", ""))
     if "Authentication failed or no valid profile" in msg:
         return "auth_rejected"
+    if "Empty API key" in msg:  # (2026-10-07) setup mode - distinct from a wrong key
+        return "empty_key"
     if "Protocol version mismatch" in msg:
         return "protocol"
     return "other"
-
-
 async def _bootstrap_fetch_once() -> dict | None:
     """Open raw WS, auth (with protocol check), send tools_request, return response dict.
 
@@ -216,12 +250,17 @@ async def _bootstrap_fetch_once() -> dict | None:
             auth_raw = await asyncio.wait_for(ws.recv(), timeout=WS_HANDSHAKE_TIMEOUT)
             auth_resp = json.loads(auth_raw)
             if not isinstance(auth_resp, dict) or auth_resp.get("type") != "auth_ok":
-                # (2026-10-05 KEY-DRIFT DX): record the failure class so the wait loop can
-                # tell "SERVER is up but rejects our key" apart from "still booting".
-                global _auth_reject_count, _key_mismatch_hint_printed
+                # (2026-10-05 KEY-DRIFT DX + 2026-10-07 empty-key class): record the failure
+                # class so the wait loop can tell "SERVER is up but rejects our key" apart
+                # from "still booting" - and an EMPTY key (setup mode) gets its own hint.
+                global _auth_reject_count, _key_mismatch_hint_printed, _status
                 if _classify_auth_failure(auth_resp) == "auth_rejected":
                     _auth_reject_count += 1
-                logger.error(f"[BOOTSTRAP] Auth failed: {auth_resp!r}")
+                if _classify_auth_failure(auth_resp) == "empty_key":
+                    logger.warning("[BOOTSTRAP] SERVER rejected the auth with an EMPTY key - no API key configured on this machine yet (SETUP MODE). Open the CLIENT UI: Settings -> Authentication -> Set API Key, or set COOLEMS_CLIENT_API_KEY; the next attempt will authenticate.")
+                else:
+                    logger.error(f"[BOOTSTRAP] Auth failed: {auth_resp!r}")
+                _status["last_error"] = "SERVER auth rejected (" + str(auth_resp.get("message", "")) + ")"
                 return None
             _check_protocol(auth_resp, "bootstrap")
             # Apply auth-derived config (context_window -> CONTEXT_WINDOW_TOKENS) exactly
@@ -252,12 +291,59 @@ async def _bootstrap_fetch_once() -> dict | None:
             raise
         level, reason = _classify_failure(e)
         logger.log(getattr(logging, level.upper()), f"[BOOTSTRAP] Attempt failed - {reason}")
+        _status["last_error"] = "SERVER unreachable - " + reason
         return None
     except Exception as e:
         level, reason = _classify_failure(e)
         logger.log(getattr(logging, level.upper()), f"[BOOTSTRAP] Attempt failed - {reason}")
+        _status["last_error"] = "bootstrap attempt failed - " + reason
         return None
 
+
+def _refresh_phase(budget: float) -> None:
+    """Keep _status["phase"] honest (2026-10-07 setup-mode UI).
+
+    No key available right now  -> "waiting_key"  (the actionable state the user must fix);
+    a key exists                 -> "bootstrapping" (normal SERVER-still-loading wait).
+    """
+    from app.keys import load_coolems_api_key as _lck2
+    try:
+        has_key = bool(_lck2())
+    except Exception:  # pragma: no cover - keys module must never break the boot loop
+        has_key = False
+    _status["phase"] = "bootstrapping" if has_key else "waiting_key"
+    _status["budget_sec"] = float(budget)
+
+def _all_addresses_loopback() -> bool:
+    """True when EVERY configured SERVER address is a loopback one (2026-10-07 LAN hint).
+
+    A fresh machine ships with ['localhost:8080'] only; if the real SERVER lives on
+    another LAN box, every attempt fails with NoServerReachable and this helper lets the
+    wait loop say so explicitly instead of retrying localhost for 30 minutes.
+    """
+    try:
+        from config import get_server_address_list
+        addrs = [a for a in get_server_address_list() if a]
+    except Exception:
+        return False  # cannot tell - do not print a possibly-wrong hint
+    if not addrs:
+        return False
+    import ipaddress as _ip
+
+    def _host_of(addr: str) -> str:
+        h = addr[1:addr.find("]")] if addr.startswith("[") else (addr.rsplit(":", 1)[0] if ":" in addr else addr)
+        return h.strip().lower()
+
+    for a in addrs:
+        h = _host_of(a)
+        if h in ("localhost", "::1"):
+            continue
+        try:
+            if not _ip.ip_address(h).is_loopback:
+                return False
+        except ValueError:
+            return False  # hostname we cannot resolve here - assume non-local, stay quiet
+    return True
 
 async def bootstrap_framework() -> dict | None:
     """Async entry point for the boot-time framework fetch (2026-09 threadless refactor).
@@ -328,8 +414,15 @@ async def bootstrap_framework() -> dict | None:
     attempt = 0
     next_progress_log = 0.0
 
+    # (2026-10-07 setup-mode UI): the phase starts as waiting_key when no key exists yet;
+    # _refresh_phase() below re-evaluates it on every attempt, so a key set via the UI
+    # while we wait flips the next attempt to bootstrapping automatically.
+    _status["phase"] = "bootstrapping"
+
     while True:
+        _refresh_phase(budget)
         attempt += 1
+        _status["attempts"] = attempt
         try:
             response = await _bootstrap_fetch_once()
         except ConnectionError as e:
@@ -345,10 +438,14 @@ async def bootstrap_framework() -> dict | None:
                 f"[BOOTSTRAP] SERVER delivered tools/DNA on attempt {attempt}"
                 + (f" after waiting {waited:.0f}s" if waited >= 2 else "")
             )
+            _status["phase"] = "ready"
+            _status["remaining_sec"] = 0.0
+            _status["last_error"] = ""
             return response
 
         now = time.monotonic()
         remaining = deadline - now
+        _status["remaining_sec"] = max(remaining, 0.0)
         if remaining <= 0:
             break
 
@@ -362,6 +459,22 @@ async def bootstrap_framework() -> dict | None:
                 "this will NOT fix itself by waiting. The CLIENT's outbound key (COOLEMS_CLIENT_API_KEY / UI) "
                 "does not match config/.api_keys.json on the SERVER. Fix: re-set your API key in UI Settings, or "
                 "run `setx COOLEMS_CLIENT_API_KEY <key-from-config\\.api_keys.json>` and restart this CLIENT."
+            )
+
+        # (2026-10-07 LAN-HINT DX): every configured address is loopback and none answered
+        # -> the SERVER almost certainly runs on ANOTHER machine. One actionable line so a
+        # fresh machine does not retry localhost for 30 minutes in silence.
+        global _lan_hint_printed
+        if (
+            not _lan_hint_printed
+            and str(_status.get("last_error", "")).startswith("SERVER unreachable")
+            and _all_addresses_loopback()
+        ):
+            _lan_hint_printed = True
+            logger.warning(
+                "[BOOTSTRAP] No SERVER reachable at the configured address(es) - all of them are LOCAL (localhost/127.0.0.1). "
+                "If your COOLEMS SERVER runs on another machine, add its LAN IP to server_addresses in CLIENT/config/settings.json "
+                "(e.g. localhost:8080 plus 192.168.x.x:8080) or use UI Settings -> Server Address; the next attempt picks it up automatically."
             )
 
         # Progress log on a steady cadence - the user must see "still waiting", not silence.
@@ -378,6 +491,10 @@ async def bootstrap_framework() -> dict | None:
 
         delay = min(delay * 1.5, BOOTSTRAP_RETRY_MAX_DELAY)
 
+    _status["phase"] = "failed"
+    if not _status.get("last_error"):
+        _status["last_error"] = f"SERVER did not deliver tools/DNA within {int(budget)}s"
+    _status["remaining_sec"] = 0.0
     logger.error(
         f"[BOOTSTRAP] Gave up after {attempt} attempts / {int(budget)}s waiting for the SERVER at {target}. "
         f"Start the COOLEMS SERVER first (code.py in the server root folder), make sure its address/port match "

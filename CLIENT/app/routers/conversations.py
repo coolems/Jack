@@ -76,7 +76,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         try:
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT id, title, model, agent_mode, created_at, ip_address, color
+                SELECT id, title, model, created_at, ip_address, color
                 FROM conversations
                 WHERE ip_address = ?
                 ORDER BY {order_col} {order_dir}
@@ -93,10 +93,9 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                     "id": row[0],
                     "title": row[1] or "New Workspace",
                     "model": row[2],
-                    "agent_mode": bool(row[3]),
-                    "created_at": row[4],
-                    "owner_ip": row[5],
-                    "color": row[6] if len(row) > 6 and row[6] else None,
+                    "created_at": row[3],
+                    "owner_ip": row[4],
+                    "color": row[5] if len(row) > 5 and row[5] else None,
                 }
                 for row in rows
             ]
@@ -123,7 +122,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 (conv_id,)
             )
             rows = cursor.fetchall()
-            cursor.execute("SELECT system_prompt, agent_mode, working_root FROM conversations WHERE id = ?", (conv_id,))
+            cursor.execute("SELECT system_prompt, working_root FROM conversations WHERE id = ?", (conv_id,))
             conv_info_full = cursor.fetchone()
         finally:
             close_db_connection(conn)
@@ -141,9 +140,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         return {
             "messages": messages,
             "system_prompt": conv_info_full[0] if conv_info_full else f"You are {agent.get_name()}.",
-            "agent_mode": bool(conv_info_full[1]) if conv_info_full else False,
             # Per-chat working root (2026-08-29): additive field. NULL for legacy chats -> UI keeps current folder.
-            "working_root": conv_info_full[2] if conv_info_full and len(conv_info_full) > 2 else None,
+            "working_root": conv_info_full[1] if conv_info_full and len(conv_info_full) > 1 else None,
             "owner_ip": conv_info[0]
         }
 
@@ -189,7 +187,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         """
         Update conversation properties.
 
-        Accepts: title, system_prompt, agent_mode, color
+        Accepts: title, system_prompt, color
         - color: one of VALID_COLORS or None to clear
         """
         current_ip = get_client_ip(request)
@@ -202,8 +200,6 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 cursor.execute("UPDATE conversations SET title = ? WHERE id = ?", (data["title"], conv_id))
             if "system_prompt" in data:
                 cursor.execute("UPDATE conversations SET system_prompt = ? WHERE id = ?", (data["system_prompt"], conv_id))
-            if "agent_mode" in data:
-                cursor.execute("UPDATE conversations SET agent_mode = ? WHERE id = ?", (data["agent_mode"], conv_id))
             if "color" in data:
                 # Accept None/null to clear color, or one of VALID_COLORS
                 new_color = data["color"]

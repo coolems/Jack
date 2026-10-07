@@ -71,6 +71,14 @@ PUBLIC_EXACT = set()
 # Loopback-only in EVERY mode (see APIMiddleware.__call__ and _is_localhost_client).
 SETUP_KEY_PATH = "/api/auth/set-key"
 
+# (2026-10-07 setup-mode UI fix): the ONE extra read-only path that stays reachable while
+# the CLIENT is still booting / waiting for a key. It exposes no credential - only the
+# bootstrap phase and whether any key source exists yet - so the Settings modal can show
+# live status instead of a dead 401 wall on every other /api/* path.
+# NOTE: /api/setup/status is ALREADY TAKEN by routers/downloads.py (tool setup progress);
+# this boot-status route lives at /api/setup/boot to avoid shadowing it.
+SETUP_STATUS_PATH = "/api/setup/boot"
+
 
 def _is_public_path(path: str) -> bool:
     """Return True if the path does not require authentication."""
@@ -246,6 +254,12 @@ class APIMiddleware:
         # Before a key exists this is the ONLY thing that works; afterwards it lets
         # the owner change the key from Settings. Loopback + Host-header check makes
         # it unreachable for remote LAN hosts and rebinding domains alike.
+        # ===== LIVE BOOT STATUS (2026-10-07) - read-only, no auth required =====
+        # Lets the UI show what boot is doing while setup mode locks every other /api/*.
+        if path == SETUP_STATUS_PATH and scope.get("method", "GET").upper() == "GET":
+            await self.app(scope, receive, send)
+            return
+
         if path == SETUP_KEY_PATH:
             if not _is_localhost_client(scope):
                 client = scope.get("client")
@@ -304,6 +318,31 @@ class APIMiddleware:
             )
             await response(scope, receive, send)
             return
+
+        # ===== DEFERRED BOOT GATE (2026-10-07 setup-mode UI fix) =====
+        # Setup mode just ended (a key now exists) but the background provider/agent boot
+        # may still be fetching the framework from the SERVER. Routers would see
+        # provider/agent = None in that window, so answer 503 "retry shortly" instead -
+        # the UI's Connect flow simply retries and everything works once boot finishes.
+        # EXEMPTION (2026-10-07): /api/settings must pass through even while boot is
+        # pending - it only reads/writes settings.json (no provider/agent access), and the
+        # user needs it to fix a wrong SERVER address while the background bootstrap keeps
+        # retrying. The bootstrap re-reads get_server_address_list() fresh every attempt,
+        # so a corrected address applies on the very next iteration - no restart needed.
+        try:
+            from app.keys import is_boot_pending as _boot_pending_check
+            if _boot_pending_check():
+                method = scope.get("method", "GET").upper()
+                if not (path == "/api/settings" and method in ("GET", "POST")):
+                    response = JSONResponse(
+                        status_code=503,
+                        content={"detail": "CLIENT still starting - please retry in a moment."},
+                        headers={"Retry-After": "2"},
+                    )
+                    await response(scope, receive, send)
+                    return
+        except Exception:  # pragma: no cover - flag check must never break auth
+            pass
 
         # Extract API key from headers
         headers = dict(scope.get("headers", {}))
