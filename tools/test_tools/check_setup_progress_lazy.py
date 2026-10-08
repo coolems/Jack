@@ -27,6 +27,41 @@ def _load(name, rel):
     return mod
 
 
+def _load_tb_package():
+    """Load tools/tool_bootstrap as a real package WITHOUT running tools/__init__.py's
+    full tool discovery (which would auto-import every tool module from disk).
+
+    Returns the bootstrap submodule: ensure_tool_runtime() really lives there and its
+    module-global lookups must be patched THERE, not on the facade.
+    """
+    import types
+
+    if "tools" not in sys.modules:
+        ns = types.ModuleType("tools")
+        ns.__path__ = [os.path.join(ROOT, "tools")]
+        ns.__spec__ = importlib.machinery.ModuleSpec("tools", loader=None, is_package=True)
+        sys.modules["tools"] = ns
+
+    pkg_dir = os.path.join(ROOT, "tools", "tool_bootstrap")
+    init_path = os.path.join(pkg_dir, "__init__.py")
+    with open(init_path, encoding="utf-8") as f:
+        init_src = f.read()
+    pkg = types.ModuleType("tools.tool_bootstrap")
+    pkg.__path__ = [pkg_dir]
+    pkg.__package__ = "tools.tool_bootstrap"
+    exec(compile(init_src, init_path, "exec"), pkg.__dict__)
+    sys.modules["tools.tool_bootstrap"] = pkg
+
+    for sub in ("setup_progress", "pip_parse", "streaming", "runtime_paths", "bootstrap"):
+        spec = importlib.util.spec_from_file_location(
+            f"tools.tool_bootstrap.{sub}", os.path.join(pkg_dir, sub + ".py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[f"tools.tool_bootstrap.{sub}"] = mod
+        spec.loader.exec_module(mod)
+
+    return sys.modules["tools.tool_bootstrap.bootstrap"]
+
+
 def main() -> int:
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)  # so `from config import ...` inside generate_image.py resolves
@@ -34,7 +69,10 @@ def main() -> int:
     # Deterministic environment: never let the REAL client runtimes root leak into this check.
     os.environ.pop("COOLEMS_CLIENT_ROOT", None)
 
-    tb = _load("tools.tool_bootstrap", "tools/tool_bootstrap.py")
+    # tool_bootstrap is now a package (2026-08 split): the flat tools/tool_bootstrap.py is a
+    # lazy facade; ensure_tool_runtime() lives in bootstrap.py and its module-global lookups
+    # must be patched THERE, not on the facade.
+    tb = _load_tb_package()
 
     failures = []
 

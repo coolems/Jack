@@ -22,14 +22,13 @@ existing imports ('from .client_provider import CoolemsClientProvider, is_model_
 'relay_ws_connect') keep working unchanged.
 """
 
-from .client_provider import (  # noqa: F401  -- package facade; implementation in client_provider/
-    CoolemsClientProvider,
-    _AccumulatingWS,
+from .connection_modes import (  # noqa: F401
     _live_relay_host_port,
     _model_switch_in_progress,
     _parse_direct_ws_address,
     _relay_mode,
     _set_model_switching,
     is_model_switching,
-    relay_ws_connect,
 )
+from .provider_class import CoolemsClientProvider  # noqa: F401
+from .ws_connect import _AccumulatingWS, relay_ws_connect  # noqa: F401

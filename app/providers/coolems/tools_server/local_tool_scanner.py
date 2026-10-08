@@ -129,7 +129,29 @@ class LocalToolScanner:
                              mod_name, module_path)
                 self._shared_sources[mod_name] = None
 
-            # Load subpackage shared modules needed by compiled web_interact tools
+            # tool_bootstrap is a PACKAGE (tools/tool_bootstrap/): the flat facade above ships as
+            # 'tool_bootstrap', and its submodules ship under dot keys so the CLIENT installs them
+            # in sys.modules BEFORE the facade execs 'from .tool_bootstrap import ...' (parents by
+            # depth first - see install_shared_modules). Children first, then the __init__ facade.
+            tb_dir = self.tools_dir / "tool_bootstrap"
+            if tb_dir.is_dir():
+                for sub_name in ('setup_progress', 'pip_parse', 'streaming', 'runtime_paths',
+                                 'bootstrap', '__init__'):
+                    sub_path = tb_dir / f"{sub_name}.py"
+                    key = 'tool_bootstrap' if sub_name == '__init__' else f'tool_bootstrap.{sub_name}'
+                    # The flat facade (key 'tool_bootstrap') was already loaded above; only add it
+                    # here when the flat file was missing but the package exists.
+                    if self._shared_sources.get(key):
+                        continue
+                    if sub_path.exists():
+                        try:
+                            self._shared_sources[key] = sub_path.read_text(encoding="utf-8")
+                            logger.info("Loaded shared module '%s' (%d chars)", key, len(self._shared_sources[key]))
+                        except Exception as exc:
+                            logger.error("Failed to load tool_bootstrap/%s.py: %s", sub_name, exc)
+                            self._shared_sources.setdefault(key, None)
+
+                # Load subpackage shared modules needed by compiled web_interact tools
             # These use 'from .X import Y' which dynamic_loader comments out
             known_subpackage_modules = [
                 ('web_interact', 'shared_instance'),   # get_web_interact, set_web_interact

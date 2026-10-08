@@ -97,7 +97,8 @@ State shape (all stages optional - absent means "not started/not applicable"):
 # implementation lives in the tools/tool_bootstrap/ package; each public symbol is
 # imported on first access - by then every submodule is already in sys.modules on the
 # CLIENT (or importable from disk on the SERVER). The flat tools/tool_bootstrap.py
-# file carries this same facade and is what gets SHIPPED to clients as the
+# file carries this same facade - on the SERVER it is shadowed by this package (a directory
+# beats a .py of the same name), and its content is what gets SHIPPED to clients as the
 # 'tool_bootstrap' shared source.
 # ---------------------------------------------------------------------------
 

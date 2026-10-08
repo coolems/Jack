@@ -6,43 +6,46 @@
     - Setup-mode detection (nothing configured yet -> only POST /api/auth/set-key works)
     - Authoritative role/email lookup (from the SERVER's last auth_ok, in-memory)
 
-    SECURITY MODEL (2026-09-29): NO CONFIDENTIAL DATA ON CLIENT DISK.
-      * The on-disk file ``CLIENT/config/.api_client_keys.json`` stores ONLY
-        non-confidential bookkeeping: {"email", "date_acquired"}. It NEVER contains
-        the API key itself, nor role/is_active/max_connections/last_used (those are
-        SERVER-side concepts owned by config/.api_keys.json and profiles.json).
-      * SINGLE-KEY CONTRACT (2026-10-07): the file holds exactly ONE entry at a time.
-        set_client_api_key() replaces every previous row with the new record - this
-        machine has one credential, so there is never ambiguity about which to use.
+    SECURITY MODEL (2026-10-08): THE KEY LIVES IN THE CLIENT CONFIG FILE.
+      * The on-disk file ``CLIENT/config/.api_client_keys.json`` holds exactly ONE
+        entry at a time: {"email", "date_acquired", "key"}. The key is stored in
+        PLAINTEXT - this is a deliberate, documented trade-off (plain mode): the
+        file is per-machine, gitignored and sits next to every other config file.
+        NO registry writes anywhere (no setx / HKCU\\Environment) - the previous
+        plaintext-in-registry persistence was removed because any local user could
+        `reg query` it; a config file in the project folder has no worse exposure
+        than the SERVER's own config/.api_keys.json on this same machine.
       * The real key lives in exactly two places:
-          1. The UI browser (localStorage 'coolems_api_key') - the UI injects it
-             into every request/WebSocket via static/ui/api-key.js, so ALL
-             user-facing traffic carries the key in headers/query params only.
+          1. This CLIENT config file (plaintext, per-machine) - the persistent store
+             for headless / non-UI startup and every future process start.
           2. The SERVER's config/.api_keys.json (the authoritative credential store).
+        Plus a transient copy in the UI browser (localStorage 'coolems_api_key') -
+        the UI injects it into every request/WebSocket via static/ui/api-key.js, so
+        ALL user-facing traffic carries the key in headers/query params only.
       * Outbound provider auth frames (CLIENT -> SERVER WebSocket: bootstrap at boot,
         control channel, tool requests) need a key without any UI involvement. Their
-        source, in priority order (2026-09-30 fix - runtime key is authoritative):
+        source, in priority order (2026-10-08 file-first):
                 a. the runtime key held IN MEMORY for this process lifetime - filled by
                    POST /api/auth/set-key or automatically when the UI presents its
                    localStorage key on an authenticated request (note_presented_key).
                    Authoritative while set: a key entered/changed in the UI must work
-                   immediately, even if COOLEMS_CLIENT_API_KEY still holds an OLDER value
-                   from before the change - setx only affects FUTURE processes, so this
-                   running client's os.environ stays stale until a restart (see
-                   set_client_api_key, which also syncs os.environ for the current run),
-                b. COOLEMS_CLIENT_API_KEY environment variable (headless / non-UI flows -
-                   used at boot while no UI session has presented a key yet; set it once
-                   per machine, e.g. `setx COOLEMS_CLIENT_API_KEY <key>`),
-                c. TRANSITIONAL: real keys still sitting in PRE-migration disk files
-                   (older builds wrote the key into .api_client_keys.json). Captured at
-               import time for this one process run, then stripped from disk.
+                   immediately, even if the config file still holds an OLDER value.
+                b. CLIENT/config/.api_client_keys.json ("key" field of the single row) -
+                   the persistent per-machine store; written by "Set API Key" (UI) and
+                   by the init script. Beats a stale COOLEMS_CLIENT_API_KEY env var, so
+                   a key rotation can never be shadowed by an old shell environment.
+                c. COOLEMS_CLIENT_API_KEY environment variable - OPTIONAL fallback for
+                   headless / CI flows (export it manually if you prefer); the config
+                   file takes precedence over it.
 
-    LEGACY MIGRATION (2026-09-29): older builds stored the full credential entry here
-    (incl. the real key, role, is_active, max_connections, last_used). At import time
-    such a file is migrated ONCE: every legacy field is stripped and the file is
-    rewritten atomically with only {email, date_acquired}. The captured keys stay in
-    memory for this process run (source c above) so an upgraded machine keeps working
-    immediately - until COOLEMS_CLIENT_API_KEY is set.
+    LEGACY MIGRATION: pre-2026-10-08 builds stored {email, date_acquired} only in this
+    file (the key lived in the per-user registry via setx). At import time a row that
+    carries no "key" field is left as-is - it simply provides NO credential and the
+    CLIENT starts in SETUP MODE until the user sets a key in the UI (which writes the
+    full row) or exports COOLEMS_CLIENT_API_KEY. Rows from even older builds that carry
+    extra confidential fields (role, is_active, max_connections, last_used) are cleaned
+    to {email, date_acquired, key?} - those fields were SERVER-side concepts and never
+    belong in this file.
 
     RENAME (2026-08-23): the file was renamed from ``.api_keys.json`` to
     ``.api_client_keys.json`` so it is not confused with the SERVER's own
@@ -59,19 +62,20 @@ from typing import Optional
 
 logger = logging.getLogger("COOLEMS")
 
-# Path to CLIENT's local .api_client_keys.json (NON-CONFIDENTIAL bookkeeping only:
-# email + date_acquired per entry - see module docstring).
+# Path to CLIENT's local .api_client_keys.json - the per-machine credential store:
+# exactly ONE row {"email", "date_acquired", "key"} (plaintext key by design).
 _CLIENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _KEYS_FILE = os.path.join(_CLIENT_DIR, "config", ".api_client_keys.json")
 
-# Environment variable holding the REAL key for OUTBOUND provider auth (headless /
-# non-UI flows: bootstrap framework fetch at boot, control channel, tool requests).
-# The UI flow never needs it - the browser injects its localStorage key into every
-# request and that fills the runtime store below.
+# Optional environment-variable fallback for OUTBOUND provider auth (headless / CI).
+# The config file above takes PRECEDENCE over it; the UI flow never needs either -
+# the browser injects its localStorage key into every request and that fills the
+# runtime store below.
 _ENV_KEY_VAR = "COOLEMS_CLIENT_API_KEY"
 
 # In-memory (process lifetime) real key for OUTBOUND provider auth. Never written to
-# disk. Filled by set_client_api_key() or note_presented_key(); see module docstring.
+# disk directly. Filled by set_client_api_key() or note_presented_key(); see module
+# docstring.
 _runtime_key: str = ""
 
 # DEFERRED BOOT FLAG (2026-10-07 setup-mode UI fix): True while the CLIENT's provider/agent
@@ -93,9 +97,6 @@ def is_boot_pending() -> bool:
     """True while the background provider/agent boot has not finished yet."""
     return _boot_pending
 
-
-# Transitional legacy keys captured from a PRE-migration file at import time.
-_legacy_keys: list = []
 
 # Authoritative identity as reported by the SERVER in auth_ok (in-memory only).
 # apply_auth_info() (app/providers/coolems/__init__.py) updates these on EVERY
@@ -122,29 +123,29 @@ def _self_heal_keys_file() -> None:
 
 
 def _migrate_legacy_file() -> None:
-    """One-time LEGACY MIGRATION (2026-09-29), runs at import time.
+    """One-time LEGACY CLEANUP (2026-10-08), runs at import time.
 
-    Older builds stored the full credential entry in .api_client_keys.json (incl. the
-    real key, role, is_active, max_connections, last_used). If such legacy fields are
-    present: every captured key goes into _legacy_keys (in-memory, this process run
-    only - keeps an upgraded machine working until COOLEMS_CLIENT_API_KEY is set) and
-    the file is rewritten atomically with ONLY {email, date_acquired}. A clean or
-    missing file is left untouched. Never blocks startup; any failure just leaves the
-    file as-is (the loaders below handle that gracefully).
+    Pre-2026-10-08 builds stored {email, date_acquired} only here (the key lived in
+    the per-user registry via setx - that persistence is gone now). Such rows carry
+    no credential and are left as-is: they simply do not end setup mode. Rows from
+    even older builds may still hold SERVER-side fields (role, is_active,
+    max_connections, last_used) - those never belong in this file, so when present
+    the row is rewritten atomically to {email, date_acquired, key?}. A clean or
+    missing file is left untouched. Never blocks startup; any failure just leaves
+    the file as-is (the loaders below handle that gracefully).
     """
-    global _legacy_keys
     if not os.path.exists(_KEYS_FILE):
         return
     try:
         with open(_KEYS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
-        logger.debug("[CLIENT] Legacy migration skipped - file unreadable: %s", e)
+        logger.debug("[CLIENT] Legacy cleanup skipped - file unreadable: %s", e)
         return
     if not isinstance(data, list):
         return
 
-    legacy_fields = ("key", "role", "is_active", "max_connections", "last_used")
+    legacy_fields = ("role", "is_active", "max_connections", "last_used")
     needs_migrate = any(
         isinstance(e, dict) and (any(f in e for f in legacy_fields)) for e in data
     )
@@ -155,10 +156,11 @@ def _migrate_legacy_file() -> None:
     for e in data:
         if not isinstance(e, dict):
             continue
+        row = {"email": e.get("email") or "", "date_acquired": e.get("date_acquired")}
         key = e.get("key")
-        if key and not _is_placeholder_key(key):
-            _legacy_keys.append(str(key))  # transitional, memory only (this run)
-        cleaned.append({"email": e.get("email") or "", "date_acquired": e.get("date_acquired")})
+        if isinstance(key, str) and key.strip():
+            row["key"] = key.strip()
+        cleaned.append(row)
 
     try:
         tmp_path = _KEYS_FILE + ".tmp"
@@ -167,19 +169,18 @@ def _migrate_legacy_file() -> None:
             f.write("\n")
         os.replace(tmp_path, _KEYS_FILE)  # atomic on Windows & POSIX
         logger.info(
-            "[CLIENT] Migrated %s to non-confidential shape (email + date_acquired only); "
-            "previously stored key material was removed from disk and kept in memory for THIS run. "
-            "Set the COOLEMS_CLIENT_API_KEY environment variable so headless startup keeps working.",
+            "[CLIENT] Cleaned legacy fields from %s (now {email, date_acquired, key?} only). "
+            "If the row has no 'key' yet, set your API key in UI Settings -> Authentication.",
             _KEYS_FILE,
         )
     except OSError as e:
-        logger.error("[CLIENT] Legacy migration could not rewrite %s: %s", _KEYS_FILE, e)
+        logger.error("[CLIENT] Legacy cleanup could not rewrite %s: %s", _KEYS_FILE, e)
 
 
 # Import-time self-heal (2026-08-23): a fresh checkout gets its bookkeeping file
-# created from the example so the user immediately sees where their email/date are kept.
+# created from the example so the user immediately sees where their email/date/key are kept.
 _self_heal_keys_file()
-# Import-time legacy migration (2026-09-29): confidential data never survives on disk.
+# Import-time legacy cleanup (2026-10-08): SERVER-side fields never survive in this file.
 _migrate_legacy_file()
 
 
@@ -219,9 +220,27 @@ def _write_key_entries(entries) -> bool:
 
 
 def _env_api_key() -> str:
-    """Real key for OUTBOUND provider auth from the environment (headless flows)."""
+    """Real key for OUTBOUND provider auth from the environment (optional fallback)."""
     v = os.environ.get(_ENV_KEY_VAR, "")
     return v.strip() if isinstance(v, str) else ""
+
+
+def _file_api_key() -> str:
+    """Real key for OUTBOUND provider auth from CLIENT/config/.api_client_keys.json.
+
+    Reads the "key" field of the single row (plaintext by design - see module
+    docstring). Returns "" when the file is missing/unreadable, holds no row with a
+    real key, or still carries the example placeholder.
+    """
+    entries = _read_key_entries()
+    if not entries:
+        return ""
+    for entry in reversed(entries):  # single-row contract; last row wins defensively
+        if isinstance(entry, dict):
+            key = entry.get("key")
+            if isinstance(key, str) and key.strip() and not _is_placeholder_key(key):
+                return key.strip()
+    return ""
 
 
 # ===== API Key Loading =====
@@ -229,17 +248,16 @@ def _env_api_key() -> str:
 def load_coolems_api_key() -> str:
     """Return the REAL key used for OUTBOUND CLIENT->SERVER provider auth.
 
-    Source (in priority order, 2026-09-30 fix):
+    Source (in priority order, 2026-10-08 file-first):
       1. Runtime in-memory key - set via UI during this process's lifetime
          (POST /api/auth/set-key or note_presented_key). Authoritative for THIS
          process: a key entered/changed in the UI must take effect immediately, even
-         when COOLEMS_CLIENT_API_KEY still holds an OLDER value from before the change.
-         That is exactly what setx guarantees NOT to do - it only updates the registry
-         (future processes), so this running client's os.environ stays stale until a
-         restart; preferring the runtime key removes that "restart required" gap.
-      2. COOLEMS_CLIENT_API_KEY environment variable - headless / non-UI flows; used at
-         boot while no UI session has presented a key yet (then it is the only source).
-      3. Transitional: legacy keys captured from a pre-migration disk file at import
+         when the config file still holds an OLDER value from before the change.
+      2. CLIENT/config/.api_client_keys.json ("key" field) - the persistent per-machine
+         store; used at boot while no UI session has presented a key yet (then it is
+         the only source). Beats a stale COOLEMS_CLIENT_API_KEY env var, so a rotated
+         key can never be shadowed by an old shell environment.
+      3. COOLEMS_CLIENT_API_KEY environment variable - optional headless/CI fallback.
 
     Returns "" when no real key is available -> the CLIENT is in SETUP MODE and the
     SERVER simply rejects auth with an actionable message. The user-facing flow never
@@ -248,25 +266,20 @@ def load_coolems_api_key() -> str:
     if _runtime_key:
         return _runtime_key
 
+    file_key = _file_api_key()
+    if file_key:
+        return file_key
+
     env_key = _env_api_key()
     if env_key and not _is_placeholder_key(env_key):
         return env_key
 
-    for legacy in _legacy_keys:  # transitional (see module docstring)
-        logger.warning(
-            "[CLIENT] Using transitional legacy API key from the pre-migration %s - "
-            "set the COOLEMS_CLIENT_API_KEY environment variable so headless startup keeps working.",
-            os.path.basename(_KEYS_FILE),
-        )
-        return legacy
-
-    if not env_key:
-        logger.warning(
-            "[CLIENT] No API key available for outbound SERVER auth (no %s set, no UI key "
-            "presented yet) - SETUP MODE until a key is configured", _ENV_KEY_VAR,
-        )
+    logger.warning(
+        "[CLIENT] No API key available for outbound SERVER auth (no key in %s, no %s set, "
+        "no UI key presented yet) - SETUP MODE until a key is configured",
+        os.path.basename(_KEYS_FILE), _ENV_KEY_VAR,
+    )
     return ""
-
 
 
 def _is_placeholder_key(key) -> bool:
@@ -277,33 +290,34 @@ def _is_placeholder_key(key) -> bool:
 def get_api_keys() -> set:
     """Return the set of REAL keys currently available to this process.
 
-    Sources: env var + runtime in-memory key + transitional legacy capture. Used for
-    setup-mode detection and basic local gating only - after the 2026-09-29 migration
-    NO fresh disk material is ever part of this set (migrated files carry no key field).
+    Sources: config file (key field) + env var + runtime in-memory key. Used for
+    setup-mode detection and basic local gating only - after a rotation the file,
+    the env fallback and the runtime store all carry the same current key.
     """
     result = set()
+    file_key = _file_api_key()
+    if file_key:
+        result.add(file_key)
     env_key = _env_api_key()
     if env_key and not _is_placeholder_key(env_key):
         result.add(env_key)
     if _runtime_key:
         result.add(_runtime_key)
-    result.update(_legacy_keys)  # transitional (see module docstring)
     return result
 
 
 def is_setup_mode() -> bool:
     """True while NO usable outbound credential exists for THIS process (SETUP MODE).
 
-    Setup mode ends when a real key source exists: runtime in-memory key, the
-    COOLEMS_CLIENT_API_KEY env var, or transitional legacy capture. The bookkeeping
-    file (.api_client_keys.json) is deliberately IRRELEVANT here (2026-10-07 fix):
-    rows with only {email, date_acquired} prove that setup was RUN on some machine at
-    some point - they carry no credential. A CLIENT copied to another PC keeps those
-    rows but has no key source, and the bootstrap cannot authenticate without one;
-    treating bookkeeping as "configured" made code_client.py take the blocking boot
-    path there while the UI (the only place a key can be entered) never started - a
-    deadlock. This also matches APIMiddleware._is_local_mode(), which gates on
-    get_api_keys() being empty, so both surfaces agree on what setup mode means.
+    Setup mode ends when a real key source exists: the runtime in-memory key, the
+    config file's "key" field, or the COOLEMS_CLIENT_API_KEY env var. Rows with only
+    {email, date_acquired} prove that setup was RUN on some machine at some point -
+    they carry no credential. A CLIENT copied to another PC keeps those rows but has
+    no key source, and the bootstrap cannot authenticate without one; treating such
+    bookkeeping as "configured" made code_client.py take the blocking boot path there
+    while the UI (the only place a key can be entered) never started - a deadlock.
+    This also matches APIMiddleware._is_local_mode(), which gates on get_api_keys()
+    being empty, so both surfaces agree on what setup mode means.
     """
     # The ONLY thing that matters is whether outbound SERVER auth can succeed right
     # now - i.e. whether a real key source exists for this process. Bookkeeping rows
@@ -315,14 +329,11 @@ def is_api_key_valid(key: str) -> bool:
     """Check whether *key* matches a real key this CLIENT process knows about.
 
     STRICT MEMBERSHIP (2026-10-01 hardening): the key must be present in one of this
-    process's local sources - runtime in-memory key, COOLEMS_CLIENT_API_KEY env var, or
-    transitional legacy capture. When NO source exists yet (clean install), EVERY
-    presented key is rejected: that state IS SETUP MODE and both auth surfaces refuse
-    all non-setup traffic before reaching this function; the one unlocked endpoint
-    (POST /api/auth/set-key) validates length itself and populates runtime + env BEFORE
-    any other request can run. The previous fail-open branch ("accept any well-formed
-    key when no local source exists") was unreachable from live paths but made the
-    contract unsafe for future callers - removed.
+    process's local sources - runtime in-memory key, config file, or COOLEMS_CLIENT_API_KEY
+    env var. When NO source exists yet (clean install), EVERY presented key is rejected:
+    that state IS SETUP MODE and both auth surfaces refuse all non-setup traffic before
+    reaching this function; the one unlocked endpoint (POST /api/auth/set-key) validates
+    length itself and populates runtime + config file BEFORE any other request can run.
 
     The SERVER remains the authoritative validator of every presented key over
     WebSocket; this function only gates which keys are worth presenting locally.
@@ -334,7 +345,6 @@ def is_api_key_valid(key: str) -> bool:
         return False
 
     return key in get_api_keys()  # fail-closed: unknown keys are never "valid" locally
-
 
 
 def note_presented_key(key: str) -> None:
@@ -357,51 +367,40 @@ def note_presented_key(key: str) -> None:
         logger.info("[CLIENT] Runtime API key captured from UI session (in-memory only - never written to disk)")
 
 
-# ===== Setting API Key Bookkeeping (2026-09-01 SETUP MODE, 2026-09-29 no-key-on-disk) =====
+# ===== Setting API Key Bookkeeping (2026-09-01 SETUP MODE, 2026-10-08 key-in-config) =====
 
 def _sync_outbound_credential_sources(key: str) -> None:
-    """Point every outbound-auth source at *key* for this machine (2026-10-05 KEY-DRIFT FIX).
+    """Point every outbound-auth source at *key* for this machine.
 
-    Three sources, all in one place so no rotation path can miss one of them:
+    Two sources, all in one place so no rotation path can miss one of them (the
+    config FILE itself is written by set_client_api_key just before this):
       1. the runtime in-memory store - outbound provider auth for THIS process;
-      2. os.environ[COOLEMS_CLIENT_API_KEY] - every env-var reader in this run sees the
-         fresh value immediately (setx alone would leave it stale until a restart);
-      3. the per-user registry via setx on Windows - every FUTURE headless CLIENT start
-         authenticates with exactly this key. Best effort: a failed setx is logged, not
-         fatal (the env var can be exported manually; the UI flow never depends on it).
+      2. os.environ[COOLEMS_CLIENT_API_KEY] - every env-var reader in this run sees
+         the fresh value immediately (covers child processes spawned from this one).
+    No registry writes: the persistent per-machine source is CLIENT/config/
+    .api_client_keys.json, which works identically on Windows, macOS and Linux.
     """
     global _runtime_key
     _runtime_key = key  # outbound auth follows the freshly presented key
     os.environ[_ENV_KEY_VAR] = key
-    try:
-        if os.name == "nt":
-            import subprocess as _sp
-            r = _sp.run(["setx", _ENV_KEY_VAR, key], capture_output=True, text=True, timeout=15)
-            if r.returncode == 0:
-                logger.info("[CLIENT] COOLEMS_CLIENT_API_KEY refreshed for future CLIENT starts (new shells)")
-            else:
-                logger.warning("[CLIENT] setx failed (%s) - headless startup keeps using the previous env value", (r.stderr or "").strip()[:120])
-    except Exception as e:  # pragma: no cover - best effort only
-        logger.debug("[CLIENT] Could not persist COOLEMS_CLIENT_API_KEY via setx: %s", e)
 
 
 def set_client_api_key(key: str = "", email: str = "") -> dict:
-    """Record {email, date_acquired} in .api_client_keys.json and return a result dict.
+    """Record {email, date_acquired, key} in .api_client_keys.json and return a result dict.
 
     Used by POST /api/auth/set-key (loopback-only via APIMiddleware). This is the ONLY
     way to leave SETUP MODE from the UI - before it succeeds, nothing else on the
     CLIENT works at all.
 
-    SECURITY (2026-09-29): the key itself is NEVER written to disk here. It stays in
-    the browser (localStorage) for all user-facing traffic and in the SERVER's
-    config/.api_keys.json as the authoritative credential. *key* is accepted so the
-    endpoint contract stays compatible; it must be non-empty/valid for setup mode to
-    unlock, then it fills the IN-MEMORY runtime store (outbound auth for this process)
-    and is discarded - never persisted.
+    STORAGE (2026-10-08): the key IS written to this file, in PLAINTEXT (plain mode -
+    deliberate trade-off; the file is per-machine and gitignored). It replaces every
+    previous row (SINGLE-KEY CONTRACT: one credential per machine) and becomes the
+    persistent outbound-auth source for every future headless start. The SERVER's
+    config/.api_keys.json remains the authoritative credential store on the server side.
 
     Behavior:
       * validates the key (non-empty string after trim, 8..256 chars) -> error dict
-      * SINGLE-KEY CONTRACT (2026-10-07): writes exactly ONE row {email, date_acquired},
+      * SINGLE-KEY CONTRACT: writes exactly ONE row {email, date_acquired, key},
         replacing every previous row - this machine holds one credential at a time
       * an idempotent re-set for the same email keeps that row's original date_acquired
 
@@ -409,7 +408,6 @@ def set_client_api_key(key: str = "", email: str = "") -> dict:
         {"ok": True,  "message": ...} on success
         {"ok": False, "error":   ...} on validation/write failure
     """
-    global _runtime_key
     key = (key or "").strip() if isinstance(key, str) else ""
     email = (email or "").strip() if isinstance(email, str) else ""
     if not key:
@@ -421,46 +419,39 @@ def set_client_api_key(key: str = "", email: str = "") -> dict:
     if entries is None:
         # Missing/corrupt file: start from a clean list. A corrupt file would otherwise
         # keep the CLIENT in setup mode forever with no way to fix it from the UI.
-        logger.warning("[CLIENT] Key bookkeeping file missing or unparseable - recreating it")
+        logger.warning("[CLIENT] Key file missing or unparseable - recreating it")
         entries = []
 
-    # Idempotent re-set (same email already recorded): refresh ALL credential sources with
-    # the freshly presented key - runtime store, this process's env AND the per-user registry
-    # (setx) that every FUTURE headless boot reads via COOLEMS_CLIENT_API_KEY. The old code
-    # skipped setx here: a key rotation done in Settings while an email row already existed
-    # left the registry holding the OLD key forever, so SERVER rejected bootstrap auth on
-    # every restart ("Invalid or inactive API key provided") while the browser UI kept working.
+    import datetime as _datetime
+
+    # SINGLE-KEY CONTRACT: exactly ONE entry at a time. Every previous row (placeholder/
+    # template rows included) is REPLACED by this record - no pile-up, and never any
+    # ambiguity about which credential belongs to this machine. An idempotent re-set for
+    # an already-recorded email keeps that row's original date_acquired; a rotation over
+    # any other previous state starts the clock fresh.
+    existing_date = None
     if email:
         for entry in entries:
             if isinstance(entry, dict) and entry.get("email") == email:
-                _sync_outbound_credential_sources(key)
-                # SINGLE-KEY CONTRACT (2026-10-07): the file holds exactly ONE row. The
-                # idempotent re-set refreshes that single row in place (original date kept,
-                # any stray extra rows from older builds disappear).
-                if not _write_key_entries([{"email": email, "date_acquired": entry.get("date_acquired")}]):
-                    return {"ok": False, "error": f"Could not write {os.path.basename(_KEYS_FILE)} - check file permissions."}
-                logger.info("[CLIENT] API key bookkeeping refreshed via /api/auth/set-key (same email; single row kept)")
-                return {"ok": True, "message": "API key bookkeeping is already set."}
-
-    # SINGLE-KEY CONTRACT (2026-10-07): exactly ONE entry at a time. Every previous row
-    # (placeholder/template rows included) is REPLACED by this record - no pile-up, and
-    # never any ambiguity about which credential belongs to this machine.
-    import datetime as _datetime
+                existing_date = entry.get("date_acquired")
+                break
 
     single = {
         "email": email,  # may be "" when the user sets the key before entering an email
-        "date_acquired": _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
+        "date_acquired": existing_date or _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
+        "key": key,      # plaintext by design (2026-10-08) - per-machine config file, gitignored
     }
 
     if not _write_key_entries([single]):
         return {"ok": False, "error": f"Could not write {os.path.basename(_KEYS_FILE)} - check file permissions."}
 
     # Explicit UI action overrides the runtime credential (key change from Settings) and
-    # keeps headless boot auth in sync: bootstrap_framework() authenticates to the SERVER
-    # BEFORE any browser exists, so it reads COOLEMS_CLIENT_API_KEY. setx persists it for
-    # FUTURE processes; os.environ covers THIS one (2026-10-05 KEY-DRIFT FIX).
+    # keeps this process's env fallback in sync: bootstrap_framework() authenticates to
+    # the SERVER BEFORE any browser exists, so it reads load_coolems_api_key(), which now
+    # finds the key in the config file above.
     _sync_outbound_credential_sources(key)
 
+    logger.info("[CLIENT] API key saved to %s (plaintext, single row; runtime + env synced)", os.path.basename(_KEYS_FILE))
     return {"ok": True, "message": "API key saved. You can now connect."}
 
 
@@ -469,8 +460,8 @@ def set_client_api_key(key: str = "", email: str = "") -> dict:
 def get_key_role(key: str = "") -> Optional[str]:
     """Return the caller's role for logging/display/gating.
 
-    The CLIENT stores NO role on disk (2026-09-29). The authoritative value is the
-    one the SERVER sends in auth_ok after validating the key against its own
+    The CLIENT stores NO role in its config file (2026-09-29). The authoritative value is
+    the one the SERVER sends in auth_ok after validating the key against its own
     config/.api_keys.json + profiles.json; apply_auth_info() caches it in-memory on
     every successful WebSocket auth. Before any WS auth has happened yet (e.g. early
     HTTP requests right after startup) there is no server-confirmed role, so this

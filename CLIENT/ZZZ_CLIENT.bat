@@ -19,6 +19,14 @@ REM --- Activate virtual environment ---
 call "%~dp0venv\Scripts\activate.bat"
 echo [VENV] Activated CLIENT/venv
 
+REM --- Outbound API key (2026-10-08): read from CLIENT/config/.api_client_keys.json ---
+REM No registry reads/writes anywhere: the per-machine credential lives in the
+REM CLIENT config file (written by UI "Set API Key" and by init). A stale
+REM COOLEMS_CLIENT_API_KEY env var from a parent shell is ignored while the config
+REM file holds a key - so no refresh step is needed here. If the file has no key,
+REM the client starts in SETUP MODE with its UI immediately available (the only
+REM place a key can be entered before anything else works).
+
 REM --- Auto-install requirements if httpx or playwright is missing (first run or new package added) ---
 set DEPS_OK=1
 python -c "import httpx" >nul 2>&1

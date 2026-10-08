@@ -308,13 +308,13 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
    - stores the key in your browser (localStorage) — it is NEVER written to disk on this machine, and
    - records `{email, date_acquired}` in `CLIENT/config/.api_client_keys.json` via `POST /api/auth/set-key` (bookkeeping only).
 
-   The real key exists in exactly two places: the browser UI and the SERVER's `config/.api_keys.json`. Headless CLIENT startup (before any browser is open) authenticates with the key from the `COOLEMS_CLIENT_API_KEY` environment variable — set it once per machine (`setx COOLEMS_CLIENT_API_KEY <key>`), or let the init script / "Set API Key" do it for you.
+   The real key exists in three places: your browser UI (localStorage), the CLIENT config file `CLIENT/config/.api_client_keys.json` (plaintext single row — written by this dialog and by the init script; no registry writes, works on Windows/macOS/Linux) and the SERVER's `config/.api_keys.json`. Headless CLIENT startup (before any browser is open) authenticates with the key from that config file. An optional `COOLEMS_CLIENT_API_KEY` environment variable acts as a fallback for headless/CI use — the config file takes precedence over it.
 
    The rest of the Settings UI unlocks immediately — no restart needed.
 5. In **Email Address**, enter the e-mail from step 2 — use the same one you recorded next to your key in `config/.api_keys.json`, since that's how the SERVER identifies you (it returns the registered e-mail on a successful handshake). The e-mail is mandatory for every request; without it nothing works. (What actually gates access is the API key — but keep both consistent so logs and status match.)
 6. Click **Connect**. A green **"Connected successfully."** means the full chain validated: UI → CLIENT → SERVER WebSocket auth → profile applied. The connection status dot in the header switches from *Disconnected* to connected, and the model selector now lists exactly the models your profile allows.
 
-> 🔁 Where things are stored: the real key lives in your browser localStorage (`coolems_api_key`) and on the SERVER (`config/.api_keys.json`) only. The CLIENT disk file `.api_client_keys.json` holds exactly **ONE** entry of non-confidential bookkeeping (`email`, `date_acquired`) at a time — every re-set replaces all previous rows (single-key contract, 2026-10-07) — plus nothing else; `COOLEMS_CLIENT_API_KEY` (env var) feeds headless startup. A second machine or a second browser repeats step 6 with its own copy of the key. **Clear Key** in Settings removes the local key and drops you back into setup mode.
+> 🔁 Where things are stored: the real key lives in your browser localStorage (`coolems_api_key`), in `CLIENT/config/.api_client_keys.json` (exactly **ONE** row `{email, date_acquired, key}` at a time — every re-set replaces all previous rows, single-key contract; plaintext by design since 2026-10-08, no registry writes) and on the SERVER (`config/.api_keys.json`). The optional `COOLEMS_CLIENT_API_KEY` env var is only a fallback (the config file wins). A second machine or a second browser repeats step 6 with its own copy of the key. **Clear Key** in Settings removes the local key and drops you back into setup mode.
 
 ### Step 7 — Connect a remote CLIENT (optional): server on a powerful workstation, client on any laptop
 
@@ -352,7 +352,7 @@ Notes:
 | Symptom | Fix |
 |---|---|
 | Banner *"No API key set yet - open Settings and set your API key"* | You're in setup mode — the UI starts immediately anyway; Settings shows live boot status. Do step 6 first; nothing else is reachable until then (by design) |
-| SERVER log shows *sent empty API key -- rejecting* on every client retry | The CLIENT has no key yet (fresh machine, `COOLEMS_CLIENT_API_KEY` unset): open the CLIENT UI → Settings and set the key — or `setx COOLEMS_CLIENT_API_KEY <key>`. The next bootstrap attempt authenticates automatically; the SERVER rejection is correct behavior |
+| SERVER log shows *sent empty API key -- rejecting* on every client retry | The CLIENT has no key yet (fresh machine, no key in `CLIENT/config/.api_client_keys.json`): open the CLIENT UI → Settings and set the key. The next bootstrap attempt authenticates automatically; the SERVER rejection is correct behavior |
 | Connect says *Your data can't be validated* / 401 | The key isn't found or inactive on the SERVER: check `config/.api_keys.json` for an exact match and `"is_active": true`; check `logs/coolems.log` on the SERVER for the rejection reason |
 | *"Authentication failed or no valid profile"* | The key's `role` has no matching entry in `config/profiles.json` — add the profile (step 3) or fix the role name; both files hot-reload, just retry Connect |
 | Model selector empty / model missing | The folder path in `allowed_models_folders` doesn't exist on disk (exact folder = exact model). Fix the absolute path in `profiles.json`; wait for reload and refresh the UI |

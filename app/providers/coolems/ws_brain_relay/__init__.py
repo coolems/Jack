@@ -14,13 +14,13 @@ existing imports ('from .ws_brain_relay import connect_to_web_relay', '_RelayTar
 keep working unchanged.
 """
 
-from .ws_brain_relay import (  # noqa: F401  -- package facade; implementation in app/providers/coolems/ws_brain_relay/
+from .connection import connect_to_web_relay  # noqa: F401
+from .request_handler import _handle_relay_request  # noqa: F401
+from .relay_handlers import (  # noqa: F401
     _RelayTargetAdapter,
     _handle_relay_model_switch,
-    _handle_relay_request,
     _handle_relay_tool_code_request,
     _handle_relay_tools_request,
     _relay_send,
     _resolve_relay_client_user_info,
-    connect_to_web_relay,
 )

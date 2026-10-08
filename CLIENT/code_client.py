@@ -238,7 +238,8 @@ if __name__ == "__main__":
         from app.keys import get_api_keys as _gak
         if not _gak():
             logger.error("Refusing to bind 0.0.0.0 with no API key available (would expose unauthenticated access).")
-            logger.error("Set the COOLEMS_CLIENT_API_KEY environment variable (or complete setup in the UI first) - or unset COOLEMS_CLIENT_HOST.")
+            logger.error("Set your API key in the CLIENT UI (Settings -> Authentication; writes CLIENT/config/.api_client_keys.json), "
+                         "export COOLEMS_CLIENT_API_KEY for headless use, or unset COOLEMS_CLIENT_HOST.")
             sys.exit(1)
         logger.warning(f"SECURITY: CLIENT bound to {bind_host} - ALL interfaces. Anyone on the network can reach port {port}.")
 

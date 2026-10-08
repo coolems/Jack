@@ -185,8 +185,8 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info(f"Target Model: {model_name or '<auto-selected after boot>'}")
         logger.info(f"Timeout: {api_timeout}s")
         logger.info("STREAMING MODE ENABLED - Responses will stream in real-time!")
-        # (2026-09-29) the disk file no longer stores keys - this reports available sources
-        # (env var + in-memory/legacy), not "keys loaded from .api_client_keys.json".
+        # (2026-10-08) this reports the number of available key SOURCES: config file
+        # (CLIENT/config/.api_client_keys.json, plaintext single row) + env var + runtime.
         logger.info(f"API Authentication: ENABLED ({len(api_keys)} key source(s) available)")
         logger.info("Connection limits: Configurable per ROLE (from profiles.json)")
         logger.info("Tool access: Configurable per ROLE (from profiles.json)")

@@ -76,7 +76,7 @@ def bootstrap_status() -> dict:
     Read-only copy - callers must not mutate the module state. Phases:
       "waiting_key"   - no outbound API key configured yet; every SERVER auth attempt is
                         rejected with 'Empty API key'. Set one in UI Settings -> Authentication
-                        (or COOLEMS_CLIENT_API_KEY) and the NEXT attempt authenticates.
+                        (or CLIENT/config/.api_client_keys.json) and the NEXT attempt authenticates.
       "bootstrapping" - a key exists; waiting for the SERVER to deliver tools/DNA.
       "ready"         - framework delivered, boot can proceed to provider/agent init.
       "failed"        - wait budget exhausted without delivery (actionable message in log).
@@ -112,8 +112,8 @@ def _classify_auth_failure(auth_resp) -> str:
                        config/.api_keys.json on the SERVER.
     'empty_key'      - (2026-10-07) SERVER rejected an EMPTY api_key: this machine has no
                        outbound credential configured yet (SETUP MODE). Waiting never helps
-                       by itself - a key must be entered in UI Settings -> Authentication or
-                       set as COOLEMS_CLIENT_API_KEY. The wait loop keeps retrying so the
+                       by itself - a key must be entered in UI Settings -> Authentication (which
+                       writes CLIENT/config/.api_client_keys.json). The wait loop keeps retrying so the
                        very next attempt after the user sets the key succeeds.
     'protocol'       - explicit protocol version mismatch (fatal - retrying never helps).
     'other'          - anything else (malformed responses...).
@@ -257,7 +257,7 @@ async def _bootstrap_fetch_once() -> dict | None:
                 if _classify_auth_failure(auth_resp) == "auth_rejected":
                     _auth_reject_count += 1
                 if _classify_auth_failure(auth_resp) == "empty_key":
-                    logger.warning("[BOOTSTRAP] SERVER rejected the auth with an EMPTY key - no API key configured on this machine yet (SETUP MODE). Open the CLIENT UI: Settings -> Authentication -> Set API Key, or set COOLEMS_CLIENT_API_KEY; the next attempt will authenticate.")
+                    logger.warning("[BOOTSTRAP] SERVER rejected the auth with an EMPTY key - no API key configured on this machine yet (SETUP MODE). Open the CLIENT UI: Settings -> Authentication -> Set API Key (writes CLIENT/config/.api_client_keys.json); the next attempt will authenticate.")
                 else:
                     logger.error(f"[BOOTSTRAP] Auth failed: {auth_resp!r}")
                 _status["last_error"] = "SERVER auth rejected (" + str(auth_resp.get("message", "")) + ")"
@@ -392,19 +392,19 @@ async def bootstrap_framework() -> dict | None:
     # One-time startup diagnostic (2026-10-05 KEY-DRIFT DX): show WHICH outbound key will be
     # presented so "SERVER rejects auth" is diagnosable from the CLIENT log alone - no key
     # material ever printed, only a fingerprint + source. Setup mode says it plainly: nothing
-    # can authenticate until a key exists (UI Settings -> API key, or COOLEMS_CLIENT_API_KEY).
+    # can authenticate until a key exists (UI Settings -> API key, which writes the CLIENT config file).
     from app.keys import load_coolems_api_key as _lck
     _key_now = _lck()
     if not _key_now:
         logger.warning(
             "[BOOTSTRAP] No API key available for outbound auth - SETUP MODE. Every SERVER "
             "auth attempt will be rejected until a key is configured (UI Settings -> API key, "
-            "or set COOLEMS_CLIENT_API_KEY on this machine)."
+            "writes CLIENT/config/.api_client_keys.json)."
         )
     else:
         import hashlib as _hashlib
         logger.info(
-            f"[BOOTSTRAP] Outbound auth key ready (source=runtime/env; fingerprint "
+            f"[BOOTSTRAP] Outbound auth key ready (source=runtime/config-file/env; fingerprint "
             f"{_hashlib.sha256(_key_now.encode()).hexdigest()[:12]}). If SERVER keeps rejecting it, "
             "the presented key does not match config/.api_keys.json on the SERVER."
         )
@@ -456,9 +456,9 @@ async def bootstrap_framework() -> dict | None:
             _key_mismatch_hint_printed = True
             logger.warning(
                 f"[BOOTSTRAP] SERVER is reachable but has rejected our API key {_auth_reject_count}x in a row - "
-                "this will NOT fix itself by waiting. The CLIENT's outbound key (COOLEMS_CLIENT_API_KEY / UI) "
-                "does not match config/.api_keys.json on the SERVER. Fix: re-set your API key in UI Settings, or "
-                "run `setx COOLEMS_CLIENT_API_KEY <key-from-config\\.api_keys.json>` and restart this CLIENT."
+                "this will NOT fix itself by waiting. The CLIENT's outbound key (CLIENT/config/.api_client_keys.json / UI) "
+                "does not match config/.api_keys.json on the SERVER. Fix: re-set your API key in UI Settings -> Authentication "
+                "(it writes CLIENT/config/.api_client_keys.json), then restart this CLIENT."
             )
 
         # (2026-10-07 LAN-HINT DX): every configured address is loopback and none answered

@@ -8,8 +8,9 @@ This module provides minimal HTTP middleware for local-mode detection only:
   - SETUP MODE (no real key configured yet): EVERYTHING is locked down except the
     loopback-only POST /api/auth/set-key endpoint that writes the first key. No chat,
     no files, no code execution before a key exists (2026-09-01 fix).
-  - KEYED MODE: key must exist in the LOCAL .api_client_keys.json (so we know which
-    credentials to present to the SERVER) + email header mandatory.
+  - KEYED MODE: a real key must be available locally (CLIENT/config/.api_client_keys.json,
+    COOLEMS_CLIENT_API_KEY env var, or the in-memory runtime key from this UI session)
+    so we know which credential to present to the SERVER + email header mandatory.
 
 REAL auth: CLIENT sends email + API key to SERVER -> SERVER validates against
 its own config/.api_keys.json and applies restrictions from profiles.json. The server's
@@ -199,9 +200,9 @@ class APIMiddleware:
     (full file R/W + code execution) before a single key existed: in that state the
     only possible action is "set api key".
 
-    KEYED MODE: Key must pass local validation (env var / in-memory runtime key /
-    transitional legacy capture - the disk file .api_client_keys.json holds ONLY
-    email + date_acquired bookkeeping since 2026-09-29, never the key itself)
+    KEYED MODE: Key must pass local validation (config file CLIENT/config/.api_client_keys.json /
+    in-memory runtime key / COOLEMS_CLIENT_API_KEY env var - the config file holds exactly
+    ONE row {email, date_acquired, key}, plaintext by design since 2026-10-08)
     + email header. Role comes from the SERVER's last auth_ok (in-memory cache,
     fail-closed "user" fallback) - permission enforcement (allowed models/tools,
     rate limits) happens on the SERVER.
