@@ -50,8 +50,8 @@ class DynamicModuleLoader:
     def __init__(self):
         """Initialize the dynamic module loader.
 
-        The working root is NOT stored here - tools resolve it live from
-        <CLIENT>/config/.working_root.json (single source of truth).
+        The working root is NOT stored here - each workspace's folder lives in its own
+        conversations.working_root DB row; agentic_mode() publishes the active turn's value.
         """
         self._compiled_tools: Dict[str, Callable[..., Any]] = {}
         self._modules_installed = False

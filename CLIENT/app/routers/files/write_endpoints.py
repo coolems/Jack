@@ -10,7 +10,7 @@ from typing import Dict
 from fastapi import APIRouter, File, UploadFile, Query, HTTPException, Request
 
 
-from app.utils.common import is_text_file, is_image_file, read_text_file, MAX_FILE_SIZE, get_working_root
+from app.utils.common import is_text_file, is_image_file, read_text_file, MAX_FILE_SIZE
 from .middleware import _safe_relative_path, _get_working_root_dir, logger
 
 from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
@@ -177,40 +177,33 @@ def register_write_endpoints(router: APIRouter):
 
     @router.post("/api/working_root")
     async def set_working_root_endpoint(request: Request, data: Dict):
-        """Set the working root (UI action) - persists it to CLIENT/config/.working_root.json.
+        """Activate a working root for a workspace (UI action) - per-workspace, DB-backed.
 
-        SINGLE SOURCE OF TRUTH: this file is the only place the value lives.
-        Every consumer (file endpoints, path guards, tools on SERVER and CLIENT)
-        resolves through that same file via get_working_root(), so writing it
-        here takes effect everywhere immediately - no propagation needed.
+        PER-WORKSPACE CONTRACT (2026-10-09): the value is persisted onto the calling
+        conversation's row (conversations.working_root) - each workspace keeps its own
+        folder and switching workspaces never clobbers another one. There is no disk
+        file anymore; the in-memory active value mirrors the workspace open in the UI so
+        HTTP file endpoints operate on it.
+
+        Body: {"working_root": "<path>", "conversation_id": "<conv>"}
+          * working_root set      -> validate + activate, persist for conversation_id (if given)
+          * working_root empty    -> activate the conversation's OWN stored value
+                                     (project-root fallback when the workspace is fresh)
         """
         # No role gate (2026-09-30): changing the working root is a regular UI action available
         # to ANY caller/role at any time - no admin restriction.
 
         try:
-            from app.utils.common import set_working_root as _set_wr
-            new_path = data.get("working_root", "").strip()
-            if not new_path:
+            from app.utils.common import set_working_root as _set_wr, get_working_root as _get_wr
+            new_path = str(data.get("working_root") or "").strip()
+            conv_id = str(data.get("conversation_id") or "").strip() or None
+
+            if not new_path and not conv_id:
                 return {"success": False, "message": "No path provided"}
-            if not os.path.isdir(new_path):
-                return {"success": False, "message": f"Directory does not exist: {new_path}"}
 
-            _set_wr(os.path.abspath(new_path))
-            wr = get_working_root()
-            logger.info(f"Working root updated to: {wr}")
-
-
-            # Per-chat working root (2026-08-31): persist the new folder onto the
-            # conversation that is open in the UI right now, so switching away and
-            # back restores it. The UI sends 'conversation_id' alongside the path;
-            # when absent or unknown this is a no-op (legacy behaviour).
-            conv_id = str(data.get("conversation_id") or "").strip()
-            if conv_id:
-                try:
-                    from app.websocket.db_ops import sync_conversation_working_root
-                    sync_conversation_working_root(conv_id)
-                except Exception as e:
-                    logger.warning(f"Could not persist working_root for conversation {conv_id}: {e}")
+            _set_wr(new_path, conv_id)  # empty path + conv_id activates the workspace's stored root
+            wr = _get_wr()
+            logger.info(f"Working root activated to: {wr} (conv={str(conv_id)[:8] if conv_id else '-'})")
 
             return {"success": True, "working_root": wr}
 

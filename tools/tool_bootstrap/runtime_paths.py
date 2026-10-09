@@ -17,7 +17,7 @@ import subprocess
 logger = logging.getLogger("COOLEMS.Tools.Bootstrap")
 
 def _get_working_root() -> str:
-    """Live working root - single source of truth is <CLIENT>/config/.working_root.json."""
+    """Live working root for the current context (per-turn ContextVar; project-root fallback)."""
     from tools.utils import get_working_root
 
     return get_working_root()

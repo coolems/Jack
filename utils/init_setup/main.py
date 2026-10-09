@@ -28,7 +28,7 @@ def _print_portable_client_block() -> None:
 
     The CLIENT folder is self-contained: its API key file, settings.json, UI certs and the
     ZZZ_CLIENT.bat venv bootstrap all live INSIDE it (see working_root.py - the tree is
-    designed to be moved; a stale .working_root.json self-heals on that PC).
+    designed to be moved; per-workspace working roots live in the CLIENT database (2026-10-09).
     """
     info("     [a] FASTEST (no init there): copy the whole CLIENT\\ folder from THIS repo to that")
     info("         PC - it already contains its API key file + settings. That PC only needs Python >= 3.10,")

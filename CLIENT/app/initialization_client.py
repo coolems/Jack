@@ -65,8 +65,8 @@ async def _fetch_and_install_from_server() -> tuple:
 
     # 2) Single install path — identical to every other init (lazy re-init, reconnects).
     # provider=None on purpose: the orchestrator's ToolFetcher is only needed for
-    # LATER tool_code_requests; step 4 wires the real provider in. NOTE: no working_root
-    # injection needed here - tools resolve it live from <CLIENT>/config/.working_root.json.
+# LATER tool_code_requests; step 4 wires the real provider in. NOTE: no working_root
+# injection needed here - tools resolve it per turn from the conversation's DB row (2026-10-09).
     orchestrator = RemoteToolOrchestrator(provider=None)
     count = orchestrator.install_from_response(response)
     if count <= 0:

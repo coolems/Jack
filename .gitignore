@@ -36,7 +36,6 @@ CLIENT/config/.api_client_keys.json
 
 # CLIENT user settings & working-root state (per-machine, auto-created at runtime)
 CLIENT/config/settings.json
-CLIENT/config/.working_root.json
 
 # Last-loaded model state (per-machine runtime data written by the SERVER after every
 # verified launch/switch - see app/providers/llama/model_persistence.py). Source of

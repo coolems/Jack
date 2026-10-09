@@ -70,7 +70,6 @@ import sys
 import os
 import time
 import re
-import json
 from typing import Optional, Tuple
 
 # Tool definition for auto-discovery
@@ -173,9 +172,11 @@ def _working_root_anchor() -> Optional[str]:
 
     Resolution order, first hit wins:
       a. injected ``get_working_root`` global (dynamic loader / sandbox),
-      b. live import from tools.utils (on-disk SERVER process),
-      c. direct read of CLIENT/config/.working_root.json (or <CWD>/config/ when this
-         process runs with its CWD inside the CLIENT dir, as the client sandbox does).
+      b. live import from tools.utils (on-disk SERVER process) - which itself resolves
+         the per-turn ContextVar and falls back to the project root (2026-10-09).
+
+    The old step c (direct read of CLIENT/config/.working_root.json) is gone: that file
+    no longer exists; working roots are per-workspace values in the CLIENT database.
 
     Returns an absolute path when available, else None. Never raises - a missing
     working root must not break test discovery; the legacy anchors below still apply.
@@ -197,32 +198,6 @@ def _working_root_anchor() -> Optional[str]:
     except Exception:
         pass
 
-    # FIX (2026-08-28): .working_root.json moved from the CLIENT root to the CLIENT
-    # config folder -- the old root-level candidate is gone. When this process runs
-    # with its CWD inside the CLIENT dir (the client sandbox chdirs there), the file
-    # also lives at <CWD>/config/.
-    candidates = []
-    try:
-        module_dir = os.path.dirname(os.path.abspath(__file__))
-        candidates.append(os.path.join(module_dir, "..", "..", "CLIENT", "config", ".working_root.json"))
-    except Exception:
-        pass
-    try:
-        candidates.append(os.path.join(os.getcwd(), "config", ".working_root.json"))
-    except Exception:
-        pass
-
-    for cand in candidates:
-        try:
-            if not os.path.isfile(cand):
-                continue
-            with open(cand, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            saved = str((data or {}).get("working_root") or "").strip()
-            if saved and os.path.isdir(saved):
-                return os.path.abspath(saved)
-        except Exception:
-            continue
     return None
 
 
@@ -255,7 +230,7 @@ def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str]
     Resolution order:
       0. Explicit ``project_root`` argument (must exist; a missing or test-less
          explicit root fails loudly instead of silently re-discovering elsewhere).
-      1. Configured working root (CLIENT UI / .working_root.json) - checked as-is,
+      1. Configured working root (the active workspace's folder from the CLIENT DB) - checked as-is,
          then its immediate parent only (in case the project wraps the working
          folder), then among its direct children. Discovery NEVER climbs above
            that scope, so it cannot escape into an unrelated ancestor tree. This is

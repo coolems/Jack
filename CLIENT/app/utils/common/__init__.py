@@ -13,12 +13,13 @@ existing import statements continue to work without changes::
 """
 
 # ---- Working root ----------------------------------------------------------
-# SINGLE SOURCE OF TRUTH: the value lives ONLY in <CLIENT>/config/.working_root.json.
+# PER-WORKSPACE SOURCE OF TRUTH: each conversation's value lives in the CLIENT
+# database (conversations.working_root); see working_root.py for the contract.
 from .working_root import (
-    _WORKING_ROOT_FILE,
-    _load_persisted_working_root,
     set_working_root,
     get_working_root,
+    get_conversation_working_root,
+    resolve_working_root_for_conv,
 )
 
 # Backward-compat: ``common.WORKING_ROOT`` attribute access still works via
@@ -65,8 +66,8 @@ from .file_io import (
 
 __all__ = [
     # working_root
-    "_WORKING_ROOT_FILE",
-    "_load_persisted_working_root",
+    "get_conversation_working_root",
+    "resolve_working_root_for_conv",
     "set_working_root",
     "get_working_root",
     # path_security

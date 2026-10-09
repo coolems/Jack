@@ -154,6 +154,21 @@ RULES:
             session_timer=getattr(config, "session_timer", None),  # (2026-08-23) pause clock while user menus are open
         )
 
+    # (2026-10-09) Per-workspace working root: resolve THIS conversation's folder from
+    # the database and publish it to tools.utils for the whole turn. Tools read the
+    # ContextVar (set_current_working_root), so concurrent workspaces each execute
+    # against their OWN folder - no shared file, no cross-workspace bleed. Workspaces
+    # without a stored value fall back to the project root. Cleared in the finally
+    # block below when the turn ends.
+    try:
+        from app.utils.common import resolve_working_root_for_conv
+        from tools.utils import set_current_working_root as _set_wr_ctx
+        _turn_wr = resolve_working_root_for_conv(config.conversation_id)
+        _set_wr_ctx(_turn_wr)
+        logger.info(f"[AGENTIC.DEBUG] Working root for this turn (conv={str(config.conversation_id)[:8]}): {_turn_wr}")
+    except Exception as e:
+        logger.warning(f"[AGENTIC.DEBUG] Per-turn working root resolution failed (tools use fallback): {e}")
+
     # Run the ReAct loop
     try:
         return await run_react_loop(
@@ -178,6 +193,13 @@ RULES:
         logger.error(f"[AGENTIC.DEBUG] agentic_mode() - UNEXPECTED ERROR: {type(e).__name__}: {e}")
         raise
     finally:
+        # (2026-10-09) Clear the per-turn working root so a stale folder can never leak
+        # into the NEXT turn's tool execution.
+        try:
+            from tools.utils import set_current_working_root as _clear_wr_ctx
+            _clear_wr_ctx(None)
+        except Exception:
+            pass
         # (2026-08-26) Clear the per-turn attachment registry so a stale image can
         # never leak into the NEXT turn's transcription.
         try:

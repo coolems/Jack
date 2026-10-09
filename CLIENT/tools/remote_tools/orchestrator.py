@@ -51,7 +51,7 @@ class RemoteToolOrchestrator:
         # Core components
         self._cache = ToolCache()
         self._fetcher = ToolFetcher(provider) if provider else None
-        self._loader = DynamicModuleLoader()  # working root is resolved live from CLIENT/config/.working_root.json
+        self._loader = DynamicModuleLoader()  # working root is published per turn via the tools.utils ContextVar (2026-10-09)
 
         # Runtime tool registry (name -> callable)
         self.tools: Dict[str, Callable] = {}
@@ -71,9 +71,9 @@ class RemoteToolOrchestrator:
 
         logger.info("RemoteToolOrchestrator initialized (zero tools — will fetch from SERVER on demand)")
 
-    # NOTE: no set_working_root() here on purpose - the working root lives ONLY in
-    # <CLIENT>/config/.working_root.json (single source of truth). Tools read that file
-    # live via tools.utils.get_working_root(), so nothing has to be propagated.
+    # NOTE: no set_working_root() here on purpose - each workspace's folder lives in its own
+    # conversations.working_root DB row; agentic_mode() resolves the active turn's value and
+    # publishes it via set_current_working_root(), so nothing has to be propagated (2026-10-09).
 
     # --- Lazy initialization (called automatically when first needed) ---
 
@@ -508,7 +508,7 @@ class RemoteToolOrchestrator:
         """Clear all cached tools (called on disconnect).
 
         The working root needs no clearing here - it is not stored in this process
-        at all; every session reads <CLIENT>/config/.working_root.json live.
+        at all; each turn's value comes from the conversation's DB row via agentic_mode() (2026-10-09).
         """
         self._initialized = False
         # (2026-08-29 threadless refactor): cancel an in-flight lazy-init task, if any —

@@ -12,9 +12,6 @@ CONTRACT (2026-08-23):
       - ``CLIENT/config/settings.json``         <- seeded from ``config/settings.example.json``
         (single source of truth for server_address; _resolve_client_server_address()
         also self-heals it on first boot - bootstrap just makes the file visible early)
-      - ``CLIENT/config/.working_root.json``    <- seeded from ``CLIENT/config/.working_root.example.json``
-        (lives in config/ since 2026-08-27; app/utils/common/working_root.py re-creates
-        it with CWD if missing anyway; the example documents its shape for a fresh checkout)
 
   * Existing files are NEVER touched (no overwrite, no migration). A missing file
     is created; a present-but-corrupt file is left alone and reported by its loader.
@@ -65,8 +62,6 @@ def _seed_from_example(target_path: str, example_path: str) -> bool:
             content = json.dumps([], indent=2) + "\n"
         elif name == "settings.json":
             content = json.dumps({"server_address": ""}, indent=2) + "\n"
-        elif name == ".working_root.json":
-            content = json.dumps({"working_root": ""}, indent=2) + "\n"
         else:  # pragma: no cover - defensive, unknown file type
             return False
 
@@ -106,8 +101,6 @@ def ensure_client_config_files(client_dir: str | None = None) -> list[str]:
          os.path.join(config_dir, ".api_client_keys.example.json")),
         (os.path.join(config_dir, "settings.json"),
          os.path.join(config_dir, "settings.example.json")),
-        (os.path.join(config_dir, ".working_root.json"),
-         os.path.join(config_dir, ".working_root.example.json")),
     ]
 
     created = []

@@ -48,6 +48,7 @@ def _mime_for(filename: str) -> str:
 def process_media_files(
     user_msg: str,
     media_files: List[str],
+    conv_id: str | None = None,
 ) -> Tuple[str, List[str], List[str], List[Dict]]:
     """
     Process media files attached to a user message.
@@ -55,6 +56,9 @@ def process_media_files(
     Args:
         user_msg: The original user message text.
         media_files: List of file URL/paths from the client.
+        conv_id: Conversation id - when given, uploads are resolved against THIS
+            workspace's own working root (per-workspace DB row) instead of whatever
+            folder happens to be active in the UI right now (2026-10-09).
 
     Returns:
         Tuple of (enhanced_message, image_data, image_paths, file_contents)
@@ -64,7 +68,13 @@ def process_media_files(
         - image_paths: List of image file paths (/files/<savedname>) for reference
         - file_contents: List of dicts with filename/content for text files
     """
-    UPLOAD_DIR = get_working_root()
+    # Per-workspace resolution (2026-10-09): the message's own workspace folder when a
+    # conversation id is known - concurrent chats then never mix up upload locations.
+    if conv_id:
+        from app.utils.common import resolve_working_root_for_conv
+        UPLOAD_DIR = resolve_working_root_for_conv(conv_id)
+    else:
+        UPLOAD_DIR = get_working_root()
 
     image_data: List[str] = []
     image_refs: List[Dict] = []   # {"filename", "path", "mime"} per successful image

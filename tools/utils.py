@@ -65,7 +65,6 @@ Contains:
 
 import base64
 import contextvars
-import json
 import logging
 import os
 from typing import List, Optional, Tuple
@@ -105,153 +104,107 @@ EXCLUDED_FOLDERS: set = {
 
 
 # ---------------------------------------------------------------------------
-# Working root management - SINGLE SOURCE OF TRUTH = <CLIENT>/config/.working_root.json
-# ---------------------------------------------------------------------------
-# BY DESIGN (2026-08-23 fix): ``.working_root.json`` is created and written ONLY by
-# CLIENT code -- specifically CLIENT/app/utils/common/working_root.py, driven by the
-# CLIENT UI ("Working Folder" field). The file lives in the CLIENT config folder
-# (CLIENT/config/, moved from the CLIENT root on 2026-08-27).
+# Working root management - PER-WORKSPACE, database as source of truth (2026-10-09)
 #
-# This module runs on BOTH sides:
-#   * SERVER process (code.py): it must only READ that same client-side file so every
-#     tool resolves the working root live from one single source of truth. It NEVER
-#     creates, re-creates or writes it -- a missing/invalid file is reported loudly and
-#     tools fail closed instead of silently self-healing (the old self-heal + CWD
-#     fallback is what used to drop stray .working_root.json files into the SERVER root).
-#   * CLIENT sandbox: when this source is delivered and installed in-memory by the
-#     dynamic loader, it reads <CLIENT>/config/.working_root.json as well. The canonical
-#     writer for that file stays CLIENT/app/utils/common/working_root.py; nothing here
-#     ever writes to disk.
+# The old design kept ONE .working_root.json file for the whole process; switching
+# workspaces in the UI overwrote it and every other workspace's tools silently broke.
+# Now:
+#   * Each conversation ("workspace") has its own working_root column in the CLIENT
+#     database (conversations.working_root). The CLIENT resolves the active value per
+#     turn from that row (app/utils/common/working_root.py) and publishes it here via
+#     set_current_working_root() - a contextvars.ContextVar, so concurrent workspaces
+#     never see each other's folder.
+#   * Fallback: when nothing is set for the current context (no active turn / legacy
+#     caller), get_working_root() returns the PROJECT ROOT (the repo containing this
+#     tools/ directory) - a valid, stable default instead of a crash.
+# This module never reads or writes .working_root.json anymore; that file no longer
+# exists.
 
+def _project_root_fallback() -> str:
+    """Project root = parent of the tools/ directory (the repo this module ships in)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-def _find_working_root_file() -> str:
-    """Locate ``<CLIENT>/config/.working_root.json`` (the single source of truth).
+_working_root_ctx = contextvars.ContextVar("_current_working_root", default=None)
+# LEGACY FALLBACK (mirrors the user-role store below): last value written process-wide;
+# consulted only when the current asyncio context has no working root of its own.
+_current_working_root: Optional[str] = None
 
-    Candidates, in order:
-      1. <this module dir>/../CLIENT/config/.working_root.json   (SERVER-side layout)
-      2. os.getcwd()/config/.working_root.json                   (CLIENT process - CWD is the CLIENT dir)
+def set_current_working_root(path) -> None:
+    """Publish *path* as the working root for the CURRENT turn/context (None clears it).
 
-    Returns the first candidate that exists as a file; when neither exists yet,
-    candidate 1's location is returned so callers can report exactly where the
-    CLIENT must create it. This function NEVER creates anything on disk.
+    Called once per chat turn by CLIENT logic/agentic_mode() with the value resolved
+    from that conversation's DB row. contextvars carry it into asyncio.to_thread() and
+    create_task(), so every tool executed during the turn - sync or async - resolves
+    exactly this workspace's folder, even when several workspaces run concurrently.
+
+    Args:
+        path: Absolute directory to use for this turn, or None to clear back to fallback.
     """
-    candidates: list[str] = []
-    try:
-        module_dir = os.path.dirname(os.path.abspath(__file__))
-        candidates.append(os.path.join(module_dir, "..", "CLIENT", "config", ".working_root.json"))
-    except Exception:
-        pass
-    cwd_candidate = os.path.join(os.getcwd(), "config", ".working_root.json")
-    candidates.append(cwd_candidate)
-
-    for candidate in candidates:
-        try:
-            if os.path.isfile(candidate):
-                return os.path.abspath(candidate)
-        except Exception:
-            continue
-    # Missing everywhere -> report the canonical CLIENT location (no file created).
-    return os.path.abspath(candidates[0]) if candidates else cwd_candidate
-
-
-def _read_working_root_file(file_path: str) -> Optional[str]:
-    """Read the persisted working root from *file_path*.
-
-    Returns the absolute path when the file exists, is valid JSON and points at
-    a real directory. Returns ``None`` for every other case (missing file, empty
-    value, corrupt JSON, unreadable file, or saved path no longer existing).
-    Never raises: persistence problems must not break tool execution; they make
-    get_working_root() report the problem instead of inventing a folder.
-    """
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        saved_path = str((data or {}).get("working_root") or "").strip()
-        if not saved_path:
-            return None
-        resolved = os.path.normpath(os.path.abspath(saved_path))
-        if not os.path.isdir(resolved):
-            logger.warning(
-                "Persisted working root does not exist: %s - the CLIENT must re-create .working_root.json",
-                resolved,
-            )
-            return None
-        return resolved
-    except Exception as e:
-        logger.debug(f"Could not read persisted working_root file {file_path}: {e}")
-        return None
-
+    global _current_working_root
+    resolved = os.path.normpath(os.path.abspath(path)) if path else None
+    _working_root_ctx.set(resolved)
+    _current_working_root = resolved  # legacy fallback for non-async callers/tests
 
 def get_working_root() -> str:
-    """Return the current working root - read live from ``.working_root.json``.
+    """Return the working root for the CURRENT context.
 
-    This module keeps NO variable of its own; the JSON file (owned by the CLIENT)
-    is the single source of truth for every tool in this process (and across
-    processes). Reading on every call also means a UI change takes effect
-    immediately, even for tools compiled before it - no propagation or
-    fingerprint tracking needed.
+    Resolution order (2026-10-09):
+      1. The ContextVar of the current task/context - set per turn from the active
+         workspace's conversations.working_root DB row (per-workspace isolation).
+      2. Legacy module global (non-async callers / direct test sets).
+      3. Project root fallback - valid default when no workspace value is active yet.
 
-    READ-ONLY BY DESIGN: when the file is missing, empty, corrupt, or points at
-    a directory that no longer exists, this function raises RuntimeError instead
-    of creating/repairing anything on disk. Only CLIENT code may create
-    .working_root.json (CLIENT/app/utils/common/working_root.py via the UI).
+    Never raises: a missing working root must not break tool execution.
+    """
+    ctx_wr = _working_root_ctx.get()
+    if ctx_wr and os.path.isdir(ctx_wr):
+        return ctx_wr
+    if _current_working_root and os.path.isdir(_current_working_root):
+        return _current_working_root
+    fallback = _project_root_fallback()
+    logger.debug(f"Working root not set for this context - using project root: {fallback}")
+    return fallback
+
+def set_working_root(path) -> None:
+    """Set the working root for the current context (tests / direct callers).
+
+    The production writer is CLIENT-side: POST /api/working_root persists per-workspace
+    values to the database and agentic_mode() publishes them via
+    set_current_working_root(). This function only updates THIS process's context value -
+    it never touches disk.
 
     Raises:
-        RuntimeError: working root unavailable - the file must be created by the
-            CLIENT first ("Working Folder" field in the CLIENT UI).
+        ValueError: if *path* is empty or not an existing directory.
     """
-    file_path = _find_working_root_file()
-    persisted = _read_working_root_file(file_path)
-    if persisted is not None:
-        return persisted
+    if not path or not str(path).strip():
+        raise ValueError("Cannot set working root: empty path")
+    resolved = os.path.abspath(str(path))
+    if not os.path.isdir(resolved):
+        raise ValueError(f"Cannot set working root: directory does not exist: {resolved}")
+    set_current_working_root(resolved)
 
-    raise RuntimeError(
-        f"working root unavailable - {file_path} is missing, empty or invalid. "
-        ".working_root.json is owned by the CLIENT and must be created there first "
-        "(CLIENT UI 'Working Folder' field -> set_working_root). The SERVER never "
-        "creates this file."
-    )
-
-
-def set_working_root(path: str) -> None:
-    """Persist *path* to ``.working_root.json`` (the single source of truth).
-
-    BY DESIGN (2026-08-23 fix): the ONLY writer of .working_root.json is CLIENT code
-    (CLIENT/app/utils/common/working_root.py, driven by the UI "Working Folder"
-    field). This SERVER-side copy therefore refuses to write anything on disk and
-    raises instead -- it exists only so legacy imports/tests keep a stable symbol.
-
-    Raises:
-        RuntimeError: always - working root persistence is CLIENT-side only.
-    """
-    raise RuntimeError(
-        "set_working_root() must not run in this process - .working_root.json is "
-        "created and written ONLY by the CLIENT (CLIENT/app/utils/common/working_root.py, "
-        "UI 'Working Folder' field). Use the CLIENT UI to change the working root."
-    )
-
-
-    
+# ---------------------------------------------------------------------------
 # User role store (ContextVar + legacy global)
-    # FIX (2026-05-28): Added to resolve admin role correctly in python_exec tool.
-    # Previously missing, causing all users to default to "user" role and get
-    # blocked by security guardrails even when authenticated as admin.
-    #
-    # CURRENT ARCHITECTURE (verified 2026-08-28): the SERVER is a just relay -- it
-    # never executes tools; every tool runs in the CLIENT sandbox, where the profile
-    # role arrives as the injected global CURRENT_USER_ROLE (shipped in
-    # tools_response.config_constants). This store therefore has NO live production
-    # consumer: it exists for tests and direct callers that need an isolated,
-    # per-task role value.
-    #
-    # FIX (2026-08-19) - PER-TASK ISOLATION via contextvars:
-    #   The old design kept ONE module-level value for the whole process, so with two
-    #   concurrent clients the LAST authenticated identity silently applied to
-    #   EVERYONE's tool execution. A contextvars.ContextVar carries the value along
-    #   with the calling task/context instead -- concurrent contexts get isolated
-    #   values automatically. The module-level global is kept as a LEGACY FALLBACK
-    #   ONLY: it still serves non-async callers and existing tests that set it
-    #   directly from a plain thread.
+#
+# FIX (2026-05-28): Added to resolve admin role correctly in python_exec tool.
+# Previously missing, causing all users to default to "user" role and get
+# blocked by security guardrails even when authenticated as admin.
+#
+# CURRENT ARCHITECTURE (verified 2026-08-28): the SERVER is a just relay -- it
+# never executes tools; every tool runs in the CLIENT sandbox, where the profile
+# role arrives as the injected global CURRENT_USER_ROLE (shipped in
+# tools_response.config_constants). This store therefore has NO live production
+# consumer: it exists for tests and direct callers that need an isolated,
+# per-task role value.
+#
+# FIX (2026-08-19) - PER-TASK ISOLATION via contextvars:
+#   The old design kept ONE module-level value for the whole process, so with two
+#   concurrent clients the LAST authenticated identity silently applied to
+#   EVERYONE's tool execution. A contextvars.ContextVar carries the value along
+#   with the calling task/context instead -- concurrent contexts get isolated
+#   values automatically. The module-level global is kept as a LEGACY FALLBACK
+#   ONLY: it still serves non-async callers and existing tests that set it
+#   directly from a plain thread.
 # ---------------------------------------------------------------------------
 
 _current_user_role_ctx = contextvars.ContextVar("_current_user_role", default=None)

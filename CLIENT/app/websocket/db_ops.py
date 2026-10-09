@@ -60,7 +60,7 @@ def _sync_conversation_working_root(cursor, conv_id: str) -> None:
     conversations.working_root with the value that was actually in effect when
     the chat was used, so clicking this chat later can restore exactly that folder.
     The read goes through get_working_root() - the single source of truth
-    (CLIENT/config/.working_root.json) - nothing else is touched.
+    (the in-memory active value of app.utils.common.working_root) - nothing else is touched.
 
     FIX (2026-08-30): verify rowcount after the UPDATE. A 0-row update means
     the conversation row was missing (or id mismatch) and NOTHING was written -
@@ -84,51 +84,7 @@ def _sync_conversation_working_root(cursor, conv_id: str) -> None:
         logger.warning(f"Could not sync working_root for conversation {conv_id}: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Standalone working_root sync (used by POST /api/working_root)
-# ---------------------------------------------------------------------------
 
-def sync_conversation_working_root(conv_id: str) -> bool:
-    """Persist the currently active working root onto one conversation row.
-
-    FIX (2026-08-31): closing the per-chat persistence gap. The column was
-    previously refreshed ONLY as a side effect of WebSocket message saves, so
-    changing the working folder in the UI and then switching chats - without
-    sending any message first - never wrote anything to the database. This
-    function is called directly by POST /api/working_root right after the new
-    value is applied, using its own short-lived connection.
-
-    Returns True when a row was updated, False otherwise. Never raises:
-    bookkeeping must not break the working-root change itself.
-    """
-    if not conv_id or not str(conv_id).strip():
-        return False
-    try:
-        conn = get_db_connection()
-        try:
-            cursor = conn.cursor()
-            _ensure_conversation_exists(cursor, conv_id)
-            from app.utils.common import get_working_root
-            cursor.execute(
-                "UPDATE conversations SET working_root = ? WHERE id = ?",
-                (get_working_root(), str(conv_id).strip()),
-            )
-            updated = cursor.rowcount > 0
-            conn.commit()
-            if not updated:
-                logger.error(
-                    "working_root sync wrote 0 rows for conversation %s - rename NOT persisted",
-                    conv_id,
-                )
-            else:
-                logger.info("Conversation %s working_root synced to DB", str(conv_id)[:8])
-            return updated
-        finally:
-            close_db_connection(conn)
-    except Exception as e:
-        # Never break the working-root change because of bookkeeping.
-        logger.warning(f"Could not sync working_root for conversation {conv_id}: {e}")
-        return False
 
 def save_user_message(
     conn_path: str,

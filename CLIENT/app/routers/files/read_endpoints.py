@@ -261,7 +261,7 @@ def register_read_endpoints(router: APIRouter):
 
     @router.get("/api/working-root-info")
     async def get_working_root_info():
-        """Get the current working root (single source of truth: CLIENT/config/.working_root.json)."""
+        """Get the ACTIVE working root - the folder of the workspace currently open in the UI."""
         try:
             return {"working_root": get_working_root()}
         except Exception as e:
@@ -306,7 +306,7 @@ def register_read_endpoints(router: APIRouter):
 
     @router.get("/api/working_root")
     async def get_working_root_endpoint():
-        """Get the current working root (single source of truth: CLIENT/config/.working_root.json)."""
+        """Get the ACTIVE working root - the folder of the workspace currently open in the UI."""
         try:
             return {"working_root": get_working_root()}
         except Exception as e:

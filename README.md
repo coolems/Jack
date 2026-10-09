@@ -110,8 +110,7 @@ The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeF
 │   ├── app/chat_bus/       # Per-chat background sessions (parallel generation)
 │   └── config/             # Per-machine client settings (gitignored; seeded from .example files)
 │       ├── .api_client_keys.json  # ← bookkeeping ONLY (email + date) - the real key is never stored here
-│       ├── settings.json          # ← which SERVER address(es) to connect to
-│       └── .working_root.json     # ← folder all file tools are locked into
+│       └── settings.json          # ← which SERVER address(es) to connect to
 ├── utils/                  # Helper scripts (zzz_init.py, gen_ui_certs.py) + ScreenShot.png
     ├── llama_server/           # Local LLM runtime binaries + models (binaries are NOT in git)
 ├── web_server_relay/       # Optional single-file pure-PHP internet relay (index.php; not part of the standard LAN deployment)
@@ -323,7 +322,7 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
 1. On the **workstation** (SERVER side): start headless with `ZZZ_SERVER.bat` and allow **TCP port 8080** in its firewall.
 2. On the **laptop**: copy the entire `CLIENT/` folder from the repo (USB stick, network share, or just clone the whole repo — either works). Before copying you may delete `venv/`, `logs/` and optionally `chat_history.db` — the launcher recreates a fresh local venv on first run and re-creates everything else it needs. Then run **`CLIENT\ZZZ_CLIENT.bat`**: it auto-creates `CLIENT/venv`, installs deps + Chromium, frees port 8000 and starts `code_client.py`.
 3. In the UI: **Settings → Authentication → Server Address**. Type the workstation's address as `IP:port` — e.g. `192.168.1.50:8080` — and press Enter/blur to save. The value is written to `CLIENT/config/settings.json` (the single source of truth; you can also edit that file directly). **Restart the CLIENT process** for a changed address to take effect. Leave it empty / click **Reset** to auto-detect this machine's LAN IP on next start.
-4. Point the working root at a local folder: if you copied an existing `CLIENT/config/.working_root.json`, it still points at the workstation's path — change it via the **folder chip in the UI header**, or edit that file (all file tools are locked into this folder, per machine).
+4. Point the working root at a local folder: every workspace (chat) has its OWN working folder, stored per-workspace in `CLIENT/chat_history.db` (`conversations.working_root`) — set it via the **folder chip in the UI header** while that workspace is open. A workspace without its own folder yet falls back to the project root (all file tools are locked into the active workspace's folder).
 5. Set API key + e-mail as in step 6 → **Connect**. The laptop now drives Jack on the workstation: models listed are exactly what your profile allows, and all heavy lifting happens where the GPU is.
 
 ### Step 8 — Scale out: add a second GPU machine (optional)
@@ -368,7 +367,7 @@ Notes:
 
 - **SERVER** config lives in `config/` — real values (API keys, profiles, backend list, per-machine state) are **gitignored**; only `.example` templates are tracked and used to bootstrap first runs. See steps 2–3 above for the exact file shapes.
   - **`llama_servers.json`** — one entry per llama-server instance: `name`, `host`, `port`. Hosts of `127.0.0.1`/`localhost` are spawned and managed by the SERVER; any other host is a remote LAN machine, attached to (health-probed every 30 s) but never controlled. This file decides how many chats can generate simultaneously.
-- **CLIENT** config lives in `CLIENT/config/` — same pattern: gitignored data files bootstrapped from `.example` templates (`.api_client_keys.json`, `settings.json`, `.working_root.json`). The working root is locked: all file tools resolve paths inside it; nothing escapes. You can change it live via the folder chip in the UI header or by editing `.working_root.json`.
+- **CLIENT** config lives in `CLIENT/config/` — same pattern: gitignored data files bootstrapped from `.example` templates (`.api_client_keys.json`, `settings.json`). Working roots are per-workspace values in the CLIENT database (`conversations.working_root`) — each workspace is locked into its own folder, with the project root as fallback; change one live via the folder chip in the UI header.
 - Bind the CLIENT UI beyond loopback only with `COOLEMS_CLIENT_HOST=0.0.0.0` **and** API keys configured — otherwise startup refuses.
 
 ## License

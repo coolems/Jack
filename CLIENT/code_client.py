@@ -92,8 +92,7 @@ logger.info(f"Timeout: {PROVIDER_DEFAULT_TIMEOUT}s")
 
 # ===== Config Bootstrap (2026-08-23) =====
 # Create missing CLIENT config data files from their shipped example templates so a
-# fresh checkout never fails at startup: .api_client_keys.json, settings.json,
-# .working_root.json. Existing files are NEVER touched.
+# fresh checkout never fails at startup: .api_client_keys.json, settings.json.
 from config.bootstrap import ensure_client_config_files, ensure_database_file
 _created_configs = ensure_client_config_files()
 if _created_configs:

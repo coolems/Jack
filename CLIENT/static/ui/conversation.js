@@ -148,29 +148,30 @@ async function loadConversation(id) {
 
         const data = await response.json();
 
-        // Per-chat working root (2026-08-29): restore the folder this chat was used with.
-        // Legacy chats have working_root=null -> keep whatever is currently active (no-op).
-        if (data.working_root && typeof currentWorkingRoot !== 'undefined'
-                && data.working_root !== currentWorkingRoot) {
+        // Per-chat working root (2026-10-09): every workspace activates its OWN folder from
+        // the database on switch. data.working_root set -> activate that exact folder; null /
+        // fresh workspace -> empty path + conversation_id, and the server resolves this
+        // workspace's stored value or pins it to the project root fallback (so each workspace
+        // owns its row from first open - no shared global file anymore).
+        if (typeof currentWorkingRoot !== 'undefined') {
             try {
                 const wrRes = await fetch('/api/working_root', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ working_root: data.working_root })
+                    body: JSON.stringify({ working_root: data.working_root || '', conversation_id: newConvId })
                 });
                 const wrData = await wrRes.json();
-                if (wrData.success) {
+                if (wrData.success && wrData.working_root !== currentWorkingRoot) {
                     currentWorkingRoot = wrData.working_root;
                     // 2026-08-29: working folder now lives in the header chip - refresh its display.
                     if (typeof updateWorkingRootChip === 'function') updateWorkingRootChip();
-                    showNotification('Working folder restored for this workspace: ' + currentWorkingRoot, 'success');
+                    showNotification('Working folder for this workspace: ' + currentWorkingRoot, 'success');
                     // Refresh file tree to the restored folder (existing helpers)
                     expandedFolders.clear();
                     selectedItems.clear();
                     currentTreePath = '';
                     setTimeout(() => loadTree(''), 100);
-                } else {
-                    // Saved folder no longer exists / not allowed -> keep current working root
+                } else if (!wrData.success) {
                     showNotification('Workspace folder unavailable (' + (wrData.message || 'error') + ') - keeping current working folder', 'warning');
                 }
             } catch (e) {

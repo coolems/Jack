@@ -255,7 +255,9 @@ def create_websocket_handler(
 
             # --- Handle file uploads ---
             enhanced_message, image_data, image_paths, file_contents = (
-                process_media_files(user_msg, media_files)
+            # Per-workspace working root (2026-10-09): resolve uploads against THIS chat's
+            # own folder so concurrent workspaces never mix up upload locations.
+                process_media_files(user_msg, media_files, conv_id=cid)
             )
 
             # --- Tool detection (informational only) ---

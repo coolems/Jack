@@ -228,20 +228,6 @@ def wire_configs(ctx: dict) -> None:
         info("CLIENT will run on another PC - leaving its settings.json for auto-detect "
              "(it finds the SERVER's LAN IP on first boot; make sure both PCs are on the same network).")
 
-    wr_path = os.path.join(client_cfg_dir, ".working_root.json")
-    data = {}
-    try:
-        with open(wr_path, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-        if isinstance(loaded, dict):
-            data = loaded
-    except (json.JSONDecodeError, OSError):
-        pass
-    if data.get("working_root") != root:
-        data["working_root"] = root
-        backup_once(wr_path, stamp)
-        write_json(wr_path, data)
-        ok(f"CLIENT .working_root.json -> {root}")
 
     # ---- 6g. CLIENT UI TLS certificates (browser trust for the local UI URL, port from config.CLIENT_UI_PORT) ----
     ctx["ui_certs_ok"] = ensure_ui_certs(root)

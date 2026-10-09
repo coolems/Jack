@@ -490,8 +490,8 @@ def install_shared_modules(sources: Dict[str, str],
         # DNA data sync runs AFTER all modules are in (see function docstring).
         sync_dna_data(dna_data)
 
-        # NOTE (2026-08-19): no working_root propagation here - tools read it live from
-        # <CLIENT>/config/.working_root.json via tools.utils.get_working_root() (single source of truth).
+        # NOTE: no working_root propagation here - tools resolve it per turn via the
+        # tools.utils ContextVar published by agentic_mode() from the conversation's DB row.
 
         if installed_count > 0:
             logger.info("Loader: shared modules installation complete (%d new modules)", installed_count)
