@@ -45,7 +45,15 @@ The implementation lives in the utils/init_setup/ package (one module per concer
     main.py        the step-by-step init flow
 """
 
+import os
 import sys
+
+# Ensure the repo ROOT is on sys.path so `utils.init_setup` resolves no matter where this
+# script is launched from (e.g. ZZZ_initial_init.bat runs it as a plain file, which puts
+# utils/ - not the repo root - first on sys.path).
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # <repo>/utils/zzz_init.py -> <repo>
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from utils.init_setup.main import main  # noqa: F401  (re-exported for `python -m`-style use)
 
