@@ -177,6 +177,9 @@ class ConversationManager {
                 ? `<span class="chat-color-dot" style="background:${colorInfo.hex};" title="${colorInfo.label}"></span>`
                 : `<span class="chat-color-dot chat-color-dot-none" title="No color"></span>`;
 
+            // (2026-10-09) attention badge: a background workspace that needs the user's eye.
+            const atKind = (typeof ChatSocketPool !== 'undefined') ? (ChatSocketPool.attention[conv.id] || '') : '';
+
             return `
                 <div class="chat-history-item ${isActive ? 'active' : ''}"
                      data-conv-id="${conv.id}"
@@ -188,6 +191,7 @@ class ConversationManager {
                     ${typeof ChatSocketPool !== 'undefined'
                         ? `<span class="chat-status-dot status-${ChatSocketPool.statuses[conv.id] || 'idle'}"></span>`
                         : ''}
+                    ${atKind ? `<span class="chat-attention-badge attention-${atKind}" title="${atKind === 'dialog' ? 'Waiting for your decision' : 'Task finished in the background'}"></span>` : ''}
                     <svg class="chat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                     </svg>

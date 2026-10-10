@@ -29,6 +29,14 @@ const ChatSocketPool = {
     order: [],            // LRU order: least recently used at index 0
     maxOpen: 6,           // CLIENT_MAX_OPEN_CHAT_WS default; refined from config when available
 
+    // ===== Sidebar attention markers (2026-10-09) ==================================
+    // Orthogonal to session status: a chat can be 'generating' AND waiting on a dialog.
+    //   'dialog' - a background workspace has a pending decision card (python_exec approval,
+    //              URL consent): BLINKS until answered or the user visits that workspace.
+    //   'done'   - a background workspace just finished its task: green flash for ~30 s.
+    attention: {},        // convId -> 'dialog' | 'done'
+    _attentionTimers: {}, // convId -> setTimeout handle for the temporary 'done' flash
+
     /** Open (or reuse) the socket for one conversation. NEVER closes other chats' sockets. */
     ensure(convId) {
         if (!convId) return null;
@@ -37,6 +45,9 @@ const ChatSocketPool = {
         if (existing && (existing.ws.readyState === WebSocket.OPEN ||
                          existing.ws.readyState === WebSocket.CONNECTING)) {
             this._touch(convId);
+            // Legacy alias: keep COOLEMS.ws pointing at the CURRENT chat's socket even when
+            // the pooled socket is reused (a switch-back must not leave it on another chat).
+            if (COOLEMS.currentConversation === convId) COOLEMS.ws = existing.ws;
             return existing.ws;
         }
 
@@ -130,14 +141,21 @@ const ChatSocketPool = {
             try { msg = JSON.parse(e.data); }
             catch (err) { logError('[ChatSocketPool] Parse error:', err); return; }
 
-            // Track status for EVERY frame of this chat (drives the sidebar dot).
+            // Track status for EVERY frame of this chat (drives the sidebar dot + attention).
             this._trackStatus(convId, msg);
 
-            if (convId !== COOLEMS.currentConversation) {
-                // Background chat: its frames must NOT render into the active view —
-                // they belong to that chat's own screen. The server keeps buffering them;
-                // when the user comes back, loadConversation() refreshes from DB + live
-                // streaming continues on this still-open socket.
+            // Suspended convs are mid-switch: the outgoing workspace is still "current" while its
+            // container is being rebuilt for the incoming one - queue its frames too, or they would
+            // render into the wrong DOM (2026-10-09 switch-race fix).
+            if (convId !== COOLEMS.currentConversation ||
+                (typeof WorkspaceViews !== 'undefined' && WorkspaceViews.isSuspended(convId))) {
+                // Background chat: its frames must NOT render into the active view — they
+                // belong to that chat's own screen. The socket is still open, so the server
+                // delivered them LIVE and did not buffer them; queueing here is what keeps an
+                // approval card / streaming bubble from being lost while you are away. On a
+                // fast-path restore loadConversation() flushes this queue through
+                // handleWebSocketMessage(); if no stash exists, the DB reload supersedes it.
+                WorkspaceViews.queueFrame(convId, msg);
                 return;
             }
             handleWebSocketMessage(msg);
@@ -198,9 +216,28 @@ const ChatSocketPool = {
 
     // ===== Status tracking (dots + eviction safety) ==================================
 
-    /** Map one frame to a chat status and refresh its sidebar dot. */
+    /** Map one frame to a chat status and refresh its sidebar dot (+ attention badge). */
     _trackStatus(convId, msg) {
         const t = msg && msg.type;
+
+        // (2026-10-09 attention markers) A BACKGROUND workspace needs the user's eye:
+        //  * a decision card appeared -> blinking 'dialog' badge until answered/visited;
+        //  * a real turn just ended   -> temporary green 'done' flash (~30 s);
+        //  * generating frames resume after a dialog -> clear it (answered or auto-fired).
+        if (convId !== COOLEMS.currentConversation) {
+            const prev = this.statuses[convId] || 'idle';
+            if (t === 'exec_approval_request') {
+                this.setAttention(convId, 'dialog');
+            } else if ((t === 'done' || t === 'error' || t === 'cancelled' ||
+                        t === 'provider_error' || t === 'execution_fail') &&
+                       (prev === 'generating' || prev === 'queued')) {
+                this.setAttention(convId, 'done');
+            } else if ((t === 'queue_start' || t === 'content' || t === 'thinking' ||
+                        t === 'tool_start' || t === 'tool_end') &&
+                       this.attention[convId] === 'dialog') {
+                this.clearAttention(convId);   // the dialog was answered - turn resumed
+            }
+        }
 
         // (2026-09-08 multi-chat UI fix) AUTHORITATIVE frame: the server sends it right after
         // replaying a chat's buffered tail on re-attach. It carries the channel's real state,
@@ -251,6 +288,54 @@ const ChatSocketPool = {
         this._updatePill();
     },
 
+    // ===== Attention badge API (2026-10-09) =========================================
+
+    /** Set a workspace's attention state ('dialog' | 'done') and update its sidebar badge. */
+    setAttention(convId, kind) {
+        if (!convId || !kind) return;
+        // A fresh dialog always wins over an old completion flash (and does not re-arm its timer).
+        if (this.attention[convId] === 'done' && kind !== 'dialog') return;
+        this.attention[convId] = kind;
+        // The 'done' flash expires on its own so the sidebar stays quiet. Scheduled at STATE level (not in
+        // _setAttentionBadge): when a turn ends while the sidebar item is not rendered yet, the badge will
+        // appear on the next render but must still expire by itself.
+        const timer = this._attentionTimers[convId];
+        if (timer) { clearTimeout(timer); delete this._attentionTimers[convId]; }
+        if (kind === 'done') {
+            this._attentionTimers[convId] = setTimeout(() => this.clearAttention(convId), 30000);
+        }
+
+        this._setAttentionBadge(convId, kind);
+    },
+
+    /** Clear a workspace's attention state (visited / answered / expired). */
+    clearAttention(convId) {
+        if (!this.attention[convId]) return;
+        delete this.attention[convId];
+        const timer = this._attentionTimers[convId];
+        if (timer) { clearTimeout(timer); delete this._attentionTimers[convId]; }
+        this._setAttentionBadge(convId, null);
+    },
+
+    /** Update one workspace's sidebar attention badge element only (timers live in set/clearAttention). */
+    _setAttentionBadge(convId, kind) {
+        const item = document.querySelector(`.chat-history-item[data-conv-id="${convId}"]`);
+        if (!item) return;   // sidebar not rendered yet — badge is added on next render
+
+        let badge = item.querySelector('.chat-attention-badge');
+        if (kind === null) {
+            if (badge) badge.remove();
+            return;
+        }
+        if (!badge) {
+            badge = document.createElement('span');
+            const dot = item.querySelector('.chat-status-dot') || item.querySelector('.chat-color-dot');
+            const anchor = dot ? dot.nextSibling : null;
+            item.insertBefore(badge, anchor);
+        }
+        badge.className = `chat-attention-badge attention-${kind}`;
+    },
+
     /** Aggregate pill: appends "· N gen · M queued" to the connection status text. */
     _updatePill() {
         const el = document.getElementById('connectionStatus');
@@ -278,6 +363,12 @@ const ChatSocketPool = {
     /** Close everything (page unload / hard reset). */
     closeAll() {
         for (const id of Object.keys(this.sockets)) this.close(id, true);
+        if (typeof WorkspaceViews !== 'undefined') WorkspaceViews.clearAll();
+        // Clean slate: drop attention state + pending done-flash timers with the rest.
+        for (const id of Object.keys(this._attentionTimers)) {
+            clearTimeout(this._attentionTimers[id]); delete this._attentionTimers[id];
+        }
+        this.attention = {};
         COOLEMS.ws = null;
     },
 };
@@ -314,6 +405,29 @@ function createNewWebSocket(convId) {
         @keyframes chat-dot-pulse {
             0%, 100% { transform: scale(1);    box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.5); }
             50%      { transform: scale(1.25); box-shadow: 0 0 0 4px rgba(46, 204, 113, 0); }
+        }
+
+        /* (2026-10-09) attention badges: a background workspace that needs the user's eye. */
+        .chat-attention-badge {
+            width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-left: 3px;
+        }
+        /* pending decision (python_exec approval / URL consent) — blinks until answered/visited */
+        .chat-attention-badge.attention-dialog {
+            background: #ff9f1a;
+            animation: chat-attention-blink 1s ease-in-out infinite;
+        }
+        @keyframes chat-attention-blink {
+            0%, 100% { opacity: 1;    box-shadow: 0 0 0 0 rgba(255, 159, 26, 0.7); }
+            50%      { opacity: 0.25; box-shadow: 0 0 0 4px rgba(255, 159, 26, 0); }
+        }
+        /* task finished in the background — green flash, expires after ~30 s (JS timeout) */
+        .chat-attention-badge.attention-done {
+            background: #2ecc71;
+            animation: chat-attention-flash 1.5s ease-in-out infinite;
+        }
+        @keyframes chat-attention-flash {
+            0%, 100% { opacity: 1;   box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.7); }
+            50%      { opacity: 0.4; box-shadow: 0 0 0 3px rgba(46, 204, 113, 0); }
         }
     `;
     document.head.appendChild(style);

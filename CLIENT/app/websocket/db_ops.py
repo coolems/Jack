@@ -9,8 +9,14 @@ UPDATED (2025-06-25):
 
 UPDATED (2026-08-29):
     - Per-chat working root: every message save also refreshes
-      conversations.working_root with the currently active working folder,
+      conversations.working_root for its OWN conversation row,
       so clicking a chat later can restore exactly that folder.
+
+FIXED (2026-10-09):
+    - The sync used to stamp the ACTIVE UI working root onto whatever row was
+      saved, corrupting background workspaces' rows while you viewed another
+      one ("working_root stops changing after the first switch"). It now
+      resolves each conversation's OWN stored value (per-workspace DB contract).
 
 FIXED (2026-08-30):
     - UI-only working-root renames were silently lost: the sync UPDATE had no
@@ -54,25 +60,30 @@ def _ensure_conversation_exists(cursor, conv_id: str) -> None:
 
 
 def _sync_conversation_working_root(cursor, conv_id: str) -> None:
-    """Persist the currently active working root onto the conversation row.
+    """Refresh this conversation's own working root onto its row (idempotent).
 
-    Per-chat working root (2026-08-29): every message save refreshes
-    conversations.working_root with the value that was actually in effect when
-    the chat was used, so clicking this chat later can restore exactly that folder.
-    The read goes through get_working_root() - the single source of truth
-    (the in-memory active value of app.utils.common.working_root) - nothing else is touched.
+    PER-WORKSPACE CONTRACT (2026-10-09): the value written is resolved from THIS
+    conversation's OWN stored value - never from the in-memory ACTIVE cache. The
+    old code stamped get_working_root() (the folder open in the UI) onto whatever
+    row was being saved, so a BACKGROUND workspace finishing its turn while you
+    viewed another one silently overwrote its own row with the other workspace's
+    path - after that, switching back "restored" the wrong folder and the working
+    root appeared to stop changing.
 
-    FIX (2026-08-30): verify rowcount after the UPDATE. A 0-row update means
-    the conversation row was missing (or id mismatch) and NOTHING was written -
-    that exact silent no-op is what made UI-only working-root renames appear to
-    "not write into the database". The failure now logs loudly instead of
-    disappearing, and _ensure_conversation_exists() prevents it.
+    Now the sync is pure bookkeeping: it writes the row's own value back (no-op),
+    or pins a fresh/NULL row to the project-root fallback so every workspace owns
+    its row from first use. The UI chip / conversation switch are the only writers
+    that ever CHANGE a row's folder.
+
+    FIX (2026-08-30, kept): verify rowcount after the UPDATE - a 0-row update means
+    the conversation row was missing and nothing was written; _ensure_conversation_exists()
+    prevents it and the failure logs loudly instead of disappearing silently.
     """
     try:
-        from app.utils.common import get_working_root
+        from app.utils.common import resolve_working_root_for_conv
         cursor.execute(
             "UPDATE conversations SET working_root = ? WHERE id = ?",
-            (get_working_root(), conv_id),
+            (resolve_working_root_for_conv(conv_id), conv_id),
         )
         if cursor.rowcount == 0:
             logger.error(
