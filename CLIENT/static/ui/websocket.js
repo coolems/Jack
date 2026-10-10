@@ -392,6 +392,54 @@ function _replayShouldRenderAssistantFrame() {
     return !fresh;                                              // already rendered this turn's bubble once
 }
 
+// (2026-10-10) FINAL TURN STATS: splice the last loop-stats line directly above
+// 'Agentic AI: TASK DONE' in the final answer bubble. The backend splices the SAME line
+// into the persisted text, so live bubbles and DB-reloaded history look identical.
+// Idempotent + replay-safe: if the line is already present (DB-loaded bubble or a
+// replayed frame) nothing happens; if the bubble is not rendered yet the line is parked
+// in COOLEMS._pendingTurnStatsLine and applied on the 'done' frame.
+function applyTurnStatsLine(line) {
+    if (!line || typeof line !== 'string') return;
+    const container = document.getElementById('chatContainer');
+    if (!container) { COOLEMS._pendingTurnStatsLine = line; return; }
+
+    // Last assistant bubble whose raw content carries the TASK DONE marker.
+    let target = null;
+    const bubbles = container.querySelectorAll('.message.assistant .message-content[data-raw-content]');
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+        const raw = bubbles[i].getAttribute('data-raw-content') || '';
+        if (raw.indexOf('Agentic AI: TASK DONE') !== -1) { target = bubbles[i]; break; }
+    }
+    if (!target) {
+        COOLEMS._pendingTurnStatsLine = line;   // bubble not rendered yet - apply on 'done'
+        return;
+    }
+
+    const raw = target.getAttribute('data-raw-content');
+    if (raw.indexOf(line) !== -1) return;       // already present - idempotent
+
+    // (2026-10-10 fix) Target ONLY the marker on its own line - same rule as the backend.
+    // The model can mention "Agentic AI: TASK DONE" mid-prose; splicing before such a
+    // meta-mention put the stats at the TOP of the answer (humanly wrong). Use the LAST
+    // standalone marker line; if none exists, append both lines cleanly at the very end.
+    // (2026-10-10 audit) lastIndexOf() could land on a LATER inline quote of the exact
+    // marker text instead of the real standalone line - walk the /gm matches and keep the
+    // LAST match's own start index so live bubbles byte-match the backend splice.
+    const _doneRe = /^[ \t]*Agentic AI: TASK DONE[ \t]*$/gm;
+    let lastStart = -1, _mm;
+    while ((_mm = _doneRe.exec(raw)) !== null) { lastStart = _mm.index; }
+    let newRaw;
+    if (lastStart >= 0) {
+        newRaw = raw.slice(0, lastStart) + line + '\n' + raw.slice(lastStart);
+    } else {
+        newRaw = raw.replace(/\n+$/, '') + '\n' + line + '\nAgentic AI: TASK DONE';
+    }
+    target.setAttribute('data-raw-content', newRaw);
+    const contentDiv = target.querySelector('.content-text');
+    if (contentDiv && typeof parseMarkdown === 'function') {
+        contentDiv.innerHTML = parseMarkdown(newRaw, false);
+    }
+}
 function handleWebSocketMessage(data) {
     const chatContainer = document.getElementById('chatContainer');
     const wasNearBottom = isNearBottom(chatContainer);
@@ -503,6 +551,10 @@ function handleWebSocketMessage(data) {
         appendExecApprovalCard(data);
     } else if (data.type === 'system') {
         showNotification(data.content, 'info');
+    } else if (data.type === 'turn_stats') {
+        // (2026-10-10) final loop-stats line for the finished agentic turn - splice it
+        // above 'Agentic AI: TASK DONE' in the answer bubble (idempotent, replay-safe).
+        applyTurnStatsLine(data.line);
     } else if (data.type === 'token_stats') {
         // LIVE token stats pushed from server after every chat_stream() call
         // This is bulletproof — each WebSocket connection gets its own data
@@ -528,6 +580,13 @@ function handleWebSocketMessage(data) {
         if (lastMsg) {
             delete lastMsg.dataset.streaming;
             lastMsg.querySelectorAll('.streaming-code').forEach(el => el.classList.remove('streaming-code'));
+        }
+        // (2026-10-10) flush a parked final-stats line if the 'turn_stats' frame arrived
+        // before this turn's answer bubble existed (or during replay). Idempotent inside.
+        if (COOLEMS._pendingTurnStatsLine) {
+            const _pl = COOLEMS._pendingTurnStatsLine;
+            delete COOLEMS._pendingTurnStatsLine;
+            applyTurnStatsLine(_pl);
         }
         if (COOLEMS.filesPanelOpen && typeof loadWorkingRootFiles === 'function') loadWorkingRootFiles();
         COOLEMS.userScrolledUp = false;

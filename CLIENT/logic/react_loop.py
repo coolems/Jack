@@ -17,6 +17,7 @@ FIXED (2026-01-XX): ToolCompilationError now terminates loop immediately without
 
 import json
 import logging
+import re
 import time
 from typing import List, Dict, Any, Tuple
 
@@ -129,6 +130,11 @@ async def run_react_loop(
     # this agentic run (loop 1 -> current). Pushed to the UI with every token_stats frame so
     # the status bar can show cumulative output for the whole session, not just one call.
     session_generated_tokens = 0
+
+    # LAST PROVIDER STATS of this run - kept so the FINAL turn-stats line (spliced above
+    # 'Agentic AI: TASK DONE' in the answer + sent as a 'turn_stats' frame) can show exactly
+    # the numbers the UI status bar showed live during the loop.
+    last_stats = None
 
     # CONTEXT-RECOVERY BUDGET - how many times this run may recover from a
     # truncated tool-call JSON (server error marker: "truncated its own tool-call").
@@ -387,7 +393,8 @@ async def run_react_loop(
                 "last_session_sec": _sess_stats["last_session_sec"],
             }
             await push_token_stats(config.websocket, stats, loop_stats)
-
+            if stats is not None:
+                last_stats = stats   # remember for the final turn-stats line at loop exit
 
             if stats:
                 logger.info(
@@ -629,6 +636,40 @@ async def run_react_loop(
                     continue
 
 
+        # (2026-10-10) FINAL TURN STATS: splice the last loop-stats line directly above
+        # "Agentic AI: TASK DONE" in the persisted answer AND send it as a "turn_stats"
+        # frame so the live bubble gets the same line. The UI handler is idempotent, so
+        # replayed frames and DB-loaded bubbles can never double-print it.
+        if final_response and "Agentic AI: TASK DONE" in final_response:
+            _elapsed_final = time.time() - func_start
+            stats_line = _format_turn_stats_line(last_stats, loop_tools, loop_no_tools,
+                                                 session_generated_tokens, _elapsed_final)
+            if stats_line:
+                # (2026-10-10 fix) Target ONLY the marker on its own line. The model can
+                # mention "Agentic AI: TASK DONE" mid-prose ("...end with 'Agentic AI:
+                # TASK DONE'") - splicing before such a meta-mention put the stats at the
+                # TOP of the answer, which looked humanly wrong. The LAST standalone line
+                # carrying the marker is the real end marker; if none exists (marker only
+                # appears mid-line), append both lines cleanly at the very end instead.
+                _m = None
+                for _m in re.finditer(r"(?m)^[ \t]*Agentic AI: TASK DONE[ \t]*$", final_response):
+                    pass  # loop ends with the LAST standalone match (or None)
+                if _m is not None:
+                    final_response = (final_response[:_m.start()] + stats_line + "\n"
+                                      + final_response[_m.start():])
+                else:
+                    final_response = (final_response.rstrip("\n") + "\n" + stats_line
+                                      + "\nAgentic AI: TASK DONE")
+                logger.info(f"[AGENTIC.DEBUG] react_loop - Final turn stats: {stats_line}")
+                if config.websocket:
+                    try:
+                        await config.websocket.send_text(json.dumps({
+                            "type": "turn_stats",
+                            "line": stats_line,
+                        }))
+                    except Exception:
+                        pass  # UI socket may already be closed - the persisted answer still carries it
+
         # Loop exit - RESTORED to match working version
         if not final_response:
             logger.warning("[AGENTIC.DEBUG] react_loop - Loop exited but no final_response, using fallback")
@@ -691,6 +732,47 @@ async def run_react_loop(
 
 
         raise
+
+
+def _format_turn_stats_line(last_stats: Any, loop_tools: int, loop_no_tools: int,
+                            session_generated_tokens: int, elapsed_sec: float) -> str:
+    """Format the FINAL turn-stats line for an agentic run (2026-10-10).
+
+    Renders EXACTLY like the UI status bar ("Loop stats: ... | 177K ctx | 9.3K sent |
+    167.4K left | \u26a1 20.6 tok/s | \U0001F4DD 0.1K gen | \u23f1 0:08") so the user sees in the
+    answer the same statistics that were live during the thinking process. Spliced directly
+    above "Agentic AI: TASK DONE" and sent as a "turn_stats" frame for the live bubble.
+
+    Returns "" when there is no provider stats object yet (nothing to report).
+    """
+    if last_stats is None:
+        return ""
+    try:
+        window = int(getattr(last_stats, "context_window", 0) or 0)
+        sent = int(getattr(last_stats, "prompt_tokens", 0) or 0)
+        remaining = getattr(last_stats, "tokens_remaining", None)
+        if remaining is None or remaining < 0:
+            remaining = max(0, window - sent - (int(getattr(last_stats, "generated_tokens", 0) or 0)))
+        speed = getattr(last_stats, "calculated_speed", None)
+        if not speed and session_generated_tokens > 0 and elapsed_sec > 0:
+            speed = session_generated_tokens / elapsed_sec   # honest fallback over the whole turn
+
+        parts = [f"Loop stats: {loop_tools} / {loop_no_tools}",
+                 f"{window // 1024}K ctx",
+                 f"{sent / 1024:.1f}K sent",
+                 f"{remaining / 1024:.1f}K left"]
+        if speed and speed > 0:
+            parts.append(f"\u26a1 {speed:.1f} tok/s")
+        if session_generated_tokens > 0:
+            parts.append(f"\U0001F4DD {session_generated_tokens / 1024:.1f}K gen")
+        total = max(0.0, float(elapsed_sec or 0))
+        h, rem = divmod(int(total), 3600)
+        m, s = divmod(rem, 60)
+        parts.append("\u23f1 " + (f"{h}:{m:02d}:" if h else f"{m}:") + f"{s:02d}")
+        return " | ".join(parts)
+    except Exception:
+        logger.debug("[AGENTIC.DEBUG] turn-stats line formatting failed", exc_info=True)
+        return ""
 
 
 def _is_valid_tool_call(tc: Dict) -> bool:
