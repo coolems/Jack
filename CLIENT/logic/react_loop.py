@@ -48,7 +48,7 @@ from utils.history_trimmer import safe_trim_history, get_token_count
 _LESSONS_INJECTION_ENABLED = False
 
 
-from .base_mode import push_token_stats, check_stop_event, build_session_stats
+from .base_mode import push_token_stats, check_stop_event, build_session_stats, strip_turn_stats_lines
 from .provider_call import call_provider_with_retry
 from .tool_lock import tool_lock, SCREEN_BROWSER_TOOLS
 
@@ -489,6 +489,13 @@ async def run_react_loop(
             else:
                 # No tool calls - check if task is truly done
                 ai_response = provider_result if isinstance(provider_result, str) else str(provider_result)
+
+                # (2026-10-11) The model can copy a past turn's spliced "Loop stats:" line
+                # out of its own history into this answer. Strip it BEFORE accumulation so
+                # the persisted bubble carries exactly ONE stats line - the one the loop
+                # splices at exit below (build_messages() keeps old lines from the model's
+                # view; this is the safety net for anything that still slips through).
+                ai_response = strip_turn_stats_lines(ai_response)
 
                 if "Agentic AI: TASK DONE" in ai_response:
                     # TASK COMPLETE - build final response from ALL accumulated thinking + this last message

@@ -283,16 +283,35 @@ class CoolemsServerProvider(BaseProvider):
             asyncio.sleep(float('inf')), name="coolems-idle-sentinel"
         )
 
+        # 2b. Await until an ACTIVE server task terminates (FIRST_COMPLETED).
+        #     (2026-10-11 fix) The idle sentinel must NOT be awaited: if the real
+        #     task dies (TLS init failure, port in use), gather() on
+        #     (real_task, infinite_sentinel) would hang forever with no listener.
+        #     asyncio.wait() over only the active tasks fails fast instead.
+        active_tasks = [t for t in (self._direct_ws_task, self._relay_brain_task) if t is not None]
+
         try:
-            await asyncio.gather(
-                self._direct_ws_task if self._direct_ws_task else self._idle_sentinel_task,
-                self._relay_brain_task if self._relay_brain_task else self._idle_sentinel_task,
-                return_exceptions=True
-            )
+            done, _pending = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
             logger.info("[SERVER] Server tasks cancelled (shutdown)")
+            return True  # code.py finally -> stop_all_servers()
 
-        return True
+        # A real server task ended. Distinguish shutdown-cancel vs genuine death.
+        died = False
+        for t in done:
+            if t.cancelled():
+                continue  # normal shutdown path (stop_all_servers cancelled it)
+            exc = t.exception()
+            if exc is not None:
+                logger.critical(f"[SERVER] {t.get_name()} died with unhandled exception - exiting", exc_info=exc)
+                raise exc  # fail fast: non-zero exit; code.py finally still runs stop_all_servers()
+            logger.critical(f"[SERVER] {t.get_name()} exited without error - server NOT listening; exiting")
+            died = True
+
+        if not died:
+            return True  # every done task was cancelled -> clean shutdown
+
+        raise RuntimeError("start_all_servers(): active WebSocket task terminated unexpectedly")
 
     async def stop_all_servers(self) -> None:
         """Gracefully shut down all server tasks and the local LLM.

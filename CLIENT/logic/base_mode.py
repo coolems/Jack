@@ -11,6 +11,7 @@ Contains:
 """
 
 import logging
+import re
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 import asyncio
@@ -114,6 +115,58 @@ class BaseModeConfig:
     session_timer: Optional["SessionTimer"] = None
     last_session_sec: float = 0.0
 
+# (2026-10-11) FINAL TURN STATS HYGIENE: react_loop.py splices a "Loop stats:" line into the
+# persisted answer right above 'Agentic AI: TASK DONE' and the UI renders it from that text.
+# That line must NEVER be sent back to the model: when past answers carrying it were fed as
+# history, the model copied an OLD stats line verbatim into its new answer (few-shot
+# self-imitation), so a bubble could show TWO lines - one copied + one freshly spliced.
+# build_messages() strips them from history; react_loop strips any residual copy from the
+# model's own response before it is accumulated. The regex matches ONLY the exact spliced
+# shape ("Loop stats: N / M | ...") so prose that merely mentions the feature survives.
+_TURN_STATS_LINE_RE = re.compile(r"(?m)^[ \t]*Loop stats:\s*\d+\s*/\s*\d+[^\n]*$")
+
+
+def strip_turn_stats_lines(text: str) -> str:
+    """Remove spliced "Loop stats:" lines from a text (exact shape only).
+
+    Collapses the 3+ newlines left behind into a paragraph break. Returns the input
+    unchanged when no such line is present.
+    """
+    if not isinstance(text, str) or "Loop stats:" not in text:
+        return text
+    cleaned = _TURN_STATS_LINE_RE.sub("", text)
+    if cleaned == text:
+        return text
+    # Leading stats line(s) are stripped too - drop the blank lines they leave at the top.
+    return re.sub(r"\n{3,}", "\n\n", cleaned).lstrip("\n")
+
+
+def strip_turn_stats_from_messages(messages: List[Dict]) -> int:
+    """Strip spliced "Loop stats:" lines from assistant history messages (in place).
+
+    Called by build_messages() so the model never sees a past turn's stats line and can't
+    copy it into its answer. The UI is unaffected - it renders the persisted text, where
+    each old answer keeps exactly one line. Returns the number of lines removed.
+    """
+    removed = 0
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or "Loop stats:" not in content:
+            continue
+        cleaned = strip_turn_stats_lines(content)
+        if cleaned != content:
+            removed += len(_TURN_STATS_LINE_RE.findall(content))
+            msg["content"] = cleaned
+            try:
+                from utils.history_manager import invalidate_message_tokens
+                invalidate_message_tokens(msg)  # content mutated -> refresh cached token count
+            except Exception:
+                pass
+    return removed
+
+
 def build_messages(
     system_prompt: str,
     conversation_history: List[Dict],
@@ -139,6 +192,11 @@ def build_messages(
     """
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(conversation_history[:-1])  # Exclude last user message from history
+
+    # (2026-10-11) Keep past turns' spliced "Loop stats:" lines out of the model's view -
+    # see strip_turn_stats_from_messages(). Without this the model copies an old line into
+    # its new answer and a bubble ends up with two stats lines.
+    strip_turn_stats_from_messages(messages)
 
     current_message = {"role": "user", "content": user_message_content}
     # `_protect` marks the CURRENT USER PROMPT for the atomic history trimmer:
