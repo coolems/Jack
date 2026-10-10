@@ -343,7 +343,17 @@ async function deleteFile(filename) {
 
 function handleFileDragStart(event, filePath, fileName) {
 
-    event.dataTransfer.setData('text/plain', JSON.stringify({filePath, fileName}));
+        // 2026-10-11: action buttons/checkbox now live inside the draggable row -
+        // don't start a file drag when the press began on an action control.
+        if (event.target && event.target.closest && event.target.closest('.tree-item-actions')) {
+
+            event.preventDefault();
+
+            return;
+
+        }
+
+        event.dataTransfer.setData('text/plain', JSON.stringify({filePath, fileName}));
 
     event.dataTransfer.effectAllowed = 'copy';
 

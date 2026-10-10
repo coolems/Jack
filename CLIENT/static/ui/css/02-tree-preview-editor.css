@@ -56,16 +56,22 @@
 .tree-meta { font-size: 11px; color: var(--text-muted); flex-shrink: 0; margin-left: 4px; }
 
 .tree-item-actions {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin-left: auto;
-    padding-left: 8px;
-    opacity: 0;
-    transition: opacity 0.15s;
-}
+        /* 2026-10-11: moved from a separate row below the item onto the same line,
+           in front of the name (inside .tree-item-main). Still invisible until hover. */
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+        opacity: 0;
+        transition: opacity 0.15s;
+    }
 
-.tree-item:hover .tree-item-actions { opacity: 1; }
+/* 2026-10-11 (fix): reveal actions ONLY for the exact row whose OWN main line is under
+       the mouse. The child-combinator chain (> .tree-item-main > .tree-item-actions) stops
+       the rule from leaking into nested rows of an expanded folder - a previous descendant
+       selector with !important hid child-row actions whenever an ancestor was hovered too,
+       and the plain :hover rule revealed every row inside a hovered folder at once. */
+    .tree-item:has(> .tree-item-main:hover) > .tree-item-main > .tree-item-actions { opacity: 1; }
 
 .tree-action-btn {
     background: var(--bg-secondary);

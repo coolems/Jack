@@ -37,6 +37,19 @@ function renderTreeItems(items, currentPath) {
 
             html += `<div class="tree-item-main" onclick="toggleFolder('${escapeHtml(itemPath).replace(/'/g, "\\'")}')">`;
 
+            // 2026-10-11: actions come FIRST on the line; the expand triangle sits
+            // right next to the name (after the actions). Invisible until hover.
+            // stopPropagation keeps button/checkbox clicks from toggling the folder.
+            html += `<div class="tree-item-actions" onclick="event.stopPropagation()">`;
+
+            html += `<button class="tree-action-btn" onclick="downloadSingle('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>`;
+
+            html += `<button class="tree-action-btn delete" onclick="deleteItem('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>`;
+
+            html += `<input type="checkbox" class="tree-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect('${escapeHtml(itemPath).replace(/'/g, "\\'")}', this.checked)">`;
+
+            html += `</div>`;
+
             html += `<span class="tree-arrow">${arrow}</span>`;
 
             html += `<span class="tree-icon">📁</span>`;
@@ -44,16 +57,6 @@ function renderTreeItems(items, currentPath) {
             html += `<span class="tree-name">${escapeHtml(item.name)}</span>`;
 
             html += `<span class="tree-meta">folder</span>`;
-
-            html += `</div>`;
-
-            html += `<div class="tree-item-actions">`;
-
-            html += `<button class="tree-action-btn" onclick="downloadSingle('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>`;
-
-            html += `<button class="tree-action-btn delete" onclick="deleteItem('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>`;
-
-            html += `<input type="checkbox" class="tree-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect('${escapeHtml(itemPath).replace(/'/g, "\\'")}', this.checked)">`;
 
             html += `</div></div>`;
 
@@ -95,19 +98,10 @@ function renderTreeItems(items, currentPath) {
 
             html += `title="Drag to prompt or click to preview">`;
 
-            html += `<span class="tree-arrow"></span>`;
-
-            html += `<span class="tree-icon">${getFileIcon(item.name)}</span>`;
-
-            html += `<span class="tree-name">${escapeHtml(item.name)}</span>`;
-
-            html += `<span class="tree-meta">${formatFileSize(item.size)}</span>`;
-
-            html += `<span class="tree-drag-hint" title="Drag to prompt">⠿</span>`;
-
-            html += `</div>`;
-
-            html += `<div class="tree-item-actions">`;
+            // 2026-10-11: actions come FIRST on the line; the (empty) arrow slot
+            // keeps file icons aligned with folder rows. Invisible until hover.
+            // stopPropagation keeps button/checkbox clicks from previewing the file.
+            html += `<div class="tree-item-actions" onclick="event.stopPropagation()">`;
 
             const isPy = item.name.toLowerCase().endsWith('.py');
 
@@ -128,6 +122,18 @@ function renderTreeItems(items, currentPath) {
             html += `<button class="tree-action-btn delete" onclick="deleteItem('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>`;
 
             html += `<input type="checkbox" class="tree-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect('${escapeHtml(itemPath).replace(/'/g, "\\'")}', this.checked)">`;
+
+            html += `</div>`;
+
+            html += `<span class="tree-arrow"></span>`;
+
+            html += `<span class="tree-icon">${getFileIcon(item.name)}</span>`;
+
+            html += `<span class="tree-name">${escapeHtml(item.name)}</span>`;
+
+            html += `<span class="tree-meta">${formatFileSize(item.size)}</span>`;
+
+            html += `<span class="tree-drag-hint" title="Drag to prompt">⠿</span>`;
 
             html += `</div></div>`;
 
