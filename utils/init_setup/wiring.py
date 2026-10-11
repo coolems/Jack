@@ -5,10 +5,9 @@ import os
 import re
 import subprocess
 import sys
-import time
 
 from .certs import ensure_ui_certs
-from .ui import backup_once, info, line, ok, warn, write_json
+from .ui import line, ok, warn, write_json
 
 
 def _is_placeholder_key(entry: dict) -> bool:
@@ -16,9 +15,29 @@ def _is_placeholder_key(entry: dict) -> bool:
     return (not key) or ("PASTE" in key.upper()) or ("EXAMPLE" in key.upper())
 
 
+def _local_lan_ip() -> str:
+    """This machine's LAN IP via the UDP connect trick (stdlib only).
+
+    Returns '' when no private LAN address can be detected - the caller then keeps
+    localhost-only and the CLIENT falls back to its own auto-detect on first boot.
+    """
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))          # no packet is sent - resolves the interface only
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+        if ip.startswith("192.168.") or ip.startswith("10.") or ip.startswith("172."):
+            return ip
+    except OSError:
+        pass
+    return ""
+
+
 def wire_configs(ctx: dict) -> None:
     root = ctx["root"]
-    stamp = time.strftime("%Y%m%d_%H%M%S")
 
     print(); print(line("-")); print("   config wiring (server <-> client sync)"); print(line("-"))
 
@@ -72,8 +91,7 @@ def wire_configs(ctx: dict) -> None:
             if not isinstance(entries, list):
                 entries = []
         except (json.JSONDecodeError, OSError):
-            warn("config/.api_keys.json unreadable - backing up and rewriting")
-            backup_once(server_path, stamp)
+            warn("config/.api_keys.json unreadable - rewriting from scratch")
             entries = []
         real = [e for e in entries if isinstance(e, dict) and not _is_placeholder_key(e)]
         changed = False
@@ -84,7 +102,6 @@ def wire_configs(ctx: dict) -> None:
             kept.append(server_entry)
             changed = True
         if changed:
-            backup_once(server_path, stamp)
             write_json(server_path, kept)
             ok("config/.api_keys.json: API key installed" + (f" (+{len(real)} existing real key(s) kept)" if real else ""))
         else:
@@ -103,8 +120,7 @@ def wire_configs(ctx: dict) -> None:
             if not isinstance(c_entries, list):
                 c_entries = []
         except (json.JSONDecodeError, OSError):
-            warn("CLIENT/config/.api_client_keys.json unreadable - backing up and rewriting")
-            backup_once(client_path, stamp)
+            warn("CLIENT/config/.api_client_keys.json unreadable - rewriting from scratch")
             c_entries = []
         # SINGLE-KEY CONTRACT: exactly ONE row {email, date_acquired, key}. Every previous
         # row is replaced (placeholder rows from the example template included); a matching
@@ -154,7 +170,6 @@ def wire_configs(ctx: dict) -> None:
             if before != after:
                 changed_roles.append(role)
         if changed_roles:
-            backup_once(prof_path, stamp)
             write_json(prof_path, profiles)
             ok(f"profiles.json: model/OCR paths rewired for {len(changed_roles)} profile(s): "
                + ", ".join(sorted(changed_roles)))
@@ -170,10 +185,8 @@ def wire_configs(ctx: dict) -> None:
             with open(last_path, "r", encoding="utf-8") as f:
                 current = json.load(f)
         except (json.JSONDecodeError, OSError):
-            backup_once(last_path, stamp)
+            current = None      # corrupt/unreadable - just overwrite it below
     if current != payload:
-        if os.path.exists(last_path):
-            backup_once(last_path, stamp)
         write_json(last_path, payload)
         ok(f".last_model_loaded.json: SERVER will boot into {ctx['final_model_name']}")
 
@@ -187,7 +200,6 @@ def wire_configs(ctx: dict) -> None:
         if n == 0:
             warn("Could not find CONTEXT_WINDOW_TOKENS in config/config.py - left as-is")
         elif new_src != src:
-            backup_once(cfg_py, stamp)
             with open(cfg_py, "w", encoding="utf-8") as f:
                 f.write(new_src)
             ok(f"config/config.py: CONTEXT_WINDOW_TOKENS -> {want_ctx} (tier {ctx['tier']['id']})")
@@ -196,38 +208,43 @@ def wire_configs(ctx: dict) -> None:
     except OSError as e:
         warn(f"Could not patch config/config.py: {e}")
 
-    # ---- 6f. CLIENT settings + working root ----
+    # ---- 6f. CLIENT settings: seed the failover list so the CLIENT folder is portable ----
+    # The CLIENT tries server_addresses in order (localhost first, then this machine's LAN IP),
+    # so the same CLIENT\ folder works on THIS PC and - when copied to any other LAN PC - there,
+    # with no address editing. No local-vs-remote question needed at init time.
     client_cfg_dir = os.path.join(root, "CLIENT", "config")
     settings_path = os.path.join(client_cfg_dir, "settings.json")
-    if ctx["same_machine_client"]:
-        data = {}
-        try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                data = loaded
-        except (json.JSONDecodeError, OSError):
-            pass
-        local_addr = "localhost:8080"          # repo convention: index 0 of the failover list
-        addrs = [a for a in (data.get("server_addresses") or []) if isinstance(a, str) and a.strip()]
-        changed_client = False
-        if local_addr not in addrs:
-            addrs.insert(0, local_addr)
+    data = {}
+    try:
+        with open(settings_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            data = loaded
+    except (json.JSONDecodeError, OSError):
+        pass
+    local_addr = "localhost:8080"          # repo convention: index 0 of the failover list
+    lan_ip = _local_lan_ip()
+    seeded = [local_addr] + ([f"{lan_ip}:8080"] if lan_ip else [])
+    addrs = [a for a in (data.get("server_addresses") or []) if isinstance(a, str) and a.strip()]
+    changed_client = False
+    for a in reversed(seeded):             # insert newest first so seeded order ends up local-first
+        if a not in addrs:
+            addrs.insert(0, a)
             changed_client = True
-        data["server_addresses"] = addrs
-        if data.get("server_address") != local_addr:
-            data["server_address"] = local_addr
-            changed_client = True
-        if changed_client:
-            backup_once(settings_path, stamp)
-            write_json(settings_path, data)
-            ok(f"CLIENT settings.json: {local_addr} set as primary server address (same machine)")
-        else:
-            ok("CLIENT settings.json: already pointing at localhost - untouched")
+    data["server_addresses"] = addrs
+    # Drop a stale singular 'server_address' (e.g. another machine's IP left over from an old
+    # clone): the ordered list is the single source of truth now; a known-good value gets
+    # re-recorded by the CLIENT itself on next successful connect.
+    if str(data.get("server_address") or "").strip() not in addrs:
+        data.pop("server_address", None)
+        changed_client = True
+    if changed_client:
+        write_json(settings_path, data)
+        ok(f"CLIENT settings.json: server_addresses seeded -> {', '.join(addrs)}")
+        ok("   (the CLIENT\ folder is now portable - copy it to any other LAN PC and run "
+           "ZZZ_CLIENT.bat there; it finds this SERVER automatically)")
     else:
-        info("CLIENT will run on another PC - leaving its settings.json for auto-detect "
-             "(it finds the SERVER's LAN IP on first boot; make sure both PCs are on the same network).")
-
+        ok(f"CLIENT settings.json: already in sync ({', '.join(addrs)}) - untouched")
 
     # ---- 6g. CLIENT UI TLS certificates (browser trust for the local UI URL, port from config.CLIENT_UI_PORT) ----
     ctx["ui_certs_ok"] = ensure_ui_certs(root)

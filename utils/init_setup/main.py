@@ -15,34 +15,6 @@ from .ui import ask, ask_download_now, ask_yn, header, human, info, line, ok, wa
 from .wiring import wire_configs
 
 
-def _print_browser_steps(num: int, ui_url: str, where: str = "") -> None:
-    """Standard browser login steps (open UI -> Settings email/key -> CONNECT -> refresh)."""
-    info(f"  {num}. Open {ui_url} in a browser{where}.")
-    info("     Expect NO model loaded yet - that is normal until you log in:")
-    info("         open Settings -> enter the EMAIL + API KEY printed above -> press CONNECT.")
-    info(f"  {num + 1}. Refresh the page (F5) - the model list now appears and you can start chatting.")
-
-
-def _print_portable_client_block() -> None:
-    """The [a]/[b] options for running this SERVER's client on ANOTHER PC.
-
-    The CLIENT folder is self-contained: its API key file, settings.json, UI certs and the
-    ZZZ_CLIENT.bat venv bootstrap all live INSIDE it (see working_root.py - the tree is
-    designed to be moved; per-workspace working roots live in the CLIENT database (2026-10-09).
-    """
-    info("     [a] FASTEST (no init there): copy the whole CLIENT\\ folder from THIS repo to that")
-    info("         PC - it already contains its API key file + settings. That PC only needs Python >= 3.10,")
-    info(f"         then just run ZZZ_CLIENT.bat there (first run builds its venv).")
-    info("     [b] Or clone the repo on that PC and run ZZZ_initial_init.bat there too.")
-    info("     File tools on that PC work against its own 'Working Folder' (settable in the UI).")
-
-
-def _print_ca_note() -> None:
-    """One-time browser trust for a SECOND PC when init generated the UI certificates."""
-    info("     If UI certificates were generated, import CLIENT\\certs\\ca.crt ONCE on that PC")
-    info(f"         (Trusted Root CAs) so its browser trusts https://127.0.0.1:{_read_client_ui_port()}/ automatically.")
-
-
 def main() -> int:
     _utf8_console()
     if sys.version_info < MIN_PYTHON:
@@ -143,7 +115,6 @@ def main() -> int:
         email = ask("Email address for the admin API key (used to log into the UI)", default="admin@localhost")
         api_key = secrets.token_hex(32)
         ctx.update({"email": email, "api_key": api_key})
-        ctx["same_machine_client"] = ask_yn("Will the CLIENT run on THIS same PC?", default_yes=True)
         wire_configs(ctx)
 
         # ---- FINAL REPORT ---------------------------------------------------------
@@ -162,11 +133,6 @@ def main() -> int:
             warn(f"Vision projector (SKIPPED for later): {ctx['model_folder']}\\{HF_MMPROJ_FILE}")
         if want_ocr:
             ok(f"OCR model:                  {ctx['ocr_folder']}")
-        print()
-        info("API key for UI login (saved in config/.api_keys.json AND CLIENT/config/.api_client_keys.json - plaintext, single row):")
-        print()
-        print(f"      EMAIL:  {email}")
-        print(f"      KEY:    {api_key}")
         print()
         info(f"Context window set to {tier['ctx']} tokens (config/config.py) - matches your GPU tier.")
         if ctx.get("ui_certs_ok"):
@@ -187,26 +153,14 @@ def main() -> int:
             info("         (image input stays disabled until it is in place - everything else already works).")
             step += 1
         info(f"  {step}. Run ZZZ_SERVER.bat   (first run creates the venv + installs deps - takes a few minutes)")
-        if ctx["same_machine_client"]:
-            info(f"  {step + 1}. Run CLIENT\\ZZZ_CLIENT.bat")
-            _print_browser_steps(step + 2, ui_url)
-            print()
-            info("Want to use this SERVER from ANOTHER PC too? The CLIENT folder is portable:")
-            _print_portable_client_block()
-            info("   Both PCs must be on the same network - on first boot the client finds this")
-            info("   SERVER's LAN IP automatically (no address editing needed). Then log in on that PC")
-            info(f"   exactly like above: {ui_url} -> Settings -> SAME EMAIL + API KEY -> CONNECT -> refresh.")
-            if ctx.get("ui_certs_ok"):
-                _print_ca_note()
-        else:
-            info(f"  {step + 1}. On the OTHER PC, get the client running there (the CLIENT folder is portable):")
-            _print_portable_client_block()
-            info("     Both PCs must be on the same network - on first boot the client finds this")
-            info("     SERVER's LAN IP automatically (no address editing needed).")
-            _print_browser_steps(step + 2, ui_url, where=" ON THAT PC")
-            if ctx.get("ui_certs_ok"):
-                _print_ca_note()
-
+        step += 1
+        info(f"  {step}. Run CLIENT\\ZZZ_CLIENT.bat")
+        step += 1
+        info(f"  {step}. Open {ui_url} in a browser and log in:")
+        info("         Settings -> enter the EMAIL + API KEY below -> press CONNECT (the page auto-refreshes).")
+        print()
+        print(f"      EMAIL:  {email}")
+        print(f"      KEY:    {api_key}")
         print()
         return 0
 

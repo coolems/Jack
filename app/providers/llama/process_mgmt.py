@@ -4,6 +4,11 @@ Handles terminating, killing, and orphan detection for llama-server processes.
 Includes stderr polling during startup to diagnose failures early.
 
 Module-level globals track the running server process state across calls.
+
+(2026-10-31 verified attach): also provides _find_pid_on_port() /
+_get_process_commandline() so start_server() can inspect a FOREIGN
+llama-server already bound to our port and decide whether it carries our
+expected flags (MTP spec-decode etc.) before reusing or restarting it.
 """
 
 import subprocess
@@ -180,6 +185,70 @@ def _kill_orphaned_process(key=None) -> None:
     proc = _server_processes.get(key or _DEFAULT_KEY)
     if proc is not None:
         _terminate_process(proc)
+
+
+def _find_pid_on_port(port: int) -> Optional[int]:
+    """Return the PID of the process LISTENING on *port* (None when nobody is).
+
+    (2026-10-31 verified attach): netstat parse extracted from
+    _kill_llama_server_by_port() so start_server() can identify a foreign
+    llama-server before deciding to reuse or kill it. Never raises."""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.split("\n"):
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.split()
+                if len(parts) >= 5:
+                    try:
+                        return int(parts[-1])
+                    except ValueError:
+                        continue
+    except Exception as e:
+        logger.debug(f"[ATTACH] netstat lookup for port {port} failed: {e}")
+    return None
+
+
+def _get_process_commandline(pid: int) -> Optional[str]:
+    """Return the full command line of a Windows process, or None if uninspectable.
+
+    (2026-10-31 verified attach): used to verify that a foreign llama-server on our
+    port was launched with OUR expected flags before we trust it. Tries wmic first
+    (fast), falls back to PowerShell Get-CimInstance, and returns None when neither
+    works (missing tools, access denied) — callers treat None as 'cannot verify'
+    and take the safe path (restart from zero). Never raises."""
+    if not pid or pid <= 0:
+        return None
+
+    # Try wmic first (present on Windows 10/11; may be absent on minimal images)
+    try:
+        result = subprocess.run(
+            ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine", "/format:list"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if line.startswith("CommandLine=") and len(line) > len("CommandLine="):
+                return line[len("CommandLine="):]
+    except Exception as e:
+        logger.debug(f"[ATTACH] wmic command-line lookup for PID {pid} failed: {e}")
+
+    # Fallback: PowerShell Get-CimInstance (always present on modern Windows)
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+            capture_output=True, text=True, timeout=5,
+        )
+        out = (result.stdout or "").strip()
+        if out:
+            return out
+    except Exception as e:
+        logger.debug(f"[ATTACH] PowerShell command-line lookup for PID {pid} failed: {e}")
+
+    return None
 
 
 def _kill_llama_server_by_port(port: int) -> None:

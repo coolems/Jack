@@ -19,7 +19,7 @@ from typing import Optional
 
 
 # --- Context / Token Limits ---
-CONTEXT_WINDOW_TOKENS: int = 161072             # Total token budget for model context def:131072
+CONTEXT_WINDOW_TOKENS: int = 181072             # Total token budget for model context def:131072
 # MUST equal the --ctx-size the deployed llama-server actually runs with (it is started from this
 # value by command_builder.py). Raising it here without a matching restart + VRAM check silently
 # desyncs client trim math / auth_ok context_window from reality - that drift caused the 2026-08-16
@@ -168,7 +168,9 @@ LLAMA_SERVER_CACHE_RAM: int = 4096                      # Max RAM (MB) for KV ca
 
 # --- Llama Server MTP (Multi-Token Prediction) Support ---
 # For MTP models (e.g. Qwen3.6-27B-MTP), these params enable speculative decoding
-# for >2x speedup. Auto-detected by server.py when 'MTP' is in model filename.
+# for >2x speedup. Auto-detected by server.py via model_utils._is_mtp_model(): first the
+# 'MTP' filename heuristic, then a header scan of the .gguf itself (baked-in MTP tensors /
+# '<arch>.nextn_predict_layers'), so files without 'MTP' in their name are handled too.
 LLAMA_SERVER_MTP_ENABLED: bool = True                          # Auto-enable MTP for MTP models
 LLAMA_SERVER_SPEC_TYPE: str = "draft-mtp"                      # Speculative decoding type
 LLAMA_SERVER_SPEC_DRAFT_N_MAX: int = 4                         # Draft tokens for MTP (2-3 recommended)

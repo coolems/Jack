@@ -43,20 +43,228 @@ def normalize_model_name(name: str) -> str:
     return n
 
 
-def _is_mtp_model(filename: str) -> bool:
-    """Check if a .gguf file is an MTP (Multi-Token Prediction) model.
+# ---------------------------------------------------------------------------
+# MTP (Multi-Token Prediction) detection — filename heuristic + file content
+# ---------------------------------------------------------------------------
 
-    MTP models contain 'MTP' in their filename (e.g. 'Qwen3.6-27B-MTP-Q5_K_M.gguf').
+_GGUF_MAGIC = 0x46554747            # 'gguf' little-endian
+_GGUF_MTP_PROBE_MAX_BYTES = 64 * 1024 * 1024   # header (metadata + tensor info) is ~11 MB for a 27B model; cap the probe read
+_GGUF_MTP_MAX_KV = 100_000          # sanity caps so a corrupt header can never make us spin
+_GGUF_MTP_MAX_TENSORS = 1_000_000
+_GGUF_MTP_MAX_ARRAY_LEN = 5_000_000
+
+# Result cache: (abspath, mtime_ns, size) -> bool. Model files are big and stable;
+# re-parsing the header on every call would be pure waste. Bounded by clearing when
+# it grows past a few entries (recompute is cheap compared to loading the model).
+_MTP_CONTENT_CACHE = {}
+
+
+def _gguf_has_mtp_content(path):
+    """Inspect a .gguf file's HEADER and report whether MTP weights are baked in.
+
+    Reads only the GGUF header (magic + metadata KV pairs + tensor-info table —
+    typically ~10-30 MB even for 27B+ models with full tokenizer arrays), never
+    the multi-GB tensor data section. One chunked read keeps this fast on slow /
+    network drives where many small reads are painful.
+
+    MTP evidence (either one is sufficient):
+      * metadata key '<arch>.nextn_predict_layers' > 0   (e.g. 'qwen35.nextn_predict_layers')
+      * any tensor name containing 'nextn' or an mtp segment
+        (baked-in heads look like 'blk.64.nextn.eh_proj.weight'; separate draft
+         files in bytkim's mtp/ folder are named the same way)
+
+    Args:
+        path: Full path to a .gguf file.
+
+    Returns:
+        True  - MTP content detected inside the file.
+        False - header parsed cleanly and contains no MTP evidence.
+        None  - undeterminable (not a parseable GGUF, truncated by the probe cap,
+                unreadable). Callers should fall back to their filename heuristic.
+    """
+    import struct as _struct
+
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    if size < 24:
+        return False
+
+    cap = min(size, _GGUF_MTP_PROBE_MAX_BYTES)
+    try:
+        with open(path, 'rb') as f:
+            data = f.read(cap)
+    except OSError:
+        return None
+
+    n = len(data)
+
+    def u32(o):
+        return _struct.unpack_from('<I', data, o)[0]
+
+    def u64(o):
+        return _struct.unpack_from('<Q', data, o)[0]
+
+    if n < 24 or u32(0) != _GGUF_MAGIC:
+        return None                       # not a GGUF we can parse -> undeterminable
+
+    version = u32(4)                      # v1/v2 and v3 all supported below
+    tensor_count = u64(8)
+    kv_count = u64(16)
+    if version > 3 or tensor_count > _GGUF_MTP_MAX_TENSORS or kv_count > _GGUF_MTP_MAX_KV:
+        return None
+
+    off = 24
+
+    def read_str(o):
+        """Read a GGUF string (u64 length + bytes). Raises ValueError on truncation."""
+        if o + 8 > n:
+            raise ValueError('truncated header')
+        ln = u64(o)
+        o += 8
+        if ln > (1 << 26) or o + ln > n:
+            raise ValueError('bad string length')
+        return data[o:o + ln].decode('utf-8', 'replace'), o + ln
+
+    def skip_value(o, t):
+        """Skip a GGUF metadata value of type *t*; returns the new offset."""
+        if t in (0, 1, 2, 3, 4, 5, 10, 11):
+            sz = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 10: 8, 11: 8}[t]
+            if o + sz > n:
+                raise ValueError('truncated header')
+            return o + sz
+        if t == 6 or t == 12:             # float32 / float64
+            sz = 4 if t == 6 else 8
+            if o + sz > n:
+                raise ValueError('truncated header')
+            return o + sz
+        if t == 7:                        # bool
+            if o + 1 > n:
+                raise ValueError('truncated header')
+            return o + 1
+        if t == 8:                        # string
+            if o + 8 > n:
+                raise ValueError('truncated header')
+            ln = u64(o)
+            o += 8
+            if ln > (1 << 26) or o + ln > n:
+                raise ValueError('bad string length')
+            return o + ln
+        if t == 9:                        # array
+            if o + 12 > n:
+                raise ValueError('truncated header')
+            et = u32(o)
+            cnt = u64(o + 4)
+            if et not in (0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12):
+                raise ValueError('bad array element type')
+            if cnt > _GGUF_MTP_MAX_ARRAY_LEN:
+                raise ValueError('array too large')
+            o += 12
+            for _ in range(cnt):
+                o = skip_value(o, et)
+            return o
+        raise ValueError(f'unknown gguf value type {t}')
+
+    nextn_layers = None
+    try:
+        # ---- metadata KV section ----
+        for _ in range(kv_count):
+            key, off = read_str(off)
+            if off + 4 > n:
+                raise ValueError('truncated header')
+            t = u32(off)
+            off += 4
+            if key.endswith('.nextn_predict_layers'):
+                # The MTP signal in metadata. Qwen-family GGUFs (arch 'qwen35' etc.)
+                # carry '<arch>.nextn_predict_layers'; we match by suffix so any
+                # architecture with the same convention is covered.
+                if t == 2:
+                    nextn_layers = _struct.unpack_from('<H', data, off)[0]
+                    off += 2
+                elif t == 4:
+                    nextn_layers = u32(off)
+                    off += 4
+                else:
+                    off = skip_value(off, t)
+            else:
+                off = skip_value(off, t)
+
+        # ---- tensor-info section (names only; data offsets are never touched) ----
+        # NOTE: GGUF v3 changed n_dims from u64 to u32 — using the wrong width here
+        # desynchronizes the whole table (verified against a real 24 GB file).
+        ndims_is_u32 = version >= 3
+        for _ in range(tensor_count):
+            name, off = read_str(off)
+            if off + (4 if ndims_is_u32 else 8) > n:
+                raise ValueError('truncated header')
+            ndims = u32(off) if ndims_is_u32 else u64(off)
+            off += 4 if ndims_is_u32 else 8
+            if not (1 <= ndims <= 8):
+                raise ValueError(f'bad tensor dims {ndims}')
+            off += 8 * ndims              # dim values
+            if off + 12 > n:
+                raise ValueError('truncated header')
+            off += 4                      # ggml type
+            off += 8                      # data offset (relative to data start)
+            low = name.lower()
+            if 'nextn' in low or '.mtp.' in low or low.startswith('mtp'):
+                return True               # MTP tensors present - no need to read on
+
+    except (ValueError, _struct.error):
+        return None                       # truncated/corrupt -> undeterminable
+
+    return bool(nextn_layers) and nextn_layers > 0
+
+
+def _is_mtp_model(filename_or_path: str) -> bool:
+    """Check if a .gguf model has an MTP (Multi-Token Prediction) head.
+
+    Two-stage detection:
+      1. FILENAME heuristic (legacy behavior, zero I/O): 'mtp' in the name,
+         e.g. 'Qwen3.6-27B-MTP-Q5_K_M.gguf'. Kept first so renamed files and
+         non-existent paths behave exactly as before.
+      2. FILE CONTENT check (new, 2026-10-31): when the argument is a path to a
+         real .gguf on disk whose filename has no 'mtp', parse its header and
+         look for baked-in MTP weights ('<arch>.nextn_predict_layers' > 0 or
+         tensor names containing 'nextn'/'mtp'). This catches files like
+         'Dirk-Qwen3.8-27B-UD-Q6_K.gguf' that carry the MTP head inside without
+         saying so in the name — no more renaming required.
+
     When detected, the server should start with --spec-type draft-mtp params
     to enable speculative decoding for >2x speedup.
 
     Args:
-        filename: The filename to check (e.g. 'Qwen3.6-27B-MTP-Q5_K_M.gguf').
+        filename_or_path: Basename or full path of a .gguf model file.
 
     Returns:
-        True if the filename contains 'MTP' (case-insensitive).
+        True if MTP is detected (by name or by content), False otherwise.
     """
-    return 'mtp' in filename.lower()
+    name = os.path.basename(filename_or_path)
+    if 'mtp' in name.lower():
+        return True                       # legacy filename heuristic — unchanged
+
+    # Plain basename with no directory component -> we cannot locate the file,
+    # so only the (negative) filename result is available.
+    if not (os.path.isabs(filename_or_path) or os.sep in filename_or_path):
+        return False
+
+    try:
+        st = os.stat(filename_or_path)
+    except OSError:
+        return False                      # not on disk -> filename heuristic only
+
+    key = (os.path.abspath(filename_or_path), st.st_mtime_ns, st.st_size)
+    cached = _MTP_CONTENT_CACHE.get(key)
+    if cached is None:
+        result = _gguf_has_mtp_content(filename_or_path)
+        if result is None:
+            return False                  # undeterminable -> keep filename answer (False here)
+        if len(_MTP_CONTENT_CACHE) > 64:
+            _MTP_CONTENT_CACHE.clear()    # entries are cheap to recompute; stay tiny
+        _MTP_CONTENT_CACHE[key] = result
+        cached = result
+    return cached
 
 
 def _get_model_base_prefix(model_filename: str) -> str:

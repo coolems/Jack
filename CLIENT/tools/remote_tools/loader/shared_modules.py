@@ -45,8 +45,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _client_root() -> str:
-    """Absolute path of the CLIENT root folder (three levels up from this file)."""
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    """Absolute path of the CLIENT root folder (four levels up from this file).
+
+    This file lives at <CLIENT>/tools/remote_tools/loader/shared_modules.py, so the
+    chain is loader -> remote_tools -> tools -> CLIENT. (2026-10-31 fix: it used to go
+    only three levels up and returned <CLIENT>/tools -- which made _client_dna_dir()
+    point at the stray <CLIENT>/tools/app/dna instead of <CLIENT>/app/dna.)
+    """
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def _client_dna_dir() -> str:
@@ -355,13 +361,31 @@ def sync_dna_data(dna_data: Optional[Dict[str, str]]) -> None:
     client_dna_dir = _client_dna_dir()
     try:
         os.makedirs(client_dna_dir, exist_ok=True)
+        written = []
+        skipped = []
         for fname, content in dna_data.items():
             # Validate JSON before writing (server is source of truth; skip corrupt payloads)
             _json.loads(content)
-            with open(os.path.join(client_dna_dir, fname), 'w', encoding='utf-8') as f:
+            fpath = os.path.join(client_dna_dir, fname)
+            # Write-only-on-change (2026-10-31): if the file already holds exactly this
+            # content, do NOT rewrite it -- rewriting identical bytes only bumps mtime and
+            # creates spurious "modified" noise in file listings / git status.
+            try:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    if f.read() == content:
+                        skipped.append(fname)
+                        continue
+            except (FileNotFoundError, UnicodeDecodeError):
+                pass  # missing or unreadable -> write below
+            with open(fpath, 'w', encoding='utf-8') as f:
                 f.write(content)
-        logger.info("Loader: DNA data files synced to CLIENT location %s (%d files)",
-                    client_dna_dir, len(dna_data))
+            written.append(fname)
+        if written:
+            logger.info("Loader: DNA data files synced to CLIENT location %s (%d written: %s)",
+                        client_dna_dir, len(written), ", ".join(written))
+        if skipped:
+            logger.debug("Loader: DNA data files unchanged, not rewritten (%s): %s",
+                         client_dna_dir, ", ".join(skipped))
     except Exception as e:
         logger.warning("Loader: failed to sync DNA data files: %s", e)
 

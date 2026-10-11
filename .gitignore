@@ -67,8 +67,10 @@ logs/
 .idea/
 .vscode/
 
-# Backups (never commit)
+# Backups (never commit) - incl. the old init-script .bak-<timestamp> files that
+ZZZ_initial_init.bat used to leave behind (init no longer creates them since 2026-10-11).
 *.backup
+*.bak-*
 
 # Working plan files (per-session scratch notes, never commit)
 plan_*.md

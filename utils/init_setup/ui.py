@@ -1,8 +1,6 @@
 """Console output, interactive ask helpers and tiny file helpers."""
 
 import json
-import os
-import shutil
 import sys
 
 
@@ -85,13 +83,6 @@ def ask_download_now(size: int, what: str = "model") -> bool:
         if val in ("s", "skip"):
             return False
         warn("Please enter D (download now) or S (skip for later)")
-
-
-def backup_once(path: str, stamp: str) -> None:
-    """Copy *path* to <name>.bak-<stamp> once (idempotent within one run)."""
-    bak = f"{path}.bak-{stamp}"
-    if os.path.exists(path) and not os.path.exists(bak):
-        shutil.copy2(path, bak)
 
 
 def write_json(path: str, data) -> None:

@@ -127,11 +127,11 @@ Follow the steps **in order**. After step 6 you have a fully working UI ↔ CLIE
 >
 > The whole guide below is detail. For a fresh clone on Windows you only need:
 >
-> 1. **Download the repo** and double-click **`ZZZ_initial_init.bat`** at the root — it sets everything up in one go (checks Python, picks & downloads a model that fits your GPU, installs llama.cpp, generates the API key into both configs). **Do not close this window until you have added the API key in the UI (step 5 below).**
+> 1. **Download the repo** and double-click **`ZZZ_initial_init.bat`** at the root — it sets everything up in one go (checks Python, picks & downloads a model that fits your GPU, installs llama.cpp, generates the API key into both configs). At the end it prints your **EMAIL + API KEY** right inside its "Next steps" list — keep this window open until you have pasted them into the UI (step 5 below).
 > 2. Double-click **`ZZZ_SERVER.bat`** at the root — **leave it running**.
 > 3. In the `CLIENT/` folder, double-click **`ZZZ_CLIENT.bat`** — leave it running too.
 > 4. Open a browser and go to **https://127.0.0.1:8000/** (the "Not secure" warning is expected — self-signed local certificate).
-> 5. In the UI: **gear icon → Settings → Authentication** → paste the API key from the `ZZZ_initial_init.bat` window, enter your e-mail and click **Connect**. Done — start chatting.
+> 5. In the UI: **gear icon → Settings → Authentication** → paste the EMAIL + API KEY printed at the end of the `ZZZ_initial_init.bat` output and click **Connect**. The page refreshes itself — when the model list appears, start chatting.
 > 6. *(Optional)* Point Jack at any repo you like: in the header there is a **Working Folder** — click it and type/paste any directory path to change the working root for all file operations. It starts out as the folder where the code was launched; you can change it at any time from the UI. All tools are restricred to operate only inside working root.
 
 ### Fastest path: `ZZZ_initial_init.bat` (recommended for a fresh clone)
@@ -147,7 +147,10 @@ Python 3.10+ (and tells you where to get it if not), then runs `utils/zzz_init.p
 - installs the pinned llama.cpp build **b10441** (or waits while you drop a newer one in by hand);
 - generates an API key and writes it into **both** the SERVER and CLIENT config files, rewires all
   profile model/OCR paths to this machine, pre-seeds the startup model, and sets the context window
-  to a value your GPU can hold.
+  to a value your GPU can hold;
+- seeds `CLIENT/config/settings.json` with `localhost:8080` plus **this machine's LAN IP** — so the
+  whole `CLIENT/` folder is portable: copy it to any other PC on the network, run
+  `ZZZ_CLIENT.bat` there and it finds this SERVER automatically (no address editing).
 
 Then run `ZZZ_SERVER.bat` (and `CLIENT\ZZZ_CLIENT.bat`) - first runs self-create their venvs. The
 manual steps below describe what that script does, for reference / non-Windows machines.
@@ -321,7 +324,7 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
 
 1. On the **workstation** (SERVER side): start headless with `ZZZ_SERVER.bat` and allow **TCP port 8080** in its firewall.
 2. On the **laptop**: copy the entire `CLIENT/` folder from the repo (USB stick, network share, or just clone the whole repo — either works). Before copying you may delete `venv/`, `logs/` and optionally `chat_history.db` — the launcher recreates a fresh local venv on first run and re-creates everything else it needs. Then run **`CLIENT\ZZZ_CLIENT.bat`**: it auto-creates `CLIENT/venv`, installs deps + Chromium, frees port 8000 and starts `code_client.py`.
-3. In the UI: **Settings → Authentication → Server Address**. Type the workstation's address as `IP:port` — e.g. `192.168.1.50:8080` — and press Enter/blur to save. The value is written to `CLIENT/config/settings.json` (the single source of truth; you can also edit that file directly). **Restart the CLIENT process** for a changed address to take effect. Leave it empty / click **Reset** to auto-detect this machine's LAN IP on next start.
+3. **No address setup needed.** `ZZZ_initial_init.bat` already seeded `CLIENT/config/settings.json` with `localhost:8080` plus the workstation's LAN IP — on this PC the client connects to localhost, on any other LAN PC it fails over to that IP automatically (both PCs just need to be on the same network). If you ever change servers manually, edit `server_addresses` in `CLIENT/config/settings.json` (ordered failover list, index 0 tried first) or use **Settings → Server Address** in the UI — a changed address needs a CLIENT restart.
 4. Point the working root at a local folder: every workspace (chat) has its OWN working folder, stored per-workspace in `CLIENT/chat_history.db` (`conversations.working_root`) — set it via the **folder chip in the UI header** while that workspace is open. A workspace without its own folder yet falls back to the project root (all file tools are locked into the active workspace's folder).
 5. Set API key + e-mail as in step 6 → **Connect**. The laptop now drives Jack on the workstation: models listed are exactly what your profile allows, and all heavy lifting happens where the GPU is.
 

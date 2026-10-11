@@ -160,3 +160,49 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
         logger.info("Using auto-detection for vision projector (--mmproj-auto)")
 
     return cmd
+
+
+
+
+def expected_flag_signatures(model_file: str, enable_mtp: bool,
+                             host: str = "0.0.0.0",
+                             port: int = LLAMA_SERVER_PORT) -> list[str]:
+    """Return the distinctive flag substrings OUR OWN launch command would contain.
+
+    (2026-10-31 verified attach): start_server() uses this to verify that a FOREIGN
+    llama-server already bound to our port was launched with equivalent flags before
+    reusing it. Instead of duplicating literals here, we build the real command via
+    _build_server_cmd() and extract the parts that identify "a server started by us":
+
+      - --ctx-size <N>   : context window (our config value)
+      - --cache-ram <N>  : KV-cache RAM limit (our config value)
+      - --flash-attn <v> : flash attention setting (our config value)
+      - --spec-type draft-mtp (+ its companions): only for MTP models
+
+    A foreign command line that contains ALL of these is treated as equivalent to one
+    we would have built; missing any -> start_server() restarts from zero so the model
+    gets exactly our flags (MTP included). The model path itself is deliberately NOT a
+    signature: a healthy server may legitimately run a different model than the one we
+    are about to launch - that case is handled by the normal auto-switch/reload flow.
+
+    Args mirror _build_server_cmd() so the signatures always match what we would spawn.
+    """
+    cmd = _build_server_cmd(
+        "llama-server.exe",  # placeholder exe path - never part of any signature
+        model_file, None, enable_mtp=enable_mtp, host=host, port=port,
+    )
+    sigs: list[str] = [
+        f"--ctx-size {CONTEXT_WINDOW_TOKENS}",
+        f"--cache-ram {LLAMA_SERVER_CACHE_RAM}",
+        f"--flash-attn {LLAMA_SERVER_FLASH_ATTN}",
+    ]
+    if enable_mtp and LLAMA_SERVER_MTP_ENABLED:
+        sigs.append(f"--spec-type {LLAMA_SERVER_SPEC_TYPE}")
+        # the companion flags travel with --spec-type in _build_server_cmd(); checking
+        # them too makes a half-configured foreign server (spec type but wrong n-max)
+        # fail verification and get restarted.
+        sigs.extend([
+            f"--spec-draft-n-max {LLAMA_SERVER_SPEC_DRAFT_N_MAX}",
+            f"--spec-draft-p-split {LLAMA_SERVER_SPEC_DRAFT_P_SPLIT}",
+        ])
+    return sigs
