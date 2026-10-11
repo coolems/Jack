@@ -4,15 +4,29 @@
    Load order is a contract: keep numbered import order in ../styles.css.
    ===================================================================== */
 /* ===== INPUT AREA ===== */
-.input-container { padding: 24px; background: var(--bg-primary); border-top: 1px solid var(--border); flex-shrink: 0; }
+.input-container {
+        /* (2026-10-15) prompt frame keeps its original full-width sizing/centering.
+           Licence badge lives in the bottom-left corner on a layer UNDER the
+           prompt frame, so resizing can never let the prompt visually cover it -
+           the frame simply stays on top where they meet. */
+        position: relative; padding: 24px; background: var(--bg-primary); border-top: 1px solid var(--border); flex-shrink: 0;
+    }
 
 .input-wrapper {
-    max-width: 800px; margin: 0 auto;
+    position: relative; z-index: 1;    /* (2026-10-15) prompt frame on top of the licence layer */
+    /* (2026-10-15) keeps its original 800px centered size at normal widths. When the window
+           shrinks, it stops growing into the reserved 200px licence strip in the bottom-left:
+           max() picks the centred offset while there is room; once that would cross 200px from
+           the left edge, the frame pins to the right of the strip and narrows instead. */
+        max-width: min(800px, calc(100% - 200px));
+        margin-left: max(200px, calc((100% - 800px) / 2));
+        margin-right: auto;
     background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: 12px; padding: 12px;
     display: flex; flex-direction: column; gap: 12px;
     transition: border-color 0.2s;
 }
+
 
 .input-wrapper:focus-within { border-color: var(--accent); }
 .input-wrapper.drag-over { border-color: var(--accent); background: rgba(59, 130, 246, 0.1); box-shadow: 0 0 20px rgba(59, 130, 246, 0.3); }
@@ -101,7 +115,6 @@ textarea {
 .tool-name { color: var(--accent); font-weight: bold; }
 .search-web-link { text-align: right; margin-top: 2px; padding: 2px; }
 .search-web-link a { color: var(--accent); text-decoration: none; font-size: 14px; padding: 8px 16px; border: 1px solid var(--accent); border-radius: 20px; transition: all 0.2s; }
-.search-web-link a:hover { background: var(--accent); color: var(--bg-primary); }
 
 /* ===== SETUP / DOWNLOADS PROGRESS (2026-09-21) ===== */
     /* Live first-run setup section for self-unpacking tools: venv -> pip packages ->
@@ -116,10 +129,10 @@ textarea {
     .sp-row .sp-title { font-weight: normal; color: var(--text-primary); white-space: nowrap; min-width: 190px; }
     .sp-body { flex: 1; min-width: 0; }
     .sp-status { flex-shrink: 0; margin-top: 2px; }
-    .sp-icon { display: inline-block; width: 14px; text-align: center; font-size: 12px; color: var(--text-secondary, #9ca3af); }
+    .sp-icon { display: inline-block; width: 14px; text-align: center; font-size: 12px; color: var(--text-secondary); }
     .sp-icon.sp-done { color: var(--success, #22c55e); }
     .sp-icon.sp-error { color: var(--danger, #ef4444); }
-    .sp-icon.sp-run { width: 10px; height: 10px; border: 2px solid rgba(59,130,246,0.25); border-top-color: var(--accent); border-radius: 50%; animation: spSpin 0.8s linear infinite; }
+    .sp-icon.sp-run { width: 10px; height: 10px; border: 2px solid rgba(59,130,246,0.25); top-color: var(--accent); border-radius: 50%; animation: spSpin 0.8s linear infinite; }
     @keyframes spSpin { to { transform: rotate(360deg); } }
     .sp-pkgs { display: flex; flex-direction: column; gap: 2px; font-family: monospace; font-size: 12px; }
     .sp-pkg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary, #9ca3af); }
@@ -128,7 +141,7 @@ textarea {
     .sp-pkg-installing { color: var(--warning, #f59e0b); }
     .sp-pkg-error { color: var(--danger, #ef4444); }
     .sp-dim { opacity: 0.6; font-size: 11px; }
-    .sp-line { margin-top: 4px; font-family: monospace; font-size: 11px; color: var(--text-secondary, #9ca3af); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sp-line { margin-top: 4px; padding: 6px 10px; background: rgba(255,255,255,0.08); overflow: hidden; text-overflow: ellipsis; }
     .sp-detail { color: var(--danger, #ef4444); }
     /* Model stage: exactly two live lines - CURRENT download + TOTAL (2026-09-21 rework). */
     .sp-model-line { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
@@ -139,8 +152,8 @@ textarea {
     .sp-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; margin-top: 3px; }
     .sp-bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
     .sp-bar-sm { height: 3px; max-width: 260px; margin-top: 2px; }
-    .sp-pkg-prog { color: var(--text-secondary, #9ca3af); font-size: 11px; white-space: nowrap; }
-    .sp-complete { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.08); color: var(--success, #22c55e); font-weight: bold; }
+    .sp-pkg-prog { white-space: nowrap; font-size: 12px; color: var(--text-secondary, #9ca3af); }
+    .sp-complete { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); color: var(--success, #22c55e); font-weight: bold; }
 
     /* ===== CODE BLOCKS ===== */
 pre {
@@ -173,7 +186,7 @@ p:last-child { margin-bottom: 0; }
 /* ===== OLLAMA ERROR ===== */
 .ollama-error { background: rgba(239, 68, 68, 0.1); border: 1px solid var(--danger); border-radius: 8px; padding: 16px; margin: 8px 0; }
 .ollama-error h3 { color: var(--danger); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-.ollama-error code { background: var(--bg-primary); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+.ollama-error code { background: var(--bg-primary); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
 
 /* ===== SCROLL INDICATOR ===== */
 .scroll-indicator {
@@ -195,11 +208,11 @@ p:last-child { margin-bottom: 0; }
     width: 48px;
     height: 48px;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s;
+    transition: all 0.2s ease;
 }
 
 .scroll-indicator button:hover {
@@ -222,7 +235,7 @@ p:last-child { margin-bottom: 0; }
 .generated-image-title { margin-bottom: 8px; color: var(--accent); font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .generated-image { max-width: 100%; border-radius: 8px; cursor: pointer; transition: transform 0.2s; }
 .generated-image:hover { transform: scale(1.02); }
-.generated-image-meta { font-size: 12px; color: var(--text-muted); margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
+.generated-image-meta { margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; font-size: var(--text-muted); }
 /* Always-visible setup/tier report line under every generated image (2026-10-04): which tier served it, on which GPU, model line, and what was installed/downloaded this run - or the honest "already cached" note. */
 .generated-image-setup { font-family: monospace; font-size: 12px; color: var(--text-secondary, #9ca3af); margin-top: 8px; padding: 6px 10px; background: var(--bg-tertiary); border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; line-height: 1.5; word-break: break-word; }
 

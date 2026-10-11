@@ -111,3 +111,9 @@ llama_server/models/*/*
 # code lands here -- the folder itself stays tracked via .gitkeep, its contents never.
 .temp/*
 !.temp/.gitkeep
+
+# LICENCE (2026-10-15 licensing plan v12): SERVER-side licence state only
+(choice/company/email/ip_history/last_check). The CLIENT keeps no licence files.
+licence/
+
+

@@ -201,6 +201,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
             logger.info("DNA: loading in background (setup mode - delivered by SERVER after key auth)")
         logger.info("=" * 60)
 
+
         # Start periodic stop_events cleanup task
         chat_bus.start_cleanup()
         logger.info("ChatBus stale-session cleanup task started (runs every 10 minutes)")
@@ -304,7 +305,19 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info(f"[SHUTDOWN-ALL] UI closed/crashed - stopped all live sessions: {result}")
         return {"status": "ok", **result}
 
-    # ===== Include route modules =====
+    # ===== LICENCE (2026-10-15 licensing plan v12) ==============================
+    # The CLIENT keeps NO licence files and never talks to coolems.com. The SERVER is
+    # the single owner of all licence logic; it feeds us a slim {use, company} payload
+    # over WebSocket (auth_ok + every token_stats frame). This endpoint only composes
+    # the badge from the in-memory cache written by those frames.
+
+    @app.get("/api/licence/status")
+    async def licence_status():
+        """Public read-only (whitelisted in app/auth.py): badge snapshot, no network call."""
+        from app import licence_cache
+        return licence_cache.badge_status()
+
+# ===== Include route modules =====
     app.include_router(create_conversations_router(db_path=db_path, model_name=model_name, agent=agent))
     app.include_router(create_files_router())
     app.include_router(create_downloads_router())  # /api/setup/status (2026-09-21)

@@ -79,6 +79,12 @@ SETUP_KEY_PATH = "/api/auth/set-key"
 # NOTE: /api/setup/status is ALREADY TAKEN by routers/downloads.py (tool setup progress);
 # this boot-status route lives at /api/setup/boot to avoid shadowing it.
 SETUP_STATUS_PATH = "/api/setup/boot"
+# (2026-10-15 licensing plan v12): read-only licence status for the persistent badge.
+# Public like /api/setup/boot: it exposes NO credential — only the local install choice
+# and the cached server answer (badge label/tooltip). There are NO write endpoints any
+# more: licensing is configured in ZZZ_initial_init.bat, and the UI badge is display-only.
+LICENCE_STATUS_PATH = "/api/licence/status"
+
 
 
 def _is_public_path(path: str) -> bool:
@@ -258,6 +264,13 @@ class APIMiddleware:
         # ===== LIVE BOOT STATUS (2026-10-07) - read-only, no auth required =====
         # Lets the UI show what boot is doing while setup mode locks every other /api/*.
         if path == SETUP_STATUS_PATH and scope.get("method", "GET").upper() == "GET":
+            await self.app(scope, receive, send)
+            return
+
+        # ===== LICENCE STATUS (licensing plan v12) - read-only, no auth required =====
+        # The badge is display-only: it shows the licence info the server matched from
+        # coolems.com. No forms/registration in the UI — that happens at init time.
+        if path == LICENCE_STATUS_PATH and scope.get("method", "GET").upper() == "GET":
             await self.app(scope, receive, send)
             return
 

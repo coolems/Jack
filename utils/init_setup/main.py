@@ -117,6 +117,11 @@ def main() -> int:
         ctx.update({"email": email, "api_key": api_key})
         wire_configs(ctx)
 
+        # ---- LICENSING (asked HERE at init time - never in the running UI) ----------
+        header("STEP 6 - LICENSING")
+        from .licensing import run_licensing_step
+        ctx["licence"] = run_licensing_step()
+
         # ---- FINAL REPORT ---------------------------------------------------------
         header("INIT COMPLETE")
         print()
@@ -133,6 +138,11 @@ def main() -> int:
             warn(f"Vision projector (SKIPPED for later): {ctx['model_folder']}\\{HF_MMPROJ_FILE}")
         if want_ocr:
             ok(f"OCR model:                  {ctx['ocr_folder']}")
+        lic = ctx.get("licence") or {}
+        if lic.get("choice") == "company":
+            ok(f"Licence:                    COMPANY ({lic.get('company')}) - pending server confirmation; the UI badge shows the live status")
+        else:
+            ok("Licence:                    PRIVATE USE (no licence needed)")
         print()
         info(f"Context window set to {tier['ctx']} tokens (config/config.py) - matches your GPU tier.")
         if ctx.get("ui_certs_ok"):

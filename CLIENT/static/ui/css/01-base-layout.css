@@ -319,3 +319,37 @@ body {
     .working-root-chip.editing .working-root-chip-label { display: none; }
     .working-root-chip.editing .working-root-chip-input { display: block; }
 
+    /* ===== LICENCE BADGE (2026-10-15 licensing plan v10) ===== */
+        /* Bottom-left corner of the big input frame (.input-container), on a layer
+                   UNDER the centered prompt frame (z-index below it). Plain: same
+                   background/text, no borders. The prompt frame itself is untouched. */
+            .licence-badge {
+                /* (2026-10-15) bottom-left corner of the big input frame, on a layer UNDER
+                   the prompt frame (.input-wrapper z-index 1 vs this z-index 0). Two compact lines:
+                   line 1 = use status (e.g. COMMERCIAL USE), line 2 = company / pending note.
+                   No background, no borders - just text on whatever is behind it. */
+                display: inline-block;
+                position: absolute; left: 12px; bottom: 8px; z-index: 0;
+                max-width: 45%;
+                font-size: 12px;
+                letter-spacing: .3px;
+                line-height: 1.4;
+                color: var(--text-primary);
+                background: transparent;   /* no own bg - shows the frame's background */
+                cursor: default;
+                user-select: text;
+
+            /* Two stacked lines: status on top, assignment / pending note below. */
+            .licence-badge__line {
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .licence-badge__line--sub {
+                font-size: 11px;
+                opacity: .85;
+            }
+
+        }
+        /* Read-only chip (licensing plan v10): no hover affordance, not clickable. */
+        .licence-badge--loading { opacity: .6; }

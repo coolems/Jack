@@ -147,6 +147,10 @@ async def _authenticate_direct_client(ws, server_provider, peer):
         # Get actual context window from server config
         from config import CONTEXT_WINDOW_TOKENS as SERVER_CONTEXT_WINDOW
 
+        # (2026-10-15 licensing plan v12) slim licence payload for the CLIENT badge:
+        # only {use, company} — nothing else about licensing ever leaves this machine.
+        from app import licence_server
+
         await ws.send(json.dumps({
             "type": "auth_ok",
             "protocol_version": PROTOCOL_VERSION,   # Echoed so the CLIENT can verify both ends agree
@@ -154,7 +158,8 @@ async def _authenticate_direct_client(ws, server_provider, peer):
             "email": user_info["email"],
             "allowed_models": [m if isinstance(m, str) else m.get("name", "") for m in allowed_models],
             "allowed_tools": allowed_tools,  # None = all tools, list = restricted
-            "context_window": SERVER_CONTEXT_WINDOW  # Actual model context window from server config
+            "context_window": SERVER_CONTEXT_WINDOW,  # Actual model context window from server config
+            "licence": licence_server.current_status()  # {use: private|company, company: name|None}
         }))
         ws._conn_id = conn_id  # Store for cleanup on disconnect (Fix #2)
         logger.info(f"[SERVER] Direct WS client authenticated: role={user_info['role']}, conn_id={conn_id}")
