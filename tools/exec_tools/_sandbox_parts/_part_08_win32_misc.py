@@ -57,7 +57,8 @@
                     def _make_ntmeta(nm, orig_fn):
                         def wrapped(path, *a, **k):
                             s = _as_path_str(path)
-                            if s is not None and not _inside(s, READ_ROOTS):
+                            if s is not None and not _inside(s, READ_ROOTS) \
+                                    and not _consent_ok(s):
                                 raise FileNotFoundError(
                                     "[Errno 2] No such file or directory (outside working_root -- "
                                     "python_exec sandbox blocks metadata access outside %s)" % root
@@ -72,7 +73,8 @@
                 _orig_ntacc = _nt.access
                 def _nt_access(path, *a, **k):
                     s = _as_path_str(path)
-                    if s is not None and not _inside(s, [ROOT]) and not _in_path_dirs(s):
+                    if (s is not None and not _inside(s, [ROOT]) and not _in_path_dirs(s)
+                            and not _consent_ok(s)):
                         return False
                     return _orig_ntacc(path, *a, **k)
                 _nt.access = _nt_access
