@@ -38,7 +38,7 @@
                 is_write = any(ch in str(mode) for ch in "wax+")
                 roots = [ROOT] if is_write else READ_ROOTS
                 if not _inside(s, roots):
-                    _deny("zipfile.ZipFile" + ("(write)" if is_write else ""), s)
+                    _fs_deny("zipfile.ZipFile" + ("(write)" if is_write else ""), s)
             return _orig_zf_init(self, file, mode, *a, **k)
         _jps_zipfile.ZipFile.__init__ = _zf_init
 
@@ -47,7 +47,7 @@
             p = path if path is not None else "."
             ps = (p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p))
             if not _inside(ps, [ROOT]):
-                _deny("zipfile extractall destination", ps)
+                _fs_deny("zipfile extractall destination", ps)
             for m in (members or self.namelist()):
                 _zip_member_ok(m)
             return _orig_extractall(self, path, members, pwd, *a, **k)
@@ -58,7 +58,7 @@
             p = path if path is not None else "."
             ps = (p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p))
             if not _inside(ps, [ROOT]):
-                _deny("zipfile extract destination", ps)
+                _fs_deny("zipfile extract destination", ps)
             _zip_member_ok(member)
             return _orig_extract(self, member, path, pwd)
         _jps_zipfile.ZipFile.extract = _extract
@@ -87,7 +87,7 @@
                 is_write = any(ch in str(mode) for ch in "wax+")
                 roots = [ROOT] if is_write else READ_ROOTS
                 if not _inside(s, roots):
-                    _deny("tarfile.TarFile" + ("(write)" if is_write else ""), s)
+                    _fs_deny("tarfile.TarFile" + ("(write)" if is_write else ""), s)
             return _orig_tf_open(name, mode, *a, **k)
         _jps_tarfile.TarFile.open = _tf_open
 
@@ -96,7 +96,7 @@
             p = path if path is not None else "."
             ps = (p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p))
             if not _inside(ps, [ROOT]):
-                _deny("tarfile extractall destination", ps)
+                _fs_deny("tarfile extractall destination", ps)
             for m in members or []:
                 nm = m.name if hasattr(m, "name") else m
                 _tar_member_ok(nm)
@@ -108,7 +108,7 @@
             p = path if path is not None else "."
             ps = (p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p))
             if not _inside(ps, [ROOT]):
-                _deny("tarfile extract destination", ps)
+                _fs_deny("tarfile extract destination", ps)
             nm = member.name if hasattr(member, "name") else member
             _tar_member_ok(nm)
             return _orig_textract(self, member, path, *a, **k)
@@ -132,7 +132,7 @@
                             is_write = any(ch in md for ch in "wax+")
                             roots = [ROOT] if is_write else READ_ROOTS
                             if not _inside(s, roots):
-                                _deny(nm + ".open" + ("(write)" if is_write else ""), s)
+                                _fs_deny(nm + ".open" + ("(write)" if is_write else ""), s)
                         return orig_fn(filename, mode, *a, **k) if filename is not None \
                             else orig_fn(*a, **k)
                     wrapped.__name__ = nm

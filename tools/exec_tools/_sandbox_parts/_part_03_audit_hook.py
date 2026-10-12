@@ -38,12 +38,12 @@
                     return  # device name (nul /dev/null) -- not a filesystem path
                 roots = [ROOT] if is_write else READ_ROOTS
                 if not _inside(s, roots):
-                    _deny("open" + ("(write)" if is_write else ""), s)
+                    _fs_deny("open" + ("(write)" if is_write else ""), s)
             elif event in ("os.listdir", "os.scandir", "os.walk"):
                 # Enumeration: read-side -> working_root + Python home.
                 s = str(args[0])
                 if not _inside(s, READ_ROOTS):
-                    _deny(event + " (enumeration)", s)
+                    _fs_deny(event + " (enumeration)", s)
             elif event in ("os.remove", "os.unlink", "os.rename", "os.replace",
                            "os.mkdir", "os.rmdir", "os.chmod", "os.utime",
                            "os.truncate", "os.link", "os.symlink"):
@@ -58,7 +58,7 @@
                     if isinstance(_a, (str, bytes)):
                         _s = _a.decode("utf-8", "replace") if isinstance(_a, bytes) else str(_a)
                         if not _inside(_s, [ROOT]):
-                            _deny(event + " (write)", _s)
+                            _fs_deny(event + " (write)", _s)
             elif event in ("shutil.copyfile", "shutil.move"):
                 # HIGH-LEVEL FILE FUNCTIONS (hardening 2026-09-17): CPython audits
                 # these with (src, dst). copy2's Windows fast path (_winapi.CopyFile2)
@@ -72,7 +72,7 @@
                         _s = _a.decode("utf-8", "replace") if isinstance(_a, bytes) else str(_a)
                         _roots = [ROOT] if _lbl == "destination" else READ_ROOTS
                         if not _inside(_s, _roots):
-                            _deny(event + " (" + _lbl + ")", _s)
+                            _fs_deny(event + " (" + _lbl + ")", _s)
             elif event == "import":
                 name = str(args[0]).split(".")[0]
                 if name in ("ctypes", "_ctypes", "cffi"):

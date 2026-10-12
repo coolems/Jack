@@ -303,7 +303,9 @@ class ToolExecutor:
                 tool_name,
                 tool_args,
                 conversation_history=conversation_history,
-                api_key=self.api_key
+                api_key=self.api_key,
+                websocket=websocket,
+                conversation_id=conversation_id
             )
         elif tool_name == 'generate_image':
             # Sync orchestrator + blocking subprocess -- run in thread
@@ -321,7 +323,9 @@ class ToolExecutor:
                 tool_name,
                 tool_args,
                 conversation_history=conversation_history,
-                api_key=self.api_key
+                api_key=self.api_key,
+                websocket=websocket,
+                conversation_id=conversation_id
             )
 
         exec_elapsed = time.time() - exec_start

@@ -141,9 +141,22 @@ def build_dep_exec_globals(dep_name: str, config_constants: Optional[Dict[str, A
     installed shared-module symbols (module objects AND individual public attributes so
     bare names work inside deps -- 2026-01-31 fix), and the config constants.
     """
+    # Module identity (2026-07-14 fix for the connect NameError incident): tool modules get
+    # '__file__'/'__spec__' from build_tool_exec_globals(), but shared_deps were exec'd WITHOUT
+    # them. web_interact/__init__.py's _discover_tools() guard reads __file__ at module level,
+    # so every compile of a web tool raised NameError: name '__file__' is not defined -- the
+    # error was swallowed inside discovery and left 'tools.web_interact' half-initialized (no
+    # WebInteract symbol), which connect() then surfaced as "Failed to connect". Mirror the
+    # tool-path identity here so deps exec exactly like tools do.
+    import importlib.util
+
     dep_globals: Dict[str, Any] = {
         '__name__': f'tools.{dep_name}',
         '__package__': 'tools',
+        '__file__': f'<remote_{dep_name}>',
+        # A real spec keeps __spec__-aware code working; find_spec('tools') is safe because
+        # shared_modules.ensure_tools_namespace() attached a proper ModuleSpec (2026-07-18).
+        '__spec__': importlib.util.find_spec('tools') or None,
         '__builtins__': __builtins__,
     }
 

@@ -1,11 +1,13 @@
 /**
  * license-badge.js - Persistent READ-ONLY licence badge.
- * LICENSING PLAN v10 (2026-10-15).
+ * LICENSING PLAN v16 (2026-10-15; badge states refined 2026-10-12).
  *
  * The UI NEVER asks, collects or saves anything about licensing — that happens in
  * ZZZ_initial_init.bat at setup time (utils/init_setup/licensing.py). This file only
  * DISPLAYS the licence information:
- *       private  -> "PRIVATE USE · not licensed for commercial use"
+  *       private (unconfirmed / no e-mail)   -> "PRIVATE USE · licence not acquired"
+ *       private (e-mail confirmed on web side, free commercial use as individual)
+ *                                           -> "PRIVATE LICENCE · licensed <e-mail> for commercial use"
  *       pending  -> "COMMERCIAL USE · pending licence confirmation"
  *       licensed -> "LICENSED — <Company> [· valid to YYYY-MM-DD]"
  * All data comes from GET /api/licence/status ONLY (the server reads/matches the
@@ -65,10 +67,23 @@
                 setLines(el, st.line1 || 'COMMERCIAL USE — LICENSED',
                          st.line2 || (st.company ? ('assigned to ' + st.company) : 'LICENSED'));
                 el.title = st.tooltip || '';
+            } else if (st && st.badge === 'private-licensed') {
+                // Free private licence CONFIRMED on the web side — good form.
+                el.className = 'licence-badge licence-badge--licensed';
+                setLines(el, st.line1 || 'PRIVATE LICENCE',
+                         st.line2 || 'licensed for commercial use');
+                el.title = st.tooltip || '';
             } else if (st && st.badge === 'private') {
-                el.className = 'licence-badge licence-badge--private';
+                // Legacy SERVER payload: private without confirmation state — unconfirmed.
+                el.className = 'licence-badge licence-badge--pending';
                 setLines(el, st.line1 || 'PRIVATE USE',
-                         st.line2 || 'not licensed for commercial use');
+                         st.line2 || 'licence not acquired');
+                el.title = st.tooltip || '';
+            } else if (st && st.badge === 'private-pending') {
+                // Private install, e-mail missing or confirmation still pending.
+                el.className = 'licence-badge licence-badge--pending';
+                setLines(el, st.line1 || 'PRIVATE USE',
+                         st.line2 || 'licence not acquired');
                 el.title = st.tooltip || '';
             } else if (st && st.choice === null) {
                 // Never registered — the question belongs to ZZZ_initial_init.bat, not here.

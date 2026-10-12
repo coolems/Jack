@@ -30,7 +30,7 @@
                         continue
                     _roots = [ROOT] if _lbl == "destination" else READ_ROOTS
                     if not _inside(s, _roots):
-                        _deny(nm + " (" + _lbl + ")", s)
+                        _fs_deny(nm + " (" + _lbl + ")", s)
                 return orig(src, dst, *a, **k)
             wrapped.__name__ = nm
             return wrapped
@@ -51,7 +51,7 @@
                         continue
                     _roots = [ROOT] if _lbl == "destination" else READ_ROOTS
                     if not _inside(s, _roots):
-                        _deny("shutil.move (" + _lbl + ")", s)
+                        _fs_deny("shutil.move (" + _lbl + ")", s)
                 return _orig_move(src, dst, *a, **k)
             _jps_shutil.move = _move
 
@@ -67,7 +67,7 @@
                         continue
                     _roots = [ROOT] if _lbl == "destination" else READ_ROOTS
                     if not _inside(s, _roots):
-                        _deny("shutil.copytree (" + _lbl + ")", s)
+                        _fs_deny("shutil.copytree (" + _lbl + ")", s)
                 return _orig_ct(src, dst, *a, **k)
             _jps_shutil.copytree = _copytree
 
@@ -77,7 +77,7 @@
                 s = (path.decode("utf-8", "replace")
                      if isinstance(path, bytes) else str(path))
                 if not _inside(s, [ROOT]):
-                    _deny("shutil.rmtree (write)", s)
+                    _fs_deny("shutil.rmtree (write)", s)
                 return _orig_rmt(path, *a, **k)
             _jps_shutil.rmtree = _rmtree
 
@@ -88,7 +88,7 @@
                      if isinstance(base_name, bytes) else str(base_name))
                 d = _jps_os.path.dirname(s) or "."
                 if not (_inside(d, [ROOT]) and _inside(s, [ROOT])):
-                    _deny("shutil.make_archive (output path)", s)
+                    _fs_deny("shutil.make_archive (output path)", s)
                 return _orig_ma(base_name, *a, **k)
             _jps_shutil.make_archive = _make_archive
 
@@ -100,9 +100,9 @@
                 d = a[0] if len(a) > 0 and not isinstance(a[0], int) else k.get("extract_dir") or "."
                 ds = d.decode("utf-8", "replace") if isinstance(d, bytes) else str(d)
                 if not _inside(s, READ_ROOTS):
-                    _deny("shutil.unpack_archive (archive)", s)
+                    _fs_deny("shutil.unpack_archive (archive)", s)
                 if not _inside(ds, [ROOT]):
-                    _deny("shutil.unpack_archive (extract dir)", ds)
+                    _fs_deny("shutil.unpack_archive (extract dir)", ds)
                 return _orig_ua(filename, *a, **k)
             _jps_shutil.unpack_archive = _unpack_archive
 

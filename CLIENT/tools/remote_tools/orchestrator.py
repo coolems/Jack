@@ -154,7 +154,7 @@ class RemoteToolOrchestrator:
             return 0
 
         if result is None:
-            logger.error("[ERROR] fetch_tools returned None — SERVER did not respond")
+            logger.error("[ERROR] fetch_tools returned None — SERVER may be unavailable")
             return 0
 
         try:
@@ -168,9 +168,8 @@ class RemoteToolOrchestrator:
 
         Split out of initialize_from_server() on 2026-08-21 so the boot bootstrap
         path can reuse it: app/providers/bootstrap.py fetches this same response
-        BEFORE CoolemsClientProvider exists (it subclasses BaseProvider, which only
-        becomes importable after framework_sources are installed). Returns number of
-        tools available.
+        BEFORE CoolemsClientProvider exists (it subclasses BaseProvider, which is only
+        importable after framework_sources are installed). Returns number of tools available.
 
         NOTE: install_shared_modules() is idempotent — modules the bootstrap already
         put in sys.modules (app.providers.base/token_stats) are skipped here.
@@ -251,18 +250,18 @@ class RemoteToolOrchestrator:
                     logger.warning("[WARN] Failed to install some framework modules from SERVER")
                 else:
                     fw_names = [k for k, v in framework_sources.items() if v]
-                    logger.info(f"[INIT] Framework modules installed (in-memory dedup): {fw_names}")
+                    logger.info(f"[INIT] Framework modules installed: {fw_names}")
 
-            # SYSTEM PROMPT: Extract and store in memory only (never save to disk)
+            # SYSTEM PROMPT: Extract and store in memory only (never saved to disk)
             system_prompt = result.get("system_prompt", "")
             if system_prompt:
                 self._system_prompt = system_prompt
-                logger.info(f"[INIT] System prompt received from SERVER ({len(system_prompt)} chars)")
+                logger.info(f"[INIT] System prompt from SERVER ({len(system_prompt)} chars)")
                 # Also update the module-level GENERIC_TOOL_PROMPT so existing imports work
                 try:
                     from app.prompts import set_system_prompt_from_server
                     set_system_prompt_from_server(system_prompt)
-                    logger.info("[INIT] Module-level GENERIC_TOOL_PROMPT updated from SERVER")
+                    logger.info("[INIT] Module-level GENERIC_TOOL_PROMPT updated")
                 except Exception as e:
                     logger.warning(f"[INIT] Failed to update module-level prompt: {e}")
 
@@ -270,7 +269,7 @@ class RemoteToolOrchestrator:
             # must mark the orchestrator initialized itself — otherwise the first
             # get_ollama_tools() would re-fetch everything from the SERVER.
             self._initialized = True
-            logger.info(f"Remote tools initialized: {len(definitions)} tools available from SERVER")
+            logger.info(f"Remote tools initialized: {len(definitions)} tools available")
             return len(definitions)
 
         except Exception as e:
@@ -283,11 +282,11 @@ class RemoteToolOrchestrator:
         """Return ONLY the definition dicts for LLM — no extra fields.
 
         llama.cpp expects standard OpenAI-style tool definitions:
-            [{"type": "function", "function": {"name": "...", ...}}, ...]
+            [{"type": "function", "function": {"name": "...", ...}}]
 
         TRIGGERS LAZY INITIALIZATION on first call if tools haven't been fetched yet.
         """
-        # Lazy init — fetch from SERVER if not already done
+        # Lazy init — fetch from SERVER on demand
         await self._ensure_initialized()
 
         defs = self._cache.get_definitions()
@@ -296,7 +295,7 @@ class RemoteToolOrchestrator:
             logger.warning("get_ollama_tools called but no definitions cached — SERVER may be unavailable")
             return []
 
-        # Extract ONLY the definition field from each cached entry
+        # Extract ONLY the definition field of each cached entry
         tool_defs = [d["definition"] if "definition" in d else d for d in defs]
         logger.info(f"get_ollama_tools: returning {len(tool_defs)} remote tool definitions")
         return tool_defs
@@ -314,12 +313,13 @@ class RemoteToolOrchestrator:
         )
 
     async def get_tool_names(self, api_key: str = None) -> list:
-        """Return all known tool names."""
+        """Get all known tool names."""
         await self._ensure_initialized()  # Ensure tools are loaded first
         return sorted(d.get("function", {}).get("name", "")
                       for d in self._cache.get_definitions())
 
     async def get_tool_count(self, api_key: str = None) -> int:
+        """Get the number of known tools."""
         await self._ensure_initialized()  # Ensure tools are loaded first
         return len(self._cache.get_definitions())
 
@@ -421,12 +421,57 @@ class RemoteToolOrchestrator:
             logger.error(f"[ERROR] Failed to load tool {tool_name} from SERVER: {e}", exc_info=True)
             return False
 
+    # ------------------------------------------------------------------
+    # OUT-OF-SANDBOX NETWORK CONSENT context bridge (2026-11-24)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _call_pyexec_with_context(func, arguments, websocket=None, conversation_id: str = None, loop=None):
+        """Run a python_exec tool call with the chat's relay context registered.
+
+        tools.exec_tools.python_exec reads this context (threading.local on a
+        sys.modules anchor) to build its UI approval-card relay for out-of-sandbox
+        socket attempts made by the sandboxed child. The context is set/restored on
+        THIS thread -- python_exec sync calls run via asyncio.to_thread, so each call
+        has its own worker thread and concurrent chats never cross wires. *loop* must
+        be captured by the caller on the event-loop thread before to_thread (a worker
+        thread cannot see a running loop). Missing args -> no context: the sandbox
+        keeps its original instant hard block.
+
+        AUDIT FIX 2026-11-24b: this method was originally inserted one indent level too
+        deep (8 spaces), which silently nested it INSIDE ensure_tool_loaded() as a local
+        function -- py_compile passed, but the class never got the attribute and every
+        python_exec call died with AttributeError in execute_tool. It is now a proper
+        class member (4-space indent).
+        """
+        import sys as _sys, types as _types, threading as _threading
+
+        key = "_coolems_pyexec_context"
+        mod = _sys.modules.get(key)
+        if mod is None:
+            mod = _types.ModuleType(key)
+            mod.context_local = _threading.local()
+            _sys.modules[key] = mod
+        local = getattr(mod, "context_local", None)
+        if websocket is not None and conversation_id and loop is not None:
+            local.context = {"websocket": websocket,
+                             "conversation_id": conversation_id,
+                             "loop": loop}
+        else:
+            local.context = None
+        try:
+            return func(**arguments)
+        finally:
+            local.context = None
+
     async def execute_tool(
-        self,
-        tool_name: str,
-        arguments: Dict[str, Any],
-        conversation_history: list = None,
-        api_key: str = None
+    self,
+    tool_name: str,
+    arguments: Dict[str, Any],
+    conversation_history: list = None,
+    api_key: str = None,
+    websocket=None,
+    conversation_id: str = None
     ) -> Any:
         """Execute a tool by name with the given arguments. Fetches if needed.
 
@@ -436,6 +481,11 @@ class RemoteToolOrchestrator:
         NOTE: ToolCompilationError exceptions propagate through here and are
               NOT caught — they bubble up to react_loop which treats them as
               non-retryable errors that should terminate the agentic loop immediately.
+              websocket / conversation_id (2026-11-24 OUT-OF-SANDBOX NETWORK
+              CONSENT): optional per-call context. For python_exec they are stored on a
+              process-wide threading.local anchor (_call_pyexec_with_context) so the
+              sandboxed child's socket gate can relay out-of-sandbox connection requests
+              to THIS chat's UI approval card while the tool runs.
         """
         # Ensure tool is loaded (may raise ToolCompilationError)
         await self.ensure_tool_loaded(tool_name)
@@ -470,6 +520,16 @@ class RemoteToolOrchestrator:
             # blocking calls to a worker thread; coroutines are still awaited in place.
             if inspect.iscoroutinefunction(func):
                 result = await func(**arguments)
+            elif tool_name == "python_exec":
+                # OUT-OF-SANDBOX NETWORK CONSENT (2026-11-24): register this
+                # chat's relay context for the duration of the call so the
+                # sandbox can ask the user about external connections.
+                # Capture the running loop HERE (on the event-loop thread): the
+                # helper itself runs in a worker thread and cannot see it.
+                _net_loop = asyncio.get_running_loop()
+                result = await asyncio.to_thread(
+                    self._call_pyexec_with_context, func, arguments,
+                    websocket, conversation_id, _net_loop)
             else:
                 result = await asyncio.to_thread(func, **arguments)
 
@@ -487,7 +547,7 @@ class RemoteToolOrchestrator:
     # --- Utility methods ---
 
     def get_tools_summary(self) -> Dict[str, Any]:
-        """Return a summary of tool state."""
+        """Get a summary of the current state."""
         return {
             "initialized": self._initialized,
             "cached_definitions": len(self._cache.get_definitions()),
@@ -498,7 +558,7 @@ class RemoteToolOrchestrator:
         }
 
     def get_system_prompt(self) -> str:
-        """Return the system prompt received from SERVER (memory only).
+        """Get the system prompt received from SERVER (memory only).
 
         Returns empty string if not yet delivered.
         """
@@ -519,6 +579,6 @@ class RemoteToolOrchestrator:
         self._cache.clear_all()
         self.tools.clear()
         self._config_constants.clear()
-        self._system_prompt = ""  # Clear system prompt from memory too
+        self._system_prompt = ""  # Clear system prompt from SERVER too
 
         logger.info("RemoteToolOrchestrator: all tools cleared")

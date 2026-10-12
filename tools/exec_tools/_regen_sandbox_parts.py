@@ -76,7 +76,7 @@ _HEADERS = {
     "_part_08_win32_misc.py": [
         "# _part_08_win32_misc.py -- PROVENANCE FRAGMENT of _sandbox_bootstrap.SANDBOX_BOOTSTRAP",
         "#",
-        "# STAGE 6 -- raw Win32 (_winapi/nt) file primitives + builtins.open containment + socket outbound policy (loopback-only default; admin open network via JACK_PYEXEC_NETWORK=1, 2026-09-30) + importlib/sqlite3 guards; last line ends _jps_setup()",
+        "# STAGE 6 -- raw Win32 (_winapi/nt) file primitives + builtins.open containment + socket outbound policy (loopback-only default; OUT-OF-SANDBOX NETWORK CONSENT GATE asking the local user via .temp/.jack_netreq request/decision files, 2026-11-24; admin open network via JACK_PYEXEC_NETWORK=1, 2026-09-30) + importlib/sqlite3 guards; last line ends _jps_setup()",
         "# Legacy source: lines 1302-1663 of the pre-split single-file SANDBOX_BOOTSTRAP string.",
     ],
     "_part_09_footer.py": [

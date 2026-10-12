@@ -28,7 +28,7 @@
                 else:
                     continue
                 if not _inside(s, [ROOT]):
-                    _deny(nm + " (write)", s)
+                    _fs_deny(nm + " (write)", s)
             return orig(path, *a, **k)
         wrapped.__name__ = nm
         return wrapped
@@ -209,11 +209,11 @@
                 def wrapped(self, *a, **k):
                     s = _path_str(self)
                     if s is not None and not _inside(s, [ROOT]):
-                        _deny("Path." + nm + " (write)", s)
+                        _fs_deny("Path." + nm + " (write)", s)
                     for _x in a:
                         xs = _path_str(_x)
                         if xs is not None and not _inside(xs, [ROOT]):
-                            _deny("Path." + nm + " target (write)", xs)
+                            _fs_deny("Path." + nm + " target (write)", xs)
                     return orig(self, *a, **k)
                 wrapped.__name__ = nm
                 return wrapped
@@ -226,10 +226,10 @@
             def _symlink_to(self, target, *a, **k):
                 s = _path_str(self)
                 if s is not None and not _inside(s, [ROOT]):
-                    _deny("Path.symlink_to (write)", s)
+                    _fs_deny("Path.symlink_to (write)", s)
                 ts = _path_str(target)
                 if ts is not None and not _inside(ts, READ_ROOTS):
-                    _deny("Path.symlink_to target", ts)
+                    _fs_deny("Path.symlink_to target", ts)
                 return _orig_sym(self, target, *a, **k)
             _jps_Path.symlink_to = _symlink_to
         except Exception as _jps_mod_exc:
@@ -255,7 +255,7 @@
             if _is_devnull(s) or _is_dev_or_pipe(s):
                 return _orig_open(path, flags, *a, **k)  # device name (nul) -- let the OS handle it
             if not _inside(s, [ROOT] if is_write else READ_ROOTS):
-                _deny("os.open" + ("(write)" if is_write else ""), s)
+                _fs_deny("os.open" + ("(write)" if is_write else ""), s)
             return _orig_open(path, flags, *a, **k)
         _real_os.open = _os_open
 

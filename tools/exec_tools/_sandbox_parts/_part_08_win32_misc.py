@@ -1,6 +1,6 @@
 # _part_08_win32_misc.py -- PROVENANCE FRAGMENT of _sandbox_bootstrap.SANDBOX_BOOTSTRAP
 #
-# STAGE 6 -- raw Win32 (_winapi/nt) file primitives + builtins.open containment + socket outbound policy (loopback-only default; admin open network via JACK_PYEXEC_NETWORK=1, 2026-09-30) + importlib/sqlite3 guards; last line ends _jps_setup()
+# STAGE 6 -- raw Win32 (_winapi/nt) file primitives + builtins.open containment + socket outbound policy (loopback-only default; OUT-OF-SANDBOX NETWORK CONSENT GATE asking the local user via .temp/.jack_netreq request/decision files, 2026-11-24; admin open network via JACK_PYEXEC_NETWORK=1, 2026-09-30) + importlib/sqlite3 guards; last line ends _jps_setup()
 # Legacy source: lines 1302-1663 of the pre-split single-file SANDBOX_BOOTSTRAP string.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
@@ -47,7 +47,7 @@
                             pass
                     is_write = bool(flags & wf) if isinstance(flags, int) else True
                     if not _inside(s, [ROOT] if is_write else READ_ROOTS):
-                        _deny("nt.open" + ("(write)" if is_write else ""), s)
+                        _fs_deny("nt.open" + ("(write)" if is_write else ""), s)
                 return _orig_nt_open(path, flags, *a, **k)
             _nt.open = _nt_open
 
@@ -88,9 +88,9 @@
                         ss = _as_path_str(src)
                         ds = _as_path_str(dst)
                         if ss is not None and not _inside(ss, READ_ROOTS):
-                            _deny("_winapi.CopyFile2 (source)", ss)
+                            _fs_deny("_winapi.CopyFile2 (source)", ss)
                         if ds is not None and not _inside(ds, [ROOT]):
-                            _deny("_winapi.CopyFile2 (destination)", ds)
+                            _fs_deny("_winapi.CopyFile2 (destination)", ds)
                         return _orig_cf2(src, dst, *a, **k)
                     _wapi.CopyFile2 = _cf2
 
@@ -119,7 +119,7 @@
                                 acc = -1  # undetermined -> fail closed (write policy)
                             is_write = (acc & _WACC) != 0 if (_WACC and acc >= 0) else True
                             if not _inside(s, [ROOT] if is_write else READ_ROOTS):
-                                _deny("_winapi.CreateFile" + ("(write)" if is_write else ""), s)
+                                _fs_deny("_winapi.CreateFile" + ("(write)" if is_write else ""), s)
                         return _orig_cfile(name, *a, **k)
                     _wapi.CreateFile = _cfile
             except Exception as _jps_mod_exc:
@@ -146,7 +146,7 @@
             if _is_devnull(s) or _is_dev_or_pipe(s):
                 return _orig_builtin_open(file, mode, *a, **k)  # device name (nul /dev/null)
             if not _inside(s, [ROOT] if is_write else READ_ROOTS):
-                _deny("open" + ("(write)" if is_write else ""), s)
+                _fs_deny("open" + ("(write)" if is_write else ""), s)
             return _orig_builtin_open(file, mode, *a, **k)
         _jps_builtins.open = _builtin_open
     except Exception as _jps_stage_exc:
@@ -168,6 +168,200 @@
     # restrictions at all (full admin: every process available). Without the env var,
     # behavior is byte-for-byte identical to before.
     _NET_OPEN = False  # default policy; flipped inside the stage when the admin env is set
+    # ---- OUT-OF-SANDBOX NETWORK CONSENT GATE (2026-11-24) ------------------------
+    # A blocked non-loopback socket target no longer dies instantly: the child writes a
+    # request file to <working_root>/.temp/.jack_netreq/<id>.json and waits (polling,
+    # up to JACK_PYEXEC_NET_ASK_TIMEOUT seconds, default 120) for a matching
+    # <id>.decision.json written by the PARENT. The parent (python_exec.py) forwards
+    # every request to the UI as an approval card ("Allow this connection" / "Deny");
+    # its answer is what lands in the decision file. No responder / no answer in time
+    # -> DENY (fail-closed, identical outcome to the old hard block). Decisions are
+    # cached per target for the rest of THIS run only; concurrent asks for the same
+    # target wait on ONE request. The loopback fast path and sendfile's blanket deny
+    # never ask -- exactly as before.
+    _NET_ASK_TIMEOUT = 120.0
+    try:
+        _v = float((_jps_os.environ.get("JACK_PYEXEC_NET_ASK_TIMEOUT") or "").strip() or "120")
+        if _v > 0:
+            _NET_ASK_TIMEOUT = min(_v, 600.0)
+    except Exception:
+        pass
+
+    # Consent relay switch: the PARENT sets JACK_PYEXEC_NET_CONSENT=1 only when it can
+    # actually deliver requests to a UI approval card (live chat channel + websocket).
+    # Without a responder we keep the ORIGINAL instant hard block -- no waiting, no files.
+    _NET_CONSENT_ON = (_jps_os.environ.get("JACK_PYEXEC_NET_CONSENT", "0") or "").strip() in ("1", "true", "yes")
+
+    import json as _jps_json
+    import time as _jps_time
+    _NET_REQ_DIR = None
+    try:
+        _NET_REQ_DIR = _jps_os.path.join(root, ".temp", ".jack_netreq")
+        _jps_os.makedirs(_NET_REQ_DIR, exist_ok=True)
+    except Exception:
+        _NET_REQ_DIR = None
+
+    import threading as _jps_th2
+    _NET_LOCK = _jps_th2.Lock()
+    _NET_DECIDED = {}   # (host, port) -> "allow" | "deny"  (this run only)
+    _NET_INFLIGHT = {}  # (host, port) -> request_id       (dedupe concurrent asks)
+
+    def _net_target_host_port(address):
+        if not isinstance(address, (tuple, list)) or not address:
+            return None
+        host = str(address[0]).strip("[]").lower()
+        try:
+            port = int(address[1]) if len(address) > 1 else 0
+        except Exception:
+            port = 0
+        return (host, port)
+
+    def _net_ask(host, port, method):
+        """Ask the local user for this out-of-sandbox connection. Returns True=allow."""
+        key = (host, port)
+        with _NET_LOCK:
+            d = _NET_DECIDED.get(key)
+            if d is not None:
+                return d == "allow"
+            rid = _NET_INFLIGHT.get(key)
+            if rid is None:
+                if _NET_REQ_DIR is None:
+                    return False  # cannot even write the request -> fail closed
+                import uuid as _jps_uuid
+                rid = _jps_uuid.uuid4().hex[:12]
+                req_path = _jps_os.path.join(_NET_REQ_DIR, rid + ".json")
+                try:
+                    with open(req_path, "w", encoding="utf-8") as _rf:
+                        _jps_json.dump({"request_id": rid, "host": host, "port": port,
+                                        "method": method}, _rf)
+                except Exception:
+                    return False  # fail closed -- no request, no connection
+                _NET_INFLIGHT[key] = rid
+
+        deadline = _jps_time.monotonic() + _NET_ASK_TIMEOUT
+        while True:
+            try:
+                with open(_jps_os.path.join(_NET_REQ_DIR, rid + ".decision.json"),
+                          "r", encoding="utf-8") as _df:
+                    dec = (_jps_json.load(_df) or {}).get("decision")
+            except Exception:
+                dec = None
+            if dec in ("allow", "deny"):
+                with _NET_LOCK:
+                    _NET_DECIDED[key] = dec
+                    _NET_INFLIGHT.pop(key, None)
+                return dec == "allow"
+            if _jps_time.monotonic() >= deadline:
+                break  # no answer in time -> deny (fail-closed)
+            try:
+                _jps_th2.Event().wait(0.15)
+            except Exception:
+                _jps_time.sleep(0.15)
+        with _NET_LOCK:
+            _NET_DECIDED[key] = "deny"
+            _NET_INFLIGHT.pop(key, None)
+        return False
+
+    def _net_gate(address, method):
+        """Raise PermissionError for a non-loopback target unless the user allows it."""
+        if not isinstance(address, (tuple, list)):
+            return  # let CPython raise its own TypeError
+        host = str(address[0]).strip("[]").lower() if address else ""
+        h = host
+        if not (h == "localhost" or h.startswith("127.") or h == "::1"):
+            if not _NET_CONSENT_ON:
+                raise PermissionError(
+                    "python_exec sandbox: socket %s to %r is blocked -- only loopback (localhost) "
+                    "connections are allowed inside python_exec. "
+                    "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
+                    % (method, address))
+            tp = _net_target_host_port(address)
+            if tp is None:
+                raise PermissionError(
+                    "python_exec sandbox: socket %s to %r is blocked -- only loopback "
+                    "(localhost) connections are allowed inside python_exec." % (method, address))
+            ok = _net_ask(tp[0], tp[1], method)
+            if not ok:
+                raise PermissionError(
+                    "python_exec sandbox: socket %s to %r was NOT allowed -- the local user "
+                    "denied it or did not answer in time. Only loopback (localhost) "
+                    "connections are allowed inside python_exec." % (method, address))
+
+    # ---- OUT-OF-SANDBOX FILE CONSENT GATE (2026-11-24) --------------------------
+    # A blocked outside-working_root file operation no longer dies instantly when a UI
+    # relay is live: the child writes a request file to <working_root>/.temp/.jack_netreq/
+    # <id>.json with kind="file" and waits (up to JACK_PYEXEC_NET_ASK_TIMEOUT seconds,
+    # same budget as the network gate) for the parent's decision file. The parent
+    # relays it to the chat UI as an approval card ("Allow this file access" / "Deny").
+    # Without a relay (JACK_PYEXEC_NET_CONSENT=0) behavior is byte-for-byte identical
+    # to the original instant hard block -- same message, no waiting, no files.
+    # Decisions are cached per resolved path for THIS run only; an allow/deny on a
+    # directory covers its whole subtree (prevents dialog spam when os.walk / shutil
+    # touch many children of one allowed area). Fail-closed everywhere: timeout or any
+    # internal error denies. Non-file denials (imports, zip member names, exec policy)
+    # keep using the plain _deny() hard block -- they are never askable.
+    _FS_DECIDED = {}   # normcase'd resolved path -> "allow" | "deny"  (this run only)
+    _FS_INFLIGHT = {}  # normcase'd resolved path -> request_id       (dedupe concurrent asks)
+    def _fs_cached(norm_p):
+        """Ancestor-aware cache lookup: a decision on a parent directory covers its subtree."""
+        for k, d in _FS_DECIDED.items():
+            if norm_p == k or norm_p.startswith(k + _jps_os.sep):
+                return d
+        return None
+    def _fs_deny(what, p):
+        """File denial with the consent option: instant hard block unless a UI relay is
+        live, in which case ASK THE LOCAL USER (fail-closed on timeout/error)."""
+        if not _NET_CONSENT_ON or _NET_REQ_DIR is None:
+            _deny(what, p)  # original message, byte-for-byte identical -- no waiting
+        try:
+            np = _norm(p)
+        except Exception:
+            _deny(what, p)  # cannot resolve the path -> fail closed with the original block
+        with _NET_LOCK:
+            d = _fs_cached(np)
+            if d is not None:
+                rid = None  # already decided (this run) -- no ask needed
+            else:
+                rid = _FS_INFLIGHT.get(np)
+                if rid is None:
+                    import uuid as _jps_uuid
+                    rid = _jps_uuid.uuid4().hex[:12]
+                    req_path = _jps_os.path.join(_NET_REQ_DIR, rid + ".json")
+                    try:
+                        with open(req_path, "w", encoding="utf-8") as _rf:
+                            _jps_json.dump({"request_id": rid, "kind": "file",
+                                            "op": what, "path": p}, _rf)
+                    except Exception:
+                        _deny(what, p)  # cannot even write the request -> fail closed
+                    _FS_INFLIGHT[np] = rid
+        if d is None:
+            deadline = _jps_time.monotonic() + _NET_ASK_TIMEOUT
+            dec = None
+            while True:
+                try:
+                    with open(_jps_os.path.join(_NET_REQ_DIR, rid + ".decision.json"),
+                              "r", encoding="utf-8") as _df:
+                        dec = (_jps_json.load(_df) or {}).get("decision")
+                except Exception:
+                    dec = None
+                if dec in ("allow", "deny"):
+                    break
+                if _jps_time.monotonic() >= deadline:
+                    break  # no answer in time -> deny (fail-closed)
+                try:
+                    _jps_th2.Event().wait(0.15)
+                except Exception:
+                    _jps_time.sleep(0.15)
+            with _NET_LOCK:
+                _FS_DECIDED[np] = dec if dec in ("allow", "deny") else "deny"
+                _FS_INFLIGHT.pop(np, None)
+            d = _FS_DECIDED[np]
+        if d == "allow":
+            return  # the user allowed this path (and its subtree) -- let it proceed
+        raise PermissionError(
+            "python_exec sandbox: %s of '%s' was NOT allowed -- it is outside working_root (%s) "
+            "and the local user denied it or did not answer in time." % (what, p, root))
+
     try:
         import socket as _jps_sock
 
@@ -190,13 +384,7 @@
         if not _NET_OPEN:
             _sock_orig_connect = _jps_sock.socket.connect
             def _sock_connect(self, address):
-                if not _is_loopback(address):
-                    raise PermissionError(
-                        "python_exec sandbox: socket connect to %r is blocked -- only "
-                        "loopback (localhost) connections are allowed inside python_exec. "
-                        "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
-                        % (address,)
-                    )
+                _net_gate(address, "connect")
                 return _sock_orig_connect(self, address)
             _jps_sock.socket.connect = _sock_connect
 
@@ -206,13 +394,7 @@
             if hasattr(_jps_sock.socket, "connect_ex"):
                 _sock_orig_cex = _jps_sock.socket.connect_ex
                 def _sock_connect_ex(self, address):
-                    if not _is_loopback(address):
-                        raise PermissionError(
-                            "python_exec sandbox: socket connect_ex to %r is blocked -- only "
-                            "loopback (localhost) connections are allowed inside python_exec. "
-                            "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
-                            % (address,)
-                        )
+                    _net_gate(address, "connect_ex")
                     return _sock_orig_cex(self, address)
                 _jps_sock.socket.connect_ex = _sock_connect_ex
 
@@ -232,13 +414,8 @@
                             addr = k.get("address") if "address" in k else (k.get("addr") if "addr" in k else None)
                             if addr is None:
                                 addr = _sock_find_addr(a) if nm == "sendto" else None
-                            if addr is not None and not _is_loopback(addr):
-                                raise PermissionError(
-                                    "python_exec sandbox: socket %s to %r is blocked -- only "
-                                    "loopback (localhost) addresses are allowed inside python_exec. "
-                                    "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
-                                    % (nm, addr)
-                                )
+                            if addr is not None:
+                                _net_gate(addr, nm)
                             return orig_fn(self, *a, **k)
                         guarded.__name__ = nm
                         return guarded
@@ -248,13 +425,8 @@
                 _sock_orig_sm = _jps_sock.socket.sendmsg
                 def _sock_sendmsg(self, *a, **k):
                     addr = k.get("addr", a[1] if len(a) > 1 else None)
-                    if isinstance(addr, tuple) and not _is_loopback(addr):
-                        raise PermissionError(
-                            "python_exec sandbox: socket sendmsg to %r is blocked -- only "
-                            "loopback (localhost) addresses are allowed inside python_exec. "
-                            "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
-                            % (addr,)
-                        )
+                    if isinstance(addr, tuple):
+                        _net_gate(addr, "sendmsg")
                     return _sock_orig_sm(self, *a, **k)
                 _jps_sock.socket.sendmsg = _sock_sendmsg
 
@@ -272,13 +444,7 @@
             if hasattr(_jps_sock, "create_connection"):
                 _sock_orig_cc = _jps_sock.create_connection
                 def _sock_cc(address, *a, **k):
-                    if not _is_loopback(address):
-                        raise PermissionError(
-                            "python_exec sandbox: socket create_connection to %r is blocked "
-                            "-- only loopback (localhost) connections are allowed inside python_exec. "
-                            "(admin: set JACK_PYEXEC_NETWORK=1 in the calling process env)"
-                            % (address,)
-                        )
+                    _net_gate(address, "create_connection")
                     return _sock_orig_cc(address, *a, **k)
                 _jps_sock.create_connection = _sock_cc
     except Exception as _jps_stage_exc:
@@ -374,7 +540,7 @@
                 else:
                     p, ro = s, False
                 if not _inside(p, READ_ROOTS if ro else [ROOT]):
-                    _deny("sqlite3.connect (database path)", s)
+                    _fs_deny("sqlite3.connect (database path)", s)
             return _orig_connect(database, *a, **k)
         _sqlite3.connect = _connect
     except Exception as _jps_stage_exc:

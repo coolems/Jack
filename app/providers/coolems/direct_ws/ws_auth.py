@@ -159,7 +159,7 @@ async def _authenticate_direct_client(ws, server_provider, peer):
             "allowed_models": [m if isinstance(m, str) else m.get("name", "") for m in allowed_models],
             "allowed_tools": allowed_tools,  # None = all tools, list = restricted
             "context_window": SERVER_CONTEXT_WINDOW,  # Actual model context window from server config
-            "licence": licence_server.current_status()  # {use: private|company, company: name|None}
+            "licence": licence_server.current_status()  # {use, company[, email, private_licensed]} — slim payload for the client badge
         }))
         ws._conn_id = conn_id  # Store for cleanup on disconnect (Fix #2)
         logger.info(f"[SERVER] Direct WS client authenticated: role={user_info['role']}, conn_id={conn_id}")

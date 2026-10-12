@@ -10,7 +10,8 @@ coolems.com. This module is the ONLY place that:
     existing SERVER->CLIENT frames (auth_ok / brain_info on connect, token_stats on
     every request round-trip):
 
-        {"use": "private" | "company", "company": "<name>" or None}
+        {"use": "private" | "company", "company": "<name>" or None,
+         "email": "<e-mail>" or None, "private_licensed": true|false}   (private installs only)
 
 The CLIENT composes the badge text from those two fields only — no licence number,
 no dates, nothing else ever leaves this machine.
@@ -19,11 +20,14 @@ OFFLINE MODE: any failure of the network check falls back to the cached last_che
 the state file (atomic write). An EXPIRED cache (valid_until passed) is treated as NOT
 licensed even offline — clients then see "not registered" again until renewed.
 
-    PRIVATE-USE E-MAIL CONFIRMATION (v15): a private install that HAS an e-mail also asks
-    the web side (POST {"mode":"private","email":...}) on server start + once per day; the endpoint
-    sends a one-time confirmation link and only writes the address into its own
-    private_licence.json after the user clicks it. The client badge is unchanged — private
-    always shows PRIVATE USE regardless of confirmation state (user decision).
+    PRIVATE-USE E-MAIL CONFIRMATION (v15, refined v16 2026-10-12): a private install that HAS an
+        e-mail also asks the web side (POST {"mode":"private","email":...}) on server start + once per day;
+        the endpoint sends a one-time confirmation link and only writes the address into its own
+        private_licence.json after the user clicks it. Private individual use is FREE for commercial
+        use, so the badge now reflects the confirmation state: e-mail confirmed on the web side ->
+        "PRIVATE LICENCE · licensed <e-mail> for commercial use"; not (yet) confirmed / no e-mail ->
+        "PRIVATE USE · licence not acquired". The slim payload carries {email, private_licensed}
+        for that; nothing else leaves this machine.
     
 NOTE on IP tracking: ip_history lives on the WEB side now
 (licence/coolems_site/jack/licences/ip_history.json, written by index.php). The local
@@ -271,21 +275,35 @@ def perform_check(state: dict | None = None, timeout: int = CHECK_TIMEOUT_SEC) -
 def current_status() -> dict:
     """Read-only snapshot for the SERVER->CLIENT frames. NO network call.
 
-    Exactly two fields travel over the wire (user decision, plan v12):
-        use     "private" | "company"   — what kind of install this server is;
-        company <name> or None          — only meaningful when use == "company".
+    Fields that travel over the wire (plan v16):
+        use              "private" | "company" — what kind of install this server is;
+        company          <name> or None        — only meaningful when use == "company";
+        email            <e-mail> or None      — private installs: the registered e-mail;
+        private_licensed true|false            — private installs: True when the web side has
+                                                 CONFIRMED that e-mail (private_licence.json) and the
+                                                 cached answer is not expired.
 
     The CLIENT composes its badge from these:
-        private            -> PRIVATE USE (nothing else)
-        company + name     -> COMMERCIAL USE — LICENSED · assigned to <name>
-        company, no name   -> COMMERCIAL USE · not registered
+        private, confirmed   -> PRIVATE LICENCE · licensed <e-mail> for commercial use
+        private, unconfirmed -> PRIVATE USE · licence not acquired
+        company + name       -> COMMERCIAL USE — LICENSED · assigned to <name>
+        company, no name     -> COMMERCIAL USE · not registered
 
-    An EXPIRED licence sends no company name — clients show "not registered" until the
-    next successful check renews it.
+    An EXPIRED / unconfirmed answer sends private_licensed False (and no company name) —
+    clients show the unconfirmed state until the next successful check renews it.
     """
     state = load_state()
     if state["choice"] == "private":
-        return {"use": "private", "company": None}
+        cache = state.get("last_check") or {}
+        # Confirmed on the web side (endpoint answered licensed:true via:"private") and not
+        # expired -> private_licensed True. A private licence is perpetual, so expiry only
+        # matters for malformed/edited answers; fail closed like company checks do.
+        return {
+            "use": "private",
+            "company": None,
+            "email": (state.get("email") or "").strip() or None,
+            "private_licensed": bool(cache.get("licensed")) and not is_expired(cache),
+        }
 
     cache = state.get("last_check") or {}
     # Licensed (live answer or offline cache) AND not expired -> send the company name.

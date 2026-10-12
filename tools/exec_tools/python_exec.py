@@ -127,6 +127,7 @@ __tool_description__ = {
     }
 }
 
+import json
 import logging
 import os
 import subprocess
@@ -192,6 +193,141 @@ except ImportError:
 
 logger = logging.getLogger("COOLEMS.Tools.Exec")
 
+
+# ============================================================================
+# OUT-OF-SANDBOX NETWORK CONSENT RELAY (2026-11-24)
+# ----------------------------------------------------------------------------
+# The child sandbox's socket gate (_sandbox_bootstrap.py, stage B7) no longer just
+# hard-blocks a non-loopback connect: when the parent tells it a UI relay is live
+# (JACK_PYEXEC_NET_CONSENT=1 in the child env), it writes a request file to
+# <working_root>/.temp/.jack_netreq/<id>.json and waits for a matching
+# <id>.decision.json. This section is that relay: while the child runs, we scan the
+# folder (in _run_sandboxed_subprocess's poll loop) and forward every request to the
+# chat UI as an approval card -- the SAME mechanism as python_exec / URL-consent cards
+# (exec_approval_request frame -> POST /api/exec-approval -> ExecApprovalState).
+#
+# Context bridge: RemoteToolOrchestrator.execute_tool wraps every python_exec call in
+# _call_pyexec_with_context(), which stores {'websocket', 'conversation_id', 'loop'} on
+# a process-wide anchor module (sys.modules[_PYEXEC_CTX_KEY]) for exactly as long as
+# THIS call runs -- set and restored inside the worker thread that executes the tool,
+# so concurrent chats never see each other's context. Non-CLIENT callers (direct
+# tests / SERVER) have no anchor entry -> callback is None -> the sandbox keeps its
+# original instant hard block (JACK_PYEXEC_NET_CONSENT=0). Fail-closed everywhere:
+# any relay error or a missing answer denies the connection.
+# ============================================================================
+
+_PYEXEC_CTX_KEY = "_coolems_pyexec_context"
+
+
+def _get_caller_context():
+    """Read the per-tool-call context set by RemoteToolOrchestrator.execute_tool.
+
+    Returns the {'websocket', 'conversation_id', 'loop'} dict for THIS python_exec
+    call, or None when no relay context exists (non-CLIENT callers / direct tests).
+    """
+    m = sys.modules.get(_PYEXEC_CTX_KEY)
+    local = getattr(m, "context_local", None) if m is not None else None
+    # threading.local on purpose: each python_exec runs in its own asyncio.to_thread
+    # worker thread, so concurrent chats never read each other's context.
+    ctx = getattr(local, "context", None) if local is not None else None
+    return ctx if isinstance(ctx, dict) else None
+
+
+def _make_net_ask_callback(ctx, working_dir):
+    """Build the sync request handler used by _run_sandboxed_subprocess's poller.
+
+    Returns a function req_dict -> None that spawns ONE daemon thread per network
+    request: it delivers an 'exec_approval_request' frame (kind='network') to the chat
+    UI, awaits the user's decision through the channel's ExecApprovalState (identical
+    plumbing to python_exec / URL-consent cards), and writes the child's
+    <id>.decision.json file with 'allow' or 'deny'. Every failure path fails closed ->
+    'deny'. Returns None when no usable relay context exists -- the sandbox then keeps
+    its original instant hard block.
+    """
+    ws = ctx.get("websocket") if isinstance(ctx, dict) else None
+    conv_id = ctx.get("conversation_id") if isinstance(ctx, dict) else None
+    loop = ctx.get("loop") if isinstance(ctx, dict) else None
+    if ws is None or not conv_id or loop is None:
+        return None
+
+    import asyncio as _aio
+
+    async def _ask_coro(req):
+        """Runs on the uvicorn loop (via run_coroutine_threadsafe). Always returns
+        'allow' or 'deny'; never raises."""
+        try:
+            from app.chat_bus import get_chat_bus, build_approval_frame
+            bus = get_chat_bus()
+            channel = bus.channels.get(conv_id) if bus is not None else None
+            state = getattr(channel, "exec_approval", None) if channel is not None else None
+            if state is None or not hasattr(state, "wait_for_decision"):
+                return "deny"  # fail closed: no live approval state for this chat
+            kind = str(req.get("kind", "")).strip() or "network"  # 'file' | 'network'
+            if kind == "file":
+                # OUT-OF-SANDBOX FILE CONSENT (2026-11-24): the approved script wants to
+                # touch a path outside working_root. Show the exact operation + path.
+                op = str(req.get("op", "?"))
+                fpath = str(req.get("path", "?"))
+                rid = state.new_request_id()
+                frame_code = ("# attempted by the approved python_exec code (operation: %s)" % op)
+                await ws.send_text(json.dumps(build_approval_frame(
+                    conv_id, rid, frame_code, kind="file",
+                    title="File access outside working_root requested",
+                    description=("The Python code you approved is trying to ACCESS A FILE "
+                                 "OUTSIDE your working_root -- the python_exec sandbox normally "
+                                 "blocks this. Operation: %s on path: %s. Allow opens exactly "
+                                 "this path (and its folder subtree) for the rest of this run; "
+                                 "Deny keeps it blocked." % (op, fpath)),
+                )))
+            else:
+                host = str(req.get("host", "?"))
+                port = req.get("port", "")
+                method = str(req.get("method", "connect"))
+                rid = state.new_request_id()
+                frame_code = ("socket.%s((%r, %s))   # attempted by the approved python_exec code"
+                              % (method, host, port))
+                await ws.send_text(json.dumps(build_approval_frame(
+                    conv_id, rid, frame_code, kind="network",
+                    title="Out-of-sandbox network access requested",
+                    description=("The Python code you approved is trying to connect OUTSIDE "
+                                 "your machine -- the python_exec sandbox normally blocks this. "
+                                 "Target: %s:%s via socket.%s(). Allow opens exactly this one "
+                                 "connection for the rest of this run; Deny keeps it blocked."
+                                 % (host, port, method)),
+                )))
+            decision = await state.wait_for_decision(rid)
+            return "allow" if decision in ("allow", "run_all") else "deny"
+        except BaseException:
+            # Covers asyncio.CancelledError (BaseException since py3.8): the turn was
+            # stopped/superseded while we waited -- fail closed with an immediate deny so
+            # the child does not sit out its full ask timeout for nothing.
+            return "deny"  # fail closed on any relay error or cancellation
+
+    def _handle_request(req):
+        """Daemon-thread body: ask the UI, then write the child's decision file."""
+        rid = str(req.get("request_id", "")) if isinstance(req, dict) else ""
+        req_dir = os.path.join(working_dir, ".temp", ".jack_netreq")
+        decision = "deny"
+        try:
+            fut = _aio.run_coroutine_threadsafe(_ask_coro(req), loop)
+            # Hard cap slightly above the child's own ask timeout (<=600s): if the turn
+            # dies without resolving the future we still deny instead of leaking a task.
+            decision = str(fut.result(timeout=610.0))
+        except BaseException:
+            # BaseException on purpose: asyncio.CancelledError / loop death must also
+            # fail closed -- an uncaught exception here would skip the decision file and
+            # make the child wait out its full ask timeout before denying (audit 2026-11-24).
+            decision = "deny"  # fail closed
+        if rid and decision in ("allow", "deny"):
+            try:
+                dec_path = os.path.join(req_dir, rid + ".decision.json")
+                with open(dec_path, "w", encoding="utf-8") as f:
+                    json.dump({"request_id": rid, "decision": decision}, f)
+            except Exception:
+                pass  # child will time out and deny on its own
+
+    return _handle_request
+    
 
 # ============================================================================
 # DEBUG MARKERS (2026-09-16): numbered checkpoints for hang diagnosis.
@@ -568,7 +704,8 @@ def _wrap_user_code(user_code):
     )
 
 
-def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout):
+def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
+                              net_ask_callback=None):
     """Run a sandbox-prefixed payload in an isolated child process.
 
     * Prepends SANDBOX_BOOTSTRAP (the runtime containment layer) to the wrapped
@@ -632,6 +769,13 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout):
     env["PYTHONUTF8"] = "1"
     env["JACK_PYEXEC_DEBUG"] = os.environ.get("JACK_PYEXEC_DEBUG", "0")  # ALL [PYEXEC] marker output (parent stderr + log files) OFF by default; opt in with JACK_PYEXEC_DEBUG=1 (2026-09-30 client-console cleanup); forwarded to the child so one switch re-enables parent AND child markers
     env["JACK_PYEXEC_NETWORK"] = os.environ.get("JACK_PYEXEC_NETWORK", "0")  # admin network opt-in (2026-09-30): forwarded to the child sandbox; with =1 its socket stage installs no outbound restrictions. Cleared above with all other JACK_PYEXEC_* state, so only THIS process's env counts.
+    # OUT-OF-SANDBOX NETWORK CONSENT GATE (2026-11-24): tell the child whether a UI relay
+    # is live for this run. =1 -> its socket gate writes .temp/.jack_netreq/<id>.json and
+    # waits for our decision file; =0 -> original instant hard block, no waiting.
+    env["JACK_PYEXEC_NET_CONSENT"] = "1" if net_ask_callback is not None else "0"
+    _netask_to = os.environ.get("JACK_PYEXEC_NET_ASK_TIMEOUT", "").strip()
+    if _netask_to:
+        env["JACK_PYEXEC_NET_ASK_TIMEOUT"] = _netask_to  # optional admin override of the child's ask timeout
 
     _t_dbg = time.time()
     _pyexec_dbg("#7 about to spawn child subprocess (timeout=%ss)" % effective_timeout, working_dir)
@@ -730,9 +874,45 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout):
         except Exception:
             return "(child trace unavailable)"
 
+    # OUT-OF-SANDBOX NETWORK CONSENT (2026-11-24): remember which request/decision files
+    # already existed so we only react to NEW ones written by THIS child during the run.
+    _net_req_dir = os.path.join(working_dir, ".temp", ".jack_netreq")
+    try:
+        _net_pre = set(os.listdir(_net_req_dir))  # files from BEFORE this run (concurrent runs)
+    except Exception:
+        _net_pre = set()
+    _net_seen = set(_net_pre)  # grows as we react to new request/decision files
+
+    def _poll_net_requests():
+        # Scan for new request files; each one spawns a daemon thread that asks the UI
+        # and writes the decision file. Never blocks the heartbeat/timeout loop below.
+        if net_ask_callback is None:
+            return
+        try:
+            for _f in os.listdir(_net_req_dir):
+                if not _f.endswith(".json") or _f in _net_seen:
+                    continue
+                if _f.endswith(".decision.json"):
+                    _net_seen.add(_f)  # our own handler's output -- ignore from now on
+                    continue
+                try:
+                    with open(os.path.join(_net_req_dir, _f), "r", encoding="utf-8") as _rf:
+                        _req = json.load(_rf)
+                except Exception:
+                    continue  # half-written file: NOT marked seen -> retried next poll;
+                              # a truly foreign file is retried harmlessly until the run ends
+                if not isinstance(_req, dict) or "request_id" not in _req:
+                    _net_seen.add(_f)  # parsed but not one of ours -- ignore
+                    continue
+                _net_seen.add(_f)
+                threading.Thread(target=net_ask_callback, args=(_req,), daemon=True).start()
+        except Exception:
+            pass
+
     _hb_next = _t_dbg + 10.0
     try:
         while proc.poll() is None:
+            _poll_net_requests()
             if time.time() - _t_dbg >= effective_timeout:
                 raise subprocess.TimeoutExpired(cmd=_cmd, timeout=effective_timeout)
             if time.time() >= _hb_next:
@@ -764,6 +944,17 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout):
             cmd=_cmd, timeout=effective_timeout,
             output=bytes(_out_chunks).decode("utf-8", "replace"),
             stderr=bytes(_err_chunks).decode("utf-8", "replace"))
+
+    # OUT-OF-SANDBOX NETWORK CONSENT cleanup: drop ONLY this run's request/decision
+    # files (the delta vs the pre-run snapshot) so .temp/.jack_netreq stays empty
+    # between runs. Files that existed BEFORE this run belong to a concurrent run --
+    # deleting them would break that run's pending ask (verified audit 2026-11-24).
+    if net_ask_callback is not None:
+        try:
+            for _f in list(_net_seen - _net_pre):
+                os.remove(os.path.join(_net_req_dir, _f))
+        except Exception:
+            pass
 
     _feed_thread.join(timeout=1.0)
     # Decode at the edge (2026-09-22): pipes are binary; errors='replace' keeps a
@@ -896,10 +1087,18 @@ def python_exec(code, timeout=None):
     effective_timeout = timeout if timeout is not None else FILE_EXEC_TIMEOUT
     os.makedirs(working_dir, exist_ok=True)
 
+    # OUT-OF-SANDBOX NETWORK CONSENT (2026-11-24): when this call came through the CLIENT
+    # orchestrator with a live chat context, build the UI relay callback so the sandbox's
+    # socket gate can ASK THE USER instead of hard-blocking. No context -> None -> the
+    # child keeps its original instant block (JACK_PYEXEC_NET_CONSENT=0).
+    _net_ctx = _get_caller_context()
+    net_ask_callback = _make_net_ask_callback(_net_ctx, working_dir) if _net_ctx else None
+
     wrapped_code = _wrap_user_code(code)  # injects child-side C4a/C4b/C5 markers
 
     try:
-        proc = _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout)
+        proc = _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
+                                         net_ask_callback=net_ask_callback)
 
         stdout = _safe_strip(proc.stdout)
         stderr = _safe_strip(proc.stderr)

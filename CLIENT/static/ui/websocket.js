@@ -631,6 +631,7 @@ async function startExecAutoApproveCountdown(card, data) {
     const rt = (typeof COOLEMS !== 'undefined' && COOLEMS.runtimeSettings) ? COOLEMS.runtimeSettings : null;
     if (!rt || rt.mode !== 'auto') return;                       // manual mode: wait forever
     if (typeof data.title === 'string' && data.title.length > 0) return; // URL consent: never auto
+    if (data.kind === 'network' || data.kind === 'file') return;   // out-of-sandbox consent (network / file): NEVER auto-approved (2026-11-24)
 
     let seconds = parseInt(rt.seconds, 10);
     if (!Number.isFinite(seconds)) seconds = 5;
@@ -674,13 +675,25 @@ function appendExecApprovalCard(data) {
     // consents (opening a local file / localhost target in the browser). When absent,
     // fall back to the original python_exec wording -- old frames keep rendering as before.
     const isUrlConsent = typeof data.title === 'string' && data.title.length > 0;
-    const headerText = isUrlConsent
-        ? '\u{1F517} ' + escapeHtml(data.title)
-        : '&#128273; Run this Python code on your machine?';
+    // (2026-11-24 out-of-sandbox network consent): kind='network' frames come from the
+    // python_exec sandbox's socket gate -- an approved script is trying to connect OUTSIDE
+    // this machine. Warning header, explicit target in the description, and ONLY two
+    // options (Allow / Deny) - no 'run until task done', never auto-approved.
+    const isNetConsent = data.kind === 'network';
+    const isFileConsent = data.kind === 'file';   // out-of-sandbox FILE consent: same two-option contract as network (2026-11-24)
+    const headerText = isNetConsent
+        ? '\u26A0\uFE0F Out-of-sandbox network access requested'
+        : (isFileConsent
+            ? '\u26A0\uFE0F File access outside working_root requested'
+            : (isUrlConsent
+                ? '\u{1F517} ' + escapeHtml(data.title)
+                : '&#128273; Run this Python code on your machine?'));
     const descHtml = (typeof data.description === 'string' && data.description.length > 0)
         ? '<div class="exec-approval-desc">' + escapeHtml(data.description) + '</div>'
         : '';
-    const allowLabel = isUrlConsent ? '&#10003; Allow this URL' : '&#10003; Allow this run';
+    const allowLabel = isNetConsent ? '&#10003; Allow this connection'
+        : (isFileConsent ? '&#10003; Allow this access'
+            : (isUrlConsent ? '&#10003; Allow this URL' : '&#10003; Allow this run'));
     const runAllLabel = isUrlConsent ? '&#9889; Open local targets until task done' : '&#9889; Run until task done';
 
     const codeHtml = escapeHtml(String(data.code || ''));
@@ -701,8 +714,8 @@ function appendExecApprovalCard(data) {
         '<span class="exec-approval-status pending">Waiting for your decision (no time limit - answer whenever you are ready)</span>' +
         '<div class="exec-approval-actions">' +
             '<button type="button" class="exec-btn exec-btn-allow" data-decision="allow">' + allowLabel + '</button>' +
-            '<button type="button" class="exec-btn exec-btn-runall" data-decision="run_all">' + runAllLabel + '</button>' +
-            '<button type="button" class="exec-btn exec-btn-deny" data-decision="deny">&#10007; ' + (isUrlConsent ? 'Do not open' : 'Do not run') + '</button>' +
+            ((isNetConsent || isFileConsent) ? '' : '<button type="button" class="exec-btn exec-btn-runall" data-decision="run_all">' + runAllLabel + '</button>') +
+            '<button type="button" class="exec-btn exec-btn-deny" data-decision="deny">&#10007; ' + (isNetConsent ? 'Deny connection' : (isFileConsent ? 'Deny access' : (isUrlConsent ? 'Do not open' : 'Do not run'))) + '</button>' +
         '</div>';
 
     body.querySelectorAll('.exec-btn').forEach(btn => {
@@ -739,14 +752,27 @@ function submitExecApproval(data, clickedBtn) {
             card.dataset.answered = '1';
             if (!ok) throw new Error((d && d.message) || ('HTTP ' + (d && d.detail ? JSON.stringify(d.detail) : '')));
             let msg;
-            const urlConsent = typeof data.title === 'string' && data.title.length > 0;
-            if (decision === 'allow') msg = urlConsent ? '\u2705 Allowed - opening this URL in the browser now.' : '\u2705 Allowed - the code is running now.';
-            else if (decision === 'run_all') msg = urlConsent
+            const netConsent = data.kind === 'network';
+            const fileConsent = data.kind === 'file';
+            const urlConsent = !netConsent && !fileConsent && typeof data.title === 'string' && data.title.length > 0;
+            if (decision === 'allow') msg = netConsent
+                ? '\u2705 Connection allowed - the script may reach that target now.'
+                : (fileConsent ? '\u2705 Access allowed - the script may touch that path for this run.'
+                    : (urlConsent ? '\u2705 Allowed - opening this URL in the browser now.' : '\u2705 Allowed - the code is running now.'));
+            else if (decision === 'run_all') msg = netConsent
+                ? '\u274C Denied - the connection stayed blocked.'
+                : fileConsent
+                ? '\u274C Denied - that path stayed blocked.'
+                : urlConsent
                 ? '\u26A1 Auto-open enabled: local file/localhost targets will open without asking until this task ends.'
                 : '\u26A1 Auto-run enabled: python_exec will run without asking until this task ends.';
-            else msg = urlConsent
+            else msg = netConsent
+                ? '\u274C Connection denied - it stays blocked and the AI was told.'
+                : fileConsent
+                ? '\u274C Access denied - that path stayed blocked and the AI was told.'
+                : (urlConsent
                 ? '\u274C Not opened - you decided not to open this target. The AI was told and will continue differently.'
-                : '\u274C Not run - you decided not to execute this code. The AI was told and will continue differently.';
+                : '\u274C Not run - you decided not to execute this code. The AI was told and will continue differently.');
             if (statusEl) { statusEl.className = 'exec-approval-status done-' + decision; statusEl.textContent = msg; }
         })
         .catch(err => {
