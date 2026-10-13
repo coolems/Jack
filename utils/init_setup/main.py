@@ -139,14 +139,10 @@ def main() -> int:
             ok("Licence:                    PRIVATE USE (no licence needed)")
         print()
         info(f"Context window set to {tier['ctx']} tokens (config/config.py) - matches your GPU tier.")
-        if ctx.get("ui_certs_ok"):
-            print()
-            info(f"UI certificates: CLIENT will serve https://127.0.0.1:{_read_client_ui_port()}/ with a locally trusted CA.")
-            info("   One-time import of the CA (CLIENT\\certs\\ca.crt) was printed above - do it once per PC.")
-        print()
         ui_port = _read_client_ui_port()
         ui_url = f"https://127.0.0.1:{ui_port}/" if ctx.get("ui_certs_ok") else f"http://127.0.0.1:{ui_port}/"
-        info("Next steps:")
+        # ---- LAST STEPS -----------------------------------------------------------
+        header("LAST STEPS")
         step = 1
         if not ctx.get("download_now", True):
             info(f"  {step}. Re-run ZZZ_initial_init.bat to download the model file you skipped")
@@ -158,13 +154,18 @@ def main() -> int:
             step += 1
         info(f"  {step}. Run ZZZ_SERVER.bat   (first run creates the venv + installs deps - takes a few minutes)")
         step += 1
-        info(f"  {step}. Run CLIENT\\ZZZ_CLIENT.bat")
+        info(f"  {step}. Run CLIENT\\ZZZ_CLIENT.bat   (first run creates the venv)")
         step += 1
         info(f"  {step}. Open {ui_url} in a browser and log in:")
-        info("         Settings -> enter the EMAIL + API KEY below -> press CONNECT (the page auto-refreshes).")
+        info("         Settings -> Authentication: enter the EMAIL + KEY from 'YOUR UI CREDENTIALS',")
+        info(f"         EMAIL:  {email}")
+        info(f"         KEY:    {api_key}")
         print()
-        print(f"      EMAIL:  {email}")
-        print(f"      KEY:    {api_key}")
+        info("         then press 'Set API Key' - it validates your credentials and refreshes the page automatically.")
+        if ctx.get("ui_certs_ok"):
+            print()
+            info(f"UI certificates: CLIENT will serve https://127.0.0.1:{_read_client_ui_port()}/ with a locally trusted CA.")
+            info("   One-time import of the CA (CLIENT\\certs\\ca.crt) was printed above - do it once per PC.")
         print()
         return 0
 

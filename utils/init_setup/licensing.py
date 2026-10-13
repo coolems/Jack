@@ -164,7 +164,7 @@ def run_licensing_step() -> dict:
     while True:
         val = ask(
             "How will you use COOLEMS?\n"
-            "      [P] Private (individual, non-commercial) - free\n"
+            "      [P] Private (individual) - free (incl. commercial use)\n"
             "      [C] Company / commercial use",
             default="P").strip().lower()
         if val in ("p", "private"):
