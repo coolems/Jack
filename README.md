@@ -15,8 +15,8 @@
 
 
 
-> Free for individuals to download, try and build personal projects.
-> **Companies need a license from Coolems KG.** See [LICENSE](./LICENSE).
+>
+>
 
 ---
 
