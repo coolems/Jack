@@ -4,9 +4,18 @@
   <img src="./utils/ScreenShot.png" width="99%" alt="Jack in action"/>
 </p>
 
-**Jack** is a local-first autonomous AI agent built on the **COOLEMS framework**. It runs entirely on your own hardware: local LLMs (llama.cpp backends) do the thinking, and Jack gives those models hands — file operations, Python execution, browser automation, OCR and image generation — inside a persistent agentic loop. Each Client chat can be set with a specific directory to work with and it will do a local work inside that folder. You can work on a file or on entire repo. Tools are delivered to Client from Server on each request and discarded after use without beeing saved loccaly. 
+**Jack** is a local-first autonomous AI agent built on the **COOLEMS framework**. In short, this is what Jack does:
 
-Multiple people can work with their own agents **at the same time**: every chat runs as an independent background session, so several conversations generate in parallel while switching between them never interrupts anything. The SERVER manages one or more `llama-server` instances on your LAN behind a fair request queue — add another GPU machine and throughput scales with it. By default, no data leaves your local network: the relay only ever talks to the llama servers you configured yourself.
+-  **Works on an entire repository with all its files — till the desired outcome.** Point it at a folder and give it a task; Jack loops until the job is verified done
+-  **Runs entirely on your own hardware** — local LLMs (llama.cpp backends) do the thinking !!!
+-  **Gives those models hands** — file operations, Python execution, browser automation, OCR and image generation, more to come.
+-  **Per-workspace working folder** — each workspace is set with its own directory: Jack does local work strictly inside that folder.
+-  **Tools delivered per request** — tools are sent from Server to Client on each request and discarded after use, never saved locally
+-  **Many people at the same time** — every workspace runs as an independent background session: several conversations generate in parallel and switching between them never interrupts anything
+-  **Scales across your LAN** — the SERVER manages one or more `llama-server` instances behind a fair request queue; add another GPU machine and throughput scales with it
+-  **Private by default** — no data leaves your local network: the relay only ever talks to the llama servers you configured yourself
+
+
 
 > Free for individuals to download, try and build personal projects.
 > **Companies need a license from Coolems KG.** See [LICENSE](./LICENSE).
