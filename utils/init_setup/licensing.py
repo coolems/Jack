@@ -158,8 +158,8 @@ def run_licensing_step() -> dict:
 
     Returns a small summary dict for the final report."""
     print()
-    info("COOLEMS is free for private (individual) use. Company / commercial use")
-    info(f"requires a written licence from Coolems KG — contact: {CONTACT_EMAIL}.")
+    info("COOLEMS Jack is free for individual use.")
+    info("Companies commercial use requires a written licence from Coolems KG.")
     print()
     while True:
         val = ask(
@@ -184,11 +184,11 @@ def run_licensing_step() -> dict:
         info("Enter your e-mail so we can confirm it (one-time link, sent by coolems.com).")
         email = ""
         while True:
-            raw_email = ask("Your e-mail (optional — press Enter to skip)", default="").strip().lower()
+            raw_email = ask("Your e-mail (will be used for licence confirmation):", default="").strip().lower()
             if not raw_email or _re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", raw_email):
                 email = raw_email
                 break
-            warn("That does not look like a valid e-mail — try again or press Enter to skip")
+            warn("That does not look like a valid e-mail — try again")
 
         state.update({"choice": "private", "company": "", "email": email})
         saved = save_state(state)
