@@ -117,16 +117,16 @@ async def _run_relay_async(provider_obj, final_api_url):
     """Run the just relay server entirely on asyncio event loop - no threads."""
     _log_relay_banner("", final_api_url)
 
-    # (2026-10-15 licensing plan v12) SERVER owns all licence logic: one immediate check on
+    # (2026-10-15 licensing plan v12) SERVER owns all license logic: one immediate check on
     # start + once-per-day re-check task. CLIENTs are fed the slim {use, company} payload over WS frames.
-    from app import licence_server
-    _licence_task = licence_server.start_licence_task()
+    from app import license_server
+    _license_task = license_server.start_license_task()
 
     try:
         await provider_obj.start_all_servers()
     finally:
-        if _licence_task is not None and not _licence_task.done():
-            _licence_task.cancel()
+        if _license_task is not None and not _license_task.done():
+            _license_task.cancel()
         logger.info("Shutting down just relay server...")
         await provider_obj.stop_all_servers()
 
@@ -138,9 +138,9 @@ async def _run_relay_with_client_async(provider_obj, final_api_url):
 
     _log_relay_banner(" + Local CLIENT", final_api_url)
 
-    # (2026-10-15 licensing plan v12) SERVER-side licence check on start + once-per-day re-check.
-    from app import licence_server
-    _licence_task = licence_server.start_licence_task()
+    # (2026-10-15 licensing plan v12) SERVER-side license check on start + once-per-day re-check.
+    from app import license_server
+    _license_task = license_server.start_license_task()
 
     # Start relay task
     relay_task = asyncio.create_task(provider_obj.start_all_servers(), name="relay-server")
@@ -196,8 +196,8 @@ async def _run_relay_with_client_async(provider_obj, final_api_url):
             except Exception:
                 client_proc.kill()
 
-        if _licence_task is not None and not _licence_task.done():
-            _licence_task.cancel()
+        if _license_task is not None and not _license_task.done():
+            _license_task.cancel()
 
         await provider_obj.stop_all_servers()
 

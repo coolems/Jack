@@ -114,7 +114,7 @@ def main() -> int:
         # ---- LICENSING (asked HERE at init time - never in the running UI) ----------
         header("STEP 6 - LICENSING")
         from .licensing import run_licensing_step
-        ctx["licence"] = run_licensing_step()
+        ctx["license"] = run_licensing_step()
 
         # ---- FINAL REPORT ---------------------------------------------------------
         header("INIT COMPLETE")
@@ -132,17 +132,17 @@ def main() -> int:
             warn(f"Vision projector (SKIPPED for later): {ctx['model_folder']}\\{HF_MMPROJ_FILE}")
         if want_ocr:
             ok(f"OCR model:                  {ctx['ocr_folder']}")
-        lic = ctx.get("licence") or {}
+        lic = ctx.get("license") or {}
         if lic.get("choice") == "company":
-            ok(f"Licence:                    COMPANY ({lic.get('company')}) - pending server confirmation; the UI badge shows the live status")
+            ok(f"License:                    COMPANY ({lic.get('company')}) - pending server confirmation; the UI badge shows the live status")
         else:
-            ok("Licence:                    PRIVATE USE (no licence needed)")
+            ok("License:                    PRIVATE USE (no license needed)")
         print()
         info(f"Context window set to {tier['ctx']} tokens (config/config.py) - matches your GPU tier.")
         ui_port = _read_client_ui_port()
         ui_url = f"https://127.0.0.1:{ui_port}/" if ctx.get("ui_certs_ok") else f"http://127.0.0.1:{ui_port}/"
         # ---- LAST STEPS -----------------------------------------------------------
-        header("LAST STEPS")
+        header("LAST STEPS (do not close this window till you work with the agent)")
         step = 1
         if not ctx.get("download_now", True):
             info(f"  {step}. Re-run ZZZ_initial_init.bat to download the model file you skipped")

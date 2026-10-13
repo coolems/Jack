@@ -1,4 +1,4 @@
-# COOLEMS COMMERCIAL LICENCE AGREEMENT (CLA) — TEMPLATE
+# COOLEMS COMMERCIAL LICENSE AGREEMENT (CLA) — TEMPLATE
 
 **DRAFT v0.1 (2026-10-15) — for lawyer review before first enterprise contract.**
 Governs commercial use of the COOLEMS "Jack" software by companies and organisations,
@@ -6,22 +6,22 @@ as required by section 3 of the source-available `LICENSE` in this repository.
 
 ---
 
-**This Commercial Licence Agreement ("Agreement") is made between:**
+**This Commercial License Agreement ("Agreement") is made between:**
 
 - **Coolems KG**, a company registered in Austria, registered office: [ADDRESS],
   contact: coolems.kg@gmail.com (the "Licensor"); and
 - **[COMPANY NAME]**, a legal entity registered under the laws of [JURISDICTION],
   registration no. [REG NO], with its seat at [ADDRESS] (the "Licensee").
 
-## 1. SUBJECT MATTER & SCOPE OF THE LICENCE
+## 1. SUBJECT MATTER & SCOPE OF THE LICENSE
 
-1.1 The Licensor grants the Licensee a **non-exclusive, non-transferable** licence to:
+1.1 The Licensor grants the Licensee a **non-exclusive, non-transferable** license to:
    (a) install and run the COOLEMS software identified in **Annex A** (version/build,
        modules, model components) on the Licensee's own infrastructure;
    (b) use it internally for the Licensee's business activities;
    (c) receive updates and support as defined in section 6.
 
-1.2 **Seat / user count:** this licence covers **[N] named users / seats** on up to
+1.2 **Seat / user count:** this license covers **[N] named users / seats** on up to
    **[M] server(s)**. Use beyond the licensed seat or server count requires a written
    amendment before such use begins. *(Seat count is pre-filled from the Licensee's
    registration data collected at software init — "number of users requested".)*
@@ -33,42 +33,42 @@ as required by section 3 of the source-available `LICENSE` in this repository.
    in Annex A.)*
 
 1.4 **Source code:** the Software is source-available under the repository `LICENSE`.
-   The commercial rights granted here do NOT override that licence: copyright notices
+   The commercial rights granted here do NOT override that license: copyright notices
    must be retained (section 4 of the repository LICENSE), derivative works remain
    subject to it, and the trademarks clause (section 6) applies unchanged.
 
 1.5 **Third-party components:** llama.cpp, model weights, CUDA/cuBLAS and other
-   third-party runtime components are governed by THEIR OWN licences (see
+   third-party runtime components are governed by THEIR OWN licenses (see
    `THIRD-PARTY-NOTICES.txt`). This Agreement grants no rights in them; the Licensee
    accepts those upstream terms directly.
 
 ## 2. FEES & PAYMENT
 
-2.1 **Licence fee:** EUR [AMOUNT] per seat / per server, billed [annually / one-time].
+2.1 **License fee:** EUR [AMOUNT] per seat / per server, billed [annually / one-time].
 2.2 Invoices are due within **[30] days** of invoice date. Late payments accrue interest
     at the statutory rate under Austrian law (Oesterreichischer Scheck- und Wechselgesetz).
 2.3 Fees are exclusive of VAT where applicable. Fees for the current term are **non-refundable**.
 2.4 The Licensor may adjust fees on renewal with **[90] days** written notice; the then-current
     fee schedule applies to renewed terms.
 
-## 3. TERM & RENEWAL (mirrors server-side licence record)
+## 3. TERM & RENEWAL (mirrors server-side license record)
 
 3.1 This Agreement starts on the **issue date** and runs for the period recorded in the
-    Licensor's licence register (`period` / `valid_until`), i.e. from **[ISSUE DATE]** to
+    Licensor's license register (`period` / `valid_until`), i.e. from **[ISSUE DATE]** to
     **[VALID UNTIL — or "perpetual"]**.
 3.2 **Renewal:** unless either party gives written notice of non-renewal at least
     **[60] days** before the end date, this Agreement renews automatically for successive
     [12-month] terms at the fees in effect at that time.
 3.3 **Expiry / suspension:** on expiry without renewal, or upon suspension by the Licensor
-    (e.g. non-payment), the licence check status of the Licensee's installation changes to
+    (e.g. non-payment), the license check status of the Licensee's installation changes to
     "pending" and the rights under section 1 end at the end of a **[14]-day** grace period.
     Data stored in the Software remains accessible during the grace period for export.
 
 ## 4. OBLIGATIONS OF THE LICENSEE
 
 4.1 Use the Software only as permitted by this Agreement and applicable law.
-4.2 Keep the licence credentials (licence number, registered company name / contact e-mail)
-    confidential; they identify THIS installation to the Licensor's licence service.
+4.2 Keep the license credentials (license number, registered company name / contact e-mail)
+    confidential; they identify THIS installation to the Licensor's license service.
 4.3 Not remove or alter copyright notices, not bypass technical measures, and not use the
     Software for unlawful purposes.
 
@@ -77,7 +77,7 @@ as required by section 3 of the source-available `LICENSE` in this repository.
 5.1 Each party keeps the other's non-public business information confidential for the term
     plus [2] years.
 5.2 The Licensor processes the Licensee's company name, contact e-mail and installation IP
-    addresses solely to operate the licence service (verification, renewal, audit). This
+    addresses solely to operate the license service (verification, renewal, audit). This
     processing is based on the parties' contractual relationship (Art. 6(1)(b) GDPR); the
     Licensor acts as data controller for this purpose and will delete or anonymise the data
     upon termination of this Agreement unless retention is required by law.
@@ -131,11 +131,11 @@ addresses above are effective on delivery.
 
 | Field | Value |
 |---|---|
-| Licence number | COOLEMS-[XX]-[NNN] |
+| License number | COOLEMS-[XX]-[NNN] |
 | Software / build | COOLEMS "Jack" v[X.Y], commit [SHA] or release tag |
 | Modules included | [list — e.g. full client, relay server, tool suite] |
 | Seats / servers | [N seats on M servers] |
-| Model components (if delivered) | [model names + their upstream licences] |
+| Model components (if delivered) | [model names + their upstream licenses] |
 | Issue date / valid until | [YYYY-MM-DD] / [YYYY-MM-DD or perpetual] |
 | Fee & billing | [EUR …, annual / one-time] |
 | Support tier | [basic / priority — see §6.2] |

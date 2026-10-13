@@ -6,14 +6,14 @@ Why this exists (licensing plan v9, Phase 1): every direct dependency in
 requirements.txt is permissive-licensed (MIT/BSD/Apache/HPND), which means NO
 source-disclosure obligation — but attribution IS required for redistribution.
 This script keeps the notices file honest: it reads the pinned requirements and
-emits one block per package with licence + copyright holder, taken from a local
+emits one block per package with license + copyright holder, taken from a local
 table that was verified against the installed dist-info METADATA/LICENSE files.
 
 RULES BAKED IN (licensing plan v9, Phase 4 guardrail):
   - A dependency NOT in the table is emitted as "UNVERIFIED" and the script EXITS NON-ZERO
     -> a CI job running this script fails the build if someone adds an unknown
     (potentially copyleft) dependency. That permanently locks in low coverage.
-  - A dependency whose licence contains GPL/AGPL is REJECTED with exit code 2,
+  - A dependency whose license contains GPL/AGPL is REJECTED with exit code 2,
     even if it were added to the table by mistake.
 
 Usage:
@@ -34,8 +34,8 @@ REQ_FILE = os.path.join(REPO_ROOT, "requirements.txt")
 OUT_FILE = os.path.join(REPO_ROOT, "THIRD-PARTY-NOTICES.txt")
 
 # Verified 2026-10-15 against the installed dist-info (METADATA + LICENSE files) in venv/.
-# Format: normalised name -> (licence_id, copyright_holder)
-LICENCE_TABLE = {
+# Format: normalised name -> (license_id, copyright_holder)
+LICENSE_TABLE = {
     "pillow":            ("HPND / PIL",          "Python Software Foundation and contributors"),
     "aiohttp":           ("Apache-2.0",          "Aio-libs team and contributors"),
     "beautifulsoup4":    ("MIT",                 "Michael Foord et al."),
@@ -58,7 +58,7 @@ LICENCE_TABLE = {
     "websockets":          ("BSD-3-Clause",        "The Websockets Project (Aymeric Augustin) and contributors"),
 }
 
-# Licences that would trigger source disclosure / copyleft obligations. Never allowed in this project.
+# Licenses that would trigger source disclosure / copyleft obligations. Never allowed in this project.
 COPYLEFT_MARKERS = ("GPL", "AGPL")
 
 
@@ -86,7 +86,7 @@ def build_notices():
         "COOLEMS \"Jack\" — THIRD-PARTY NOTICES",
         "=" * 60,
         "",
-        "This file lists the third-party components used by COOLEMS and their licences.",
+        "This file lists the third-party components used by COOLEMS and their licenses.",
         "All direct dependencies are permissively licensed (MIT/BSD/Apache/HPND): they may be",
         "redistributed with this software provided these notices are kept. None of them",
         "impose source-disclosure or copyleft obligations on Coolems KG's own code.",
@@ -99,30 +99,30 @@ def build_notices():
     unknown = []
     copyleft = []
     for name, version in parse_requirements(REQ_FILE):
-        entry = LICENCE_TABLE.get(name)
+        entry = LICENSE_TABLE.get(name)
         if entry is None:
             lines.append(f"{name}=={version}")
-            lines.append("  LICENCE: UNVERIFIED — CHECK BEFORE DISTRIBUTING")
+            lines.append("  LICENSE: UNVERIFIED — CHECK BEFORE DISTRIBUTING")
             lines.append("")
             unknown.append(name)
             continue
 
-        licence_id, holder = entry
+        license_id, holder = entry
         for marker in COPYLEFT_MARKERS:
-            if marker.lower() in licence_id.lower():
-                copyleft.append((name, licence_id))
+            if marker.lower() in license_id.lower():
+                copyleft.append((name, license_id))
         lines.append(f"{name}=={version}")
-        lines.append(f"  Licence: {licence_id}")
+        lines.append(f"  License: {license_id}")
         lines.append(f"  Copyright holder: {holder}")
         lines.append("")
 
     # llama.cpp runtime binaries (not a pip dep — shipped/downloaded separately)
     lines += [
         "llama.cpp (runtime binaries, llama_server/)",
-        "  Licence: MIT",
+        "  License: MIT",
         "  Copyright holder: Georgi Gerganov and contributors",
         "  Note: when distributing the pre-built Windows CUDA binaries, keep their copyright",
-        "  notice and licence text in the package; if the installer downloads them at install",
+        "  notice and license text in the package; if the installer downloads them at install",
         "  time (planned distribution model), the upstream MIT terms bind user-to-upstream.",
         "",
     ]
@@ -139,7 +139,7 @@ def main():
 
     if copyleft:
         for name, lic in copyleft:
-            print(f"FATAL: {name} carries a copyleft licence ({lic}) — NOT allowed in this project.", file=sys.stderr)
+            print(f"FATAL: {name} carries a copyleft license ({lic}) — NOT allowed in this project.", file=sys.stderr)
         sys.exit(2)
 
     if args.check:

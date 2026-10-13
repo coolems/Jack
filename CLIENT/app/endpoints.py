@@ -305,17 +305,17 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info(f"[SHUTDOWN-ALL] UI closed/crashed - stopped all live sessions: {result}")
         return {"status": "ok", **result}
 
-    # ===== LICENCE (2026-10-15 licensing plan v12) ==============================
-    # The CLIENT keeps NO licence files and never talks to coolems.com. The SERVER is
-    # the single owner of all licence logic; it feeds us a slim {use, company} payload
+    # ===== LICENSE (2026-10-15 licensing plan v12) ==============================
+    # The CLIENT keeps NO license files and never talks to coolems.com. The SERVER is
+    # the single owner of all license logic; it feeds us a slim {use, company} payload
     # over WebSocket (auth_ok + every token_stats frame). This endpoint only composes
     # the badge from the in-memory cache written by those frames.
 
-    @app.get("/api/licence/status")
-    async def licence_status():
+    @app.get("/api/license/status")
+    async def license_status():
         """Public read-only (whitelisted in app/auth.py): badge snapshot, no network call."""
-        from app import licence_cache
-        return licence_cache.badge_status()
+        from app import license_cache
+        return license_cache.badge_status()
 
 # ===== Include route modules =====
     app.include_router(create_conversations_router(db_path=db_path, model_name=model_name, agent=agent))

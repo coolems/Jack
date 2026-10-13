@@ -226,10 +226,10 @@ async def run_chat_core(server_provider, provider, sink, *, model: str, messages
 
         if token_stats:
             # (2026-10-15 licensing plan v12) every request round-trip re-delivers the slim
-            # licence payload {use, company} so CLIENT badges stay fresh without any client-side check.
-            from app import licence_server
+            # license payload {use, company} so CLIENT badges stay fresh without any client-side check.
+            from app import license_server
             await _sink_send_frame(sink, {"type": "token_stats", **token_stats.to_dict(),
-                                          "licence": licence_server.current_status()})
+                                          "license": license_server.current_status()})
 
         await _sink_send_frame(sink, {"type": "done"})
         return True

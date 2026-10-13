@@ -96,12 +96,12 @@ def apply_auth_info(auth_response: dict, context: str = "") -> None:
             logger.debug("[CLIENT] Could not cache auth_ok role/email: %s", e)
     
 
-    # (2026-10-15 licensing plan v12) licence payload from SERVER -> in-memory cache.
+    # (2026-10-15 licensing plan v12) license payload from SERVER -> in-memory cache.
     # Independent of context_window: the SERVER sends it on every auth_ok and stats frame.
     try:
-        import app.licence_cache as _lic
-        if auth_response.get("licence") is not None:
-            _lic.update_from_frame(auth_response["licence"])
+        import app.license_cache as _lic
+        if auth_response.get("license") is not None:
+            _lic.update_from_frame(auth_response["license"])
     except Exception:  # pragma: no cover - display-only; never break the auth path
         pass
 # ─── WebSocket Relay Helpers ──

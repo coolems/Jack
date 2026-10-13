@@ -6,16 +6,16 @@
 /* ===== INPUT AREA ===== */
 .input-container {
         /* (2026-10-15) prompt frame keeps its original full-width sizing/centering.
-           Licence badge lives in the bottom-left corner on a layer UNDER the
+           License badge lives in the bottom-left corner on a layer UNDER the
            prompt frame, so resizing can never let the prompt visually cover it -
            the frame simply stays on top where they meet. */
         position: relative; padding: 24px; background: var(--bg-primary); border-top: 1px solid var(--border); flex-shrink: 0;
     }
 
 .input-wrapper {
-    position: relative; z-index: 1;    /* (2026-10-15) prompt frame on top of the licence layer */
+    position: relative; z-index: 1;    /* (2026-10-15) prompt frame on top of the license layer */
     /* (2026-10-15) keeps its original 800px centered size at normal widths. When the window
-           shrinks, it stops growing into the reserved 200px licence strip in the bottom-left:
+           shrinks, it stops growing into the reserved 200px license strip in the bottom-left:
            max() picks the centred offset while there is room; once that would cross 200px from
            the left edge, the frame pins to the right of the strip and narrows instead. */
         max-width: min(800px, calc(100% - 200px));

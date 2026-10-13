@@ -9,7 +9,7 @@
 Multiple people can work with their own agents **at the same time**: every chat runs as an independent background session, so several conversations generate in parallel while switching between them never interrupts anything. The SERVER manages one or more `llama-server` instances on your LAN behind a fair request queue — add another GPU machine and throughput scales with it. By default, no data leaves your local network: the relay only ever talks to the llama servers you configured yourself.
 
 > Free for individuals to download, try and build personal projects.
-> **Companies need a licence from Coolems KG.** See [LICENSE](./LICENSE).
+> **Companies need a license from Coolems KG.** See [LICENSE](./LICENSE).
 
 ---
 
@@ -380,6 +380,6 @@ This project is **source-available, not open source**.
 | Use | Terms |
 |---|---|
 | Individual / personal use (download, run, modify, private personal projects) | **Free**, no fee, see [LICENSE](./LICENSE) |
-| Company / commercial use (any legal entity, products, services for third parties) | **Requires a written licence from Coolems KG** |
+| Company / commercial use (any legal entity, products, services for third parties) | **Requires a written license from Coolems KG** |
 
-Full text: [`LICENSE`](./LICENSE). For company licences, contact **Coolems KG**.
+Full text: [`LICENSE`](./LICENSE). For company licenses, contact **Coolems KG**.

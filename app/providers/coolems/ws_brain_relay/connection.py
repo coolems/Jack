@@ -370,16 +370,16 @@ async def connect_to_web_relay(server_provider):
 
                 # auth_ok so CLIENTs receive the real context window through a relay.
 
-                # (2026-10-15 licensing plan v12) slim licence payload {use, company} — the relay
+                # (2026-10-15 licensing plan v12) slim license payload {use, company} — the relay
                 # merges it into every client's auth_ok exactly like context_window.
-                from app import licence_server
+                from app import license_server
 
                 await ws.send(json.dumps({
 
                     "type": "brain_info",
 
                     "context_window": SERVER_CONTEXT_WINDOW,
-                    "licence": licence_server.current_status(),
+                    "license": license_server.current_status(),
 
                 }))
 

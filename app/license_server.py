@@ -1,11 +1,11 @@
-"""Coolems KG licence module (SERVER side — single owner of ALL licence logic).
+"""Coolems KG license module (SERVER side — single owner of ALL license logic).
 
-LICENSING PLAN v14 (2026-10-15): the CLIENT keeps NO licence files and never talks to
+LICENSING PLAN v14 (2026-10-15): the CLIENT keeps NO license files and never talks to
 coolems.com. This module is the ONLY place that:
 
-  - persists the registration choice + company data in <ROOT>/licence/licence_state.json
+  - persists the registration choice + company data in <ROOT>/config/license_state.json
     (server root, gitignored);
-  - checks the licence with the Coolems KG endpoint on server start and once per day;
+  - checks the license with the Coolems KG endpoint on server start and once per day;
   - feeds the CLIENTs: current_status() returns the SLIM payload that rides on the
     existing SERVER->CLIENT frames (auth_ok / brain_info on connect, token_stats on
     every request round-trip):
@@ -13,7 +13,7 @@ coolems.com. This module is the ONLY place that:
         {"use": "private" | "company", "company": "<name>" or None,
          "email": "<e-mail>" or None, "private_licensed": true|false}   (private installs only)
 
-The CLIENT composes the badge text from those two fields only — no licence number,
+The CLIENT composes the badge text from those two fields only — no license number,
 no dates, nothing else ever leaves this machine.
 
 OFFLINE MODE: any failure of the network check falls back to the cached last_check in
@@ -23,14 +23,14 @@ licensed even offline — clients then see "not registered" again until renewed.
     PRIVATE-USE E-MAIL CONFIRMATION (v15, refined v16 2026-10-12): a private install that HAS an
         e-mail also asks the web side (POST {"mode":"private","email":...}) on server start + once per day;
         the endpoint sends a one-time confirmation link and only writes the address into its own
-        private_licence.json after the user clicks it. Private individual use is FREE for commercial
+        private_license.json after the user clicks it. Private individual use is FREE for commercial
         use, so the badge now reflects the confirmation state: e-mail confirmed on the web side ->
-        "PRIVATE LICENCE · licensed <e-mail> for commercial use"; not (yet) confirmed / no e-mail ->
-        "PRIVATE USE · licence not acquired". The slim payload carries {email, private_licensed}
+        "PRIVATE LICENSE · licensed <e-mail> for commercial use"; not (yet) confirmed / no e-mail ->
+        "PRIVATE USE · license not acquired". The slim payload carries {email, private_licensed}
         for that; nothing else leaves this machine.
     
 NOTE on IP tracking: ip_history lives on the WEB side now
-(licence/coolems_site/jack/licences/ip_history.json, written by index.php). The local
+(coolems_site/jack/licenses/ip_history.json, written by index.php). The local
 state file no longer stores it.
 
 SECURITY FRAMING (accepted by design): not DRM — the server file + UI badge are a
@@ -47,13 +47,14 @@ from datetime import datetime, timezone
 # ===== Paths & constants =========================================================
 
 SERVER_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # app/ -> <ROOT>
-LICENCE_DIR = os.path.join(SERVER_ROOT, "licence")
-STATE_FILE = os.path.join(LICENCE_DIR, "licence_state.json")
+# NOTE: state lives in config/ (a top-level license/ dir is impossible on Windows — it collides case-insensitively with the root LICENSE file)
+LICENSE_DIR = os.path.join(SERVER_ROOT, "config")
+STATE_FILE = os.path.join(LICENSE_DIR, "license_state.json")
 
-# Server-side licence endpoint (coolems.com). Overridable for tests / staging.
+# Server-side license endpoint (coolems.com). Overridable for tests / staging.
 ENDPOINT_URL = os.environ.get(
-    "COOLEMS_LICENCE_ENDPOINT",
-    "https://coolems.com/jack/licences/index.php",
+    "COOLEMS_LICENSE_ENDPOINT",
+    "https://coolems.com/jack/licenses/index.php",
 )
 
 CONTACT_EMAIL = "coolems.kg@gmail.com"
@@ -81,7 +82,7 @@ def default_state() -> dict:
 
 
 def load_state() -> dict:
-    """Read the local licence state. Missing/corrupt file -> fresh default (never fatal)."""
+    """Read the local license state. Missing/corrupt file -> fresh default (never fatal)."""
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -100,9 +101,9 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    """Atomic write of the local licence state. Never raises to callers."""
+    """Atomic write of the local license state. Never raises to callers."""
     try:
-        os.makedirs(LICENCE_DIR, exist_ok=True)
+        os.makedirs(LICENSE_DIR, exist_ok=True)
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
@@ -115,7 +116,7 @@ def save_state(state: dict) -> None:
                 os.remove(STATE_FILE)
             os.rename(tmp, STATE_FILE)
     except OSError:
-        pass  # licence bookkeeping must never crash the server
+        pass  # license bookkeeping must never crash the server
 
 
 def record_company_registration(company: str, email: str = "", users_requested: int = 0,
@@ -187,7 +188,7 @@ def _build_ssl_context():
 
 
 def perform_check(state: dict | None = None, timeout: int = CHECK_TIMEOUT_SEC) -> dict:
-    """Check the licence with the Coolems KG endpoint.
+    """Check the license with the Coolems KG endpoint.
 
     - private installs: no network call at all.
     - company installs: HTTPS POST {company, email} to ENDPOINT_URL (GET fallback when
@@ -280,12 +281,12 @@ def current_status() -> dict:
         company          <name> or None        — only meaningful when use == "company";
         email            <e-mail> or None      — private installs: the registered e-mail;
         private_licensed true|false            — private installs: True when the web side has
-                                                 CONFIRMED that e-mail (private_licence.json) and the
+                                                 CONFIRMED that e-mail (private_license.json) and the
                                                  cached answer is not expired.
 
     The CLIENT composes its badge from these:
-        private, confirmed   -> PRIVATE LICENCE · licensed <e-mail> for commercial use
-        private, unconfirmed -> PRIVATE USE · licence not acquired
+        private, confirmed   -> PRIVATE LICENSE · licensed <e-mail> for commercial use
+        private, unconfirmed -> PRIVATE USE · license not acquired
         company + name       -> COMMERCIAL USE — LICENSED · assigned to <name>
         company, no name     -> COMMERCIAL USE · not registered
 
@@ -296,7 +297,7 @@ def current_status() -> dict:
     if state["choice"] == "private":
         cache = state.get("last_check") or {}
         # Confirmed on the web side (endpoint answered licensed:true via:"private") and not
-        # expired -> private_licensed True. A private licence is perpetual, so expiry only
+        # expired -> private_licensed True. A private license is perpetual, so expiry only
         # matters for malformed/edited answers; fail closed like company checks do.
         return {
             "use": "private",
@@ -317,7 +318,7 @@ def current_status() -> dict:
 
 # ===== Periodic background loop (runs on the server event loop) ==================
 
-async def licence_loop() -> None:
+async def license_loop() -> None:
     """Immediate first check, then re-check every PERIODIC_CHECK_INTERVAL_SEC.
 
     Runs the network call in a worker thread (await to_thread) so it NEVER blocks
@@ -335,18 +336,18 @@ async def licence_loop() -> None:
                               (st.get("choice") == "private" and st.get("email"))
             if needs_check:
                 result = await _la.to_thread(perform_check)
-                logger.info("[SERVER] Licence check: status=%s", (result or {}).get("status"))
+                logger.info("[SERVER] License check: status=%s", (result or {}).get("status"))
         except Exception as e:  # pragma: no cover - bookkeeping must never die
-            logger.debug(f"Periodic licence check failed (non-fatal): {e}")
+            logger.debug(f"Periodic license check failed (non-fatal): {e}")
         try:
             await _la.sleep(PERIODIC_CHECK_INTERVAL_SEC)
         except _la.CancelledError:
             raise
 
 
-def start_licence_task() -> "object | None":
+def start_license_task() -> "object | None":
     """Boot hook: starts the check loop on the running event loop. The FIRST check is
-    done by licence_loop() itself, in a worker thread - so this call NEVER blocks boot
+    done by license_loop() itself, in a worker thread - so this call NEVER blocks boot
     (a synchronous perform_check() here would stall the whole server up to 10 s when
     the endpoint is unreachable). Returns the task handle (None when no loop)."""
     import asyncio as _la
@@ -357,7 +358,7 @@ def start_licence_task() -> "object | None":
         loop = _la.get_running_loop()
     except RuntimeError:
         return None
-    task = _la.create_task(licence_loop(), name="licence-check-loop")
-    logger.info("[SERVER] Licence check loop started (immediate + every %ss)",
+    task = _la.create_task(license_loop(), name="license-check-loop")
+    logger.info("[SERVER] License check loop started (immediate + every %ss)",
                 PERIODIC_CHECK_INTERVAL_SEC)
     return task

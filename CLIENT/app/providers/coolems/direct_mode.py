@@ -123,12 +123,12 @@ async def chat_stream_direct_websocket(
                         final_response = msg.get("content", "")
                         logger.info(f"[CLIENT] Received final response via Direct WS")
                     elif t == "token_stats":
-                        # (2026-10-15 licensing plan v12) refresh the in-memory licence
+                        # (2026-10-15 licensing plan v12) refresh the in-memory license
                         # cache from the SERVER payload carried on every stats frame.
                         try:
-                            import app.licence_cache as _lic
-                            if msg.get("licence") is not None:
-                                _lic.update_from_frame(msg["licence"])
+                            import app.license_cache as _lic
+                            if msg.get("license") is not None:
+                                _lic.update_from_frame(msg["license"])
                         except Exception:  # pragma: no cover - display-only, never break streaming
                             pass
                         token_stats = TokenStats(
