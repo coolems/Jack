@@ -6,14 +6,12 @@
 
 **Jack** is a local-first autonomous AI agent built on the **COOLEMS framework**. In short, this is what Jack does:
 
--  **Works on an entire repository with all its files — till the desired outcome.** Point it at a folder and give it a task; Jack loops until the job is verified done
--  **Runs entirely on your own hardware** — local LLMs (llama.cpp backends) do the thinking !!!
--  **Gives those models hands** — file operations, Python execution, browser automation, OCR and image generation, more to come.
--  **Per-workspace working folder** — each workspace is set with its own directory: Jack does local work strictly inside that folder.
--  **Tools delivered per request** — tools are sent from Server to Client on each request and discarded after use, never saved locally
--  **Many people at the same time** — every workspace runs as an independent background session: several conversations generate in parallel and switching between them never interrupts anything
--  **Scales across your LAN** — the SERVER manages one or more `llama-server` instances behind a fair request queue; add another GPU machine and throughput scales with it
--  **Private by default** — no data leaves your local network: the relay only ever talks to the llama servers you configured yourself
+-  **Works on an entire repository with all its files — till the desired outcome.** Point it at a folder and give it a task
+-  **Gives those models hands** — file operations, Python execution, browser automation, OCR and image generation
+-  **Per-workspace working folder** — each workspace is set with its own directory
+-  **Many people at the same time** — every workspace runs as an independent background session in parallel
+-  **Scales across your LAN** — the SERVER manages one or more `llama-server` instances behind a fair request queue
+-  **Private by default** — no data leaves your local network
 
 
 
