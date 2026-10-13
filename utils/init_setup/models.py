@@ -76,7 +76,7 @@ def download_model_files(ctx: dict) -> None:
             ok(f"{fname} already present ({human(size)}) - skipped")
         else:
             url = f"https://huggingface.co/{repo}/resolve/main/{fname}?download=true"
-            download_file(url, found_p, expected_size=size, label=f"Qwen3.8-27B-{quant}")
+            download_file(url, found_p, expected_size=size, label=fname)
         ctx["final_model_name"] = fname
 
     ctx["model_path"] = os.path.join(model_folder, ctx["final_model_name"])
