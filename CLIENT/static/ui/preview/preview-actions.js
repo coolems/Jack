@@ -27,47 +27,47 @@ Object.assign(PreviewManager.prototype, {
             document.body.removeChild(a);
         }
     },
-    
+
     /**
      * Run current Python file
      */
     async runPythonFile() {
         if (!this.currentFile) return;
-        
+
         const filename = this.currentFile.name;
         const path = this.currentFile.path;
-        
+
         // Show loading in preview
         const contentEl = document.getElementById('previewContent');
         if (contentEl) {
             contentEl.innerHTML = '<div class="preview-empty"><div class="loading-spinner"></div><p>Running ' + this.escapeHtml(filename) + '...</p></div>';
         }
-        
+
         try {
             const response = await fetch('/api/run-file', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: path })
             });
-            
+
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            
+
             const data = await response.json();
-            
+
             // Show output
             const hasOutput = data.stdout && data.stdout.trim().length > 0;
             const hasErrors = data.stderr && data.stderr.trim().length > 0;
-            
+
             let statusClass = data.returncode === 0 ? 'status-success' : 'status-error';
             let statusText = data.returncode === 0 ? '✓ Completed' : `✗ Exit code: ${data.returncode}`;
             if (data.status === 'timeout') {
                 statusClass = 'status-error';
                 statusText = '⏱ Timed out';
             }
-            
+
             let html = '<div class="python-output-container">';
             html += `<div class="python-output-status ${statusClass}">${statusText}</div>`;
-            
+
             if (hasOutput || hasErrors) {
                 html += '<div class="python-output-content">';
                 if (hasOutput) {
@@ -81,15 +81,15 @@ Object.assign(PreviewManager.prototype, {
                 html += '<div class="python-output-empty">No output</div>';
             }
             html += '</div>';
-            
+
             if (contentEl) contentEl.innerHTML = html;
-            
+
         } catch (e) {
             if (contentEl) contentEl.innerHTML = '<div class="preview-empty"><p style="color:var(--danger);">Failed to run: ' + this.escapeHtml(e.message) + '</p></div>';
             this.showNotification('Failed to run Python file', 'error');
         }
     },
-    
+
     /**
      * Close preview panel
      */
@@ -109,13 +109,13 @@ Object.assign(PreviewManager.prototype, {
             this.previewPanel.classList.add('collapsed');
             this.previewPanel.style.width = '';
         }
-        
+
         this.currentFile = null;
         this.currentContent = null;
         this.currentHighlighter = null;
         this.isDiffMode = false;
         this.isEditing = false;
-        
+
         if (this.previewContent) {
             this.previewContent.innerHTML = `
                 <div class="preview-empty">
@@ -124,7 +124,7 @@ Object.assign(PreviewManager.prototype, {
                 </div>
             `;
         }
-        
+
         if (this.previewFilename) {
             this.previewFilename.textContent = '';
         }

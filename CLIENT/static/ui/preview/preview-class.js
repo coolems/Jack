@@ -24,53 +24,53 @@ class PreviewManager {
         this.previewFilename = null;
         this.pdfExtensions = ['pdf'];
     }
-    
+
     init() {
         if (this.initialized) return;
-        
+
         this.cacheElements();
         this.setupEventListeners();
         this.setupFontSizeControls();
         this.setupSchemaSelector();
         this.setupCompareButton();
         this.restoreFontSize();
-        
+
         this.initialized = true;
         console.log('[PreviewManager] Initialized');
     }
-    
+
     cacheElements() {
         this.previewContent = document.getElementById('previewContent');
         this.previewFilename = document.getElementById('previewFilename');
         this.previewPanel = document.getElementById('previewPanel');
     }
-    
+
     setupEventListeners() {
         const editBtn = document.getElementById('previewEditBtn');
         if (editBtn) {
             editBtn.onclick = () => this.toggleEdit();
         }
-        
+
         const saveBtn = document.getElementById('previewSaveBtn');
         if (saveBtn) {
             saveBtn.onclick = () => void this.saveEdit().catch(e => console.error('[Preview] saveEdit failed:', e));
         }
-        
+
         const cancelBtn = document.getElementById('previewCancelBtn');
         if (cancelBtn) {
             cancelBtn.onclick = () => void this.cancelEdit().catch(e => console.error('[Preview] cancelEdit failed:', e));
         }
-        
+
         const downloadBtn = document.getElementById('previewDownloadBtn');
         if (downloadBtn) {
             downloadBtn.onclick = () => void this.download().catch(e => console.error('[Preview] download failed:', e));
         }
-        
+
         const runBtn = document.getElementById('previewRunBtn');
         if (runBtn) {
             runBtn.onclick = () => this.runPythonFile();
         }
-        
+
         // BUG FIX (2026-08-27): the Close X button in index.html calls the global
         // closePreview() (file-handler.js), which is now the SINGLE owner of closing
         // the panel. The old selector binding above never matched that button, so it

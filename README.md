@@ -27,7 +27,7 @@ Multiple people can work with their own agents **at the same time**: every chat 
 - ⏰ **Time tools** — local/UTC/city time, timezone differences
 - 🔁 **Model auto-switching with drain policy** — running requests finish on their backend; new ones are held back until every instance has reloaded
 - 🩹 **LLM self-heal** — a 90 s stream stall kills and restarts the llama-server automatically
-- ⚡ **MTP speculative decoding** — auto-detected from the model filename for >2x speedup on MTP builds
+- ⚡ **MTP speculative decoding** — auto-detected (filename or GGUF header scan) for >2x speedup on MTP builds
 - 🔒 **Security by default** — TLS relay, API-key auth, loopback-only client bind (refused without keys), gitignored secrets
 
 ## Parallel Chats & Multi-Server Scaling
@@ -141,8 +141,8 @@ Python 3.10+ (and tells you where to get it if not), then runs `utils/zzz_init.p
 
 - detects your NVIDIA GPU and recommends a Qwen3.8-27B quant that fits its VRAM (you can override);
 - downloads the model from HuggingFace (resumable, size-verified) into `llama_server/models/<quant>/`;
-- optionally adds the **MTP** draft file for >2x speedup (the main file is renamed so "MTP" is in its
-  name - that's what auto-enables speculative decoding);
+- the model files ship with the **MTP** head baked in, so MTP speculative decoding (>2x speedup)
+  auto-enables at server start (detected from the GGUF header - no extra file or rename needed);
 - optionally downloads the GLM-OCR model (enables `transcribe_image`);
 - installs the pinned llama.cpp build **b10441** (or waits while you drop a newer one in by hand);
 - generates an API key and writes it into **both** the SERVER and CLIENT config files, rewires all
@@ -163,7 +163,7 @@ manual steps below describe what that script does, for reference / non-Windows m
 3. Put your model weights into **one folder per model** under `llama_server/models/`, e.g.:
 
    ```
-   llama_server/models/qwen38-q6/Qwen3.8-27B-UD-MTP-Q6_K.gguf
+   llama_server/models/qwen38-27b-q6_k/Dirk-Qwen3.8-27B-UD-Q6_K.gguf
    ```
 
    The *folder* is the model identity — profiles in step 3 reference these folders by absolute path. (Optional: a separate OCR model folder, e.g. `llama_server/models/glm_ocr/`, enables the `transcribe_image` tool.)

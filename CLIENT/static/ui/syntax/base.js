@@ -8,7 +8,7 @@ class BaseHighlighter {
         this.name = 'base';
         this.extensions = [];
     }
-    
+
     /**
      * Escape HTML special characters
      */
@@ -17,7 +17,7 @@ class BaseHighlighter {
         div.textContent = text;
         return div.innerHTML;
     }
-    
+
     /**
      * Apply highlighting to a line of code
      * Override in child classes
@@ -25,7 +25,7 @@ class BaseHighlighter {
     highlightLine(line, schema) {
         return this.escapeHtml(line);
     }
-    
+
     /**
      * Highlight entire code block
      * Each line is wrapped in a <div> for proper line break rendering
@@ -33,17 +33,23 @@ class BaseHighlighter {
      */
     highlight(code, schema) {
         const lines = code.split('\n');
-        const highlighted = lines.map(line => `<div>${this.highlightLine(line, schema)}</div>`);
+        // BUG FIX (2026-07-15): an empty source line must still occupy one full row.
+        // <div></div> has height 0, which collapsed blank lines and made the gutter
+        // numbers drift out of alignment with the text after the first blank line.
+        const highlighted = lines.map(line => {
+            const inner = line.length > 0 ? this.highlightLine(line, schema) : '&nbsp;';
+            return `<div>${inner}</div>`;
+        });
         return highlighted.join('');
     }
-    
+
     /**
      * Check if this highlighter supports a file extension
      */
     supportsExtension(ext) {
         return this.extensions.includes(ext.toLowerCase());
     }
-    
+
     /**
      * Token wrapper with schema-aware coloring
      */
@@ -51,7 +57,7 @@ class BaseHighlighter {
         const color = schema[tokenType] || schema.text;
         return `<span style="color: ${color}">${text}</span>`;
     }
-    
+
     /**
      * Simple regex-based tokenization helper
      * Override for complex tokenization

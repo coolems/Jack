@@ -13,7 +13,7 @@ class TextHighlighter extends BaseHighlighter {
             'conf', 'cfg', 'ini', 'env', 'lock'
         ];
     }
-    
+
     highlightLine(line, schema) {
         // No syntax highlighting, just escape HTML
         return this.escapeHtml(line);

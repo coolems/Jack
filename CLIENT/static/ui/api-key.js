@@ -81,7 +81,8 @@ function applySetupModeUI() {
  * "Set API Key" button handler - stores the key locally AND writes it to the CLIENT
  * backend via POST /api/auth/set-key. That endpoint is the ONLY one that works while
  * no real key exists (setup mode), so a successful response means the whole app just
- * unlocked: re-apply the UI and, if an email was already entered, validate with Connect.
+ * unlocked: re-apply the UI and run the credential validation itself (the old separate
+ * "Connect" button was removed on 2026-11-24 - this handler does its job now).
  */
 async function setApiKeyToBackend() {
     const input = document.getElementById('apiKeyInput');
@@ -111,7 +112,7 @@ async function setApiKeyToBackend() {
         const response = await fetch('/api/auth/set-key', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key: key })
+            body: JSON.stringify(payload)
         });
 
         let detail = '';
@@ -125,14 +126,21 @@ async function setApiKeyToBackend() {
 
         // Key accepted by the backend - setup mode is over. Unlock the Settings UI.
         applySetupModeUI();
-        // (2026-10-07) provider/agent boot may still be running in the background:
-        // keep showing live status until it reports ready.
-        updateConnectStatus('API key saved - CLIENT is starting its provider...', 'info');
-        showNotification('API key set - connecting to SERVER.', 'success');
 
-        // If an email was already entered, run the normal validation right away.
+        // (2026-11-24) "Set API Key" now does ALL of what the old Connect button did:
+        // if a validation e-mail is stored, run the full credential check right away
+        // (it reloads the page on success so every socket picks up the fresh key).
+        // Without an e-mail there is nothing to validate yet - point the user at the
+        // email field; entering it there triggers maybeAutoConnect() automatically.
         if (getStoredEmail()) {
+            updateConnectStatus('API key saved - validating credentials...', 'info');
+            showNotification('API key set - connecting to SERVER.', 'success');
             setTimeout(() => connectWithCredentials(), 300);
+        } else {
+            // (2026-10-07) provider/agent boot may still be running in the background:
+            // keep showing live status until it reports ready.
+            updateConnectStatus('API key saved - enter your validation e-mail above to finish connecting.', 'warning');
+            showNotification('API key set - add your email to connect.', 'success');
         }
     } catch (e) {
         updateConnectStatus('Could not save API key - is the CLIENT server running?', 'error');
@@ -171,9 +179,12 @@ function updateConnectStatus(message, type) {
 }
 
 /**
- * Connect button handler - validates BOTH email AND API key against the server.
- * The fetch override automatically injects X-API-Key and X-User-Email headers,
- * so the middleware's is_key_email_match() check runs on the server side.
+ * (2026-11-24) Internal credential validation - no button calls this directly anymore;
+ * it is triggered by setApiKeyToBackend() and maybeAutoConnect(). Validates BOTH email
+ * AND API key against the server. The fetch override automatically injects X-API-Key
+ * and X-User-Email headers, so the middleware's is_key_email_match() check runs on the
+ * server side. On success it reloads the page so every WebSocket/HTTP session picks up
+ * the fresh credentials (sockets opened before the key existed stay stale otherwise).
  */
 async function connectWithCredentials() {
     const key = getStoredApiKey();
@@ -227,6 +238,17 @@ async function connectWithCredentials() {
     } catch (e) {
         updateConnectStatus("Your data can't be validated. Please contact support for API key.", 'error');
         showNotification("Your data can't be validated. Please contact support for API key.", 'error');
+    }
+}
+
+/**
+ * (2026-11-24) Called when the email field changes. With an API key already stored,
+ * entering/saving a validation e-mail completes the credential pair - run the same
+ * validation + reload that "Set API Key" runs, so no second button is needed.
+ */
+function maybeAutoConnect() {
+    if (getStoredApiKey() && getStoredEmail()) {
+        connectWithCredentials();
     }
 }
 

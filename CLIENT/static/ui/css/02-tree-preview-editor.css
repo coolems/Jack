@@ -250,6 +250,11 @@
 
 .preview-content {
     flex: 1;
+    /* VIEW-MODE FIX (2026-10-13): overflow-x too - long lines no longer wrap, they extend
+       the row and scroll horizontally. The vertical scrollbar stays here (#previewContent is
+       still the ONLY vertical scroller in view mode). In edit mode nothing overflows this box
+       (the textarea scrolls itself), so no horizontal bar appears there. */
+    overflow-x: auto;
     overflow-y: auto;
     padding: 16px;
     display: flex;
@@ -257,24 +262,44 @@
 }
 
 /* Preview with line numbers */
+/* SYNC CONTRACT (2026-10-13, supersedes the 2026-07-15 note): one source line must be
+   EXACTLY ONE visual row in view mode, so the gutter always shows as many numbers as the
+   file has lines and number N sits next to line N.
+   - The text pane uses white-space: pre (NO wrapping) - a long line extends the row and
+     scrolls horizontally instead of becoming 2+ rows with only one number.
+   - #previewContent is the ONLY vertical scroller; the row grows to the text's natural
+     height, so gutter + text physically cannot drift apart while scrolling vertically.
+   - The gutter is position:sticky left:0, so it stays visible while scrolling right.
+   - Empty highlighted lines get '&nbsp;' (syntax/base.js) plus a 1.5em min-height guard,
+     so blank lines keep their number too. */
 .preview-with-line-numbers {
     display: flex;
-    width: 100%;
-    height: 100%;
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     font-size: 13px;
     line-height: 1.5;
 }
 
+/* View mode only: the row stretches to its longest line (horizontal scroll on
+   #previewContent) but never narrower than the panel. Edit mode keeps width:100% because
+   the textarea there owns both scroll axes itself. */
+.preview-with-line-numbers:not(.preview-edit-mode) {
+    width: max-content;
+    min-width: 100%;
+}
+
 .line-numbers {
     flex-shrink: 0;
+    /* Stays pinned to the left edge while #previewContent scrolls horizontally, so the
+       numbers never scroll out of view (opaque background covers the text beneath). */
+    position: sticky;
+    left: 0;
+    z-index: 2;
     text-align: right;
     padding: 0 12px 0 8px;
     color: var(--text-muted);
     border-right: 1px solid var(--border);
     background: var(--bg-secondary);
     user-select: none;
-    overflow-y: auto;
 }
 
 .line-numbers span {
@@ -285,56 +310,58 @@
 .preview-text-display {
     flex: 1;
     padding: 0 12px;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    overflow-x: auto;
+    /* white-space: pre (NOT pre-wrap): wrapping turned one source line into several visual
+       rows while the gutter kept ONE number per line - that is why the file looked bigger
+       than the line-number list. Long lines now scroll horizontally instead, keeping a
+       strict 1 line == 1 row == 1 number mapping (same contract as edit mode). */
+    white-space: pre;
+    overflow-wrap: normal;
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 
-/* ===== FULL-WIDTH TEXT EDITOR FOR PREVIEW PANEL ===== */
+/* Highlighted branch renders one <div> per source line. syntax/base.js inserts '&nbsp;'
+   into empty lines so they keep full row height; 1.5em == exactly one row at the fixed
+   line-height: 1.5 - a belt-and-braces guard so number N always sits next to line N. */
+.preview-text-display > div {
+    min-height: 1.5em;
+}
+
+/* Full-width text editor for edit mode. white-space: pre (NOT pre-wrap) keeps one visual
+   row per LOGICAL line - long lines scroll horizontally instead of wrapping, which is what
+   makes the mirrored .line-numbers gutter pixel-accurate. Line metrics (font-family,
+   line-height 1.5, padding 0 12px) must stay identical to .preview-text-display so a
+   textarea scrollTop maps 1:1 onto the gutter's. */
 .preview-text-editor-full {
+    flex: 1;
     width: 100%;
     min-height: 100%;
     resize: none;
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 13px;
-    line-height: 1.5;
-    background: var(--bg-primary);
-    color: var(--text-primary);
     border: none;
     outline: none;
-    padding: 0 12px;
     margin: 0;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    overflow-y: auto;
-}
-
-.preview-text-editor-full:focus {
-    outline: none;
-}
-
-/* Ensure line numbers scroll with editor in edit mode */
-.preview-with-line-numbers {
-    display: flex;
-    height: 100%;
-    width: 100%;
-}
-
-.preview-with-line-numbers .line-numbers {
-    flex-shrink: 0;
-    text-align: right;
-    padding: 0 12px 0 8px;
-    color: var(--text-muted);
-    border-right: 1px solid var(--border);
-    background: var(--bg-secondary);
-    user-select: none;
-    overflow-y: auto;
-}
-
-.preview-with-line-numbers .line-numbers span {
-    display: block;
+    padding: 0 12px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
     line-height: 1.5;
+    white-space: pre;
+}
+
+/* Edit-mode variant: the row is pinned to panel height so the TEXTAREA becomes the
+   vertical scroller and .line-numbers is a passive mirror (scrollTop copied by JS).
+   The textarea uses white-space: pre (one visual line per logical line), so one
+   gutter number per logical line is always pixel-accurate. */
+.preview-with-line-numbers.preview-edit-mode {
+    height: 100%;
+    overflow: hidden;
+}
+
+/* In edit mode only, the gutter scrolls invisibly to mirror the textarea scrollTop. */
+.preview-with-line-numbers.preview-edit-mode .line-numbers {
+    overflow-y: auto;
+    scrollbar-width: none; /* Firefox */
+}
+
+.preview-with-line-numbers.preview-edit-mode .line-numbers::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
 }
 
 /* Legacy editor (keep for backward compatibility) */

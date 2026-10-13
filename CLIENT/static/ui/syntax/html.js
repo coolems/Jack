@@ -11,7 +11,7 @@ class HtmlHighlighter extends BaseHighlighter {
             'html', 'htm', 'css', 'scss', 'sass', 'less',
             'js', 'jsx', 'ts', 'tsx', 'json', 'xml', 'yaml', 'yml'
         ];
-        
+
         // HTML tags
         this.htmlTags = new Set([
             'html', 'head', 'body', 'div', 'span', 'p', 'a', 'img', 'ul', 'ol',
@@ -21,7 +21,7 @@ class HtmlHighlighter extends BaseHighlighter {
             'style', 'link', 'meta', 'title', 'br', 'hr', 'strong', 'em', 'b',
             'i', 'code', 'pre', 'blockquote', 'canvas', 'svg', 'video', 'audio'
         ]);
-        
+
         // CSS properties
         this.cssProperties = new Set([
             'color', 'background', 'background-color', 'margin', 'padding',
@@ -30,7 +30,7 @@ class HtmlHighlighter extends BaseHighlighter {
             'text-decoration', 'line-height', 'opacity', 'z-index', 'overflow',
             'flex', 'grid', 'gap', 'align-items', 'justify-content'
         ]);
-        
+
         // JavaScript keywords
         this.jsKeywords = new Set([
             'function', 'const', 'let', 'var', 'if', 'else', 'for', 'while',
@@ -40,11 +40,11 @@ class HtmlHighlighter extends BaseHighlighter {
             'default', 'async', 'await', 'static', 'get', 'set', 'yield'
         ]);
     }
-    
+
     highlightLine(line, schema) {
         // Detect content type based on extension or content
         const contentType = this.detectContentType(line);
-        
+
         switch (contentType) {
             case 'css':
                 return this.highlightCSS(line, schema);
@@ -55,14 +55,14 @@ class HtmlHighlighter extends BaseHighlighter {
                 return this.highlightHTML(line, schema);
         }
     }
-    
+
     detectContentType(line) {
         // This is called per line - in practice we'd detect based on file extension
         // For simplicity, we'll return 'html' and let the HTML highlighter handle it
         // The actual detection happens in the main PreviewManager based on file extension
         return 'html';
     }
-    
+
     highlightHTML(line, schema) {
         let result = '';
         let i = 0;
@@ -70,10 +70,10 @@ class HtmlHighlighter extends BaseHighlighter {
         let inString = false;
         let stringChar = '';
         let tagBuffer = '';
-        
+
         while (i < line.length) {
             const char = line[i];
-            
+
             // Handle strings inside attributes
             if (inString) {
                 if (char === stringChar && line[i-1] !== '\\') {
@@ -85,7 +85,7 @@ class HtmlHighlighter extends BaseHighlighter {
                 i++;
                 continue;
             }
-            
+
             // Handle tag opening
             if (char === '<' && !inTag) {
                 if (result) {
@@ -100,7 +100,7 @@ class HtmlHighlighter extends BaseHighlighter {
                 i++;
                 continue;
             }
-            
+
             // Handle tag closing
             if (char === '>' && inTag) {
                 result += this.wrapToken(this.escapeHtml(char), 'tag', schema);
@@ -108,7 +108,7 @@ class HtmlHighlighter extends BaseHighlighter {
                 i++;
                 continue;
             }
-            
+
             // Handle tag name
             if (inTag && !inString) {
                 // Check if we're at a tag name
@@ -117,7 +117,7 @@ class HtmlHighlighter extends BaseHighlighter {
                     i++;
                     continue;
                 }
-                
+
                 // Extract tag name
                 const tagMatch = this.extractWord(line, i);
                 if (tagMatch.text && this.htmlTags.has(tagMatch.text.toLowerCase())) {
@@ -125,7 +125,7 @@ class HtmlHighlighter extends BaseHighlighter {
                     i = tagMatch.nextIndex;
                     continue;
                 }
-                
+
                 // Handle attributes
                 if (this.isLetter(char) || char === '-') {
                     const attrMatch = this.extractWord(line, i);
@@ -137,14 +137,14 @@ class HtmlHighlighter extends BaseHighlighter {
                     i = attrMatch.nextIndex;
                     continue;
                 }
-                
+
                 // Handle equals sign
                 if (char === '=') {
                     result += this.wrapToken(this.escapeHtml(char), 'operator', schema);
                     i++;
                     continue;
                 }
-                
+
                 // Handle string start in attributes
                 if (char === '"' || char === "'") {
                     inString = true;
@@ -154,22 +154,22 @@ class HtmlHighlighter extends BaseHighlighter {
                     continue;
                 }
             }
-            
+
             // Regular character
             result += this.escapeHtml(char);
             i++;
         }
-        
+
         return result;
     }
-    
+
     highlightCSS(line, schema) {
         let result = '';
         let i = 0;
-        
+
         while (i < line.length) {
             const char = line[i];
-            
+
             // Handle comments
             if (char === '/' && line[i+1] === '*') {
                 const commentMatch = this.extractComment(line, i);
@@ -177,13 +177,13 @@ class HtmlHighlighter extends BaseHighlighter {
                 i = commentMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle selectors (class, id, element)
             if (char === '.' || char === '#' || this.isLetter(char)) {
                 const wordMatch = this.extractWord(line, i);
                 const word = wordMatch.text;
                 let tokenType = 'class';
-                
+
                 if (word[0] === '#') {
                     tokenType = 'keyword';
                 } else if (word[0] === '.') {
@@ -193,12 +193,12 @@ class HtmlHighlighter extends BaseHighlighter {
                 } else {
                     tokenType = 'type';
                 }
-                
+
                 result += this.wrapToken(this.escapeHtml(word), tokenType, schema);
                 i = wordMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle numbers and units
             if (this.isDigit(char)) {
                 const numMatch = this.extractNumberWithUnit(line, i);
@@ -206,31 +206,31 @@ class HtmlHighlighter extends BaseHighlighter {
                 i = numMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle operators
             if (char === ':' || char === ';' || char === '{' || char === '}' || char === ',') {
                 result += this.wrapToken(this.escapeHtml(char), 'operator', schema);
                 i++;
                 continue;
             }
-            
+
             result += this.escapeHtml(char);
             i++;
         }
-        
+
         return result;
     }
-    
+
     highlightJS(line, schema) {
         let result = '';
         let i = 0;
         let inString = false;
         let stringChar = '';
         let inRegex = false;
-        
+
         while (i < line.length) {
             const char = line[i];
-            
+
             // Handle strings
             if ((char === '"' || char === "'" || char === '`') && !inRegex) {
                 if (!inString) {
@@ -246,14 +246,14 @@ class HtmlHighlighter extends BaseHighlighter {
                 i++;
                 continue;
             }
-            
+
             // Handle single-line comments
             if (char === '/' && line[i+1] === '/' && !inString) {
                 const comment = this.escapeHtml(line.slice(i));
                 result += this.wrapToken(comment, 'comment', schema);
                 break;
             }
-            
+
             // Handle multi-line comments
             if (char === '/' && line[i+1] === '*' && !inString) {
                 const commentMatch = this.extractComment(line, i);
@@ -261,24 +261,24 @@ class HtmlHighlighter extends BaseHighlighter {
                 i = commentMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle keywords and identifiers
             if (this.isLetter(char) || char === '_' || char === '$') {
                 const wordMatch = this.extractWord(line, i);
                 const word = wordMatch.text;
                 let tokenType = 'variable';
-                
+
                 if (this.jsKeywords.has(word)) {
                     tokenType = 'keyword';
                 } else if (word.match(/^[A-Z]/)) {
                     tokenType = 'class';
                 }
-                
+
                 result += this.wrapToken(this.escapeHtml(word), tokenType, schema);
                 i = wordMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle numbers
             if (this.isDigit(char)) {
                 const numMatch = this.extractNumber(line, i);
@@ -286,7 +286,7 @@ class HtmlHighlighter extends BaseHighlighter {
                 i = numMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle operators
             if (this.isJSOperator(char)) {
                 const opMatch = this.extractJSOperator(line, i);
@@ -294,14 +294,14 @@ class HtmlHighlighter extends BaseHighlighter {
                 i = opMatch.nextIndex;
                 continue;
             }
-            
+
             result += this.escapeHtml(char);
             i++;
         }
-        
+
         return result;
     }
-    
+
     extractComment(line, start) {
         let end = start + 2;
         while (end < line.length && !(line[end-1] === '*' && line[end] === '/')) {
@@ -313,7 +313,7 @@ class HtmlHighlighter extends BaseHighlighter {
             nextIndex: end
         };
     }
-    
+
     extractWord(line, start) {
         let end = start;
         while (end < line.length && (this.isLetter(line[end]) || this.isDigit(line[end]) || line[end] === '_' || line[end] === '-' || line[end] === '.')) {
@@ -324,11 +324,11 @@ class HtmlHighlighter extends BaseHighlighter {
             nextIndex: end
         };
     }
-    
+
     extractNumber(line, start) {
         let end = start;
         let hasDecimal = false;
-        
+
         while (end < line.length) {
             const char = line[end];
             if (this.isDigit(char)) {
@@ -340,56 +340,56 @@ class HtmlHighlighter extends BaseHighlighter {
                 break;
             }
         }
-        
+
         return {
             text: line.slice(start, end),
             nextIndex: end
         };
     }
-    
+
     extractNumberWithUnit(line, start) {
         let end = start;
-        
+
         while (end < line.length && (this.isDigit(line[end]) || line[end] === '.')) {
             end++;
         }
-        
+
         // Extract unit (px, em, rem, %, vh, vw)
         while (end < line.length && this.isLetter(line[end])) {
             end++;
         }
-        
+
         return {
             text: line.slice(start, end),
             nextIndex: end
         };
     }
-    
+
     extractJSOperator(line, start) {
         const operators = ['===', '!==', '==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '&&', '||', '++', '--', '??'];
         let end = start + 1;
-        
+
         if (end < line.length) {
             const twoChar = line.slice(start, end + 1);
             if (operators.includes(twoChar)) {
                 end++;
             }
         }
-        
+
         return {
             text: line.slice(start, end),
             nextIndex: end
         };
     }
-    
+
     isDigit(char) {
         return char >= '0' && char <= '9';
     }
-    
+
     isLetter(char) {
         return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z');
     }
-    
+
     isJSOperator(char) {
         const operators = new Set(['+', '-', '*', '/', '%', '=', '!', '<', '>', '&', '|', '?']);
         return operators.has(char);

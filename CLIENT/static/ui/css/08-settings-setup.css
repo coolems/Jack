@@ -47,6 +47,5 @@
    non-public request with 401 until POST /api/auth/set-key succeeds. */
 #settingsModal.setup-mode #serverAddressGroup { display: none; }
 #settingsModal.setup-mode #emailGroup { display: none; }
-#settingsModal.setup-mode #connectBtn { display: none; }
 #settingsModal.setup-mode #clearKeyBtn { display: none; }
 #settingsModal.setup-mode .settings-tab[data-pane="agent"] { display: none; }

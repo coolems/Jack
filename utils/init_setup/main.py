@@ -5,7 +5,7 @@ import secrets
 import shutil
 import sys
 
-from .constants import HF_MMPROJ_FILE, HF_MODEL_REPO, LLAMA_BUILD, MMPROJ_SIZE, MIN_PYTHON, OCR_FILES
+from .constants import HF_MMPROJ_FILE, LLAMA_BUILD, MMPROJ_SIZE, MIN_PYTHON, OCR_FILES
 from .errors import InitError
 from .gpu import detect_gpu
 from .llama import install_llama_libs
@@ -44,7 +44,7 @@ def main() -> int:
 
         # ---- STEP 2: model menu ----------------------------------------------
         quant_entry, tier = select_model(gpu_name, vram_mb)
-        q_label, _q_fname, q_size = quant_entry
+        q_label, _q_fname, q_size, _q_repo = quant_entry
         ok(f"Model choice: Qwen3.8-27B-{q_label} ({human(q_size)}) - context target {tier['ctx']} tokens")
 
         # ---- STEP 2a: download the model now, or skip it for later ------------
@@ -58,7 +58,7 @@ def main() -> int:
 
         # ---- STEP 2b: vision projector (mmproj) now, or skip for later --------
         header("STEP 2b - VISION PROJECTOR (MMPROJ): DOWNLOAD NOW OR SKIP FOR LATER")
-        info(f"Vision projector file: {HF_MMPROJ_FILE} from huggingface.co/{HF_MODEL_REPO}")
+        info(f"Vision projector file: {HF_MMPROJ_FILE} from huggingface.co/{_q_repo}")
         mmproj_now = ask_download_now(MMPROJ_SIZE, what="vision projector (mmproj)")
         if mmproj_now:
             ok(f"Will download the vision projector now (~{human(MMPROJ_SIZE)})")
@@ -68,11 +68,6 @@ def main() -> int:
 
         # ---- STEP 2c: optional downloads + disk pre-check ---------------------
         header("STEP 2c - OPTIONAL DOWNLOADS & DISK CHECK")
-        want_mtp = ask_yn(
-            "Enable MTP speculative decoding (>2x generation speedup)?\n"
-            "      (no extra download - the head is already inside unsloth's GGUF; the file just gets\n"
-            "       renamed with 'MTP' so our code auto-enables it. On very small GPUs say N)",
-            default_yes=True)
         want_ocr = ask_yn(
             f"Download the GLM-OCR model (+{human(sum(s for _f, s in OCR_FILES))}, needed by the transcribe_image tool)?",
             default_yes=True)
@@ -101,7 +96,6 @@ def main() -> int:
             "root": ROOT,
             "quant_entry": quant_entry,
             "tier": tier,
-            "want_mtp": want_mtp,
             "want_ocr": want_ocr,
             "download_now": download_now,
             "mmproj_now": mmproj_now,
@@ -130,8 +124,8 @@ def main() -> int:
             ok(f"Model:                        {ctx['model_path']}")
         else:
             warn(f"Model (SKIPPED for later):  {ctx['model_path']}")
-        if want_mtp:
-            ok("MTP spec decoding ENABLED - head is built into the model file (no extra weights loaded)")
+        ok("MTP spec decoding auto-enables at server start - the head is baked into the "
+           "model file and detected from its GGUF header (no extra weights loaded)")
         if ctx.get("mmproj_now", True):
             ok(f"Vision projector (mmproj):  {os.path.join(ctx['model_folder'], HF_MMPROJ_FILE)}")
         else:

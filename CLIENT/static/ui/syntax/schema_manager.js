@@ -12,7 +12,7 @@ class SchemaManager {
         this.initSchemas();
         this.loadSavedSchema();
     }
-    
+
     initSchemas() {
         // Monokai Pro (Default)
         this.schemas.monokai = {
@@ -34,7 +34,7 @@ class SchemaManager {
             attribute: '#78dce8',
             punctuation: '#fcfcfa'
         };
-        
+
         // Solarized Dark
         this.schemas.solarized = {
             name: 'Solarized Dark',
@@ -55,7 +55,7 @@ class SchemaManager {
             attribute: '#2aa198',
             punctuation: '#839496'
         };
-        
+
         // GitHub Dark
         this.schemas.github = {
             name: 'GitHub Dark',
@@ -76,7 +76,7 @@ class SchemaManager {
             attribute: '#79c0ff',
             punctuation: '#c9d1d9'
         };
-        
+
         // One Dark Pro
         this.schemas.onedark = {
             name: 'One Dark Pro',
@@ -97,7 +97,7 @@ class SchemaManager {
             attribute: '#d19a66',
             punctuation: '#abb2bf'
         };
-        
+
         // Dracula
         this.schemas.dracula = {
             name: 'Dracula',
@@ -119,7 +119,7 @@ class SchemaManager {
             punctuation: '#f8f8f2'
         };
     }
-    
+
     loadSavedSchema() {
         const saved = localStorage.getItem(this.storageKey);
         if (saved && this.schemas[saved]) {
@@ -129,26 +129,26 @@ class SchemaManager {
         }
         this.applySchemaToDocument();
     }
-    
+
     saveSchema(schemaName) {
         localStorage.setItem(this.storageKey, schemaName);
     }
-    
+
     getCurrentSchema() {
         return this.schemas[this.currentSchema];
     }
-    
+
     getSchemaNames() {
         return Object.keys(this.schemas);
     }
-    
+
     getSchemaInfo() {
         return Object.entries(this.schemas).map(([id, schema]) => ({
             id: id,
             name: schema.name
         }));
     }
-    
+
     setSchema(schemaName) {
         if (this.schemas[schemaName]) {
             this.currentSchema = schemaName;
@@ -159,42 +159,42 @@ class SchemaManager {
         }
         return false;
     }
-    
+
     applySchemaToDocument() {
         const schema = this.getCurrentSchema();
         if (!schema) return;
-        
+
         // Apply background to preview content
         const previewContent = document.getElementById('previewContent');
         if (previewContent) {
             previewContent.style.backgroundColor = schema.background;
             previewContent.style.color = schema.text;
         }
-        
+
         // Apply to diff containers if they exist
         const diffLeft = document.getElementById('diffContentLeft');
         const diffRight = document.getElementById('diffContentRight');
         if (diffLeft) diffLeft.style.backgroundColor = schema.background;
         if (diffRight) diffRight.style.backgroundColor = schema.background;
     }
-    
+
     addListener(callback) {
         this.listeners.push(callback);
     }
-    
+
     removeListener(callback) {
         const index = this.listeners.indexOf(callback);
         if (index > -1) this.listeners.splice(index, 1);
     }
-    
+
     notifyListeners() {
         this.listeners.forEach(callback => callback(this.getCurrentSchema()));
     }
-    
+
     getSchemaCSS(schemaId) {
         const schema = this.schemas[schemaId];
         if (!schema) return '';
-        
+
         return `
             background-color: ${schema.background};
             color: ${schema.text};

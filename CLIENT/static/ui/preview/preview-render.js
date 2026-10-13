@@ -12,17 +12,17 @@ Object.assign(PreviewManager.prototype, {
     // buildAuthedUrl() (it mints a short-lived media token). Every caller already awaits.
     async renderPreview(content, filename) {
         if (!this.previewContent) return;
-        
+
         const schema = window.SchemaManager ? window.SchemaManager.getCurrentSchema() : null;
-        
+
         let html = '';
-        
+
         // Check if this is an image file or PDF
         const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg'];
         const ext = filename.split('.').pop().toLowerCase();
         const isImage = imageExtensions.includes(ext);
         const isPdf = this.pdfExtensions.includes(ext);
-        
+
         if (isPdf) {
             // Render PDF as iframe - use the download endpoint with inline=true.
             // SECURITY fix 2026-10-05: ?t=<media token> instead of ?api_key=... (the master
@@ -66,18 +66,20 @@ Object.assign(PreviewManager.prototype, {
                 </div>
             `;
         } else {
+            // SYNC FIX (2026-07-15): gutter is built from content.split('\n') and the text pane
+            // renders the SAME string with white-space: pre-wrap -> one visual row per source line.
+            // (the old replace(/\n/g, '<br>') doubled every newline, so numbers drifted).
             const lines = content.split('\n');
             const lineNumbers = lines.map((_, i) => `<span>${i + 1}</span>`).join('');
-            const escapedContent = this.escapeHtml(content);
-            
+
             html = `
                 <div class="preview-with-line-numbers">
                     <div class="line-numbers">${lineNumbers}</div>
-                    <div class="preview-text-display" id="previewTextDisplay">${escapedContent.replace(/\n/g, '<br>')}</div>
+                    <div class="preview-text-display" id="previewTextDisplay">${this.escapeHtml(content)}</div>
                 </div>
             `;
         }
-        
+
         this.previewContent.innerHTML = html;
 
         // ADDED (2026-09-18): fetch + render the rich metadata card for images.
@@ -86,18 +88,18 @@ Object.assign(PreviewManager.prototype, {
         if (isImage && this.currentFile) {
             this.loadImageMetadata(this.currentFile.path, filename);
         }
-        
+
         if (schema && this.previewContent) {
             this.previewContent.style.backgroundColor = schema.background;
             this.previewContent.style.color = schema.text;
         }
-        
+
         const display = document.getElementById('previewTextDisplay');
         if (display) {
             display.setAttribute('data-raw-content', content);
         }
     },
-    
+
     /**
      * Reapply syntax highlighting (called when schema changes)
      */
@@ -105,10 +107,14 @@ Object.assign(PreviewManager.prototype, {
         if (this.currentContent && this.currentFile && !this.isDiffMode && !this.isEditing) {
             // 2026-10-03: renderPreview is async (media token mint); callers are sync
             // event handlers -> fire-and-forget with a catch.
-            void this.renderPreview(this.currentContent, this.currentFile.name).catch(e => console.error('[Preview] reapplyHighlighting render failed:', e));
+            // SYNC FIX (2026-07-15): keep the user's scroll position across the re-render.
+            const scrollTop = this.previewContent ? this.previewContent.scrollTop : 0;
+            void this.renderPreview(this.currentContent, this.currentFile.name)
+                .then(() => { if (this.previewContent) this.previewContent.scrollTop = scrollTop; })
+                .catch(e => console.error('[Preview] reapplyHighlighting render failed:', e));
         }
     },
-    
+
     /**
      * Update preview UI elements
      * @param {string} filename - File name
@@ -117,28 +123,28 @@ Object.assign(PreviewManager.prototype, {
         if (this.previewFilename) {
             this.previewFilename.textContent = filename;
         }
-        
+
         const editBtn = document.getElementById('previewEditBtn');
         const compareBtn = document.getElementById('previewCompareBtn');
         const downloadBtn = document.getElementById('previewDownloadBtn');
-        
+
         // Check if file is editable text file
         const isTextFile = filename.match(/\.(txt|md|json|xml|yml|yaml|ini|cfg|conf|log|py|js|html|css|java|cpp|c|h|go|rs|ts|jsx|tsx)$/i);
         const isPyFile = filename.toLowerCase().endsWith('.py');
-        
+
         if (editBtn) {
             editBtn.style.display = isTextFile ? 'flex' : 'none';
         }
         if (compareBtn) compareBtn.style.display = 'flex';
         if (downloadBtn) downloadBtn.style.display = 'flex';
-        
+
         // Run button for .py files
         const runBtn = document.getElementById('previewRunBtn');
         if (runBtn) {
             runBtn.style.display = isPyFile ? 'flex' : 'none';
         }
     },
-    
+
     /**
      * Show preview panel
      */
@@ -148,14 +154,14 @@ Object.assign(PreviewManager.prototype, {
         if (this._closing) return;
         if (this.previewPanel && this.previewPanel.classList.contains('collapsed')) {
             this.previewPanel.classList.remove('collapsed');
-            
+
             const savedWidth = localStorage.getItem('previewPanelWidth');
             if (savedWidth) {
                 this.previewPanel.style.width = savedWidth + 'px';
             }
         }
     },
-    
+
     /**
      * Show loading indicator
      */
@@ -169,7 +175,7 @@ Object.assign(PreviewManager.prototype, {
             `;
         }
     },
-    
+
     /**
      * Show error message
      * @param {string} message - Error message

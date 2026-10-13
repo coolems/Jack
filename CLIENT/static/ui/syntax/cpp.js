@@ -8,7 +8,7 @@ class CppHighlighter extends BaseHighlighter {
         super();
         this.name = 'cpp';
         this.extensions = ['c', 'cpp', 'cc', 'cxx', 'h', 'hpp', 'hxx', 'ino'];
-        
+
         // C/C++ keywords
         this.keywords = new Set([
             'auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do',
@@ -24,7 +24,7 @@ class CppHighlighter extends BaseHighlighter {
             'static_assert', 'static_cast', 'template', 'this', 'throw', 'true',
             'try', 'typeid', 'typename', 'using', 'virtual', 'xor', 'xor_eq'
         ]);
-        
+
         // Common types
         this.types = new Set([
             'int8_t', 'int16_t', 'int32_t', 'int64_t', 'uint8_t', 'uint16_t',
@@ -33,24 +33,24 @@ class CppHighlighter extends BaseHighlighter {
             'stack', 'pair', 'unique_ptr', 'shared_ptr', 'weak_ptr'
         ]);
     }
-    
+
     highlightLine(line, schema) {
         let result = '';
         let i = 0;
         let inString = false;
         let stringChar = '';
         let inChar = false;
-        
+
         while (i < line.length) {
             const char = line[i];
-            
+
             // Handle preprocessor directives
             if (char === '#' && i === 0) {
                 const preprocMatch = this.extractPreprocessor(line, i);
                 result += this.wrapToken(this.escapeHtml(preprocMatch.text), 'preprocessor', schema);
                 break;
             }
-            
+
             // Handle strings
             if (char === '"' && !inString && !inChar) {
                 inString = true;
@@ -59,20 +59,20 @@ class CppHighlighter extends BaseHighlighter {
                 i++;
                 continue;
             }
-            
+
             if (inString && char === '"' && line[i-1] !== '\\') {
                 inString = false;
                 result += this.wrapToken(this.escapeHtml(char), 'string', schema);
                 i++;
                 continue;
             }
-            
+
             if (inString) {
                 result += this.wrapToken(this.escapeHtml(char), 'string', schema);
                 i++;
                 continue;
             }
-            
+
             // Handle character literals
             if (char === "'" && !inChar && !inString) {
                 inChar = true;
@@ -80,27 +80,27 @@ class CppHighlighter extends BaseHighlighter {
                 i++;
                 continue;
             }
-            
+
             if (inChar && char === "'" && line[i-1] !== '\\') {
                 inChar = false;
                 result += this.wrapToken(this.escapeHtml(char), 'string', schema);
                 i++;
                 continue;
             }
-            
+
             if (inChar) {
                 result += this.wrapToken(this.escapeHtml(char), 'string', schema);
                 i++;
                 continue;
             }
-            
+
             // Handle single-line comments
             if (char === '/' && line[i+1] === '/') {
                 const comment = this.escapeHtml(line.slice(i));
                 result += this.wrapToken(comment, 'comment', schema);
                 break;
             }
-            
+
             // Handle multi-line comments
             if (char === '/' && line[i+1] === '*') {
                 const commentMatch = this.extractComment(line, i);
@@ -108,7 +108,7 @@ class CppHighlighter extends BaseHighlighter {
                 i = commentMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle numbers
             if (this.isDigit(char) || (char === '-' && i + 1 < line.length && this.isDigit(line[i + 1]))) {
                 const numMatch = this.extractNumber(line, i);
@@ -116,13 +116,13 @@ class CppHighlighter extends BaseHighlighter {
                 i = numMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle words (keywords, types, identifiers)
             if (this.isLetter(char) || char === '_') {
                 const wordMatch = this.extractWord(line, i);
                 const word = wordMatch.text;
                 let tokenType = 'variable';
-                
+
                 if (this.keywords.has(word)) {
                     tokenType = 'keyword';
                 } else if (this.types.has(word)) {
@@ -130,12 +130,12 @@ class CppHighlighter extends BaseHighlighter {
                 } else if (word.length > 0 && word[0] === word[0].toUpperCase() && word[0] !== word[0].toLowerCase()) {
                     tokenType = 'class';
                 }
-                
+
                 result += this.wrapToken(this.escapeHtml(word), tokenType, schema);
                 i = wordMatch.nextIndex;
                 continue;
             }
-            
+
             // Handle operators
             if (this.isOperator(char)) {
                 const opMatch = this.extractOperator(line, i);
@@ -143,14 +143,14 @@ class CppHighlighter extends BaseHighlighter {
                 i = opMatch.nextIndex;
                 continue;
             }
-            
+
             result += this.escapeHtml(char);
             i++;
         }
-        
+
         return result;
     }
-    
+
     extractPreprocessor(line, start) {
         let end = start;
         while (end < line.length) {
@@ -162,7 +162,7 @@ class CppHighlighter extends BaseHighlighter {
             nextIndex: end
         };
     }
-    
+
     extractComment(line, start) {
         let end = start + 2;
         while (end < line.length && !(line[end-1] === '*' && line[end] === '/')) {
@@ -174,20 +174,20 @@ class CppHighlighter extends BaseHighlighter {
             nextIndex: end
         };
     }
-    
+
     extractNumber(line, start) {
         let end = start;
         let hasDecimal = false;
         let isHex = false;
-        
+
         if (line[end] === '-') end++;
-        
+
         // Check for hex (0x)
         if (end + 1 < line.length && line[end] === '0' && (line[end+1] === 'x' || line[end+1] === 'X')) {
             isHex = true;
             end += 2;
         }
-        
+
         while (end < line.length) {
             const char = line[end];
             if (isHex) {
@@ -205,13 +205,13 @@ class CppHighlighter extends BaseHighlighter {
                 break;
             }
         }
-        
+
         return {
             text: line.slice(start, end),
             nextIndex: end
         };
     }
-    
+
     extractWord(line, start) {
         let end = start;
         while (end < line.length && (this.isLetter(line[end]) || this.isDigit(line[end]) || line[end] === '_')) {
@@ -222,32 +222,32 @@ class CppHighlighter extends BaseHighlighter {
             nextIndex: end
         };
     }
-    
+
     extractOperator(line, start) {
         const operators = ['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=', '&&', '||', '++', '--', '->', '::', '<<', '>>'];
         let end = start + 1;
-        
+
         if (end < line.length) {
             const twoChar = line.slice(start, end + 1);
             if (operators.includes(twoChar)) {
                 end++;
             }
         }
-        
+
         return {
             text: line.slice(start, end),
             nextIndex: end
         };
     }
-    
+
     isDigit(char) {
         return char >= '0' && char <= '9';
     }
-    
+
     isLetter(char) {
         return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z');
     }
-    
+
     isOperator(char) {
         const operators = new Set(['+', '-', '*', '/', '%', '=', '!', '<', '>', '&', '|', '^', '~', '?', ':', '.', ',', ';', '(', ')', '[', ']', '{', '}']);
         return operators.has(char);
