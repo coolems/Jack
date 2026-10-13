@@ -4,7 +4,7 @@
   <img src="./utils/ScreenShot.png" width="99%" alt="Jack in action"/>
 </p>
 
-**Jack** is a local-first autonomous AI agent built on the **COOLEMS framework**. In short, this is what Jack does:
+**Jack** is a local-first autonomous AI agent built on the **COOLEMS framework**. In short what Jack does:
 
 -  **Works on an entire repository with all its files — till the desired outcome.** Point it at a folder and give it a task
 -  **Gives those models hands** — file operations, Python execution, browser automation, OCR and image generation
