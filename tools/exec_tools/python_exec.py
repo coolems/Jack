@@ -233,6 +233,35 @@ def _get_caller_context():
     return ctx if isinstance(ctx, dict) else None
 
 
+# ============================================================================
+# EXPLAIN REQUEST STASH (2026-07-18 unified consent dialog). When the user clicks
+# "Explain request" on a file/network consent card raised from INSIDE this
+# python_exec call, the relay denies that one operation (fail-closed) and stashes
+# the AI-facing instruction here; drain_explain_instructions() appends it to this
+# tool call's result so the ReAct loop sees it in THIS turn. Thread-safe: the relay
+# runs on daemon threads while the main thread drains after the child exits.
+# ============================================================================
+import threading as _threading
+
+_EXPLAIN_STASH = []          # list[str] - pending explain instructions for this run
+_EXPLAIN_LOCK = _threading.Lock()
+
+
+def stash_explain_instruction(text):
+    """Relay-side: remember an Explain-request instruction to surface in the result."""
+    with _EXPLAIN_LOCK:
+        _EXPLAIN_STASH.append(str(text))
+
+
+def drain_explain_instructions():
+    """Main-thread side: pop ALL stashed instructions, one joined block (or empty string)."""
+    with _EXPLAIN_LOCK:
+        items = list(_EXPLAIN_STASH)
+        del _EXPLAIN_STASH[:]
+    if not items:
+        return ""
+    return "\n\n" + "\n\n".join(items)
+
 def _make_net_ask_callback(ctx, working_dir):
     """Build the sync request handler used by _run_sandboxed_subprocess's poller.
 
@@ -256,47 +285,51 @@ def _make_net_ask_callback(ctx, working_dir):
         """Runs on the uvicorn loop (via run_coroutine_threadsafe). Always returns
         'allow' or 'deny'; never raises."""
         try:
-            from app.chat_bus import get_chat_bus, build_approval_frame
+            from app.chat_bus import get_chat_bus, build_frame, explain_instruction
             bus = get_chat_bus()
             channel = bus.channels.get(conv_id) if bus is not None else None
             state = getattr(channel, "exec_approval", None) if channel is not None else None
             if state is None or not hasattr(state, "wait_for_decision"):
                 return "deny"  # fail closed: no live approval state for this chat
             kind = str(req.get("kind", "")).strip() or "network"  # 'file' | 'network'
+            # (2026-07-18 rev4) per-kind grant: an earlier card of THIS SAME KIND granted
+            # "Allow until task done" this run - allow without asking. Other kinds still ask.
+            if getattr(state, "is_allowed_till_task_done", lambda k: False)(kind):
+                return "allow"
             if kind == "file":
                 # OUT-OF-SANDBOX FILE CONSENT (2026-11-24): the approved script wants to
                 # touch a path outside working_root. Show the exact operation + path.
                 op = str(req.get("op", "?"))
                 fpath = str(req.get("path", "?"))
-                rid = state.new_request_id()
-                frame_code = ("# attempted by the approved python_exec code (operation: %s)" % op)
-                await ws.send_text(json.dumps(build_approval_frame(
-                    conv_id, rid, frame_code, kind="file",
-                    title="File access outside working_root requested",
-                    description=("The Python code you approved is trying to ACCESS A FILE "
-                                 "OUTSIDE your working_root -- the python_exec sandbox normally "
-                                 "blocks this. Operation: %s on path: %s. Allow opens exactly "
-                                 "this path (and its folder subtree) for the rest of this run; "
-                                 "Deny keeps it blocked." % (op, fpath)),
-                )))
+                payload = ("# attempted by the approved python_exec code (operation: %s)" % op)
+                description = ("The Python code you approved is trying to ACCESS A FILE "
+                               "OUTSIDE your working_root -- the python_exec sandbox normally "
+                               "blocks this. Operation: %s on path: %s. Allow opens exactly "
+                               "this path (and its folder subtree) for the rest of this run; "
+                               "Deny keeps it blocked." % (op, fpath))
             else:
                 host = str(req.get("host", "?"))
                 port = req.get("port", "")
                 method = str(req.get("method", "connect"))
-                rid = state.new_request_id()
-                frame_code = ("socket.%s((%r, %s))   # attempted by the approved python_exec code"
-                              % (method, host, port))
-                await ws.send_text(json.dumps(build_approval_frame(
-                    conv_id, rid, frame_code, kind="network",
-                    title="Out-of-sandbox network access requested",
-                    description=("The Python code you approved is trying to connect OUTSIDE "
-                                 "your machine -- the python_exec sandbox normally blocks this. "
-                                 "Target: %s:%s via socket.%s(). Allow opens exactly this one "
-                                 "connection for the rest of this run; Deny keeps it blocked."
-                                 % (host, port, method)),
-                )))
-            decision = await state.wait_for_decision(rid)
-            return "allow" if decision in ("allow", "run_all") else "deny"
+                payload = ("socket.%s((%r, %s))   # attempted by the approved python_exec code"
+                           % (method, host, port))
+                description = ("The Python code you approved is trying to connect OUTSIDE "
+                               "your machine -- the python_exec sandbox normally blocks this. "
+                               "Target: %s:%s via socket.%s(). Allow opens exactly this one "
+                               "connection for the rest of this run; Deny keeps it blocked."
+                               % (host, port, method))
+            rid = state.new_request_id()
+            await ws.send_text(json.dumps(build_frame(
+                conv_id, rid, payload, kind=kind, description=description)))
+            decision = await state.wait_for_decision(rid, kind=kind)
+            if decision == "explain":
+                # (2026-07-18 unified dialog) the user wants an explanation: deny THIS one
+                # operation (fail-closed - asking for info allows nothing) and stash the
+                # instruction so drain_explain_instructions() surfaces it in this tool call's
+                # result. The AI then explains + re-issues python_exec -> a fresh card appears.
+                stash_explain_instruction(explain_instruction(kind, payload[:200]))
+                return "deny"
+            return "allow" if decision in ("allow", "allow_category_until_done") else "deny"
         except BaseException:
             # Covers asyncio.CancelledError (BaseException since py3.8): the turn was
             # stopped/superseded while we waited -- fail closed with an immediate deny so
@@ -1102,6 +1135,10 @@ def python_exec(code, timeout=None):
 
         stdout = _safe_strip(proc.stdout)
         stderr = _safe_strip(proc.stderr)
+        # (2026-07-18 unified consent dialog) surface any "Explain request" instructions the
+        # user triggered on file/network cards DURING this run, so the AI gets them in THIS
+        # tool result and can answer + re-issue python_exec.
+        _explain_block = drain_explain_instructions()
         _pyexec_dbg("#10 output captured (stdout=%d, stderr=%d chars), total %.1fs" % (len(stdout), len(stderr), time.time() - _pe_t0), working_dir)
 
         if proc.returncode == 3:
@@ -1113,7 +1150,7 @@ def python_exec(code, timeout=None):
                 f"{detail[:FILE_EXEC_ERROR_TRUNCATE_CHARS]}\n\n"
                 "The child process could not verify the working_root lock and was "
                 "terminated before any code ran. Configure working_root first."
-            )
+            ) + _explain_block
 
         if proc.returncode != 0:
             _pyexec_dbg("#11 returning non-zero rc=%s result" % proc.returncode, working_dir)
@@ -1121,16 +1158,16 @@ def python_exec(code, timeout=None):
             if not error_msg:
                 error_msg = f"Process exited with code {proc.returncode} (no output)"
             truncated = error_msg[:FILE_EXEC_ERROR_TRUNCATE_CHARS]
-            return f"Error:\n\n{truncated}"
+            return f"Error:\n\n{truncated}" + _explain_block
 
         _pyexec_dbg("#11 returning success result (%d chars), total %.1fs" % (len(stdout) if stdout else 0, time.time() - _pe_t0), working_dir)
         if not stdout:
-            return "Executed successfully (no output)"
+            return "Executed successfully (no output)" + _explain_block
 
         if len(stdout) > FILE_EXEC_OUTPUT_TRUNCATE_CHARS:
-            return stdout[:FILE_EXEC_OUTPUT_TRUNCATE_CHARS] + "\n\n...[truncated, output too long]..."
+            return stdout[:FILE_EXEC_OUTPUT_TRUNCATE_CHARS] + "\n\n...[truncated, output too long]..." + _explain_block
 
-        return stdout
+        return stdout + _explain_block
 
     except subprocess.TimeoutExpired as exc:
         _pyexec_dbg("#9.5 TIMEOUT fired after %ss -- child did not finish in time" % effective_timeout, working_dir)

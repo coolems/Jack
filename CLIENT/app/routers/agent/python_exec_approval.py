@@ -81,10 +81,10 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
     async def exec_approval_decision(conv_id: str, request_id: str, data: Dict):
         """Resolve a pending python_exec approval for one chat.
 
-        Body: {"decision": "allow" | "deny" | "run_all"}
+        Body: {"decision": "allow" | "deny" | "allow_category_until_done"}
           - allow   : run this ONE piece of code
           - deny    : do NOT run it (the AI is told the user declined)
-          - run_all : "run until task done" - every python_exec of THIS agentic
+          - allow_category_until_done : "run until task done" - every python_exec of THIS agentic
                       run executes without asking; resets on the next loop run
 
         409 when the request id is unknown or already answered (e.g. the user was
@@ -93,11 +93,14 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         from app.chat_bus import get_chat_bus
 
         decision = str((data or {}).get("decision", "")).strip().lower()
-        if decision not in ("allow", "deny", "run_all"):
+        # (2026-07-18 unified consent dialog) 'explain' = the user clicked "Explain request"
+        # on ANY card kind: nothing is allowed; the AI answers in its required format and
+        # re-issues the tool call, which renders a fresh card.
+        if decision not in ("allow", "deny", "allow_category_until_done", "explain"):
             return JSONResponse(
                 status_code=400,
                 content={"status": "error",
-                         "message": "decision must be one of: allow, deny, run_all"}
+                         "message": "decision must be one of: allow, deny, allow_category_until_done, explain"}
             )
 
         bus = get_chat_bus()
@@ -111,13 +114,13 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                          "message": "No pending python_exec approval for this workspace."}
             )
 
-        if not state.resolve(request_id, decision):
+        resolved, _newly_granted = state.resolve(request_id, decision)  # per-kind grant flag set inside resolve()
+        if not resolved:
             return JSONResponse(
                 status_code=409,
                 content={"status": "error",
                          "message": "That approval was already answered or expired."}
             )
-
         logger.info(f"[EXEC-APPROVAL] conv={conv_id} request={request_id} -> {decision}")
         return {"status": "ok", "decision": decision}
 

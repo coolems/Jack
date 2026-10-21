@@ -410,7 +410,79 @@
                         </div>
                                             </div>
 
-                    <!-- (2026-10-03) Image Generator - model line + default resolution for generate_image().
+                        <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                                <label>🌐 URL Open Dialog Behavior</label>
+                                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                    When this consent dialog appears, choose how it behaves. Each category has its OWN auto-allow timer - fully independent from the others (2026-07-18 unified consent dialog).
+                                </p>
+                                <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="urlConsentBehavior" id="urlConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        Wait for my decision (default)
+                                    </label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="urlConsentBehavior" id="urlConsentAuto" value="auto" onchange="saveRuntimeSettings()">
+                                        Auto-approve after
+                                    </label>
+                                </div>
+                                <div id="urlConsentSecondsGroup" style="display:none; align-items:center; gap:8px;">
+                                    <input type="number" id="urlConsentSeconds" min="1" max="3600" step="1" value="5"
+                                    autocomplete="off" onchange="saveRuntimeSettings()"
+                                    style="width: 90px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                        background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                                    <span style="color: var(--text-secondary); font-size: 13px;">seconds (1 - 3600) - the dialog still opens, then approves by itself</span>
+                                </div>
+                            </div>
+
+                            <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                                <label>📁 File Access Dialog Behavior</label>
+                                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                    When this consent dialog appears, choose how it behaves. Each category has its OWN auto-allow timer - fully independent from the others (2026-07-18 unified consent dialog).
+                                </p>
+                                <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="fileConsentBehavior" id="fileConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        Wait for my decision (default)
+                                    </label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="fileConsentBehavior" id="fileConsentAuto" value="auto" onchange="saveRuntimeSettings()">
+                                        Auto-approve after
+                                    </label>
+                                </div>
+                                <div id="fileConsentSecondsGroup" style="display:none; align-items:center; gap:8px;">
+                                    <input type="number" id="fileConsentSeconds" min="1" max="3600" step="1" value="5"
+                                    autocomplete="off" onchange="saveRuntimeSettings()"
+                                    style="width: 90px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                        background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                                    <span style="color: var(--text-secondary); font-size: 13px;">seconds (1 - 3600) - the dialog still opens, then approves by itself</span>
+                                </div>
+                            </div>
+
+                            <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                                <label>⚠️🌍 Network Access Dialog Behavior</label>
+                                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                    When this consent dialog appears, choose how it behaves. Each category has its OWN auto-allow timer - fully independent from the others (2026-07-18 unified consent dialog).
+                                </p>
+                                <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="networkConsentBehavior" id="networkConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        Wait for my decision (default)
+                                    </label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="networkConsentBehavior" id="networkConsentAuto" value="auto" onchange="saveRuntimeSettings()">
+                                        Auto-approve after
+                                    </label>
+                                </div>
+                                <div id="networkConsentSecondsGroup" style="display:none; align-items:center; gap:8px;">
+                                    <input type="number" id="networkConsentSeconds" min="1" max="3600" step="1" value="5"
+                                    autocomplete="off" onchange="saveRuntimeSettings()"
+                                    style="width: 90px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                        background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                                    <span style="color: var(--text-secondary); font-size: 13px;">seconds (1 - 3600) - the dialog still opens, then approves by itself</span>
+                                </div>
+                            </div>
+
+                        <!-- (2026-10-03) Image Generator - model line + default resolution for generate_image().
                              Saved to settings.json via POST /api/settings and read LIVE by the tool on
                              every generation, so a save applies to the very next image - no restart. -->
                         <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
@@ -554,7 +626,8 @@
     <script src="/static/ui/files/files-panel.js?v=20260918a"></script>
     <script src="/static/ui/search-engine-settings.js?v=20260827e">
     </script>
-    <script src="/static/ui/runtime-settings.js?v=20261005a"></script>
+    <script src="/static/ui/runtime-settings.js?v=20261124b"></script>
+    <script src="/static/ui/approval-dialog.js?v=20261124c"></script>
     <script src="/static/ui/ui-controls.js?v=20260827e">
     
     </script>

@@ -11,7 +11,7 @@ Public API (kept minimal on purpose):
     ChannelWebSocket  — provider-facing socket that routes frames through the channel
     run_generation_turn — background turn runner extracted from websocket/handler.py
     ExecApprovalState — per-run user approval gate for python_exec (exec_approval.py):
-                        'allow' / 'deny' / 'run_all' ("run until task done", resets each run)
+                        'allow' / 'deny' / 'allow_category_until_done' ("run until task done", resets each run)
 
 Singletons: set_chat_bus()/get_chat_bus() — wired at app startup; tests build their own.
 """
@@ -24,7 +24,20 @@ from .exec_approval import (
     build_approval_frame,
 )
 
+# (2026-07-18 unified consent dialog) ONE shared code path for all four card kinds:
+# python / url / file / network - see consent_dialog.py.
+from .consent_dialog import (
+    ConsentDialog,
+    ConsentResult,
+    build_frame,
+    explain_instruction,
+)
+
 __all__ = [
+    "ConsentDialog,"
+    "ConsentResult,"
+    "build_frame,"
+    "explain_instruction,"
     "ChatBus",
     "ChatChannel",
     "ChannelStatus",

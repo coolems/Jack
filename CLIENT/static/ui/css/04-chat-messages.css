@@ -300,3 +300,7 @@
 .exec-btn-runall:hover:not(:disabled) { background: rgba(245, 158, 11, 0.15); border-color: var(--warning); color: var(--warning); }
 .exec-btn-deny:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border-color: var(--danger); color: var(--danger); }
 .exec-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* (2026-07-18 unified consent dialog) kind icon in the card header + Explain button. */
+.exec-approval-icon { font-size: 15px; margin-right: 2px; }
+.exec-btn-explain:hover:not(:disabled) { background: rgba(59, 130, 246, 0.15); border-color: var(--accent); color: var(--accent); }

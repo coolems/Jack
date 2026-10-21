@@ -446,6 +446,26 @@ IMAGE_GEN_HEIGHT_DEFAULT = 400
 #: Inclusive pixel bounds accepted by POST /api/settings (the worker snaps to multiples of 32).
 IMAGE_GEN_SIZE_MIN, IMAGE_GEN_SIZE_MAX = 32, 4096
 
+# (2026-07-18 unified consent dialog) PER-KIND auto-approve timers for the OTHER three
+# consent card kinds. Fully DETACHED from python_exec's pair and from each other: every
+# kind has its own mode + seconds, so any dialog category can be set to auto-allow
+# independently in Settings > Runtime. Defaults are "manual" (never auto) - safe until
+# the user explicitly opts a category into auto-approve. Keys follow the same pattern as
+# python_exec_auto_approve[_seconds] but with per-kind names:
+#   url_consent_auto_approve / url_consent_auto_approve_seconds
+#   file_consent_auto_approve / file_consent_auto_approve_seconds
+#   network_consent_auto_approve / network_consent_auto_approve_seconds
+CONSENT_KINDS = ("python", "url", "file", "network")
+#: settings.json key names per kind (python keeps its historical python_exec_* keys).
+CONSENT_SETTING_KEYS = {
+    "python":  ("python_exec_auto_approve",        "python_exec_auto_approve_seconds"),
+    "url":     ("url_consent_auto_approve",        "url_consent_auto_approve_seconds"),
+    "file":    ("file_consent_auto_approve",       "file_consent_auto_approve_seconds"),
+    "network": ("network_consent_auto_approve",    "network_consent_auto_approve_seconds"),
+}
+CONSENT_AUTO_APPROVE_DEFAULT = "manual"
+CONSENT_AUTO_APPROVE_SECONDS_DEFAULT = 5
+
 
 def get_runtime_settings() -> dict:
     """Return the live Runtime-tab values from settings.json with safe defaults.
@@ -480,12 +500,36 @@ def get_runtime_settings() -> dict:
     width = _coerce_image_gen_size(settings.get("image_gen_width"), IMAGE_GEN_WIDTH_DEFAULT)
     height = _coerce_image_gen_size(settings.get("image_gen_height"), IMAGE_GEN_HEIGHT_DEFAULT)
 
+
+    # (2026-07-18 unified consent dialog) per-kind auto-approve settings, fully detached:
+    # approvals[kind] = {"mode": "manual"|"auto", "seconds": int 1..3600} for all four
+    # kinds. The frontend starts a countdown from THAT kind's values when rendering the
+    # card; manual = wait forever (the original behavior).
+    approvals = {}
+    for _kind in CONSENT_KINDS:
+        _mode_key, _sec_key = CONSENT_SETTING_KEYS[_kind]
+        if _kind == "python":  # historical defaults keep their values
+            _def_mode, _def_sec = PYTHON_EXEC_AUTO_APPROVE_DEFAULT, PYTHON_EXEC_AUTO_APPROVE_SECONDS_DEFAULT
+        else:
+            _def_mode, _def_sec = CONSENT_AUTO_APPROVE_DEFAULT, CONSENT_AUTO_APPROVE_SECONDS_DEFAULT
+        _mode = str(settings.get(_mode_key) or "").strip().lower()
+        if _mode not in ("manual", "auto"):
+            _mode = _def_mode
+        try:
+            _sec = int(str(settings.get(_sec_key) or "").strip())
+        except (TypeError, ValueError):
+            _sec = 0
+        if not (1 <= _sec <= 3600):
+            _sec = _def_sec
+        approvals[_kind] = {"mode": _mode, "seconds": _sec}
     return {
         "python_exec_auto_approve": mode,
         "python_exec_auto_approve_seconds": seconds,
         "image_gen_tier": tier,
         "image_gen_width": width,
         "image_gen_height": height,
+        # (2026-07-18) per-kind consent auto-approve settings (see CONSENT_SETTING_KEYS).
+        "approvals": approvals,
     }
 
 

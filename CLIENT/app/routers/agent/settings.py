@@ -44,6 +44,12 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
             runtime = get_runtime_settings()
             settings["python_exec_auto_approve"] = runtime["python_exec_auto_approve"]
             settings["python_exec_auto_approve_seconds"] = runtime["python_exec_auto_approve_seconds"]
+
+            # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for the
+            # OTHER three card kinds - fully detached from the python_exec pair.
+            for _kind in ("url", "file", "network"):
+                settings[_kind + "_consent_auto_approve"] = runtime["approvals"][_kind]["mode"]
+                settings[_kind + "_consent_auto_approve_seconds"] = runtime["approvals"][_kind]["seconds"]
             # (2026-10-03) Runtime tab: image generator - model line + default resolution.
             settings["image_gen_tier"] = runtime["image_gen_tier"]
             settings["image_gen_width"] = runtime["image_gen_width"]
@@ -148,6 +154,24 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                 if not (1 <= sec <= 3600):
                     return JSONResponse(status_code=400, content={"detail": "python_exec_auto_approve_seconds must be between 1 and 3600"})
                 current["python_exec_auto_approve_seconds"] = sec
+            # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for url / file /
+            # network consent cards - same validation as python_exec, fully detached keys.
+            for _kind in ("url", "file", "network"):
+                _mode_key = _kind + "_consent_auto_approve"
+                _sec_key = _kind + "_consent_auto_approve_seconds"
+                if _mode_key in data:
+                    _m = str(data[_mode_key]).strip().lower()
+                    if _m not in ("manual", "auto"):
+                        return JSONResponse(status_code=400, content={"detail": _mode_key + " must be manual or auto"})
+                    current[_mode_key] = _m
+                if _sec_key in data:
+                    try:
+                        _s = int(str(data.get(_sec_key) or "").strip())
+                    except (TypeError, ValueError):
+                        return JSONResponse(status_code=400, content={"detail": _sec_key + " must be a whole number of seconds"})
+                    if not (1 <= _s <= 3600):
+                        return JSONResponse(status_code=400, content={"detail": _sec_key + " must be between 1 and 3600"})
+                    current[_sec_key] = _s
 
             # (2026-10-03) Runtime tab field: image generator tier. generate_image reads this
             # LIVE from settings.json on every run, so the pick applies to the very next

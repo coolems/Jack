@@ -230,7 +230,7 @@ class ToolExecutor:
         live_messages is not provided.
         conversation_id (2026-09-24): identifies this chat's ChatBus channel so a
         python_exec call can be gated on the local user's approval ('allow' / 'deny'
-        / 'run_all' = run until task done). See _ask_user_for_python_exec().
+        / 'allow_category_until_done' = run until task done). See _ask_user_for_python_exec().
 
 
         Returns:
@@ -249,20 +249,24 @@ class ToolExecutor:
         # USER APPROVAL GATE for python_exec (2026-09-24)
         # The AI runs on the SERVER, but python_exec executes code ON THIS machine.
         # Every call is shown to the local user in the chat with Allow / Deny /
-        # "Run until task done" buttons; only an explicit YES reaches the orchestrator.
+        # "Allow until task done" buttons; only an explicit YES reaches the orchestrator.
         # A NO (or an unavailable approval channel) returns a message telling the AI that the
         # user decided not to run this code - nothing is executed, ever.
         # ============================================================
         if tool_name == "python_exec":
-            if await self._ask_user_for_python_exec(tool_args, websocket, conversation_id):
+            _consent = await self._ask_user_for_python_exec(tool_args, websocket, conversation_id)
+            if _consent.allowed:
                 pass  # approved (or auto-run active for this task) -> fall through and execute
+            elif _consent.decision == "explain":
+                logger.info("[EXEC-APPROVAL] python_exec EXPLAIN requested - nothing executed, AI will explain + re-ask")
+                return _consent.explain_instruction, ""
             else:
                 logger.warning("[EXEC-APPROVAL] python_exec NOT executed - user declined (or approval unavailable)")
-                deny_msg = ("USER DECISION: The user on this machine chose NOT to run this python_exec code. "
-                             "The code was NOT executed and must not be re-submitted or worked around in any form. "
-                             "Continue the task without executing that code - e.g. write it out as a file for the user "
-                             "to review/run manually, explain what it would do, or proceed with an alternative approach "
-                             "that does not require running it.")
+                deny_msg = ("USER DECISION: You decided to not execute this python code. The code was NOT executed and must "
+                             "not be re-submitted or worked around in any form. Stop the current approach and respond to the user "
+                             "with something like: \"You decided to not execute this python code. Now you can instruct me in a new "
+                             "direction.\" Also include your continuation plan <plan> - the remaining steps of the current task so far, "
+                             "clearly numbered - in case the user wants to resume it later.")
                 return deny_msg, ""
 
         # ============================================================
@@ -276,8 +280,12 @@ class ToolExecutor:
         if tool_name in URL_CONSENT_TOOLS:
             url_arg = (tool_args or {}).get("url") if isinstance(tool_args, dict) else None
             if isinstance(url_arg, str) and url_arg.strip():
-                if await self._maybe_ask_url_consent(url_arg, websocket, conversation_id):
+                _url_consent = await self._maybe_ask_url_consent(url_arg, websocket, conversation_id)
+                if _url_consent.allowed:
                     pass  # allowed (grant registered / auto-consent active) -> fall through
+                elif _url_consent.decision == "explain":
+                    logger.info("[URL-CONSENT] EXPLAIN requested - nothing opened, AI will explain + re-ask")
+                    return _url_consent.explain_instruction, ""
                 else:
                     logger.warning("[URL-CONSENT] %s NOT executed - blocked target declined or unconsentable", tool_name)
                     deny_msg = ("USER DECISION: This URL was refused by the local user's browser-security gate. "
@@ -446,170 +454,109 @@ class ToolExecutor:
     # ------------------------------------------------------------------
 
     async def _ask_user_for_python_exec(self, tool_args: Dict, websocket: Any,
-                                        conversation_id: str = None) -> bool:
+                                        conversation_id: str = None):
         """Ask the local user whether this python_exec code may run on THIS machine.
 
-        Returns True only when execution is allowed (explicit 'allow' or an active
-        "run until task done" grant for this agentic run). Everything else - deny,
-        missing channel/state, undeliverable frame - fails closed and returns False so
-        the code NEVER runs without user consent.
+        Thin wrapper over the shared consent dialog (app/chat_bus/consent_dialog.py,
+        kind='python') - ONE code path for all four card kinds. Returns a ConsentResult:
+          allowed=True              -> execute ('allow', or 'allow_category_until_done' grant active)
+          decision == 'explain'     -> user clicked Explain request; caller returns the
+                                       instruction text (nothing executed)
+          anything else             -> fail-closed, do NOT execute
 
-        There is NO timeout on the question: wait_for_decision() blocks until the user
-        answers (or the turn is stopped), so the user has all the time in the world.
-
-        The approval state lives on the chat's ChatChannel (fresh per turn), so a
-        "run until task done" grant lasts exactly one agentic run: the next loop run
-        starts with a new ExecApprovalState and asks again.
+        There is NO timeout on the question: it blocks until the user answers (or the
+        turn is stopped). The per-run state lives on the chat's ChatChannel (fresh each
+        turn), so a "run until task done" grant lasts exactly one agentic run.
         """
-        from app.chat_bus import get_chat_bus, build_approval_frame
+        from app.chat_bus import ConsentDialog, ConsentResult
 
         code = (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else ""
         if not isinstance(code, str) or not code.strip():
             # Empty/invalid payload: let python_exec() itself answer with its own message.
-            return True
+            return ConsentResult("allow")
 
-        bus = get_chat_bus()
-        state = None
-        if bus is not None and conversation_id:
-            channel = bus.channels.get(conversation_id)
-            if channel is not None:
-                state = getattr(channel, "exec_approval", None)
-        # Fail-closed: no live approval state (non-bus context / stale channel) -> refuse.
-        if state is None or not hasattr(state, "wait_for_decision"):
-            logger.warning("[EXEC-APPROVAL] no approval state for conv=%s - failing closed (not executed)", conversation_id)
-            return False
+        # (2026-07-18 rev4) the one-time allow-until-task-done system message is sent ONCE per
+        # agentic run PER KIND: only on the click that first activates THIS kind's grant.
+        from app.chat_bus.consent_dialog import get_approval_state as _gas
+        from app.chat_bus import get_chat_bus as _gb
+        _state = _gas(_gb(), conversation_id)
+        _already_granted = bool(getattr(_state, "was_notified", lambda k: False)("python"))
 
-        if getattr(state, "auto_run_all", False):
-            logger.info("[EXEC-APPROVAL] auto-run active for this task - python_exec allowed without asking")
-            return True
+        result = await ConsentDialog("python").ask(
+            websocket=websocket, conv_id=conversation_id, payload=code,
+            session_timer=self.session_timer)
 
-        request_id = state.new_request_id()
-        try:
-            await websocket.send_text(json.dumps(build_approval_frame(conversation_id, request_id, code)))
-        except Exception as e:
-            logger.warning(f"[EXEC-APPROVAL] approval frame not delivered ({e}) - failing closed")
-            return False
-
-        # (2026-08-23 session stats) a user-decision menu is now open: PAUSE the
-        # session clock so the wait for this click never counts as working time.
-        if self.session_timer is not None:
-            self.session_timer.pause()
-        try:
-            decision = await state.wait_for_decision(request_id)
-        finally:
-            # (2026-08-23 session stats) the menu is closed again - resume counting.
-            if self.session_timer is not None:
-                self.session_timer.resume()
-
-        if decision == "run_all":
-            # Grant is now active for the REST OF THIS RUN (state.auto_run_all=True).
+        if result.decision == "allow_category_until_done" and not _already_granted:
+            # Grant is now active for the REST OF THIS RUN - python kind only (per-kind flags, rev4).
             try:
                 await websocket.send_text(json.dumps({
                     "type": "system",
-                    "content": "Auto-run enabled: python_exec will run without asking until this task ends.",
+                    "content": "Allow-until-task-done enabled: consent requests will be approved without asking until this task ends.",
                 }))
             except Exception:
                 pass  # dead socket - the grant still holds in state; card shows it client-side
-            return True
-
-        if decision == "allow":
-            return True
-
-        # 'deny' -> fail-closed (the only remaining decision).
-        logger.info(f"[EXEC-APPROVAL] python_exec blocked by user decision: {decision}")
-        return False
-
+        return result
     # ------------------------------------------------------------------
-    # URL consent gate for browser tools (2026-07-15) - see app/chat_bus/exec_approval.py
+    # URL consent gate for browser tools (2026-07-15) - shared dialog, kind='url'
     # ------------------------------------------------------------------
 
     async def _maybe_ask_url_consent(self, url: str, websocket: Any,
-                                     conversation_id: str = None) -> bool:
+                                     conversation_id: str = None):
         """Decide whether a URL-bearing browser tool may proceed to *url*.
 
-        Returns True when the SSRF guard already accepts the URL (normal public web -
-        no user interaction at all), or after an explicit user Allow for a CONSENTABLE
-        local target (file:// inside working root, loopback http(s)) -- in that case a
-        one-shot exact-match grant is registered so the tool's own ensure_url_not_ssrff()
-        passes. Returns False (fail-closed) when the target is hard-blocked by policy or
-        the user declined / could not be asked. Never raises.
+        Returns a ConsentResult. allowed=True when the SSRF guard already accepts the
+        URL (normal public web - no user interaction at all) or after an explicit user
+        Allow / active run-all grant for a CONSENTABLE local target (file:// inside
+        working root, loopback http(s)) -- in that case a one-shot exact-match grant is
+        registered so the tool's own ensure_url_not_ssrff() passes. decision=='explain'
+        means the user clicked Explain request (nothing opened; caller returns the
+        instruction). Everything else fails closed. Never raises.
 
-        "Run until task done" on a URL consent card behaves like python_exec: every later
-        consentable local target of THIS agentic run passes without asking; dangerous
+        "Allow until task done" on a URL consent card grants the url kind only (2026-07-18 rev4):
+            every later consentable local target of THIS agentic run passes without asking; dangerous
         (non-consentable) targets are still hard-blocked even under auto-consent.
         """
+        from app.chat_bus import ConsentDialog, ConsentResult
+
         try:
             from tools.ssrf_guard import validate_url_not_ssrff, classify_blocked_url, grant_url
         except Exception as e:  # guard unavailable -> let the tool's own check answer (it fails closed there)
             logger.warning(f"[URL-CONSENT] ssrf_guard unavailable ({e!r}) - skipping pre-gate")
-            return True
+            return ConsentResult("allow")
 
         safe, _reason = validate_url_not_ssrff(url)
         if safe:
-            return True  # public web target -- normal path, no question asked
+            return ConsentResult("allow")  # public web target -- normal path, no question asked
 
         consentable, why = classify_blocked_url(url)
         if not consentable:
             logger.info(f"[URL-CONSENT] hard block (not consentable): {url} - {why}")
-            return False
+            return ConsentResult("deny")
 
-        from app.chat_bus import get_chat_bus, build_approval_frame
-        bus = get_chat_bus()
-        state = None
-        if bus is not None and conversation_id:
-            channel = bus.channels.get(conversation_id)
-            if channel is not None:
-                state = getattr(channel, "exec_approval", None)
-        # Fail-closed: no live approval state (non-bus context / stale channel) -> refuse.
-        if state is None or not hasattr(state, "wait_for_decision"):
-            logger.warning("[URL-CONSENT] no approval state for conv=%s - failing closed (not navigated)", conversation_id)
-            return False
+        # (2026-07-18 rev4) system message ONCE per agentic run PER KIND - only on the first
+        # "Allow until task done" click for THIS kind.
+        from app.chat_bus.consent_dialog import get_approval_state as _gas2
+        from app.chat_bus import get_chat_bus as _gb2
+        _state2 = _gas2(_gb2(), conversation_id)
+        _already_granted = bool(getattr(_state2, "was_notified", lambda k: False)("url"))
 
-        if getattr(state, "auto_run_all", False):
-            # Auto-consent active for this run: consentable local targets pass without asking.
-            grant_url(url)
-            logger.info("[URL-CONSENT] auto-consent active - allowed %s without asking", url[:120])
-            return True
+        result = await ConsentDialog("url").ask(
+            websocket=websocket, conv_id=conversation_id, payload=url,
+            description=("This URL points to THIS machine (a file inside your working "
+                         "folder or a localhost address). The SSRF guard blocked it by default; "
+                         "Allow opens exactly this one URL."),
+            session_timer=self.session_timer)
 
-        request_id = state.new_request_id()
-        try:
-            await websocket.send_text(json.dumps(build_approval_frame(
-                conversation_id, request_id, url,
-                title="Open this local target in the browser?",
-                description=("This URL points to THIS machine (a file inside your working "
-                             "folder or a localhost address). The SSRF guard blocked it by default; "
-                             "Allow opens exactly this one URL."),
-            )))
-        except Exception as e:
-            logger.warning(f"[URL-CONSENT] approval frame not delivered ({e}) - failing closed")
-            return False
+        if result.allowed:
+            grant_url(url)  # 'allow' = this one now; 'allow_category_until_done' = this one + rest of the run
+            logger.info(f"[URL-CONSENT] allowed local target ({result.decision}): {url[:120]}")
+            if result.decision == "allow_category_until_done" and not _already_granted:
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "system",
+                        "content": "Auto-open enabled: local file/localhost targets will open without asking until this task ends.",
+                    }))
+                except Exception:
+                    pass  # dead socket - the grant still holds in state; card shows it client-side
 
-        # (2026-08-23 session stats) a user-decision menu is now open: PAUSE the
-        # session clock so the wait for this click never counts as working time.
-        if self.session_timer is not None:
-            self.session_timer.pause()
-        try:
-            decision = await state.wait_for_decision(request_id)
-        finally:
-            # (2026-08-23 session stats) the menu is closed again - resume counting.
-            if self.session_timer is not None:
-                self.session_timer.resume()
-
-        if decision == "run_all":
-            grant_url(url)  # this one now, plus auto-consent for the rest of the run
-            try:
-                await websocket.send_text(json.dumps({
-                    "type": "system",
-                    "content": "Auto-open enabled: local file/localhost targets will open without asking until this task ends.",
-                }))
-            except Exception:
-                pass  # dead socket - the grant still holds in state; card shows it client-side
-            return True
-
-        if decision == "allow":
-            grant_url(url)
-            logger.info(f"[URL-CONSENT] user allowed local target: {url[:120]}")
-            return True
-
-        logger.info(f"[URL-CONSENT] local target blocked by user decision: {decision} ({url[:120]})")
-        return False
+        return result

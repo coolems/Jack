@@ -548,7 +548,7 @@ function handleWebSocketMessage(data) {
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
     } else if (data.type === 'exec_approval_request') {
         // python_exec user approval card: the AI wants to run code ON THIS machine.
-        appendExecApprovalCard(data);
+        ApprovalDialog.appendCard(data);   // (2026-07-18) unified consent dialog - one code path for all kinds
     } else if (data.type === 'system') {
         showNotification(data.content, 'info');
     } else if (data.type === 'turn_stats') {
@@ -605,181 +605,17 @@ function handleWebSocketMessage(data) {
     }
 }
 
-// ===== PYTHON_EXEC USER APPROVAL CARD (2026-09-24) ==============================
-// The backend emits one 'exec_approval_request' frame per python_exec call the AI
-// wants to run on THIS machine. This card shows the exact code and three options:
-//   Allow this run / Run until task done (auto-run for the rest of this agentic run)
-//   / Do not run. The decision is POSTed to /api/exec-approval/<conv>/<request>;
-// on 'Do not run' the AI receives a message that the user declined and adapts.
-// (2026-10-02) Runtime tab: when the user picked "Auto-approve after N seconds",
-// a python_exec approval card starts this countdown as soon as it renders. At zero it
-// submits 'allow' itself - exactly what a manual click would do. URL-consent cards are
-// NEVER auto-approved (they need an explicit decision). Manual mode = no timer at all,
-// the original "wait until the user chooses" behavior.
-/**
- * (2026-10-05 first-run fix) ASYNC on purpose: before reading the saved mode it awaits
- * ensureRuntimeSettingsLoaded() so COOLEMS.runtimeSettings already holds the real
- * settings.json values - even when this is the very first python_exec dialog of a fresh
- * page load and the user never opened Settings > Runtime. Without that await the card
- * would render with the placeholder 'manual' default and show "no time limit".
- */
-async function startExecAutoApproveCountdown(card, data) {
-    // Saved settings first (one /api/settings sync per page session; instant afterwards).
-    if (typeof ensureRuntimeSettingsLoaded === 'function') {
-        try { await ensureRuntimeSettingsLoaded(); } catch (e) { /* keep current values */ }
-    }
-    const rt = (typeof COOLEMS !== 'undefined' && COOLEMS.runtimeSettings) ? COOLEMS.runtimeSettings : null;
-    if (!rt || rt.mode !== 'auto') return;                       // manual mode: wait forever
-    if (typeof data.title === 'string' && data.title.length > 0) return; // URL consent: never auto
-    if (data.kind === 'network' || data.kind === 'file') return;   // out-of-sandbox consent (network / file): NEVER auto-approved (2026-11-24)
+// ===== UNIFIED CONSENT DIALOG (2026-07-18) ===================================
+// All four consent card kinds (python / url / file / network) are now rendered by the
+// shared ApprovalDialog object in static/ui/approval-dialog.js - ONE code path, a
+// kind->config table (icon + short title + labels), an "Explain request" button on
+// every card and per-kind auto-approve timers from COOLEMS.runtimeSettings.approvals.
+// The old inline functions below are kept ONLY as compatibility shims.
 
-    let seconds = parseInt(rt.seconds, 10);
-    if (!Number.isFinite(seconds)) seconds = 5;
-    seconds = Math.min(3600, Math.max(1, seconds));
+function appendExecApprovalCard(data) { ApprovalDialog.appendCard(data); }
+function submitExecApproval(data, btn) { ApprovalDialog.submitDecision(data, btn); }
+async function startExecAutoApproveCountdown(card, data) { return ApprovalDialog.startAutoApproveCountdown(card, data); }
 
-    const statusEl = card.querySelector('.exec-approval-status');
-    if (statusEl) {
-        statusEl.className = 'exec-approval-status pending';
-        statusEl.textContent = '\u23F3 Auto-approve in ' + seconds + 's - click a button to decide sooner.';
-    }
-
-    let remaining = seconds;
-    const tickTimer = setInterval(() => {
-        if (card.dataset.answered === '1') { clearInterval(tickTimer); return; }
-        const allowBtn = card.querySelector('.exec-btn[data-decision="allow"]');
-        // Any button click disables all buttons immediately - once that happens the user
-        // has decided and the countdown must stop touching the dialog (no status overwrite).
-        if (!allowBtn || allowBtn.disabled) { clearInterval(tickTimer); return; }
-        remaining -= 1;
-        if (remaining > 0) {
-            if (statusEl) statusEl.textContent = '\u23F3 Auto-approve in ' + remaining + 's - click a button to decide sooner.';
-        } else {
-            clearInterval(tickTimer);
-            submitExecApproval(data, allowBtn);   // identical to the user clicking Allow
-        }
-    }, 1000);
-}
-
-function appendExecApprovalCard(data) {
-    const container = document.getElementById('chatContainer');
-    if (!container) return;
-    const welcome = document.getElementById('welcome');
-    if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
-
-    // Replay/duplicate safety: never render the same request twice.
-    if (data.request_id && container.querySelector('.exec-approval-card[data-request-id="' + data.request_id + '"]')) {
-        return;
-    }
-
-    // (2026-07-15 URL consent): the frame may carry title/description for non-code
-    // consents (opening a local file / localhost target in the browser). When absent,
-    // fall back to the original python_exec wording -- old frames keep rendering as before.
-    const isUrlConsent = typeof data.title === 'string' && data.title.length > 0;
-    // (2026-11-24 out-of-sandbox network consent): kind='network' frames come from the
-    // python_exec sandbox's socket gate -- an approved script is trying to connect OUTSIDE
-    // this machine. Warning header, explicit target in the description, and ONLY two
-    // options (Allow / Deny) - no 'run until task done', never auto-approved.
-    const isNetConsent = data.kind === 'network';
-    const isFileConsent = data.kind === 'file';   // out-of-sandbox FILE consent: same two-option contract as network (2026-11-24)
-    const headerText = isNetConsent
-        ? '\u26A0\uFE0F Out-of-sandbox network access requested'
-        : (isFileConsent
-            ? '\u26A0\uFE0F File access outside working_root requested'
-            : (isUrlConsent
-                ? '\u{1F517} ' + escapeHtml(data.title)
-                : '&#128273; Run this Python code on your machine?'));
-    const descHtml = (typeof data.description === 'string' && data.description.length > 0)
-        ? '<div class="exec-approval-desc">' + escapeHtml(data.description) + '</div>'
-        : '';
-    const allowLabel = isNetConsent ? '&#10003; Allow this connection'
-        : (isFileConsent ? '&#10003; Allow this access'
-            : (isUrlConsent ? '&#10003; Allow this URL' : '&#10003; Allow this run'));
-    const runAllLabel = isUrlConsent ? '&#9889; Open local targets until task done' : '&#9889; Run until task done';
-
-    const codeHtml = escapeHtml(String(data.code || ''));
-    const card = document.createElement('div');
-    card.className = 'message assistant';
-
-    const inner = document.createElement('div');
-    inner.className = 'avatar';
-    inner.textContent = 'AI';
-
-    const body = document.createElement('div');
-    body.className = 'message-content exec-approval-card';
-    if (data.request_id) body.setAttribute('data-request-id', data.request_id);
-    body.innerHTML =
-        '<div class="exec-approval-header">' + headerText + '</div>' +
-        descHtml +
-        '<pre class="exec-approval-code"><code>' + codeHtml + '</code></pre>' +
-        '<span class="exec-approval-status pending">Waiting for your decision (no time limit - answer whenever you are ready)</span>' +
-        '<div class="exec-approval-actions">' +
-            '<button type="button" class="exec-btn exec-btn-allow" data-decision="allow">' + allowLabel + '</button>' +
-            ((isNetConsent || isFileConsent) ? '' : '<button type="button" class="exec-btn exec-btn-runall" data-decision="run_all">' + runAllLabel + '</button>') +
-            '<button type="button" class="exec-btn exec-btn-deny" data-decision="deny">&#10007; ' + (isNetConsent ? 'Deny connection' : (isFileConsent ? 'Deny access' : (isUrlConsent ? 'Do not open' : 'Do not run'))) + '</button>' +
-        '</div>';
-
-    body.querySelectorAll('.exec-btn').forEach(btn => {
-        btn.addEventListener('click', () => submitExecApproval(data, btn));
-    });
-
-    card.appendChild(inner);
-    card.appendChild(body);
-    container.appendChild(card);
-
-    void startExecAutoApproveCountdown(card, data).catch(e => console.error('[EXEC-APPROVAL] auto-approve countdown failed:', e));
-    // ^ now async (2026-10-05): awaits the saved runtime settings before starting the timer
-
-    if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
-}
-
-function submitExecApproval(data, clickedBtn) {
-    const card = clickedBtn.closest('.exec-approval-card');
-    if (!card || card.dataset.answered === '1') return;
-    card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
-    const statusEl = card.querySelector('.exec-approval-status');
-    const decision = clickedBtn.dataset.decision;
-
-    if (statusEl) { statusEl.className = 'exec-approval-status waiting'; statusEl.textContent = 'Sending decision...'; }
-
-    const convId = data.conv_id || COOLEMS.currentConversation;
-    fetch('/api/exec-approval/' + encodeURIComponent(convId) + '/' + encodeURIComponent(data.request_id), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision: decision })
-    })
-        .then(response => response.json().catch(() => ({})).then(d => ({ ok: response.ok, d })))
-        .then(({ ok, d }) => {
-            card.dataset.answered = '1';
-            if (!ok) throw new Error((d && d.message) || ('HTTP ' + (d && d.detail ? JSON.stringify(d.detail) : '')));
-            let msg;
-            const netConsent = data.kind === 'network';
-            const fileConsent = data.kind === 'file';
-            const urlConsent = !netConsent && !fileConsent && typeof data.title === 'string' && data.title.length > 0;
-            if (decision === 'allow') msg = netConsent
-                ? '\u2705 Connection allowed - the script may reach that target now.'
-                : (fileConsent ? '\u2705 Access allowed - the script may touch that path for this run.'
-                    : (urlConsent ? '\u2705 Allowed - opening this URL in the browser now.' : '\u2705 Allowed - the code is running now.'));
-            else if (decision === 'run_all') msg = netConsent
-                ? '\u274C Denied - the connection stayed blocked.'
-                : fileConsent
-                ? '\u274C Denied - that path stayed blocked.'
-                : urlConsent
-                ? '\u26A1 Auto-open enabled: local file/localhost targets will open without asking until this task ends.'
-                : '\u26A1 Auto-run enabled: python_exec will run without asking until this task ends.';
-            else msg = netConsent
-                ? '\u274C Connection denied - it stays blocked and the AI was told.'
-                : fileConsent
-                ? '\u274C Access denied - that path stayed blocked and the AI was told.'
-                : (urlConsent
-                ? '\u274C Not opened - you decided not to open this target. The AI was told and will continue differently.'
-                : '\u274C Not run - you decided not to execute this code. The AI was told and will continue differently.');
-            if (statusEl) { statusEl.className = 'exec-approval-status done-' + decision; statusEl.textContent = msg; }
-        })
-        .catch(err => {
-            card.dataset.answered = '1';
-            if (statusEl) { statusEl.className = 'exec-approval-status done-error'; statusEl.textContent = '\u26A0 ' + err.message; }
-        });
-}
 /**
  * Handle model_switch_status broadcast messages from server.
  * Updates the connection status indicator with live model switch progress.

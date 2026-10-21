@@ -27,7 +27,9 @@
 // whether to start an auto-approve countdown. Before this fix COOLEMS.runtimeSettings stayed
 // 'manual' until the user opened Settings > Runtime, so on a fresh page load the FIRST
 // python_exec dialog showed "no time limit" even when settings.json said "auto after 5s".
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400 };
+// approvals[kind] (2026-07-18 unified consent dialog): per-kind auto-approve settings,
+// fully detached per category - python / url / file / network each have their own mode+seconds.
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 } } };
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
 let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
@@ -54,13 +56,30 @@ async function refreshRuntimeSettingsFromApi() {
         seconds = parseInt(data.python_exec_auto_approve_seconds, 10);
     }
 
+    // (2026-07-18 unified consent dialog) per-kind auto-approve pairs - fully detached.
+    const approvals = {};
+    ['python', 'url', 'file', 'network'].forEach(function (kind) {
+        let m = 'manual';
+        let s = 5;
+        if (kind === 'python') {   // historical key names
+            m = mode;
+            s = seconds;
+        } else {
+            const mk = kind + '_consent_auto_approve';
+            const sk = kind + '_consent_auto_approve_seconds';
+            if (data && data[mk] === 'auto') m = 'auto';
+            if (data && Number.isFinite(parseInt(data[sk], 10))) s = parseInt(data[sk], 10);
+        }
+        approvals[kind] = { mode: m, seconds: Math.min(3600, Math.max(1, s)) };
+    });
+
     // Image Generator values (tier + default resolution).
     const tier = (data && ['auto', 'high', 'mid', 'low'].indexOf(data.image_gen_tier) !== -1)
         ? data.image_gen_tier : 'auto';
     let imgWidth = _coerceImageGenSize(data && data.image_gen_width, 600);
     let imgHeight = _coerceImageGenSize(data && data.image_gen_height, 400);
 
-    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight };
+    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, approvals: approvals };
     COOLEMS._runtimeSettingsLoaded = true;
 
     // Fill the Runtime tab controls when they are in the DOM (openSettings path).
@@ -72,6 +91,20 @@ async function refreshRuntimeSettingsFromApi() {
 
         const secInput = document.getElementById('pyExecAutoSeconds');
         if (secInput) secInput.value = String(seconds);
+
+        // (2026-07-18) fill the three per-kind consent rows (url / file / network).
+        ['url', 'file', 'network'].forEach(function (kind) {
+            const a = approvals[kind];
+            const manualEl = document.getElementById(kind + 'ConsentManual');
+            const autoEl = document.getElementById(kind + 'ConsentAuto');
+            if (manualEl && autoEl) {
+                manualEl.checked = (a.mode === 'manual');
+                autoEl.checked = (a.mode === 'auto');
+                const secInput = document.getElementById(kind + 'ConsentSeconds');
+                if (secInput) secInput.value = String(a.seconds);
+                toggleConsentSecondsGroup(kind, a.mode === 'auto');
+            }
+        });
 
         setImageGenTierRadio(tier);
 
@@ -129,6 +162,33 @@ function toggleRuntimeSecondsGroup(show) {
     if (group) group.style.display = show ? 'flex' : 'none';
 }
 
+// (2026-07-18 unified consent dialog) per-kind rows: show/hide the seconds input for one kind.
+function toggleConsentSecondsGroup(kind, show) {
+    const group = document.getElementById(kind + 'ConsentSecondsGroup');
+    if (group) group.style.display = show ? 'flex' : 'none';
+}
+
+// Read all four per-kind consent settings from the Runtime tab controls (python uses its
+// historical radio/seconds ids). Returns approvals[kind] = {mode, seconds}.
+function readApprovalsFromControls() {
+    const out = {};
+    // python: legacy control names.
+    const pyAuto = document.getElementById('pyExecAuto');
+    const pySec = document.getElementById('pyExecAutoSeconds');
+    let pyMode = (pyAuto && pyAuto.checked) ? 'auto' : 'manual';
+    let pySeconds = pySec ? parseInt(pySec.value, 10) : NaN;
+    if (!Number.isFinite(pySeconds)) pySeconds = 5;
+    out.python = { mode: pyMode, seconds: Math.min(3600, Math.max(1, pySeconds)) };
+    ['url', 'file', 'network'].forEach(function (kind) {
+        const autoEl = document.getElementById(kind + 'ConsentAuto');
+        const secInput = document.getElementById(kind + 'ConsentSeconds');
+        let s = secInput ? parseInt(secInput.value, 10) : NaN;
+        if (!Number.isFinite(s)) s = 5;
+        out[kind] = { mode: (autoEl && autoEl.checked) ? 'auto' : 'manual', seconds: Math.min(3600, Math.max(1, s)) };
+    });
+    return out;
+}
+
 /** Save the current Runtime tab selection to settings.json. Called on any radio/seconds change. */
 async function saveRuntimeSettings() {
     const manualRadio = document.getElementById('pyExecManual');
@@ -152,6 +212,16 @@ async function saveRuntimeSettings() {
     seconds = Math.min(3600, Math.max(1, seconds));
     if (secInput && String(seconds) !== secInput.value.trim()) secInput.value = String(seconds);
 
+    // (2026-07-18 unified consent dialog) per-kind pairs for all 4 kinds (read from controls).
+    const approvalsNow = readApprovalsFromControls();
+
+    // (2026-11-24 fix) show/hide EACH kind's seconds input when its radio changes -
+    // previously only the python group was toggled, so selecting "Auto-approve after"
+    // on URL / File Access / Network never revealed their seconds field.
+    ['url', 'file', 'network'].forEach(function (kind) {
+        toggleConsentSecondsGroup(kind, approvalsNow[kind].mode === 'auto');
+    });
+
     // (2026-10-03) Read the default resolution inputs, clamped to 32..4096 px.
     let imgWidth = _coerceImageGenSize(document.getElementById('imgGenWidth') && document.getElementById('imgGenWidth').value, 600);
     let imgHeight = _coerceImageGenSize(document.getElementById('imgGenHeight') && document.getElementById('imgGenHeight').value, 400);
@@ -166,18 +236,25 @@ async function saveRuntimeSettings() {
             // No manual auth headers needed: the global fetch override in api-key.js
             // injects X-API-Key / X-User-Email for every /api/ request automatically.
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            body: JSON.stringify(Object.assign({
                 python_exec_auto_approve: mode,
                 python_exec_auto_approve_seconds: seconds,
                 image_gen_tier: imageGenTier,
                 image_gen_width: imgWidth,
                 image_gen_height: imgHeight
-            })
+            }, {
+                    url_consent_auto_approve: approvalsNow.url.mode,
+                    url_consent_auto_approve_seconds: approvalsNow.url.seconds,
+                    file_consent_auto_approve: approvalsNow.file.mode,
+                    file_consent_auto_approve_seconds: approvalsNow.file.seconds,
+                    network_consent_auto_approve: approvalsNow.network.mode,
+                    network_consent_auto_approve_seconds: approvalsNow.network.seconds
+            }))
         });
 
         // Silent by design: the Runtime tab shows no save feedback in the UI.
         if (response.ok) {
-            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight };
+            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, approvals: readApprovalsFromControls() };
         } else {
             const errData = await response.json().catch(() => ({}));
             console.error('[RUNTIME SETTINGS] Save rejected:', errData.detail || 'Unknown error');
