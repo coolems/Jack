@@ -10,7 +10,9 @@ One job per attribute — deliberately small:
   * stop_event    — cancellation, owned HERE instead of the handler's local state
   * frame buffer  — bounded deque for background frames (CHAT_BACKGROUND_FRAME_BUFFER)
   * subscribers   — UI WebSockets currently attached to this conversation
-"""
+      * steer queue   — (2026-10-23) user messages typed WHILE the agent runs, drained by the
+                        ReAct loop at its next safe boundary (never a new turn, never a stop)
+    """
 
 import asyncio
 import json
@@ -18,7 +20,9 @@ from collections import deque
 from enum import Enum
 import time
 
-from config import CHAT_BACKGROUND_FRAME_BUFFER
+import uuid
+
+from config import CHAT_BACKGROUND_FRAME_BUFFER, CHAT_STEER_QUEUE_MAX
 
 
 class ChannelStatus(str, Enum):
@@ -42,6 +46,13 @@ class ChatChannel:
         self.stop_event = asyncio.Event()
         self.task: "asyncio.Task | None" = None          # running generation task (if any)
         self.queue_position: int = 0                      # >1 while waiting in the SERVER queue
+        # (2026-10-23 live steering) True while the CURRENT turn runs the agentic ReAct loop.
+        # Steering is only meaningful there (a normal one-shot completion has no next step to
+        # inject into). Set by run_generation_turn at turn start.
+        self.agent_mode: bool = False
+        # Messages typed by the user DURING a run. Drained by the ReAct loop at its next safe
+        # boundary (before a provider call / before pending tool calls), never as a new turn.
+        self._steer_queue: deque[dict] = deque(maxlen=max(1, CHAT_STEER_QUEUE_MAX))
         # (2026-08-23 session stats) duration of the PREVIOUS completed turn, in ACTIVE seconds
         # (approval-menu pauses excluded - see logic.base_mode.SessionTimer). The next turn's
         # config reads this so the UI status bar can show "last session" time. 0 = no previous
@@ -60,6 +71,38 @@ class ChatChannel:
         if status is not self.status:
             self.status = status
 
+    # --- live steering (2026-10-23) ------------------------------------------------
+
+    def queue_steer(self, text: str, steer_id: str | None = None) -> dict:
+        """Queue one mid-run user message for the CURRENT agentic turn.
+
+        Returns the queued item (with the id echoed to the UI). A deque with a bounded
+        length is used on purpose: if a client floods the queue the OLDEST unapplied
+        message is dropped instead of growing memory forever. The item is NOT persisted
+        here - persistence happens only when the loop actually applies it, so a message
+        that never reached the model does not pollute the conversation history.
+        """
+        item = {
+            "id": steer_id or uuid.uuid4().hex,
+            "text": text,
+            "received_at": time.time(),
+        }
+        self._steer_queue.append(item)
+        self.last_activity = time.time()
+        return item
+
+    def has_pending_steer(self) -> bool:
+        """True when at least one steering message is waiting to be injected."""
+        return bool(self._steer_queue)
+
+    def pending_steer_count(self) -> int:
+        return len(self._steer_queue)
+
+    def drain_steer(self) -> list[dict]:
+        """Remove and return every queued steering message (FIFO)."""
+        items = list(self._steer_queue)
+        self._steer_queue.clear()
+        return items
     # --- subscribers (UI sockets attached to this chat) ---------------------------
 
     def attach(self, ws) -> None:

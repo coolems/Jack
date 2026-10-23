@@ -27,7 +27,11 @@ from app.websocket.message_types import (
     send_search_web_suggestion,
     send_done,
 )
-from app.websocket.db_ops import save_assistant_message, _sync_conversation_working_root
+from app.websocket.db_ops import (
+    save_assistant_message,
+    save_user_message,
+    _sync_conversation_working_root,
+)
 from app.db_manager import get_db_connection, close_db_connection
 from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_config
 from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
@@ -50,6 +54,31 @@ def _is_user_cancelled(error) -> bool:
     if name in ("ConnectionClosed", "ConnectionClosedOK", "ConnectionClosedError"):
         return True
     return False
+
+
+async def _reject_pending_steers(channel, sink, message: str, code: str) -> int:
+    """Settle any steering message the loop never reached (2026-10-23).
+
+    A steer that is still queued when the turn ends can never be applied. The UI bubble
+    for it must not stay stuck on "queued", so we drain the channel and tell attached
+    clients why. Best-effort: a dead channel must never break the turn teardown.
+    """
+    try:
+        pending = channel.drain_steer()
+    except Exception:
+        pending = []
+    for item in pending:
+        try:
+            await sink.send_text(json.dumps({
+                "type": "steer_rejected",
+                "steer_id": item.get("id") if isinstance(item, dict) else None,
+                "content": item.get("text", "") if isinstance(item, dict) else "",
+                "code": code,
+                "message": message,
+            }))
+        except Exception:
+            pass  # UI gone - nothing to update
+    return len(pending)
 
 
 class _StatusSink:
@@ -115,7 +144,37 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     channel_ws.reset_capture()
     channel._answer_persisted = False   # (2026-09-09 audit) fresh flag for this turn
 
-    # (2026-09-24 python_exec user approval): a FRESH approval state per run - any
+    # (2026-10-23 live steering) Only an agentic turn has a next step to inject into.
+    # Normal one-shot completions are refused by ChatBus.steer() with a clear message.
+    channel.agent_mode = bool(agent_mode)
+    # Any steering message queued for a PREVIOUS (superseded) turn can never run now.
+    # Settle its UI bubble before this new turn starts streaming.
+    try:
+        await _reject_pending_steers(
+            channel, sink,
+            "A newer message replaced the task before this steering message could be applied.",
+            "task_superseded",
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug(f"[CHATBUS] stale-steer cleanup failed (non-fatal): {e}")
+
+    async def _persist_applied_steer(item) -> None:
+        """Persist one applied steering message in the conversation history.
+
+        Called by logic.react_loop ONLY after the loop actually injected the text into the
+        provider message list. Raw text is stored (no injection header) so reloading the
+        conversation shows exactly what the user typed, in chronological order before the
+        final assistant answer.
+        """
+        text = item.get("text", "") if isinstance(item, dict) else str(item or "")
+        if not text.strip():
+            return
+        try:
+            save_user_message(db_path, conv_id, text, auto_title=False)
+        except Exception as e:
+            logger.error(f"[CHATBUS] Failed to persist steering message for conv={conv_id}: {e}")
+
+# (2026-09-24 python_exec user approval): a FRESH approval state per run - any
     # "run until task done" grant from an earlier loop is gone by design, so the next
     # python_exec in this new loop asks the user again. The channel holds it for the
     # whole turn; ToolExecutor picks it up via conversation_id -> ChatBus.
@@ -154,8 +213,13 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                     ollama_tools=ollama_tools,
                     api_key=ws_key,
                     session_timer=session_timer,
-                    last_session_sec=last_session_sec,
-                )
+                        last_session_sec=last_session_sec,
+                        # (2026-10-23 live steering) the running ReAct loop drains this
+                        # channel's queue at each safe boundary; the callback persists each
+                        # message only after it was actually injected.
+                        steer_source=channel,
+                        on_steer_applied=_persist_applied_steer,
+                    )
                 result = await agentic_mode(agent_config, conversation_history, enhanced_message, media_files)
                 conversation_history.append({"role": "assistant", "content": result})
                 return result
@@ -208,6 +272,11 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                     logger.warning(f"[CHATBUS] working_root sync after cancel failed: {sync_err}")
 
                 channel.set_status(ChannelStatus.CANCELLED)
+                await _reject_pending_steers(
+                    channel, sink,
+                    "The task was stopped before this steering message could be applied.",
+                    "task_stopped",
+                )
                 try:
                     await send_done(sink)
                 except Exception:
@@ -265,6 +334,14 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                 await send_search_web_suggestion(sink, user_msg, "Search same question on internet")
             except Exception as ws_err:
                 logger.warning(f"[CHATBUS] search suggestion not delivered: {ws_err}")
+
+        # (2026-10-23 live steering) Anything still queued here arrived too late for the
+        # loop to inject - settle the UI bubble instead of leaving it on "queued".
+        await _reject_pending_steers(
+            channel, sink,
+            "The task finished before this steering message could be applied. Send it as a new message.",
+            "task_ended",
+        )
 
         channel.set_status(ChannelStatus.DONE)
         try:

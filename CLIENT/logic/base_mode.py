@@ -115,6 +115,14 @@ class BaseModeConfig:
     session_timer: Optional["SessionTimer"] = None
     last_session_sec: float = 0.0
 
+    # (2026-10-23 live steering) Per-turn source of user messages typed WHILE the agent
+    # works. `steer_source` is a ChatChannel-like object exposing has_pending_steer() and
+    # drain_steer(); `on_steer_applied` is an async callback (item -> None) used by the
+    # turn runner to persist an applied message exactly once. Both are None for callers
+    # that do not support steering (normal mode, tests, direct API use).
+    steer_source: Any = None
+    on_steer_applied: Any = None
+    
 # (2026-10-11) FINAL TURN STATS HYGIENE: react_loop.py splices a "Loop stats:" line into the
 # persisted answer right above 'Agentic AI: TASK DONE' and the UI renders it from that text.
 # That line must NEVER be sent back to the model: when past answers carrying it were fed as

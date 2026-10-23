@@ -6,8 +6,8 @@ UI socket is attached and are buffered (bounded) otherwise, so switching chats i
 browser never kills another chat's session — exactly the requested behaviour.
 
 Public API (kept minimal on purpose):
-    ChatBus           — conv_id → channel registry + submit/attach/detach/stop (bus.py)
-    ChatChannel       — one chat's persistent state: status, stop event, buffer (channel.py)
+    ChatBus           — conv_id → channel registry + submit/attach/detach/stop/steer (bus.py)
+        ChatChannel       — one chat's persistent state: status, stop event, buffer, steer queue (channel.py)
     ChannelWebSocket  — provider-facing socket that routes frames through the channel
     run_generation_turn — background turn runner extracted from websocket/handler.py
     ExecApprovalState — per-run user approval gate for python_exec (exec_approval.py):

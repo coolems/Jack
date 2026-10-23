@@ -8,7 +8,8 @@ This is the main WebSocket handler that coordinates:
 - /search command dispatch
 - File/media processing
 - Tool detection (informational only - agentic mode is enabled ONLY via the UI button)
-- Submitting validated turns to the ChatBus (the turn runs as a background task owned by the chat's channel)
+    - Live steering: steer=True frames are routed to the live agentic turn instead of submit()
+    - Submitting validated turns to the ChatBus (the turn runs as a background task owned by the chat's channel)
 - Persistence: user messages here; assistant messages + error/retry handling are owned by the ChatBus
 - ROLE-BASED TOOL FILTERING (NEW)
 
@@ -42,10 +43,10 @@ from app.websocket.search_handler import handle_search_command
 from app.detection import detect_tool_requirement
 
 from utils.history_manager import (
-        load_conversation_history as load_history_from_db,
-        count_messages_for_conv,
-        trim_history_to_token_limit,
-        max_history_tokens,
+    load_conversation_history as load_history_from_db,
+    count_messages_for_conv,
+    trim_history_to_token_limit,
+    max_history_tokens,
     )
 
 logger = logging.getLogger("COOLEMS")
@@ -169,7 +170,10 @@ def create_websocket_handler(
                     "type": "chat_status",
                     "status": _channel.status.value,
                     "queue_position": int(getattr(_channel, "queue_position", 0) or 0),
-                }))
+                    # (2026-10-23 live steering) lets a re-attaching UI know whether the
+                    # running turn can be steered (agentic) or must be stopped normally.
+                    "agent_mode": bool(getattr(_channel, "agent_mode", False)),
+                    }))
             except Exception:
                 pass  # dead socket — the channel keeps buffering
 
@@ -191,131 +195,131 @@ def create_websocket_handler(
 
 
     async def _prepare_user_message(payload, ctx):
-            """Stage 2 (2026-08-20 split, review #10): turn one validated payload into a ready-to-dispatch dict.
+        """Stage 2 (2026-08-20 split, review #10): turn one validated payload into a ready-to-dispatch dict.
 
-            Handles: field extraction, stop/capture reset, /search short-circuit, media file
-            processing, tool detection + auto agent-mode, user-message persistence and history
-            load/trim, role-based tool filtering. Returns the prepared dict, or None when the
-            message was fully handled by /search (caller should just `continue`).
+        Handles: field extraction, stop/capture reset, /search short-circuit, media file
+        processing, tool detection + auto agent-mode, user-message persistence and history
+        load/trim, role-based tool filtering. Returns the prepared dict, or None when the
+        message was fully handled by /search (caller should just `continue`).
 
-            Mutates ctx in place for shared per-connection state: response_in_progress, history.
-            """
-            ws = ctx["websocket"]
-            cid = ctx["conv_id"]
-            ws_key, role, client_ip = ctx["ws_key"], ctx["role"], ctx["client_ip"]
-            stop_event = ctx["stop_event"]  # channel-owned (bus) or local fallback
+        Mutates ctx in place for shared per-connection state: response_in_progress, history.
+        """
+        ws = ctx["websocket"]
+        cid = ctx["conv_id"]
+        ws_key, role, client_ip = ctx["ws_key"], ctx["role"], ctx["client_ip"]
+        stop_event = ctx["stop_event"]  # channel-owned (bus) or local fallback
 
-            # Step 3: Extract validated fields (all type-safe now)
-            user_msg = payload.message
-            model = payload.model or model_name
-            system_prompt = payload.system_prompt or f"You are {agent.get_name()}."
-            agent_mode = payload.agent_mode
-            media_files = payload.media_files
-            # Engine config lives in <CLIENT>/config/search_engines.json (single source of
-            # truth). Read it fresh on every message so Settings UI saves apply immediately -
-            # no restart needed. (payload.search_engines is a legacy field, ignored here.)
-            search_engines = {"engines": load_search_engines()}
-            enable_thinking = payload.enable_thinking
+        # Step 3: Extract validated fields (all type-safe now)
+        user_msg = payload.message
+        model = payload.model or model_name
+        system_prompt = payload.system_prompt or f"You are {agent.get_name()}."
+        agent_mode = payload.agent_mode
+        media_files = payload.media_files
+        # Engine config lives in <CLIENT>/config/search_engines.json (single source of
+        # truth). Read it fresh on every message so Settings UI saves apply immediately -
+        # no restart needed. (payload.search_engines is a legacy field, ignored here.)
+        search_engines = {"engines": load_search_engines()}
+        enable_thinking = payload.enable_thinking
 
-            logger.info(f"[AGENT] Client {client_ip} (role={role}) sent: {user_msg[:100]}...")
+        logger.info(f"[AGENT] Client {client_ip} (role={role}) sent: {user_msg[:100]}...")
 
-            stop_event.clear()
-            ctx["response_in_progress"] = True
+        stop_event.clear()
+        ctx["response_in_progress"] = True
 
-            agent.learn_lesson(
-                f"User asked: {user_msg[:100]}",
-                "Handled user request appropriately",
+        agent.learn_lesson(
+            f"User asked: {user_msg[:100]}",
+            "Handled user request appropriately",
+        )
+
+        # --- Handle /search command ---
+        if user_msg and user_msg.strip().lower().startswith("/search "):
+            search_query = user_msg.strip()[8:].strip()
+            logger.info(
+                f"[SEARCH] Web search triggered via /search command: {search_query}"
             )
 
-            # --- Handle /search command ---
-            if user_msg and user_msg.strip().lower().startswith("/search "):
-                search_query = user_msg.strip()[8:].strip()
-                logger.info(
-                    f"[SEARCH] Web search triggered via /search command: {search_query}"
-                )
-
-                success = await handle_search_command(
-                    user_msg=user_msg,
-                    search_query=search_query,
-                    model=model,
-                    provider=provider,
-                    tool_orchestrator=tool_orchestrator,
-                    websocket=ws,
-                    agent=agent,
-                    db_path=db_path,
-                    conv_id=cid,
-                    search_engines=search_engines,
-                    conversation_history=ctx["history"],
-                    api_key=ws_key,  # Pass API key for permission checking
-                )
-
-                if success:
-                    ctx["response_in_progress"] = False
-                    return None
-
-            # --- Handle file uploads ---
-            enhanced_message, image_data, image_paths, file_contents = (
-                # Per-workspace working root (2026-10-09): resolve uploads against THIS chat's
-                # own folder so concurrent workspaces never mix up upload locations.
-                process_media_files(user_msg, media_files, conv_id=cid)
+            success = await handle_search_command(
+                user_msg=user_msg,
+                search_query=search_query,
+                model=model,
+                provider=provider,
+                tool_orchestrator=tool_orchestrator,
+                websocket=ws,
+                agent=agent,
+                db_path=db_path,
+                conv_id=cid,
+                search_engines=search_engines,
+                conversation_history=ctx["history"],
+                api_key=ws_key,  # Pass API key for permission checking
             )
 
-            # --- Tool detection (informational only) ---
-            # Agentic mode is enabled ONLY when the user presses the agent button at the
-            # prompt input window (payload.agent_mode). Detection results are kept solely to
-            # drive the "search on internet" suggestion below - they must NEVER flip
-            # agent_mode on their own.
-            requires_tools, _tool_types = detect_tool_requirement(user_msg)
-            # --- Save user message ---
-            save_user_message(
-                db_path, cid, user_msg,
-                media_urls=media_files,
-                file_contents=file_contents,
-            )
+            if success:
+                ctx["response_in_progress"] = False
+                return None
 
-            # --- Reload and trim history ---
-            ctx["history"] = load_history_from_db(cid)
-            ctx["history"] = trim_history_to_token_limit(
-                ctx["history"],
-                max_tokens=max_history_tokens(),
-            )
+        # --- Handle file uploads ---
+        enhanced_message, image_data, image_paths, file_contents = (
+            # Per-workspace working root (2026-10-09): resolve uploads against THIS chat's
+            # own folder so concurrent workspaces never mix up upload locations.
+            process_media_files(user_msg, media_files, conv_id=cid)
+        )
 
-            # --- Build config inputs ---
-            dna_content = agent.get_identity()
+        # --- Tool detection (informational only) ---
+        # Agentic mode is enabled ONLY when the user presses the agent button at the
+        # prompt input window (payload.agent_mode). Detection results are kept solely to
+        # drive the "search on internet" suggestion below - they must NEVER flip
+        # agent_mode on their own.
+        requires_tools, _tool_types = detect_tool_requirement(user_msg)
+        # --- Save user message ---
+        save_user_message(
+            db_path, cid, user_msg,
+            media_urls=media_files,
+            file_contents=file_contents,
+        )
 
-            # ============================================================
-            # ROLE-BASED TOOL FILTERING
-            # Get tools filtered by the user's role
-            # ============================================================
-            ollama_tools = None
-            if agent_mode and tool_orchestrator:
-                # Pass the API key to get filtered tools based on role
-                # (2026-08-29 threadless refactor): get_ollama_tools is async now — the
-                # lazy SERVER fetch runs directly on this loop instead of in a worker thread.
-                ollama_tools = await tool_orchestrator.get_ollama_tools(api_key=ws_key)
+        # --- Reload and trim history ---
+        ctx["history"] = load_history_from_db(cid)
+        ctx["history"] = trim_history_to_token_limit(
+            ctx["history"],
+            max_tokens=max_history_tokens(),
+        )
 
-                # Log what tools are available to this role
-                if ollama_tools:
-                    tool_names = [t.get("function", {}).get("name", "unknown") for t in ollama_tools]
-                    logger.info(f"[ROLE] Role '{role}' has access to {len(ollama_tools)} tools: {tool_names}")
-                else:
-                    logger.info(f"[ROLE] Role '{role}' has NO tools available (agent mode may not work)")
+        # --- Build config inputs ---
+        dna_content = agent.get_identity()
 
-            return {
-                "user_msg": user_msg,
-                "model": model,
-                "system_prompt": system_prompt,  # kept for parity with the pre-split handler
-                "agent_mode": agent_mode,
-                "enable_thinking": enable_thinking,
-                "enhanced_message": enhanced_message,
-                "image_data": image_data,
-                "image_paths": image_paths,
-                "file_contents": file_contents,
-                "media_files": media_files,
-                "requires_tools": requires_tools,
-                "ollama_tools": ollama_tools,
-                "dna_content": dna_content,
-            }
+        # ============================================================
+        # ROLE-BASED TOOL FILTERING
+        # Get tools filtered by the user's role
+        # ============================================================
+        ollama_tools = None
+        if agent_mode and tool_orchestrator:
+            # Pass the API key to get filtered tools based on role
+            # (2026-08-29 threadless refactor): get_ollama_tools is async now — the
+            # lazy SERVER fetch runs directly on this loop instead of in a worker thread.
+            ollama_tools = await tool_orchestrator.get_ollama_tools(api_key=ws_key)
+
+            # Log what tools are available to this role
+            if ollama_tools:
+                tool_names = [t.get("function", {}).get("name", "unknown") for t in ollama_tools]
+                logger.info(f"[ROLE] Role '{role}' has access to {len(ollama_tools)} tools: {tool_names}")
+            else:
+                logger.info(f"[ROLE] Role '{role}' has NO tools available (agent mode may not work)")
+
+        return {
+            "user_msg": user_msg,
+            "model": model,
+            "system_prompt": system_prompt,  # kept for parity with the pre-split handler
+            "agent_mode": agent_mode,
+            "enable_thinking": enable_thinking,
+            "enhanced_message": enhanced_message,
+            "image_data": image_data,
+            "image_paths": image_paths,
+            "file_contents": file_contents,
+            "media_files": media_files,
+            "requires_tools": requires_tools,
+            "ollama_tools": ollama_tools,
+            "dna_content": dna_content,
+        }
 
 
     async def websocket_chat(websocket: WebSocket, conv_id: str):
@@ -365,6 +369,41 @@ def create_websocket_handler(
                         f"[WS] Validation error from client {client_ip}: {error_detail}"
                     )
                     await send_error(websocket, f"Invalid message: {error_detail}", code=422)
+                    continue
+
+                # ============================================================
+                # (2026-10-23 live steering) A steer is NOT a new turn: it must never
+                # save a user message, reset per-connection state or supersede the
+                # running task (bus.submit does exactly that). Route it to the live
+                # channel instead; the ReAct loop picks it up at its next safe step.
+                # ============================================================
+                if getattr(payload, "steer", False):
+                    if bus is None:
+                        await send_error(websocket, "Chat session service unavailable (internal error). Please retry.", code=500)
+                        continue
+                    ok, info, code = await bus.steer(conv_id, payload.message, payload.steer_id)
+                    if ok:
+                        frame = {
+                            "type": "steer_received",
+                            "steer_id": info.get("id"),
+                            "content": payload.message,
+                            "pending": bus.channels[conv_id].pending_steer_count() if conv_id in bus.channels else 1,
+                        }
+                        logger.info(f"[STEER] conv={conv_id} steering message received "
+                                    f"(id={str(info.get('id'))[:12]})")
+                    else:
+                        frame = {
+                            "type": "steer_rejected",
+                            "steer_id": payload.steer_id,
+                            "content": payload.message,
+                            "code": code,
+                            "message": info,
+                        }
+                        logger.info(f"[STEER] conv={conv_id} steering message refused ({code}): {info}")
+                    try:
+                        await websocket.send_text(json.dumps(frame))
+                    except Exception:
+                        logger.debug("[STEER] ack could not be delivered (UI socket gone)")
                     continue
 
                 prepared = await _prepare_user_message(payload, ctx)

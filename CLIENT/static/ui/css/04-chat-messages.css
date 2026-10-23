@@ -115,97 +115,51 @@
 }
 
 
-    /* ===== RECOVERY WARNING BLOCK ===== */
-    .recovery-warning-block {
-        background: linear-gradient(135deg, #2a1a0a 0%, #1a150a 100%);
-        border-left: 4px solid var(--warning);
-        border-radius: 8px;
-        margin: 12px 0;
-        overflow: hidden;
-        font-size: 13px;
-        animation: fadeIn 0.3s ease;
-    }
+/* ===== RECOVERY WARNING BLOCK ===== */
+.recovery-warning-block {
+    background: linear-gradient(135deg, #2a1a0a 0%, #1a150a 100%);
+    border-left: 4px solid var(--warning);
+    border-radius: 8px;
+    margin: 12px 0;
+    overflow: hidden;
+    font-size: 13px;
+    animation: fadeIn 0.3s ease;
+}
 
-    .recovery-warning-header {
-        padding: 8px 12px;
-        background: rgba(245, 158, 11, 0.15);
-        color: var(--warning);
-        font-weight: 600;
-        font-size: 12px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        border-bottom: 1px solid rgba(245, 158, 11, 0.2);
-    }
+.recovery-warning-header {
+    padding: 8px 12px;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--warning);
+    font-weight: 600;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid rgba(245, 158, 11, 0.2);
+}
 
-    .recovery-warning-header::before {
-        content: "⚠️";
-        font-size: 14px;
-    }
+.recovery-warning-header::before {
+    content: "⚠️";
+    font-size: 14px;
+}
 
-    .recovery-warning-content {
-        padding: 12px;
-        color: #a3a3a3;
-        line-height: 1.5;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        font-size: 12px;
-    }
+.recovery-warning-content {
+    padding: 12px;
+    color: #a3a3a3;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 12px;
+}
 
-    .recovery-warning-content.success {
-        color: var(--success);
-    }
+.recovery-warning-content.success {
+    color: var(--success);
+}
 
-    .recovery-warning-content.error {
-        color: var(--danger);
-    }
-    
+.recovery-warning-content.error {
+    color: var(--danger);
+}
 
-    /* ===== RECOVERY WARNING BLOCK ===== */
-    .recovery-warning-block {
-        background: linear-gradient(135deg, #2a1a0a 0%, #1a150a 100%);
-        border-left: 4px solid var(--warning);
-        border-radius: 8px;
-        margin: 12px 0;
-        overflow: hidden;
-        font-size: 13px;
-        animation: fadeIn 0.3s ease;
-    }
-
-    .recovery-warning-header {
-        padding: 8px 12px;
-        background: rgba(245, 158, 11, 0.15);
-        color: var(--warning);
-        font-weight: 600;
-        font-size: 12px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        border-bottom: 1px solid rgba(245, 158, 11, 0.2);
-    }
-
-    .recovery-warning-header::before {
-        content: "⚠️";
-        font-size: 14px;
-    }
-
-    .recovery-warning-content {
-        padding: 12px;
-        color: #a3a3a3;
-        line-height: 1.5;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        font-size: 12px;
-    }
-
-    .recovery-warning-content.success {
-        color: var(--success);
-    }
-
-    .recovery-warning-content.error {
-        color: var(--danger);
-    }
-    
 /* ===== FILE CONTENTS IN MESSAGES ===== */
 .file-contents { margin: 8px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg-tertiary); }
 .file-content-preview { border-bottom: 1px solid var(--border); }
@@ -304,3 +258,24 @@
 /* (2026-07-18 unified consent dialog) kind icon in the card header + Explain button. */
 .exec-approval-icon { font-size: 15px; margin-right: 2px; }
 .exec-btn-explain:hover:not(:disabled) { background: rgba(59, 130, 246, 0.15); border-color: var(--accent); color: var(--accent); }
+
+/* ===== LIVE STEERING MESSAGE (2026-10-23) =====
+   A user message typed WHILE the agent is still working. Amber dashed styling makes it
+   clearly different from a normal prompt, and the status line settles from sending ->
+   delivered -> applied (or explains why it could not be applied). */
+.message.steering .message-content {
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px dashed var(--warning);
+    color: var(--text-primary);
+}
+.message.steering .avatar { background: var(--warning); }
+.message.steering .steer-label {
+    font-size: 11px; font-weight: 600; letter-spacing: .3px;
+    color: var(--warning); margin-bottom: 6px; text-transform: uppercase;
+}
+.message.steering .steer-status {
+    font-size: 11.5px; margin-top: 6px; color: var(--text-secondary);
+}
+.message.steering .steer-status.received { color: #93c5fd; }
+.message.steering .steer-status.applied { color: var(--success); }
+.message.steering .steer-status.rejected { color: var(--danger); }

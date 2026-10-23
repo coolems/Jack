@@ -20,6 +20,11 @@ async function getChatSessionStatus(convId) {
         const res = await fetch(`/api/conversations/${convId}/status`);
         if (res.ok) {
             const data = await res.json();
+            // (2026-10-23 live steering) cache whether the live turn accepts steering -
+            // restored together with the status/button state when switching back.
+            if (data && data.agent_mode !== undefined && typeof ChatSocketPool !== 'undefined') {
+                ChatSocketPool.agentModes[convId] = !!data.agent_mode;
+            }
             if (data && typeof data.status === 'string') return data.status;
         }
     } catch (e) { /* fall through to pool state */ }
@@ -68,6 +73,7 @@ async function newChat() {
         // per-chat generation state so the button shows blue (send) for it, even if the
         // previous chat was still thinking in the background.
         COOLEMS.isStreaming = false;
+        COOLEMS.streamingAgentMode = false;
         COOLEMS.streamingBuffer = '';
         setButtonState(false);
         COOLEMS._inReplay = false;
@@ -138,6 +144,7 @@ async function deleteConversation(id) {
                 COOLEMS.currentConversation = null;
                 // (2026-09-08 multi-chat UI fix) no chat selected -> nothing can be generating.
                 COOLEMS.isStreaming = false;
+                COOLEMS.streamingAgentMode = false;
                 setButtonState(false);
                 COOLEMS._inReplay = false;
                 COOLEMS._baselineAssistant = 0;
@@ -236,6 +243,10 @@ async function loadConversation(id) {
 
             WorkspaceViews.restore(newConvId);            // reattach the REAL node + streaming state
             COOLEMS.isStreaming = (_liveStatus === 'generating' || _liveStatus === 'queued');
+            // (2026-10-23 live steering) restore whether the running turn can be steered.
+            COOLEMS.streamingAgentMode = COOLEMS.isStreaming && (ChatSocketPool.agentModes[newConvId] !== undefined
+                ? !!ChatSocketPool.agentModes[newConvId]
+                : !!COOLEMS.agentMode);
             setButtonState(COOLEMS.isStreaming);
             ChatSocketPool.updateChatStatus(newConvId, _liveStatus);
 
@@ -319,10 +330,15 @@ async function loadConversation(id) {
         COOLEMS.streamingBuffer = '';
         if (_liveStatus === 'generating' || _liveStatus === 'queued') {
             COOLEMS.isStreaming = true;
+            // (2026-10-23 live steering) authoritative from the channel when known.
+            COOLEMS.streamingAgentMode = (ChatSocketPool.agentModes[newConvId] !== undefined
+                ? !!ChatSocketPool.agentModes[newConvId]
+                : !!COOLEMS.agentMode);
             setButtonState(true);                       // red stop button: this chat is busy
             ChatSocketPool.updateChatStatus(newConvId, _liveStatus);
         } else {
             COOLEMS.isStreaming = false;
+            COOLEMS.streamingAgentMode = false;
             setButtonState(false);                      // blue send button: free to prompt
             ChatSocketPool.updateChatStatus(newConvId, 'idle');
         }
@@ -582,6 +598,7 @@ async function editAndResend(messageIndex, newContent) {
 
         // STEP 7: Send the edited message to AI over this chat's own socket
         COOLEMS.isStreaming = true;
+        COOLEMS.streamingAgentMode = !!COOLEMS.agentMode;   // (2026-10-23 live steering)
         COOLEMS.streamingBuffer = '';
         setButtonState(true);
 
@@ -599,22 +616,23 @@ async function editAndResend(messageIndex, newContent) {
         log('[EDIT] Message sent to AI');
         showNotification('Message edited. AI responding from this point.', 'success');
 
-        } catch (error) {
-            console.error('[EDIT] Failed:', error);
+    } catch (error) {
+        console.error('[EDIT] Failed:', error);
             showNotification('Failed to edit message: ' + error.message, 'error');
             COOLEMS.isStreaming = false;
+            COOLEMS.streamingAgentMode = false;
             setButtonState(false);
 
-            log('[EDIT] Attempting to recover by reloading conversation');
-            try {
-                // (2026-09-08 multi-chat) the socket stays open — just reload the view.
-                await loadConversation(COOLEMS.currentConversation);
-            } catch (reloadError) {
-                console.error('[EDIT] Recovery failed:', reloadError);
-                showNotification('Please refresh the page to continue', 'error');
-            }
+        log('[EDIT] Attempting to recover by reloading conversation');
+        try {
+            // (2026-09-08 multi-chat) the socket stays open — just reload the view.
+            await loadConversation(COOLEMS.currentConversation);
+        } catch (reloadError) {
+            console.error('[EDIT] Recovery failed:', reloadError);
+            showNotification('Please refresh the page to continue', 'error');
         }
     }
+}
 
 // Helper function to check if a conversation switch is in progress
 window.isConversationSwitching = function() {

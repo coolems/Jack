@@ -8,7 +8,8 @@ chats generate at once — switching chats in the browser no longer kills anythi
 Responsibilities (and ONLY these):
   * get_or_create / submit   — create or reuse a channel, spawn the background task
   * attach / detach          — UI socket lifecycle per conversation
-  * stop                     — cancel queued-or-running work for one chat (/api/stop)
+      * steer                    — queue a mid-run user message for the live agentic turn
+      * stop                     — cancel queued-or-running work for one chat (/api/stop)
   * stop_all                 — cancel EVERY live session (UI closed / backend shutdown)
   * stale cleanup            — drop channels idle too long (replaces the old dict cleanup)
 
@@ -115,6 +116,16 @@ class ChatBus:
                 if ch.task is not None and not ch.task.done()]
 
         async def _stop_one(ch: ChatChannel) -> bool:
+            # Fail any steering message still waiting for an injection point BEFORE the
+            # stop notification, so the UI can settle its bubble honestly.
+            try:
+                await self._reject_pending_steers(
+                    ch,
+                    "The task was stopped before this steering message could be applied.",
+                    "task_stopped",
+                )
+            except Exception:
+                pass
             try:
                 await ch.emit_frame({"type": "system",
                                      "content": f"Generation stopped ({reason}). Type new message to continue."})
@@ -210,6 +221,9 @@ class ChatBus:
         channel_ws = ChannelWebSocket(ch)
         register_stop_event(self._stop_events, conv_id, ch.stop_event)
         ch.set_status(ChannelStatus.GENERATING)  # may be corrected to QUEUED by queue_status frames
+        # (2026-10-23 live steering) mark the mode BEFORE the task starts, so a steer sent
+        # in the tiny window between submit() and run_generation_turn() is not refused.
+        ch.agent_mode = bool(prepared.get("agent_mode"))
         prepared = dict(prepared)
         prepared["history"] = list(prepared.get("history", []))
 
@@ -219,6 +233,69 @@ class ChatBus:
         )
         ch.task = task
         return ch
+
+    async def steer(self, conv_id: str, text: str, steer_id: str | None = None):
+        """Queue a mid-run user message for this chat's LIVE agentic turn.
+
+        Live steering (2026-10-23): the UI lets the user keep typing while the agent works;
+        pressing Enter sends the text here instead of starting a new turn. The running ReAct
+        loop drains this queue at its next safe boundary and injects the text as a fresh user
+        instruction (see logic/react_loop._apply_pending_steers), so the current task continues
+        with the correction instead of being killed and restarted.
+
+        Returns a 3-tuple ``(ok, info, code)``:
+          * ok=True  -> info is the queued item dict (its "id" is echoed to the UI)
+          * ok=False -> info is a human-readable reason, code a stable machine code.
+
+        Refused when there is no live turn or the turn is not agentic: a normal one-shot
+        completion has no next step to inject into, and the UI is told honestly instead of
+        silently dropping the user's text.
+        """
+        self._bind_owner_loop()
+        text = (text or "").strip()
+        if not text:
+            return False, "The steering message is empty.", "empty"
+
+        ch = self._channels.get(conv_id)
+        if ch is None or ch.task is None or ch.task.done():
+            return (False,
+                    "The task already finished - send this as a normal message.",
+                    "no_active_turn")
+        if not getattr(ch, "agent_mode", False):
+            return (False,
+                    "Steering is only available while an Agent-mode task is running. "
+                    "Use Stop to interrupt this response.",
+                    "not_agentic")
+        if ch.stop_event.is_set():
+            return (False,
+                    "This task is being stopped - send the message as a new turn instead.",
+                    "task_stopping")
+
+        item = ch.queue_steer(text, steer_id)
+        logger.info(f"[CHATBUS] Steering message queued for conv={conv_id} "
+                    f"(id={item['id'][:12]}, pending={ch.pending_steer_count()})")
+        return True, item, ""
+
+    async def _reject_pending_steers(self, ch: ChatChannel, message: str, code: str) -> int:
+        """Tell attached UI clients that still-queued steering messages will never run.
+
+        Used on stop/stop_all so a pending steer bubble cannot stay stuck at "queued"
+        forever when the turn is torn down before the loop reached an injection point.
+        Best-effort: a dead channel must never break the stop path.
+        """
+        pending = ch.drain_steer()
+        for item in pending:
+            try:
+                await ch.emit_frame({
+                    "type": "steer_rejected",
+                    "steer_id": item.get("id"),
+                    "content": item.get("text", ""),
+                    "code": code,
+                    "message": message,
+                })
+            except Exception:
+                pass  # UI gone - nothing to update
+        return len(pending)
 
     async def _guarded_turn(self, ch: ChatChannel, channel_ws: ChannelWebSocket, prepared: dict) -> None:
         """Run the turn; on completion clean up the legacy stop-event entry."""
@@ -295,6 +372,12 @@ class ChatBus:
 
         logger.info(f"[CHATBUS] Stop requested for conv={conv_id} "
                     f"(status={ch.status.value}, task_running={bool(ch.task and not ch.task.done())})")
+        # A steering message still waiting for an injection point will never run now.
+        await self._reject_pending_steers(
+            ch,
+            "The task was stopped before this steering message could be applied.",
+            "task_stopped",
+        )
         if send_frame:
             try:
                 await ch.emit_frame({"type": "system",

@@ -26,6 +26,9 @@
 const ChatSocketPool = {
     sockets: {},          // convId -> { ws, reconnectAttempts }
     statuses: {},         // convId -> 'idle' | 'queued' | 'generating' (drives dots + eviction safety)
+    // (2026-10-23 live steering) convId -> bool: whether that chat's current/last turn is
+    // agentic and therefore accepts a mid-run steering message. Reported by chat_status.
+    agentModes: {},
     order: [],            // LRU order: least recently used at index 0
     maxOpen: 6,           // CLIENT_MAX_OPEN_CHAT_WS default; refined from config when available
 
@@ -230,11 +233,11 @@ const ChatSocketPool = {
                 this.setAttention(convId, 'dialog');
             } else if ((t === 'done' || t === 'error' || t === 'cancelled' ||
                         t === 'provider_error' || t === 'execution_fail') &&
-                       (prev === 'generating' || prev === 'queued')) {
+                        (prev === 'generating' || prev === 'queued')) {
                 this.setAttention(convId, 'done');
             } else if ((t === 'queue_start' || t === 'content' || t === 'thinking' ||
                         t === 'tool_start' || t === 'tool_end') &&
-                       this.attention[convId] === 'dialog') {
+                        this.attention[convId] === 'dialog') {
                 this.clearAttention(convId);   // the dialog was answered - turn resumed
             }
         }
@@ -249,6 +252,8 @@ const ChatSocketPool = {
                 this.statuses[convId] = st2;
                 this._setDot(convId, st2);
             }
+            // (2026-10-23 live steering) remember whether this chat's turn can be steered.
+            if (msg.agent_mode !== undefined) this.agentModes[convId] = !!msg.agent_mode;
             return;
         }
 

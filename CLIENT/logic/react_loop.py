@@ -7,6 +7,8 @@ Handles:
 - Token stats pushing after every provider call
 - Tool result processing and message history management
 - Stop event checking between iterations
+- Live steering: user messages typed during a run are injected as fresh user turns at
+  safe boundaries (before a provider call / before pending tool calls)
 - Safe-margin token warning + context-guardian finish/plan message before hard trim
 - Temp thinking array to preserve all AI reasoning steps in final history
 
@@ -54,6 +56,126 @@ from .tool_lock import tool_lock, SCREEN_BROWSER_TOOLS
 
 
 logger = logging.getLogger("COOLEMS.Logic.ReactLoop")
+
+
+# ============================================================
+# LIVE STEERING (2026-10-23)
+# While an agentic turn is running the UI can hand the loop a new user instruction
+# ("steer"). It is injected as a USER message at the next safe boundary - before a provider
+# call, or right before pending tool calls - so the SAME task continues with the correction
+# instead of being stopped and restarted. The header makes it unambiguous to the model that
+# this is the newest, highest-priority instruction rather than a new separate task.
+# ============================================================
+STEER_PROMPT_HEADER = (
+    "[USER STEERING MESSAGE - the user typed this WHILE you were working on the current task. "
+    "It is the NEWEST instruction and takes priority wherever it conflicts with the original "
+    "request. Follow it immediately, including if it asks you to stop or change direction. "
+    "Adjust your approach / parameters now, keep already-finished work that is still useful, "
+    "and continue the SAME task - do not restart from scratch unless this message asks for it. "
+    "When the task as now specified is complete, end with 'Agentic AI: TASK DONE'.]"
+)
+
+TOOL_SKIPPED_FOR_STEER = (
+    "NOT EXECUTED: the user sent a steering message while this tool call was pending, so it was "
+    "re-planned before running. Read the newest user instruction above and decide whether this "
+    "call is still needed."
+)
+
+
+def _has_pending_steers(config: Any) -> bool:
+    """True when the chat channel holds a steering message not yet injected."""
+    source = getattr(config, "steer_source", None)
+    has_pending = getattr(source, "has_pending_steer", None)
+    if not callable(has_pending):
+        return False
+    try:
+        return bool(has_pending())
+    except Exception:  # pragma: no cover - steering must never break the loop
+        return False
+
+
+async def _apply_pending_steers(config: Any, messages: List[Dict]) -> int:
+    """Drain queued steering messages and append them to *messages* as user turns.
+
+    Ordering contract: callers that are about to inject after a streamed assistant answer
+    must append that assistant message FIRST, then call this helper - so the steer is the
+    final user message the next provider call sees.
+
+    Side effects per message (best-effort, never fatal):
+      * `config.on_steer_applied(item)` persists the raw text exactly once, in order;
+      * a `steer_applied` frame settles the UI bubble (correlated by steer id).
+
+    Returns the number of messages actually injected.
+    """
+    source = getattr(config, "steer_source", None)
+    drain = getattr(source, "drain_steer", None)
+    if not callable(drain):
+        return 0
+    try:
+        items = drain() or []
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[STEER] Could not drain steering queue: {e}")
+        return 0
+
+    applied = 0
+    callback = getattr(config, "on_steer_applied", None)
+    for item in items:
+        if isinstance(item, str):
+            text, steer_id = item, None
+        elif isinstance(item, dict):
+            text = item.get("text", "")
+            steer_id = item.get("id")
+        else:
+            continue
+        text = (text or "").strip()
+        if not text:
+            continue
+
+        # Persist BEFORE injection so the DB order matches the order the model sees, and
+        # a message that never reached the model is never written (see bus.steer docstring).
+        if callable(callback):
+            try:
+                await callback(item)
+            except Exception as e:
+                logger.error(f"[STEER] Failed to persist applied steering message {steer_id}: {e}")
+
+        messages.append({"role": "user", "content": f"{STEER_PROMPT_HEADER}\n\n{text}"})
+        applied += 1
+
+        if getattr(config, "websocket", None):
+            try:
+                await config.websocket.send_text(json.dumps({
+                    "type": "steer_applied",
+                    "steer_id": steer_id,
+                    "content": text,
+                }))
+            except Exception:
+                pass  # UI gone - injection still happened
+
+        logger.info(f"[STEER] Applied steering message {steer_id} at loop boundary "
+                    f"(chars={len(text)}, total_applied_now={applied})")
+
+    return applied
+
+
+def _append_skipped_tool_results(messages: List[Dict], tool_calls: List[Dict], start_idx: int) -> int:
+    """Complete every pending tool call with an explicit 'not executed' result.
+
+    The OpenAI message contract REQUIRES one role="tool" message for every tool_call id
+    on the preceding assistant message. When steering pre-empts a batch we must keep that
+    contract valid or the next provider call is rejected - so each skipped call gets a
+    synthetic result explaining why it did not run.
+    """
+    skipped = 0
+    for tc in tool_calls[start_idx:]:
+        tool_id = tc.get("id", "") if isinstance(tc, dict) else ""
+        messages.append({
+            "role": "tool",
+            "content": TOOL_SKIPPED_FOR_STEER,
+            "tool_call_id": tool_id,
+        })
+        skipped += 1
+    return skipped
 
 
 # Lazy-import ToolCompilationError to avoid circular dependency at module load time
@@ -204,6 +326,16 @@ async def run_react_loop(
 
 
 
+
+            # ---- LIVE STEERING (2026-10-23): drain queued user messages FIRST ----
+            # A steer that arrived while the previous provider call / tool batch was
+            # running becomes the newest user turn for THIS provider call. Reset the
+            # thinking counter: fresh user input is not the model "stalling".
+            _steers_applied = await _apply_pending_steers(config, messages)
+            if _steers_applied:
+                consecutive_thinking_count = 0
+                logger.info(f"[AGENTIC.DEBUG] react_loop - injected {_steers_applied} live "
+                            f"steering message(s) before provider call")
 
             # Increment total loop call counter
             loop_tools += 1
@@ -475,6 +607,30 @@ async def run_react_loop(
                     if check_stop_event(config) is not None:
                         logger.warning("[AGENTIC.DEBUG] react_loop - STOP EVENT set mid-batch; skipping %d remaining tool call(s)", len(tool_calls) - tc_idx)
                         break
+
+                    # ---- LIVE STEERING pre-empts pending side effects (2026-10-23) ----
+                    # The user redirected the task WHILE this tool batch was pending. Do not
+                    # run actions they may no longer want; complete the batch with explicit
+                    # "not executed" tool results (the message contract requires one result
+                    # per tool_call id) and inject the steering message before the next call.
+                    if _has_pending_steers(config):
+                        _skipped = _append_skipped_tool_results(messages, tool_calls, tc_idx)
+                        _steers_applied = await _apply_pending_steers(config, messages)
+                        logger.warning(
+                            f"[AGENTIC.DEBUG] react_loop - steering pre-empted {_skipped} pending "
+                            f"tool call(s) at index {tc_idx}; injected {_steers_applied} steering message(s)"
+                        )
+                        if _skipped and config.websocket:
+                            try:
+                                await config.websocket.send_text(json.dumps({
+                                    "type": "system",
+                                    "content": (f"Steering applied - {_skipped} pending tool call(s) "
+                                                "were re-planned before running."),
+                                }))
+                            except Exception:
+                                pass  # UI gone - the injection still happened
+                        break
+
                     agent_lessons = await _execute_single_tool_call(
                         tc, tool_executor, config, messages,
                         conversation_history, agent_lessons
@@ -496,6 +652,34 @@ async def run_react_loop(
                 # splices at exit below (build_messages() keeps old lines from the model's
                 # view; this is the safety net for anything that still slips through).
                 ai_response = strip_turn_stats_lines(ai_response)
+
+                # ---- LIVE STEERING vs. premature completion (2026-10-23) ----
+                # The user typed a correction while this (possibly final) answer was
+                # streaming. Do NOT accept the task as done: keep what was streamed as an
+                # assistant turn, inject the steering message AFTER it, and let the model
+                # revise/continue. This is what makes steering during a long final answer
+                # feel live instead of "too late - the task already finished".
+                if _has_pending_steers(config):
+                    if ai_response:
+                        if messages and messages[-1].get("role") == "assistant":
+                            messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
+                            invalidate_message_tokens(messages[-1])
+                        else:
+                            messages.append({"role": "assistant", "content": ai_response})
+                    _steers_applied = await _apply_pending_steers(config, messages)
+                    if _steers_applied:
+                        # The streamed answer stays in `messages` (the model must see what it
+                        # already wrote) but is NOT accumulated into temp_thinking: it was a
+                        # premature completion, superseded by the steering message. Keeping it
+                        # would persist a stale "TASK DONE" answer ahead of the revised one.
+                        logger.warning(
+                            f"[AGENTIC.DEBUG] react_loop - completion deferred: injected "
+                            f"{_steers_applied} steering message(s) during the final answer"
+                        )
+                        consecutive_thinking_count = 0
+                        loop_no_tools = 0
+                        tool_iteration += 1
+                        continue
 
                 if "Agentic AI: TASK DONE" in ai_response:
                     # TASK COMPLETE - build final response from ALL accumulated thinking + this last message

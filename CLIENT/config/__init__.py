@@ -53,6 +53,7 @@ from .config import (
     PROTOCOL_VERSION,
     CHAT_BACKGROUND_FRAME_BUFFER,   # (2026-09-08 multi-chat) background frame buffer per chat
     CLIENT_MAX_OPEN_CHAT_WS,        # (2026-09-08 multi-chat) UI LRU cap on open per-chat sockets
+    CHAT_STEER_QUEUE_MAX,           # (2026-10-23 live steering) max queued mid-run user messages
 
     MODEL_NAME,
 

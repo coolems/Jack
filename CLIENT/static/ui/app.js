@@ -29,6 +29,10 @@ window.COOLEMS = {
     agentMode: (function () { try { return localStorage.getItem('coolems_agent_mode') === '1'; } catch (e) { return false; } })(),
     enableThinking: false,
     isStreaming: false,
+    // (2026-10-23 live steering) true when the CURRENT in-flight turn is agentic, i.e. it
+    // has a ReAct loop that can accept a mid-run steering message. Normal-mode completions
+    // must be stopped instead (there is no next step to inject into).
+    streamingAgentMode: false,
     wsReconnectAttempts: 0,
     filesPanelOpen: false,
     MAX_RECONNECT_ATTEMPTS: 3,
@@ -238,9 +242,15 @@ function autoResize(textarea) {
 }
 
 function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
-        if (!COOLEMS.isStreaming && typeof sendMessage === 'function') sendMessage();
+        if (COOLEMS.isStreaming) {
+            // (2026-10-23 live steering) Enter while the agent is working does NOT stop it
+            // and does NOT start a new turn: the text is delivered to the running task.
+            if (typeof sendSteerMessage === 'function') sendSteerMessage();
+        } else if (typeof sendMessage === 'function') {
+            sendMessage();
+        }
     }
 }
 
@@ -441,7 +451,6 @@ window.addEventListener('beforeunload', _cleanupOnUiClose);
 // pagehide covers paths where beforeunload does not fire reliably (tab crash/close on some
 // browsers). Both are idempotent.
 window.addEventListener('pagehide', _cleanupOnUiClose);
-    
 // ===== GLOBAL FUNCTIONS EXPOSED FOR OTHER MODULES =====
 window.escapeHtml = escapeHtml;
 window.getWebSocketUrl = getWebSocketUrl;

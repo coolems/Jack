@@ -13,8 +13,8 @@
 @import url("css/01-base-layout.css");
 @import url("css/02-tree-preview-editor.css");
 @import url("css/03-diff-view-core.css");
-@import url("css/04-chat-messages.css");
-@import url("css/05-input-modals-code.css");
+@import url("css/04-chat-messages.css?v=20261023a");
+@import url("css/05-input-modals-code.css?v=20261023a");
 @import url("css/06-responsive-conversations.css");
 @import url("css/07-diff-rowtable-compare.css");
 @import url("css/08-settings-setup.css");

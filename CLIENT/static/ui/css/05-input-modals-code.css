@@ -1,26 +1,26 @@
 /* =====================================================================
-   05-input-modals-code.css — module of the former monolithic styles.css
-   Source: CLIENT/static/ui/styles.css lines L1426-L1609 (split 2026-09-18).
-   Load order is a contract: keep numbered import order in ../styles.css.
-   ===================================================================== */
+  05-input-modals-code.css — module of the former monolithic styles.css
+  Source: CLIENT/static/ui/styles.css lines L1426-L1609 (split 2026-09-18).
+  Load order is a contract: keep numbered import order in ../styles.css.
+  ===================================================================== */
 /* ===== INPUT AREA ===== */
 .input-container {
-        /* (2026-10-15) prompt frame keeps its original full-width sizing/centering.
-           License badge lives in the bottom-left corner on a layer UNDER the
-           prompt frame, so resizing can never let the prompt visually cover it -
-           the frame simply stays on top where they meet. */
-        position: relative; padding: 24px; background: var(--bg-primary); border-top: 1px solid var(--border); flex-shrink: 0;
-    }
+    /* (2026-10-15) prompt frame keeps its original full-width sizing/centering.
+       License badge lives in the bottom-left corner on a layer UNDER the
+       prompt frame, so resizing can never let the prompt visually cover it -
+       the frame simply stays on top where they meet. */
+    position: relative; padding: 24px; background: var(--bg-primary); border-top: 1px solid var(--border); flex-shrink: 0;
+}
 
 .input-wrapper {
     position: relative; z-index: 1;    /* (2026-10-15) prompt frame on top of the license layer */
     /* (2026-10-15) keeps its original 800px centered size at normal widths. When the window
-           shrinks, it stops growing into the reserved 200px license strip in the bottom-left:
-           max() picks the centred offset while there is room; once that would cross 200px from
-           the left edge, the frame pins to the right of the strip and narrows instead. */
-        max-width: min(800px, calc(100% - 200px));
-        margin-left: max(200px, calc((100% - 800px) / 2));
-        margin-right: auto;
+       shrinks, it stops growing into the reserved 200px license strip in the bottom-left:
+       max() picks the centred offset while there is room; once that would cross 200px from
+       the left edge, the frame pins to the right of the strip and narrows instead. */
+    max-width: min(800px, calc(100% - 200px));
+    margin-left: max(200px, calc((100% - 800px) / 2));
+    margin-right: auto;
     background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: 12px; padding: 12px;
     display: flex; flex-direction: column; gap: 12px;
@@ -56,6 +56,30 @@ textarea {
 }
 
 .input-footer { display: flex; justify-content: space-between; align-items: center; }
+
+/* ===== LIVE STEERING HINT (2026-10-23) =====
+  Visible only while an AGENTIC turn is running: makes it obvious that the prompt box is
+  still live and Enter steers the running task (the red button keeps its stop behavior). */
+.steer-hint {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--warning);
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px dashed rgba(245, 158, 11, 0.55);
+    border-radius: 8px;
+    padding: 7px 10px;
+}
+.steer-hint.visible { display: flex; }
+.steer-hint-key {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 20px; height: 20px; padding: 0 4px;
+    border: 1px solid rgba(245, 158, 11, 0.55); border-radius: 4px;
+    font-size: 12px; font-weight: 600; flex-shrink: 0;
+}
+.steer-hint b { color: var(--text-primary); }
 .file-preview { display: flex; gap: 8px; flex-wrap: wrap; }
 .file-tag { background: var(--bg-tertiary); padding: 4px 8px; border-radius: 4px; font-size: 12px; display: flex; align-items: center; gap: 4px; }
 .file-tag-image { background: rgba(59, 130, 246, 0.2); border: 1px solid var(--accent); }
@@ -95,8 +119,8 @@ textarea {
 
 .modal.active { display: flex; }
 /* (2026-10-02) STANDARD FIXED SIZE for every tab: the box keeps one big size no matter
-   which settings pane is shown - it never grows/shrinks, and because the height is fixed
-   the top bar ("Settings" header) stays at exactly the same position on each switch. */
+  which settings pane is shown - it never grows/shrinks, and because the height is fixed
+  the top bar ("Settings" header) stays at exactly the same position on each switch. */
 .modal-content { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; width: min(94%, 760px); height: min(86vh, 860px); overflow-y: auto; }
 /* Sticky top bar: even when a long pane scrolls inside the fixed box, the header row never moves. */
 .modal-header { padding: 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; background: var(--bg-secondary); z-index: 5; flex-shrink: 0; }
@@ -117,45 +141,45 @@ textarea {
 .search-web-link a { color: var(--accent); text-decoration: none; font-size: 14px; padding: 8px 16px; border: 1px solid var(--accent); border-radius: 20px; transition: all 0.2s; }
 
 /* ===== SETUP / DOWNLOADS PROGRESS (2026-09-21) ===== */
-    /* Live first-run setup section for self-unpacking tools: venv -> pip packages ->
-       model files with size / downloaded / MB/s / ETA. Data: GET /api/setup/status. */
-    .sp-card { background: var(--bg-tertiary); border-left: 3px solid var(--accent); padding: 10px 12px; margin: 8px 0; border-radius: 0 8px 8px 0; font-size: 13px; }
-    .sp-card[data-state="error"] { border-left-color: var(--danger, #ef4444); }
-    .sp-card[data-state="done"] { border-left-color: var(--success, #22c55e); opacity: 0.92; }
-    .sp-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
-    .sp-title { color: var(--accent); font-weight: bold; }
-    .sp-header-status { color: var(--text-secondary, #9ca3af); font-size: 12px; }
-    .sp-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.06); }
-    .sp-row .sp-title { font-weight: normal; color: var(--text-primary); white-space: nowrap; min-width: 190px; }
-    .sp-body { flex: 1; min-width: 0; }
-    .sp-status { flex-shrink: 0; margin-top: 2px; }
-    .sp-icon { display: inline-block; width: 14px; text-align: center; font-size: 12px; color: var(--text-secondary); }
-    .sp-icon.sp-done { color: var(--success, #22c55e); }
-    .sp-icon.sp-error { color: var(--danger, #ef4444); }
-    .sp-icon.sp-run { width: 10px; height: 10px; border: 2px solid rgba(59,130,246,0.25); top-color: var(--accent); border-radius: 50%; animation: spSpin 0.8s linear infinite; }
-    @keyframes spSpin { to { transform: rotate(360deg); } }
-    .sp-pkgs { display: flex; flex-direction: column; gap: 2px; font-family: monospace; font-size: 12px; }
-    .sp-pkg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary, #9ca3af); }
-    .sp-pkg-done, .sp-pkg-cached { color: var(--success, #22c55e); }
-    .sp-pkg-downloading { color: var(--accent); }
-    .sp-pkg-installing { color: var(--warning, #f59e0b); }
-    .sp-pkg-error { color: var(--danger, #ef4444); }
-    .sp-dim { opacity: 0.6; font-size: 11px; }
-    .sp-line { margin-top: 4px; padding: 6px 10px; background: rgba(255,255,255,0.08); overflow: hidden; text-overflow: ellipsis; }
-    .sp-detail { color: var(--danger, #ef4444); }
-    /* Model stage: exactly two live lines - CURRENT download + TOTAL (2026-09-21 rework). */
-    .sp-model-line { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
-    .sp-model-label { flex-shrink: 0; min-width: 54px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-secondary, #9ca3af); opacity: 0.75; }
-    .sp-file-name { flex-shrink: 1; min-width: 0; font-family: monospace; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; display: inline-block; vertical-align: bottom; }
-    .sp-file-meta { font-size: 11px; color: var(--text-secondary, #9ca3af); white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .sp-total-meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .sp-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; margin-top: 3px; }
-    .sp-bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
-    .sp-bar-sm { height: 3px; max-width: 260px; margin-top: 2px; }
-    .sp-pkg-prog { white-space: nowrap; font-size: 12px; color: var(--text-secondary, #9ca3af); }
-    .sp-complete { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); color: var(--success, #22c55e); font-weight: bold; }
+/* Live first-run setup section for self-unpacking tools: venv -> pip packages ->
+  model files with size / downloaded / MB/s / ETA. Data: GET /api/setup/status. */
+.sp-card { background: var(--bg-tertiary); border-left: 3px solid var(--accent); padding: 10px 12px; margin: 8px 0; border-radius: 0 8px 8px 0; font-size: 13px; }
+.sp-card[data-state="error"] { border-left-color: var(--danger, #ef4444); }
+.sp-card[data-state="done"] { border-left-color: var(--success, #22c55e); opacity: 0.92; }
+.sp-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.sp-title { color: var(--accent); font-weight: bold; }
+.sp-header-status { color: var(--text-secondary, #9ca3af); font-size: 12px; }
+.sp-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.06); }
+.sp-row .sp-title { font-weight: normal; color: var(--text-primary); white-space: nowrap; min-width: 190px; }
+.sp-body { flex: 1; min-width: 0; }
+.sp-status { flex-shrink: 0; margin-top: 2px; }
+.sp-icon { display: inline-block; width: 14px; text-align: center; font-size: 12px; color: var(--text-secondary); }
+.sp-icon.sp-done { color: var(--success, #22c55e); }
+.sp-icon.sp-error { color: var(--danger, #ef4444); }
+.sp-icon.sp-run { width: 10px; height: 10px; border: 2px solid rgba(59,130,246,0.25); top-color: var(--accent); border-radius: 50%; animation: spSpin 0.8s linear infinite; }
+@keyframes spSpin { to { transform: rotate(360deg); } }
+.sp-pkgs { display: flex; flex-direction: column; gap: 2px; font-family: monospace; font-size: 12px; }
+.sp-pkg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary, #9ca3af); }
+.sp-pkg-done, .sp-pkg-cached { color: var(--success, #22c55e); }
+.sp-pkg-downloading { color: var(--accent); }
+.sp-pkg-installing { color: var(--warning, #f59e0b); }
+.sp-pkg-error { color: var(--danger, #ef4444); }
+.sp-dim { opacity: 0.6; font-size: 11px; }
+.sp-line { margin-top: 4px; padding: 6px 10px; background: rgba(255,255,255,0.08); overflow: hidden; text-overflow: ellipsis; }
+.sp-detail { color: var(--danger, #ef4444); }
+/* Model stage: exactly two live lines - CURRENT download + TOTAL (2026-09-21 rework). */
+.sp-model-line { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+.sp-model-label { flex-shrink: 0; min-width: 54px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-secondary, #9ca3af); opacity: 0.75; }
+.sp-file-name { flex-shrink: 1; min-width: 0; font-family: monospace; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 46%; display: inline-block; vertical-align: bottom; }
+.sp-file-meta { font-size: 11px; color: var(--text-secondary, #9ca3af); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sp-total-meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sp-bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; margin-top: 3px; }
+.sp-bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.4s ease; }
+.sp-bar-sm { height: 3px; max-width: 260px; margin-top: 2px; }
+.sp-pkg-prog { white-space: nowrap; font-size: 12px; color: var(--text-secondary, #9ca3af); }
+.sp-complete { margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); color: var(--success, #22c55e); font-weight: bold; }
 
-    /* ===== CODE BLOCKS ===== */
+/* ===== CODE BLOCKS ===== */
 pre {
     background: #1e1e1e; padding: 12px; border-radius: 6px;
     overflow-x: auto; margin: 8px 0;

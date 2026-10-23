@@ -49,7 +49,19 @@ class WebSocketChatMessage(BaseModel):
         False,
         description="Whether to enable model thinking/reasoning mode"
     )
-
+    # (2026-10-23 live steering) While an agentic turn is running the UI sends a normal
+    # message payload with steer=True instead of submitting a new turn. The text is queued
+    # on the chat and injected into the running ReAct loop at its next safe boundary.
+    steer: bool = Field(
+        False,
+        description="True when this message steers the currently running agentic task instead of starting a new turn"
+    )
+    steer_id: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Client-generated correlation id echoed back in steer_received/applied/rejected frames"
+    )
+    
     @field_validator("message")
     @classmethod
     def message_must_not_be_whitespace_only(cls, v: str) -> str:

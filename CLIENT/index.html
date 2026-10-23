@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261015i">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261023a">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -90,6 +90,8 @@
                     </select>
                 </div>
                 <textarea id="messageInput" placeholder="Message COOLEMS..." rows="1" onkeydown="handleKeyDown(event)" oninput="autoResize(this)"></textarea>
+                <!-- (2026-11-25) the extra "Agent is working…" hint line was removed - the live
+                     steering placeholder in the textarea itself is enough. -->
                 <div class="input-footer">
                     <div class="file-preview" id="filePreview"></div>
                     <button class="think-toggle" id="thinkToggle" onclick="toggleThink()" title="Toggle thinking mode">
@@ -549,7 +551,7 @@
     <!-- Load scripts in dependency order -->
     <script src="/static/ui/api-key.js?v=20261124a">
     </script>
-    <script src="/static/ui/app.js?v=20260830a">
+    <script src="/static/ui/app.js?v=20261023a">
     </script>
     <script src="/static/ui/license-badge.js?v=20261015e">
     </script>
@@ -557,13 +559,13 @@
     </script>
     <script src="/static/ui/conversation-manager.js?v=20261009a">
     </script>
-    <script src="/static/ui/conversation.js?v=20261009b">
+    <script src="/static/ui/conversation.js?v=20261023a">
     </script>
     <script src="/static/ui/workspace-view.js?v=20261009a"></script>
-    <script src="/static/ui/chat-socket-pool.js?v=20261009a"></script>
-    <script src="/static/ui/websocket.js?v=20261124a">
+    <script src="/static/ui/chat-socket-pool.js?v=20261023a"></script>
+    <script src="/static/ui/websocket.js?v=20261023b">
     </script>
-    <script src="/static/ui/message.js?v=20261005a">
+    <script src="/static/ui/message.js?v=20261023b">
     
     </script>
     <script src="/static/ui/setup-progress.js?v=20261023a"></script>

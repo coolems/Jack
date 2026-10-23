@@ -102,6 +102,8 @@ def build_agentic_config(
     api_key: str | None = None,
     session_timer=None,   # (2026-08-23) active-time timer for this turn (pauses on user menus)
     last_session_sec: float = 0.0,  # previous turn's duration for the UI "last session" stat
+    steer_source: Any = None,       # (2026-10-23) live mid-run steering queue (ChatChannel)
+    on_steer_applied: Any = None,   # async callback: persist one applied steering message
 ) -> "AgenticModeConfig":
     """
     Build an AgenticModeConfig with defaults from config.py.
@@ -123,6 +125,8 @@ def build_agentic_config(
         tool_orchestrator: Tool orchestrator instance.
         ollama_tools: Pre-built Ollama-compatible tool definitions.
         api_key: API key for role-based permission checking.
+        steer_source: (2026-10-23) live mid-run steering queue owned by the chat channel.
+        on_steer_applied: (2026-10-23) async callback persisting each applied steering message.
 
     Returns:
         Fully constructed AgenticModeConfig instance.
@@ -148,4 +152,6 @@ def build_agentic_config(
         api_key=api_key,
         session_timer=session_timer,
         last_session_sec=last_session_sec,
+        steer_source=steer_source,
+        on_steer_applied=on_steer_applied,
     )

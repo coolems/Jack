@@ -632,6 +632,13 @@ COOLEMS_RECONNECT_MAX_DELAY: float = 30.0
 CHAT_BACKGROUND_FRAME_BUFFER: int = 400   # frames kept per background chat until it finishes (bounded memory)
 CLIENT_MAX_OPEN_CHAT_WS: int = 6          # UI LRU cap on simultaneously open per-chat sockets
 
+# --- Live steering (2026-10-23) ---
+# While an agentic task is running, the user can type in the prompt box and press Enter:
+# the text is queued on the chat's channel and injected into the ReAct loop at its next
+# safe step (never as a new turn, never stopping the current task). Bounded so a stuck
+# keyboard cannot grow memory without limit; oldest entries are dropped first.
+CHAT_STEER_QUEUE_MAX: int = 32
+    
 # --- Model (fetched from SERVER at runtime) ---
 MODEL_NAME: str = ""  # Auto-detected from SERVER loaded models at runtime do not hardcode here
 

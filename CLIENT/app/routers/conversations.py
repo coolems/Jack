@@ -169,6 +169,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
         status = "idle"
         queue_position = 0
+        agent_mode = False
         try:
             from app.chat_bus import get_chat_bus
             bus = get_chat_bus()
@@ -177,11 +178,13 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 if ch is not None:
                     status = ch.status.value
                     queue_position = int(getattr(ch, "queue_position", 0) or 0)
+                    # (2026-10-23 live steering) whether the live turn accepts steering
+                    agent_mode = bool(getattr(ch, "agent_mode", False))
         except Exception as e:  # pragma: no cover - bus must never break the list/status UI
             logger.debug(f"Conversation status lookup failed for {conv_id}: {e}")
 
-        return {"status": status, "queue_position": queue_position}
-
+        return {"status": status, "queue_position": queue_position, "agent_mode": agent_mode}
+    
     @router.post("/{conv_id}/update")
     async def update_conversation(conv_id: str, data: Dict, request: Request):
         """
