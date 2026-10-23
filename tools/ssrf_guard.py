@@ -54,15 +54,19 @@ DELIVERY NOTE (server/client split)
 CLIENT usage requires aiohttp (listed in CLIENT/requirements.txt). Browser navigation
 tools do NOT need it -- they only use the sync-free validation gate above.
 
-    URL CONSENT (2026-07-15): consentable local targets (file:// inside working root,
-    loopback http(s)) may be passed after an explicit user Allow via grant_url() -- a
-    one-shot exact-match ledger consumed by validate/ensure on first use. All other
-    blocks remain hard and can never be consented into. See classify_blocked_url()."""
+    URL CONSENT (2026-07-15, extended 2026-10-23): blocked targets may be passed after
+    an explicit user Allow via grant_url() -- a one-shot exact-match ledger consumed by
+    validate/ensure on first use. Consentable categories: file:// inside the working
+    root ('local_file'), loopback http(s) ('loopback') and private/reserved http(s)
+    targets such as LAN / link-local / CGNAT IPs ('private_ip') -- the user decides in
+    a consent card which of these to open. Only non-URL/undecidable input stays hard-
+    blocked (no channel, no meaning for a click). See classify_blocked_url()."""
 
 import asyncio
 import ipaddress
 import logging
 import os
+import re
 import socket
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -332,18 +336,21 @@ def validate_url_not_ssrff(
 # ---------------------------------------------------------------------------
 # URL CONSENT (2026-07-15) -- user-permission flow for *consentable* local targets.
 # ---------------------------------------------------------------------------
-# Some blocked URLs are NOT SSRF risks: file:// paths INSIDE the working root and
-# loopback http(s) hosts (localhost / 127.x). Those are exactly what a user would
-# want to open in the browser during development (e.g. previewing an HTML file that
-# just got written), but the hard block above cannot ask -- it has no channel to the
-# local user. So:
-#   * ToolExecutor (CLIENT) pre-checks URL-bearing tools with validate_url_not_ssrff();
-#     when a failure is CONSENTABLE it shows the same approval card as python_exec and,
-#     on an explicit Allow, registers a ONE-SHOT grant below;
-#   * validate/ensure then pass THAT exact URL through (the grant is consumed on first
-#     match -- approving one file never opens another);
-#   * everything else stays HARD-blocked exactly as before: private/LAN IPs, link-local
-#     metadata ranges, CGNAT, multicast/reserved, and any other non-loopback target.
+# Blocked URLs cannot ask for permission by themselves -- they have no channel to the
+# local user. So ToolExecutor (CLIENT) pre-checks URL-bearing tools with
+# validate_url_not_ssrff(); when a failure is CONSENTABLE it shows the same approval
+# card as python_exec and, on an explicit Allow, registers a ONE-SHOT grant below;
+# validate/ensure then pass THAT exact URL through (the grant is consumed on first
+# match -- approving one target never opens another).
+#
+# Consentable categories (2026-10-23: extended from local-only to ALL blocked targets):
+#   * 'local_file'  -- file:// paths INSIDE the working root;
+#   * 'loopback'    -- http(s) targeting localhost / 127.x / ::1;
+#   * 'private_ip'  -- http(s) targeting private/reserved ranges (LAN, link-local
+#     metadata, CGNAT, multicast, reserved, IPv6 ULA/link-local). The card shows the
+#     exact target and its class so the USER decides what is ok for him.
+# Only input that cannot be classified at all stays hard-blocked: non-strings, URLs
+# with no hostname, or internal errors (fail-closed by construction).
 # The fail-closed contract is untouched: when no grant exists, behavior is byte-identical
 # to the pre-consent module.
 
@@ -400,23 +407,65 @@ def _file_url_local_path(url: str):
     return os.path.normpath(os.path.abspath(local))
 
 
+def _ip_class_label(ip_obj) -> str:
+    """Human-readable class for a blocked IP -- shown on the consent card so the user
+    can decide with full context (2026-10-23)."""
+    if isinstance(ip_obj, ipaddress.IPv4Address):
+        if ip_obj.is_loopback:
+            return "loopback"
+        for label, net in (("link-local (cloud metadata range)", _BLOCKED_NETWORKS_V4[5]),   # 169.254/16
+                           ("current-network address", _BLOCKED_NETWORKS_V4[1]),              # 0.0.0.0/8
+                           ("private LAN", ipaddress.IPv4Network('10.0.0.0/8')),
+                           ("private LAN", ipaddress.IPv4Network('172.16.0.0/12')),
+                           ("private LAN", ipaddress.IPv4Network('192.168.0.0/16')),
+                           ("carrier-grade NAT", _BLOCKED_NETWORKS_V4[6]),                    # 100.64/10
+                           ("benchmark-testing range", _BLOCKED_NETWORKS_V4[7]),             # 198.18/15
+                           ("multicast", _BLOCKED_NETWORKS_V4[8]),                            # 224/4
+                           ("reserved", _BLOCKED_NETWORKS_V4[9])):                            # 240/4
+            if ip_obj in net:
+                return label
+        return "blocked range"
+    # IPv6
+    if ip_obj.is_loopback or ip_obj == ipaddress.IPv6Address("::"):
+        return "loopback/unspecified"
+    for label, net in (("unique-local (private) IPv6", _BLOCKED_NETWORKS_V6[2]),   # fc00::/7
+                       ("link-local IPv6", _BLOCKED_NETWORKS_V6[3]),                # fe80::/10
+                       ("multicast IPv6", _BLOCKED_NETWORKS_V6[4])):                # ff00::/8
+        if ip_obj in net:
+            return label
+    return "blocked range"
+
+
 def classify_blocked_url(url: str):
     """Classify a BLOCKED url as consentable (user may be asked) or hard-blocked.
 
-    Returns (is_consentable, reason):
-      * file:// whose local path is INSIDE the current working root -> consentable
-        ('local_file');
-      * http(s) targeting loopback (localhost / 127.x / ::1)         -> consentable
-        ('loopback') -- e.g. a dev server started on this machine;
-      * everything else                                              -> hard block, the
-        user is NEVER asked (private LAN, link-local metadata IPs, CGNAT, multicast,
-        reserved ranges, foreign file:// paths, other schemes).
+    Returns (is_consentable, reason). The *reason* doubles as the card's context line,
+    so it names the exact target and its class. Consentable categories (2026-10-23 --
+    extended from local-only to every blocked http(s)/file:// target, so the USER
+    decides what is ok for him):
 
-    Never raises: any internal error degrades to a hard block.
+      * 'local_file'  -- file:// whose local path is INSIDE the current working root;
+      * 'loopback'    -- http(s) targeting localhost / 127.x / ::1 (dev server etc.);
+      * 'private_ip'  -- http(s) targeting private/reserved ranges: LAN, link-local
+        metadata IPs, CGNAT, multicast, reserved, IPv6 ULA/link-local.
+
+    Hard blocks remain for what a click cannot meaningfully decide: other schemes
+    (ftp://, data:, ...), URLs with no hostname, hostnames whose answers are mixed or
+    undecidable (at least one public/unparseable answer), and any internal error
+    (fail-closed by construction).
+
+    Never raises.
     """
     try:
         if not isinstance(url, str):
             return False, "not a string"
+
+        # Browser tools auto-prefix 'https://' when no scheme is present (goto/check_url do
+        # exactly this) -- classify the same way so e.g. 'localhost:8080' is offered to the
+        # user instead of dying as an unknown scheme. urlparse would otherwise read
+        # 'localhost' itself as a fake scheme, so gate on KNOWN schemes only.
+        if not re.match(r'^[a-z][a-z0-9+.-]*://', url, flags=re.IGNORECASE):
+            url = 'https://' + url
 
         local = _file_url_local_path(url)
         if local is not None:
@@ -435,24 +484,62 @@ def classify_blocked_url(url: str):
             except ValueError:
                 return False, "file path on a different drive than the working root"
             if not (rel == os.curdir or rel.startswith('..' + os.sep)):
-                return True, f"local file inside working root: {real_local}"
+                return True, f"local file inside your working folder: {real_local}"
             return False, f"path is outside the working root: {real_local}"
 
         parsed = urlparse(url)
         scheme = (parsed.scheme or '').lower()
-        if scheme in ('http', 'https'):
-            host = (parsed.hostname or '')
-            if not host:
-                return False, "no hostname"
-            if host.lower() == 'localhost':
-                return True, f"loopback target: {url}"
+        if scheme not in ('http', 'https'):
+            # ftp://, data:, javascript: etc. -- no browser-navigation consent makes sense;
+            # a grant could never be used safely by the http(s)-only tools anyway.
+            return False, f"scheme '{scheme or 'none'}' is not openable in the browser"
+
+        # parsed.hostname strips the port and IPv6 brackets ('[fd12::1]' -> 'fd12::1');
+        # for bracketed hosts it also drops a zone id -- fall back to the raw netloc so
+        # 'fe80::1%eth0' still classifies like its unbracketed twin.
+        host = (parsed.hostname or '').lower()
+        if not host and parsed.netloc:
+            raw_host = parsed.netloc.split('@', 1)[-1]
+            if raw_host.startswith('[') and ']' in raw_host:
+                host = raw_host[1:raw_host.index(']')].lower()
+        if not host:
+            return False, "no hostname"
+        if host == 'localhost':
+            return True, f"loopback target (this machine): {url}"
+        try:
+            lit = ipaddress.ip_address(host)
+            if lit.is_loopback or lit == ipaddress.IPv6Address("::"):
+                return True, f"loopback target (this machine): {url}"
+            if is_blocked_ip_obj(lit):
+                return True, (f"private/reserved IP ({_ip_class_label(lit)}): "
+                              f"{host} -- e.g. a device on your local network")
+            # public IP literal: validate() would not have blocked it -- undecidable here.
+            return False, "target is not classified as blocked (undecidable)"
+        except ValueError:
+            pass  # hostname -- resolve once to decide
+
+        # Hostname that the guard already rejected: re-resolve ONCE and consent only when
+        # EVERY answer is a blocked IP with a nameable class. Mixed/public answers mean
+        # this is not a purely local target -> stays hard-blocked (fail-closed).
+        try:
+            infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except Exception as e:
+            return False, f"cannot classify hostname ({type(e).__name__}) - fails closed"
+        answers = []
+        for res in infos:
             try:
-                lit = ipaddress.ip_address(host)
-                if lit.is_loopback:
-                    return True, f"loopback target: {url}"
+                ip_obj = ipaddress.ip_address(res[4][0].split('%', 1)[0])
             except ValueError:
-                pass  # hostname -- DNS answer was private (hard block), or undecidable
-        return False, "non-consentable target"
+                return False, f"unparseable DNS answer for {host!r} - fails closed"
+            if not is_blocked_ip_obj(ip_obj):
+                return False, f"{host!r} also resolves to a public address - not a local-only target"
+            answers.append(ip_obj)
+        if not answers:
+            return False, "no DNS answers for hostname - fails closed"
+        label = _ip_class_label(answers[0])
+        ips_txt = ", ".join(str(a) for a in dict.fromkeys(str(a) for a in answers))
+        return True, (f"hostname {host!r} resolves only to private/reserved IP(s) "
+                      f"({label}): {ips_txt}")
     except Exception as e:  # fail-closed by construction
         logger.error(f"SSRF guard [consent]: classification error ({e!r}) - treating as hard block")
         return False, f"classification error: {type(e).__name__}"

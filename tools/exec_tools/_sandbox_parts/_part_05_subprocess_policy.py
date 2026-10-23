@@ -61,7 +61,8 @@
                 if isinstance(cmd, str):
                     has_op, tok = _jps_has_operator(cmd)
                     if has_op:
-                        _deny_exec("shell operator in command (token %r)" % tok, cmd)
+                        # (2026-10-24) consentable: asks the local user when a UI relay is live.
+                        _exec_gate("shell operator in command (token %r)" % tok, cmd)
                     toks = _jps_tokens(cmd)
                     _check_prog_base(_jps_basename(toks[0]) if toks else "", cmd)
                 return _orig_system(cmd)
@@ -77,7 +78,8 @@
                 if isinstance(cmd, str):
                     has_op, tok = _jps_has_operator(cmd)
                     if has_op:
-                        _deny_exec("shell operator in command (token %r)" % tok, cmd)
+                        # (2026-10-24) consentable: asks the local user when a UI relay is live.
+                        _exec_gate("shell operator in command (token %r)" % tok, cmd)
                     toks = _jps_tokens(cmd)
                     _check_prog_base(_jps_basename(toks[0]) if toks else "", cmd)
                 return _orig_popen(cmd, *a, **k)
@@ -104,7 +106,8 @@
                              if isinstance(path, bytes) else str(path))
                         base = _jps_basename(s)
                         if _is_denied_prog(base):
-                            _deny_exec("%s of %r" % (nm, s), path)
+                            # (2026-10-24) consentable: asks the local user when a UI relay is live.
+                            _exec_gate("%s of %r" % (nm, s), path)
                         return orig_fn(mode, path, *a, **k)
                     guarded.__name__ = nm
                     return guarded

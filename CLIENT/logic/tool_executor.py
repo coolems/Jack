@@ -270,11 +270,12 @@ class ToolExecutor:
                 return deny_msg, ""
 
         # ============================================================
-        # USER APPROVAL GATE for URL-bearing browser tools (2026-07-15).
+        # USER APPROVAL GATE for URL-bearing browser tools (2026-07-15, extended 2026-10-23).
         # Pre-checks the SSRF guard BEFORE execution: when a blocked target is
-        # CONSENTABLE (file:// inside working root / loopback http(s)) it asks the
-        # local user; on Allow it registers the one-shot grant so the tool's own
-        # ensure_url_not_ssrff() passes for this exact URL. Hard-blocked targets and
+        # CONSENTABLE (file:// inside working root, loopback http(s), private/reserved
+        # IP targets) it asks the local user - the card names the exact target and its
+        # class; on Allow it registers the one-shot grant so the tool's own
+        # ensure_url_not_ssrff() passes for this exact URL. Unclassifiable targets and
         # a declined question fail closed with an explanatory message (no execution).
         # ============================================================
         if tool_name in URL_CONSENT_TOOLS:
@@ -290,9 +291,9 @@ class ToolExecutor:
                     logger.warning("[URL-CONSENT] %s NOT executed - blocked target declined or unconsentable", tool_name)
                     deny_msg = ("USER DECISION: This URL was refused by the local user's browser-security gate. "
                                 f"The navigation to {url_arg[:200]} did NOT happen and must not be retried with the same URL. "
-                                "If it is a local file inside your working folder, tell the user to click Allow on the "
-                                "approval card (or ask them again in a new task). Otherwise use an alternative approach: "
-                                "serve the file over http://localhost, read it as text with the file tools, or explain what you intended.")
+                                "Tell the user they can click Allow on the approval card (or ask them again in a new task). "
+                                "Otherwise use an alternative approach: serve the file over http://localhost, read it as text "
+                                "with the file tools, or explain what you intended.")
                     return deny_msg, ""
 
         # Send tool start notification (skip if silent mode)
@@ -506,15 +507,19 @@ class ToolExecutor:
 
         Returns a ConsentResult. allowed=True when the SSRF guard already accepts the
         URL (normal public web - no user interaction at all) or after an explicit user
-        Allow / active run-all grant for a CONSENTABLE local target (file:// inside
-        working root, loopback http(s)) -- in that case a one-shot exact-match grant is
-        registered so the tool's own ensure_url_not_ssrff() passes. decision=='explain'
-        means the user clicked Explain request (nothing opened; caller returns the
-        instruction). Everything else fails closed. Never raises.
+        Allow / active run-all grant for a CONSENTABLE target -- in that case a one-shot
+        exact-match grant is registered so the tool's own ensure_url_not_ssrff() passes.
+        decision=='explain' means the user clicked Explain request (nothing opened;
+        caller returns the instruction). Everything else fails closed. Never raises.
+
+        Consentable categories (2026-10-23: extended beyond local-only so the USER
+        decides what is ok for him): file:// inside working root, loopback http(s) and
+        private/reserved IP targets (LAN / link-local metadata / CGNAT / ...). The card's
+        description line names the exact target + class from classify_blocked_url().
 
         "Allow until task done" on a URL consent card grants the url kind only (2026-07-18 rev4):
-            every later consentable local target of THIS agentic run passes without asking; dangerous
-        (non-consentable) targets are still hard-blocked even under auto-consent.
+            every later consentable target of THIS agentic run passes without asking;
+        unclassifiable targets stay hard-blocked even under auto-consent.
         """
         from app.chat_bus import ConsentDialog, ConsentResult
 
@@ -542,19 +547,23 @@ class ToolExecutor:
 
         result = await ConsentDialog("url").ask(
             websocket=websocket, conv_id=conversation_id, payload=url,
-            description=("This URL points to THIS machine (a file inside your working "
-                         "folder or a localhost address). The SSRF guard blocked it by default; "
+            description=(f"The SSRF guard blocked this target by default: {why}. "
                          "Allow opens exactly this one URL."),
             session_timer=self.session_timer)
 
         if result.allowed:
             grant_url(url)  # 'allow' = this one now; 'allow_category_until_done' = this one + rest of the run
-            logger.info(f"[URL-CONSENT] allowed local target ({result.decision}): {url[:120]}")
+            # The browser tools auto-prefix 'https://' on scheme-less input -- grant that
+            # normalized form too so the tool's own ensure_url_not_ssrff() passes (the
+            # ledger is exact-match, 2026-10-23).
+            if not re.match(r'^[a-z][a-z0-9+.-]*://', url or '', flags=re.IGNORECASE):
+                grant_url('https://' + url)
+            logger.info(f"[URL-CONSENT] allowed target ({result.decision}): {url[:120]}")
             if result.decision == "allow_category_until_done" and not _already_granted:
                 try:
                     await websocket.send_text(json.dumps({
                         "type": "system",
-                        "content": "Auto-open enabled: local file/localhost targets will open without asking until this task ends.",
+                        "content": "Auto-open enabled: blocked-but-consentable URL targets (local files, localhost and private/LAN addresses) will open without asking until this task ends.",
                     }))
                 except Exception:
                     pass  # dead socket - the grant still holds in state; card shows it client-side

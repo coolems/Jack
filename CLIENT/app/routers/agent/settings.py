@@ -47,7 +47,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
 
             # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for the
             # OTHER three card kinds - fully detached from the python_exec pair.
-            for _kind in ("url", "file", "network"):
+            for _kind in ("url", "file", "network", "subprocess"):  # (2026-10-24)
                 settings[_kind + "_consent_auto_approve"] = runtime["approvals"][_kind]["mode"]
                 settings[_kind + "_consent_auto_approve_seconds"] = runtime["approvals"][_kind]["seconds"]
             # (2026-10-03) Runtime tab: image generator - model line + default resolution.
@@ -156,7 +156,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                 current["python_exec_auto_approve_seconds"] = sec
             # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for url / file /
             # network consent cards - same validation as python_exec, fully detached keys.
-            for _kind in ("url", "file", "network"):
+            for _kind in ("url", "file", "network", "subprocess"):  # (2026-10-24)
                 _mode_key = _kind + "_consent_auto_approve"
                 _sec_key = _kind + "_consent_auto_approve_seconds"
                 if _mode_key in data:

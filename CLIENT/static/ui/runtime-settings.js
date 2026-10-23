@@ -29,7 +29,7 @@
 // python_exec dialog showed "no time limit" even when settings.json said "auto after 5s".
 // approvals[kind] (2026-07-18 unified consent dialog): per-kind auto-approve settings,
 // fully detached per category - python / url / file / network each have their own mode+seconds.
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 } } };
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 } };  // (2026-10-24) subprocess consent cards
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
 let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
@@ -58,7 +58,7 @@ async function refreshRuntimeSettingsFromApi() {
 
     // (2026-07-18 unified consent dialog) per-kind auto-approve pairs - fully detached.
     const approvals = {};
-    ['python', 'url', 'file', 'network'].forEach(function (kind) {
+    ['python', 'url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // (2026-10-24)
         let m = 'manual';
         let s = 5;
         if (kind === 'python') {   // historical key names
@@ -93,7 +93,7 @@ async function refreshRuntimeSettingsFromApi() {
         if (secInput) secInput.value = String(seconds);
 
         // (2026-07-18) fill the three per-kind consent rows (url / file / network).
-        ['url', 'file', 'network'].forEach(function (kind) {
+        ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
             const a = approvals[kind];
             const manualEl = document.getElementById(kind + 'ConsentManual');
             const autoEl = document.getElementById(kind + 'ConsentAuto');
@@ -179,7 +179,7 @@ function readApprovalsFromControls() {
     let pySeconds = pySec ? parseInt(pySec.value, 10) : NaN;
     if (!Number.isFinite(pySeconds)) pySeconds = 5;
     out.python = { mode: pyMode, seconds: Math.min(3600, Math.max(1, pySeconds)) };
-    ['url', 'file', 'network'].forEach(function (kind) {
+        ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
         const autoEl = document.getElementById(kind + 'ConsentAuto');
         const secInput = document.getElementById(kind + 'ConsentSeconds');
         let s = secInput ? parseInt(secInput.value, 10) : NaN;
@@ -218,7 +218,7 @@ async function saveRuntimeSettings() {
     // (2026-11-24 fix) show/hide EACH kind's seconds input when its radio changes -
     // previously only the python group was toggled, so selecting "Auto-approve after"
     // on URL / File Access / Network never revealed their seconds field.
-    ['url', 'file', 'network'].forEach(function (kind) {
+        ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
         toggleConsentSecondsGroup(kind, approvalsNow[kind].mode === 'auto');
     });
 

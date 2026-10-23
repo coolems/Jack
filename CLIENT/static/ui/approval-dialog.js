@@ -7,7 +7,8 @@
  * card from the kind -> config table below - different inputs, same code:
  *
  *   python    AI wants to run Python code on THIS machine        (code payload)
- *   url       browser tool to a local target (SSRF-consentable)  (URL payload)
+ *   url       browser tool to a blocked-but-consentable target: local file inside the
+ *             working root, localhost or private/reserved IP (LAN / metadata / CGNAT)  (URL payload)
  *   file      sandboxed python_exec touching OUTSIDE working_root (op + path line)
  *   network   sandboxed python_exec connecting OUTSIDE the box    (socket call line)
  *
@@ -44,7 +45,7 @@ const APPROVAL_DIALOG_CONFIG = {
         denyLabel: '&times; Do not open',
         runAllLabel: '&#9889; Allow until task done',
         statusAllow: '\u2705 Allowed - opening this URL in the browser now.',
-        statusRunAll: '\u26A1 Auto-open enabled: local file/localhost targets will open without asking until this task ends.',
+        statusRunAll: '\u26A1 Auto-open enabled: consentable URL targets (local files, localhost and private/LAN addresses) will open without asking until this task ends.',
         statusDeny: '\u274C Not opened - you decided not to open this target. The AI was told and will continue differently.'
     },
     file: {
@@ -56,6 +57,16 @@ const APPROVAL_DIALOG_CONFIG = {
         statusAllow: '\u2705 Access allowed - the script may touch that path for this run.',
         statusRunAll: '\u26A1 Allow-until-task-done enabled: file access requests will be approved without asking until this task ends.',
         statusDeny: '\u274C Access denied - that path stayed blocked and the AI was told.'
+    },
+    subprocess: {
+        icon: '\u{1F5A8}\uFE0F',               // 🔨 (spawning an external program)
+        title: 'External program request',
+        allowLabel: '&#10003; Allow this spawn',
+        denyLabel: '&times; Block spawn',
+        runAllLabel: '&#9889; Allow until task done',
+        statusAllow: '\u2705 Spawn allowed - the program is running now (outside the sandbox).',
+        statusRunAll: '\u26A1 Allow-until-task-done enabled: external-program requests will be approved without asking until this task ends.',
+        statusDeny: '\u274C Spawn blocked - the program did not run and the AI was told.'
     },
     network: {
         icon: '\u26A0\uFE0F\u{1F30D}',        // ⚠️🌍 (warning kept for the risky one)

@@ -66,7 +66,7 @@ def build_approval_frame(conv_id: str, request_id: str, code: str,
 
 
 #: Consent card categories - each has its OWN "allow until task done" grant flag.
-ALLOW_TILL_TASK_DONE_KINDS = ("python", "url", "file", "network")
+ALLOW_TILL_TASK_DONE_KINDS = ("python", "url", "file", "network", "subprocess")  # (2026-10-24) subprocess consent cards
 
 
 def _flag_name(kind: str) -> str:
@@ -93,6 +93,7 @@ class ExecApprovalState:
         self.allow_url_till_task_done = False
         self.allow_file_till_task_done = False
         self.allow_network_till_task_done = False
+        self.allow_subprocess_till_task_done = False  # (2026-10-24)
         # Per-kind "grant already announced" flags: set True the moment a kind's grant fires,
         # so callers can send their one-time system message exactly ONCE per agentic run + kind.
         self._notified: dict[str, bool] = {k: False for k in ALLOW_TILL_TASK_DONE_KINDS}

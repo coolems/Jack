@@ -140,17 +140,49 @@
     try:
         import builtins as _jps_builtins
         _orig_builtin_open = _jps_builtins.open
+        _MISSING = object()
+
         def _builtin_open(file, mode="r", *a, **k):
-            if not isinstance(file, (str, bytes)):
-                return _orig_builtin_open(file, mode, *a, **k)  # fd or path-like -> audit hook covers it
-            s = file.decode("utf-8", "replace") if isinstance(file, bytes) else file
             is_write = any(ch in str(mode) for ch in "wax+")
-            if _is_devnull(s) or _is_dev_or_pipe(s):
-                return _orig_builtin_open(file, mode, *a, **k)  # device name (nul /dev/null)
-            if not _inside(s, [ROOT] if is_write else READ_ROOTS):
-                _fs_deny("open" + ("(write)" if is_write else ""), s)
+            # Path-like objects (pathlib.Path) are NOT str/bytes: the audit hook
+            # already validates them, but the LINE-ENDING POLICY below must still
+            # apply -- pathlib.Path.write_text() goes through this function.
+            if isinstance(file, (str, bytes)):
+                s = file.decode("utf-8", "replace") if isinstance(file, bytes) else file
+                if _is_devnull(s) or _is_dev_or_pipe(s):
+                    return _orig_builtin_open(file, mode, *a, **k)  # device name (nul /dev/null)
+                if not _inside(s, [ROOT] if is_write else READ_ROOTS):
+                    _fs_deny("open" + ("(write)" if is_write else ""), s)
+            # LINE-ENDING POLICY (2026-10-23): text-mode writes must NOT let the OS
+            # translate "\n" into os.linesep. On Windows the old behavior produced:
+            #   * CRLF in every file written with open(p, 'w'), and
+            #   * "\r\r\n" (double CR) whenever the content already contained CRLF,
+            # because the translation turned the LF of an existing CRLF into CRLF.
+            # A read-modify-write also converted whole LF files to CRLF. Passing
+            # newline="\n" disables translation entirely ("\n" and "" mean no
+            # translation on write), so bytes written are the bytes the caller built.
+            # Explicit newline=""/"\r\n" from the caller is always honored.
+            if is_write and "b" not in str(mode):
+                if len(a) >= 4:
+                    if a[3] is None:
+                        a = a[:3] + ("\n",) + a[4:]
+                elif k.get("newline", _MISSING) is _MISSING or k.get("newline") is None:
+                    k["newline"] = "\n"
             return _orig_builtin_open(file, mode, *a, **k)
+
         _jps_builtins.open = _builtin_open
+
+        # io.open is the SAME function object in CPython, but rebinding builtins.open
+        # does not update the io module attribute. pathlib.Path.write_text()/open()
+        # call io.open and explicitly pass newline=None, so patching io.open (and
+        # treating newline=None as "unspecified") is required to enforce the policy
+        # for pathlib and for libraries that import io.open directly.
+        try:
+            import io as _jps_io
+            if getattr(_jps_io, "open", None) is _orig_builtin_open:
+                _jps_io.open = _builtin_open
+        except Exception:
+            pass
     except Exception as _jps_stage_exc:
         _jps_log_exc("builtins.open patch: %s" % repr(_jps_stage_exc))
 

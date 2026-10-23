@@ -103,13 +103,52 @@ def _strip_multiline_paren_imports(source_code: str, pattern: str, replacement: 
 # Step 1 -- multi-dot relative imports: 'from ..utils import X' -> 'X = utils.X'
 # ---------------------------------------------------------------------------
 
+def _flatten_multi_dot_paren_imports(source_code: str) -> str:
+    """Collapse a multi-line parenthesized multi-dot import to one line.
+
+    'from ..utils import (\n A,\n B as C,\n)' becomes
+    'from ..utils import A, B as C' -- after which the line-based rewrite below can
+    handle it like any single-line form. FIX (2026-10-09): without this, step 1's
+    regex matched only the opening line and rewrote it to '( = utils.(', a syntax
+    error that made every tool carrying this import form (write_file.py) fail to
+    compile on the CLIENT while working fine in the SERVER workspace.
+    """
+    start_re = _re.compile(r'^(\s*)from\s+([.]{2,})([a-zA-Z_][\w.]*)\s+import\s*\($')
+    lines = source_code.split('\n')
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        m = start_re.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        indent, dots, module = m.group(1), m.group(2), m.group(3)
+        names_parts: list[str] = []
+        j = i + 1
+        tail = ''
+        while j < len(lines):
+            if ')' in lines[j]:
+                tail = _re.sub(r'\s*#.*$', '', lines[j].split(')', 1)[1]).strip()
+                break
+            names_parts.append(_re.sub(r'\s*#.*$', '', lines[j]).strip().rstrip(',').strip())
+            j += 1
+        joined = ', '.join(p for p in names_parts if p)
+        out.append(f"{indent}from {dots}{module} import {joined}" + (f"  # {tail}" if tail else ''))
+        i = j + 1
+    return '\n'.join(out)
+
+
 def _step_multi_dot_relative(source_code: str) -> str:
     """Rewrite 'from ..pkg.mod import A, B as C' into assignments against the module.
 
-    Processed LINE BY LINE (not one global regex) so that when one import line expands
-    into several assignment lines, indentation is always taken from THIS line -- this
-    fixed position-tracking bugs with multi-name imports inside function bodies.
+    Multi-line parenthesized forms are flattened to a single line first (see
+    _flatten_multi_dot_paren_imports), then everything is processed LINE BY LINE
+    (not one global regex) so that when one import line expands into several
+    assignment lines, indentation is always taken from THIS line -- this fixed
+    position-tracking bugs with multi-name imports inside function bodies.
     """
+    source_code = _flatten_multi_dot_paren_imports(source_code)
     pattern = _re.compile(r'^(\s*)from\s+([.]{2,})([a-zA-Z_][\w.]*)\s+import\s+(.+)$')
     out_lines: list[str] = []
 
@@ -132,28 +171,28 @@ def _step_multi_dot_relative(source_code: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_bare_parent_import(source_code: str) -> str:
-        """Rewrite 'from . import Name as Alias' into 'Alias = Name'.
+    """Rewrite 'from . import Name as Alias' into 'Alias = Name'.
 
-        The bare name is resolved from exec globals, where shared_modules.py has already
-        injected the sibling package's public symbols. MUST run before step 4 -- its regex
-        matches a dot followed by whitespace, which 'from .module import X' would not hit,
-        but keeping the order stable avoids any overlap surprises.
-        """
-        pattern = _re.compile(r'^(\s*)from\s+\.\s+import\s+(.+)$')
-        out_lines: list[str] = []
+    The bare name is resolved from exec globals, where shared_modules.py has already
+    injected the sibling package's public symbols. MUST run before step 4 -- its regex
+    matches a dot followed by whitespace, which 'from .module import X' would not hit,
+    but keeping the order stable avoids any overlap surprises.
+    """
+    pattern = _re.compile(r'^(\s*)from\s+\.\s+import\s+(.+)$')
+    out_lines: list[str] = []
 
-        for line in source_code.split('\n'):
-            m = pattern.match(line)
-            if not m:
-                out_lines.append(line)
-                continue
-            leading_ws, names_str = m.groups()
-            pairs = _parse_import_names(names_str)
-            # Bare reference -- the symbol is injected into exec_globals by shared deps.
-            for original, alias in pairs:
-                out_lines.append(f"{leading_ws}{alias} = {original}")
+    for line in source_code.split('\n'):
+        m = pattern.match(line)
+        if not m:
+            out_lines.append(line)
+            continue
+        leading_ws, names_str = m.groups()
+        pairs = _parse_import_names(names_str)
+        # Bare reference -- the symbol is injected into exec_globals by shared deps.
+        for original, alias in pairs:
+            out_lines.append(f"{leading_ws}{alias} = {original}")
 
-        return '\n'.join(out_lines)
+    return '\n'.join(out_lines)
 
 
     # ---------------------------------------------------------------------------
@@ -178,48 +217,48 @@ def _step_same_package_multiline(source_code: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_same_package_single(source_code: str) -> str:
-        """Rewrite 'from .XXX import YYY' for exec() execution.
+    """Rewrite 'from .XXX import YYY' for exec() execution.
 
-        The imported symbols are ALREADY present in exec_globals (injected by
-        globals_builder from the installed shared modules / merged by install_shared_deps),
-        so plain names need no import statement at runtime -- they become an indented
-        'pass'. An ALIAS ('from .XXX import YYY as ZZZ') is different: neutralizing it to
-        'pass' leaves the alias name unbound -> NameError on every call. That exact bug hit
-        browser_screenshot.py on 2026-09-14 ('name _ensure_page is not defined': the tool used
-        'from .shared_instance import ensure_page as _ensure_page'). Aliases are now bound with
-        an explicit assignment against the injected original name: 'ZZZ = YYY'. The RHS resolves
-        through module globals (the injected symbol), so this is safe even inside function
-        bodies -- the same pattern step 2 uses for bare parent-package imports.
+    The imported symbols are ALREADY present in exec_globals (injected by
+    globals_builder from the installed shared modules / merged by install_shared_deps),
+    so plain names need no import statement at runtime -- they become an indented
+    'pass'. An ALIAS ('from .XXX import YYY as ZZZ') is different: neutralizing it to
+    'pass' leaves the alias name unbound -> NameError on every call. That exact bug hit
+    browser_screenshot.py on 2026-09-14 ('name _ensure_page is not defined': the tool used
+    'from .shared_instance import ensure_page as _ensure_page'). Aliases are now bound with
+    an explicit assignment against the injected original name: 'ZZZ = YYY'. The RHS resolves
+    through module globals (the injected symbol), so this is safe even inside function
+    bodies -- the same pattern step 2 uses for bare parent-package imports.
 
-        FIX (2026-08-29): plain-name self-assignments ('X = X') remain forbidden: that form is
-        fatal when the import sits INSIDE A FUNCTION BODY (Python treats X as local for the whole
-        function and reads the unbound local -> UnboundLocalError on every call). Plain names
-        therefore stay neutralized to 'pass'; only ALIASES get an assignment, and their RHS
-        references a DIFFERENT name that is never local.
+    FIX (2026-08-29): plain-name self-assignments ('X = X') remain forbidden: that form is
+    fatal when the import sits INSIDE A FUNCTION BODY (Python treats X as local for the whole
+    function and reads the unbound local -> UnboundLocalError on every call). Plain names
+    therefore stay neutralized to 'pass'; only ALIASES get an assignment, and their RHS
+    references a DIFFERENT name that is never local.
 
-        History: 2026-01-31 switched comments -> self-assignments; 2026-08-29 showed the
-        plain-name assignment form unsound for function-body imports (neutralization);
-        2026-09-14 added alias binding after the browser_screenshot NameError incident.
-        """
-        def _replace(match: _re.Match) -> str:
-            leading_ws = match.group(1)
-            pairs = _parse_import_names(match.group(3))
-            out_lines = []
-            for original, alias in pairs:
-                if alias != original:
-                    # Alias must be bound explicitly -- 'pass' would leave it unbound.
-                    out_lines.append(f"{leading_ws}{alias} = {original}")
-                else:
-                    out_lines.append(
-                        f"{leading_ws}pass  # same-package import neutralized (symbols injected into globals)")
-            return '\n'.join(out_lines)
+    History: 2026-01-31 switched comments -> self-assignments; 2026-08-29 showed the
+    plain-name assignment form unsound for function-body imports (neutralization);
+    2026-09-14 added alias binding after the browser_screenshot NameError incident.
+    """
+    def _replace(match: _re.Match) -> str:
+        leading_ws = match.group(1)
+        pairs = _parse_import_names(match.group(3))
+        out_lines = []
+        for original, alias in pairs:
+            if alias != original:
+                # Alias must be bound explicitly -- 'pass' would leave it unbound.
+                out_lines.append(f"{leading_ws}{alias} = {original}")
+            else:
+                out_lines.append(
+                    f"{leading_ws}pass  # same-package import neutralized (symbols injected into globals)")
+        return '\n'.join(out_lines)
 
-        return _re.sub(
-            r'^(\s*)from\s+\.\s*([a-zA-Z_][\w.]*)\s+import\s+(.+)$',
-            _replace,
-            source_code,
-            flags=_re.MULTILINE,
-        )
+    return _re.sub(
+        r'^(\s*)from\s+\.\s*([a-zA-Z_][\w.]*)\s+import\s+(.+)$',
+        _replace,
+        source_code,
+        flags=_re.MULTILINE,
+    )
 # ---------------------------------------------------------------------------
 
 def _step_absolute_tools_import(source_code: str) -> str:

@@ -582,35 +582,36 @@ class ASTSecurityVisitor(ast.NodeVisitor):
 
 
 # ============================================================================
-# PATH SCOPE CHECK (2026-08-23) -- ALWAYS-ON hard floor, independent of the
-# per-profile blocked-libs set.
+# PATH SCOPE CHECK (2026-08-23, narrowed 2026-10-23)
 #
-# WHY THIS EXISTS
-#   The profile-driven layers above govern IMPORTS and dangerous calls. An admin
-#   clean set ("modules": []) disables ALL of them BY DESIGN -- which also means
-#   open(r"<DATA_DRIVE>\models\...") or os.listdir("<SYSTEM_DIR>") executes with zero friction  # examples
-#   even though the tool contract says "stay inside working_root". This check
-#   closes that gap at PATH-LITERAL level: every string constant in the submitted
-#   code is inspected BEFORE execution, and any literal that resolves OUTSIDE the
-#   configured working_root blocks the whole run.
+# WHAT THIS DOES
+#   Runs only when the profile's blocked-libs set is NON-EMPTY (see python_exec).
+#   It resolves path literals that are actually HANDED TO A FILESYSTEM API and
+#   blocks the run when such a path resolves outside working_root (or contains a
+#   ".." segment).
 #
-# WHAT COUNTS AS A PATH CANDIDATE (string constants only -- no disk access here)
-#   * Windows drive/absolute:  X:\data\x , X:/system , bare "X:"   # any drive letter
-#   * UNC / backslash-rooted:  \\server\\share , \Windows\System32
-#   * POSIX absolute, strict charset [A-Za-z0-9._-], >=2 segments: /etc/passwd
-#     (strict charset keeps regexes like "^/a/" or "/\d+/" from false-matching)
-#   * ANY string with ".." as a FULL path segment: ..\\x , ../secrets
-#     (the child process cwd IS working_root, so ".." climbs out of the tree)
-#   Non-candidates by design: URLs ("https://..."), relative paths inside the
-#   root ("<project>/x.txt", ".gitignore"), plain prose.
+# WHY IT WAS NARROWED
+#   The original version scanned EVERY string constant. That blocked safe code
+#   whenever a string merely STARTED with an absolute-looking path, e.g.
+#       print("/api/v1/users")          # HTTP route, not a file
+#       log("C:\\Users\\x\\notes")       # prose
+#   On Windows "/api/v1" abspaths to "C:\\api\\v1", producing a false positive that
+#   made python_exec look broken for URL/router code.
 #
-# LIMITATIONS (documented -- same residual class as every static guardrail)
-#   * Paths built dynamically at runtime (chr() math, env-var expansion, f-string
-#     FormattedValue parts) are not visible to a pre-exec scan. Non-admin profiles
-#     still block "os" entirely via their blocked-libs set; the hard-floor taint
-#     model above covers the builtins-module route.
-#   * A literal that is INSIDE working_root but resolved elsewhere at runtime
-#     (e.g. symlink targets) cannot be seen statically.
+# WHAT IS STILL CAUGHT
+#   Arguments (positional and keyword) of known path sinks:
+#     open(...), Path(...), os.path.*, os.listdir/walk/stat/..., shutil.*,
+#     pathlib read_text/write_text/open, zipfile/tarfile open, sqlite3.connect,
+#     tempfile.*, linecache/runpy/FileInput, pandas read_*/to_*, imaging writers.
+#   Plus keywords named file/path/dir/filename/... on ANY call (covers libraries
+#   whose function name is not in the sink list).
+#
+# LIMITATIONS (unchanged class of static-guardrail residual)
+#   * A path assigned to a variable and used later is not traced here
+#     (p = "/etc/passwd"; open(p)). That is deliberate: static dataflow produced
+#     false positives and complexity. The UNCONDITIONAL runtime sandbox still
+#     blocks the actual access, so this pre-exec layer is UX, not the hard boundary.
+#   * Paths built entirely at runtime are invisible here for the same reason.
 #
 # CONTRACT: run_path_scope_check(code, working_root) -> (has_violations, [msgs])
 # Pure stdlib (ast/os/re), zero coupling to sibling modules -- delivery-safe for
@@ -620,6 +621,68 @@ class ASTSecurityVisitor(ast.NodeVisitor):
 _WIN_DRIVE_ABS_RE = re.compile(r'^[A-Za-z]:([/\\].*)?$')                 # e.g. X:\data , X:/x , "X:"  (any drive letter)
 _POSIX_ABS_STRICT_RE = re.compile(r'^/[A-Za-z0-9._\-]+(/[A-Za-z0-9._\-]*)+$')  # /etc/passwd (>=2 segments)
 _DOTDOT_SEGMENT_RE = re.compile(r'(^|[/\\])\.\.([/\\]|$)')           # ".." as full segment
+
+# Bare call names that take a filesystem path.
+_PATH_SINK_CALLS = frozenset({
+    "open", "Path", "PurePath", "PosixPath", "WindowsPath",
+    "FileInput", "ZipFile", "TarFile",
+    "NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile",
+    "mkstemp", "mkdtemp",
+})
+
+# Attribute (method/function) names that ALWAYS take a filesystem path. Only a
+# literal that IS a path candidate can trigger a violation, so broad names are safe.
+_PATH_SINK_ATTRS = frozenset({
+    # open + text/binary pathlib access
+    "open", "read_text", "write_text", "read_bytes", "write_bytes",
+    # enumeration (unambiguous filesystem names)
+    "iterdir", "glob", "rglob", "walk", "listdir", "scandir",
+    "access", "readlink", "resolve", "absolute", "expanduser",
+    # unambiguous mutation
+    "makedirs", "removedirs", "truncate", "chmod", "chown", "utime",
+    "symlink", "chdir",
+    # copy / move / archives
+    "copyfile", "copytree", "rmtree", "extract", "extractall", "joinpath",
+    # temp / db / data / imaging
+    "mkstemp", "mkdtemp", "connect", "read_csv", "read_excel",
+    "read_json", "read_parquet", "to_csv", "to_excel", "to_json",
+    "to_parquet", "savefig", "imread", "imwrite", "imsave",
+    "load_img", "save_img", "run_path", "getline", "getlines",
+    "startfile",
+})
+
+# Names that are ALSO common on non-path objects (`str.replace`, `list.remove`,
+# `set.add`, `dict.copy`). They count as a sink only when the receiver chain roots
+# at a known path module/class -- otherwise `text.replace("/api/v1", "")` would be
+# mistaken for a filesystem call.
+_PATH_AMBIGUOUS_ATTRS = frozenset({
+    "replace", "remove", "unlink", "rename", "rmdir", "mkdir",
+    "stat", "lstat", "exists", "is_file", "is_dir", "is_symlink",
+    "samefile", "copy", "copy2", "move", "add", "touch", "link",
+})
+_PATH_ROOT_HINTS = frozenset({
+    "os", "path", "ntpath", "posixpath", "pathlib", "Path", "PurePath",
+    "shutil", "tempfile", "zipfile", "tarfile", "io", "codecs",
+    "linecache", "runpy", "fileinput", "glob", "sqlite3",
+    "gzip", "bz2", "lzma",
+})
+
+# Pure path math: only a sink when the call chain roots at a path module. This
+# keeps `','.join(...)` or `s.split(...)` from being treated as filesystem calls.
+_PATH_MATH_ATTRS = frozenset({
+    "join", "basename", "dirname", "split", "splitext", "normpath",
+    "abspath", "realpath", "relpath", "isabs", "commonprefix",
+    "expandvars",
+})
+_PATH_MATH_ROOTS = frozenset({"os", "path", "ntpath", "posixpath", "pathlib"})
+
+# Keyword names that mean "this value is a path" on any call, even when the
+# function itself is unknown (third-party libraries).
+_PATH_KEYWORDS = frozenset({
+    "file", "filename", "filepath", "path", "pathname", "dir", "directory",
+    "folder", "src", "dst", "source", "destination", "cwd", "archive",
+    "db", "database",
+})
 
 
 def _is_path_candidate(s):
@@ -637,14 +700,50 @@ def _is_path_candidate(s):
     return False
 
 
-def run_path_scope_check(code, working_root):
-    """Pre-execution guardrail: block code that references paths OUTSIDE working_root.
+def _call_chain(node):
+    """Return ['os', 'path', 'join'] for an Attribute/Call function node."""
+    parts = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+    return list(reversed(parts))
 
-    Scans every string constant in the AST (f-string literal parts included -- they
-    are plain Constants; dynamic FormattedValue parts are skipped by design). A
-    candidate path is resolved with os.path.abspath/normcase and compared to
-    *working_root* case-insensitively on Windows. Any hit outside the root, or any
-    ".." full-segment traversal string, produces a violation.
+
+def _is_path_sink_call(call):
+    """True when *call* looks like a filesystem API taking a path argument."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id in _PATH_SINK_CALLS
+    if isinstance(func, ast.Attribute):
+        chain = _call_chain(func)
+        if not chain:
+            return False
+        last = chain[-1]
+        if last in _PATH_MATH_ATTRS:
+            return any(part in _PATH_MATH_ROOTS for part in chain[:-1])
+        if last in _PATH_AMBIGUOUS_ATTRS:
+            return bool(chain[:-1]) and chain[0] in _PATH_ROOT_HINTS
+        return last in _PATH_SINK_ATTRS
+    return False
+
+
+def _iter_string_constants(node):
+    """Yield every str Constant inside *node* (f-string literal parts included)."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            yield sub
+
+
+def run_path_scope_check(code, working_root):
+    """Pre-execution guardrail: block path literals used OUTSIDE working_root.
+
+    Only strings that are arguments of a filesystem API (or of a path-named
+    keyword) are considered. Each candidate is resolved with os.path.abspath/
+    normcase and compared to *working_root*; a ".." full-segment traversal is
+    always reported. See the block comment above for the rationale.
 
     Args:
         code: user-supplied Python source (pre-wrap -- line numbers stay accurate).
@@ -669,24 +768,46 @@ def run_path_scope_check(code, working_root):
     violations = []
     seen = set()
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
-            continue
-        s = node.value
+    def _check_literal(lit, sink_label):
+        s = lit.value
         reason = None
         if _DOTDOT_SEGMENT_RE.search(s):
-            reason = "'..' path traversal -- the child process cwd is working_root, so '..' climbs out of it"
+            reason = ("'..' path traversal -- the child process cwd is working_root, "
+                      "so '..' climbs out of it")
         elif _is_path_candidate(s):
             resolved = os.path.normcase(os.path.abspath(s))
             if resolved != root_norm and not resolved.startswith(root_norm + os.sep):
-                reason = f"path resolves to {resolved} which is OUTSIDE working_root ({working_root})"
+                reason = (f"path resolves to {resolved} which is OUTSIDE "
+                          f"working_root ({working_root})")
+        if not reason:
+            return
+        key = (getattr(lit, "lineno", 0), s)
+        if key in seen:
+            return
+        seen.add(key)
+        snippet = s if len(s) <= 60 else s[:57] + "..."
+        violations.append(
+            f"line {getattr(lit, 'lineno', '?')}: path literal {snippet!r} "
+            f"passed to {sink_label} -- {reason}"
+        )
 
-        if reason:
-            snippet = s if len(s) <= 60 else s[:57] + "..."
-            msg = (f"line {node.lineno}: path literal {snippet!r} -- {reason}")
-            if msg not in seen:
-                seen.add(msg)
-                violations.append(msg)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        is_sink = _is_path_sink_call(node)
+        path_kw_values = [kw.value for kw in node.keywords
+                          if kw.arg and kw.arg.lower() in _PATH_KEYWORDS]
+        if not is_sink and not path_kw_values:
+            continue
+
+        chain = _call_chain(node.func)
+        sink_label = (".".join(chain) + "()") if chain else "a filesystem call"
+        # For a known sink, every argument is a potential path (open(file, ...));
+        # for an unknown function, only the path-named keywords are.
+        args = (list(node.args) + [kw.value for kw in node.keywords]) if is_sink else path_kw_values
+        for arg in args:
+            for lit in _iter_string_constants(arg):
+                _check_literal(lit, sink_label)
 
     return len(violations) > 0, violations
 

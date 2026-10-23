@@ -89,7 +89,8 @@
 
     def _check_prog_base(base, ctx):
         if base and _is_denied_prog(base):
-            _deny_exec("program %r is a shell/interpreter/network tool" % base, ctx)
+            # (2026-10-24) consentable: asks the local user when a UI relay is live.
+            _exec_gate("program %r is a shell/interpreter/network tool" % base, ctx)
 
     def _check_cmd(cmdline, shell_ctx=False):
         """Validate one command for spawning. `cmdline` is a list or a string."""
@@ -105,7 +106,8 @@
             if sc:
                 has_op, tok = _jps_has_operator(cmdline)
                 if has_op:
-                    _deny_exec("shell operator in command (token %r)" % tok, cmdline)
+                    # (2026-10-24) consentable: asks the local user when a UI relay is live.
+                    _exec_gate("shell operator in command (token %r)" % tok, cmdline)
             toks = _jps_tokens(cmdline)
             _check_prog_base(_jps_basename(toks[0]) if toks else "", cmdline)
         else:
@@ -113,4 +115,90 @@
                    for t in cmdline]
             prog = seq[0] if seq else ""
             _check_prog_base(_jps_basename(prog), cmdline)
+
+    # ---- OUT-OF-SANDBOX SUBPROCESS CONSENT GATE (2026-10-24) ------------------
+    # A denied child-process spawn (shell / interpreter / network tool, or a shell
+    # operator in a string command) no longer dies instantly when a UI relay is live:
+    # the child writes a request file to <working_root>/.temp/.jack_netreq/<id>.json
+    # with kind="subprocess" and waits (same budget as the network/file gates) for the
+    # parent's decision file. The parent relays it to the chat UI as an approval card
+    # ("Allow this spawn" / "Deny"). Without a relay (JACK_PYEXEC_NET_CONSENT=0)
+    # behavior is byte-for-byte identical to the original instant hard block -- same
+    # message, no waiting, no files. Decisions are cached per command signature for
+    # THIS run only; each DISTINCT spawn gets its own ask (a user who allowed one curl
+    # URL must still decide about a different target). Fail-closed everywhere: timeout
+    # or any internal error denies. NOTE: the relay infrastructure (_NET_CONSENT_ON /
+    # _NET_REQ_DIR / _NET_LOCK / _jps_time) is DEFINED LATER in this same function and
+    # resolved at CALL time -- exactly like _fs_deny() does, so no forward-reference bug.
+    _EXEC_DECIDED = {}   # command signature -> "allow" | "deny" (this run only)
+    _EXEC_INFLIGHT = {}  # command signature -> request_id       (dedupe concurrent asks)
+    def _exec_gate(what, detail):
+        """Spawn denial with the consent option: instant hard block unless a UI relay is
+        live, in which case ASK THE LOCAL USER (fail-closed on timeout/error)."""
+        if not _NET_CONSENT_ON or _NET_REQ_DIR is None:
+            _deny_exec(what, detail)  # original message -- no waiting
+        # (2026-10-24 fix: duplicate consent cards) EVERY spawn passes TWO gate
+        # checkpoints in sequence -- the audit hook (which sees CPython's
+        # list2cmdline STRING form, e.g. cmd /c "echo X") and the patched
+        # Popen.__init__ (which sees the caller's ORIGINAL LIST, ['cmd', '/c',
+        # 'echo X']). With sig = str(detail) those produced two DIFFERENT
+        # signatures -> two request files -> TWO cards for ONE spawn. Normalize
+        # to a canonical token form so both checkpoints share one signature and
+        # one decision: shlex.split of the actual command (string or list),
+        # lowercased program basename, quoted args -- e.g. 'cmd /c "echo x"'.
+        # NOTE: shlex is deliberately NOT used here -- its POSIX backslash
+        # unescaping mangles Windows paths (C:\Windows -> c:windows), which
+        # would re-split list-form vs string-form signatures. The existing
+        # quote-aware _jps_tokens() splitter treats backslashes as literals.
+        try:
+            if isinstance(detail, (list, tuple)):
+                _sig_toks = [str(t) for t in detail]
+            else:
+                _sig_toks = _jps_tokens(str(detail))
+            _prog = _jps_basename(_sig_toks[0]) if _sig_toks else ""
+            sig = (_prog + " " + " ".join('"%s"' % t for t in _sig_toks[1:])).strip()[:200]
+        except Exception:
+            sig = str(detail)[:120]
+        with _NET_LOCK:
+            d = _EXEC_DECIDED.get(sig)
+            rid = _EXEC_INFLIGHT.get(sig)
+            if d is None and rid is None:
+                import uuid as _jps_uuid
+                rid = _jps_uuid.uuid4().hex[:12]
+                req_path = _jps_os.path.join(_NET_REQ_DIR, rid + ".json")
+                try:
+                    with open(req_path, "w", encoding="utf-8") as _rf:
+                        _jps_json.dump({"request_id": rid, "kind": "subprocess",
+                                        "what": what, "command": sig}, _rf)
+                except Exception:
+                    _deny_exec(what, detail)  # cannot even write the request -> fail closed
+                _EXEC_INFLIGHT[sig] = rid
+        if d is None:
+            deadline = _jps_time.monotonic() + _NET_ASK_TIMEOUT
+            dec = None
+            while True:
+                try:
+                    with open(_jps_os.path.join(_NET_REQ_DIR, rid + ".decision.json"),
+                              "r", encoding="utf-8") as _df:
+                        dec = (_jps_json.load(_df) or {}).get("decision")
+                except Exception:
+                    dec = None
+                if dec in ("allow", "deny"):
+                    break
+                if _jps_time.monotonic() >= deadline:
+                    break  # no answer in time -> deny (fail-closed)
+                try:
+                    _jps_th2.Event().wait(0.15)
+                except Exception:
+                    _jps_time.sleep(0.15)
+            with _NET_LOCK:
+                _EXEC_DECIDED[sig] = dec if dec in ("allow", "deny") else "deny"
+                _EXEC_INFLIGHT.pop(sig, None)
+            d = _EXEC_DECIDED[sig]
+        if d == "allow":
+            return  # the user allowed this exact spawn -- let it proceed
+        raise PermissionError(
+            "python_exec sandbox: child-process spawn NOT allowed -- %s (%s). The local "
+            "user denied it or did not answer in time. Shells, interpreters and network "
+            "tools are blocked from python_exec by default." % (what, str(detail)[:120]))
 

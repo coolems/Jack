@@ -455,13 +455,14 @@ IMAGE_GEN_SIZE_MIN, IMAGE_GEN_SIZE_MAX = 32, 4096
 #   url_consent_auto_approve / url_consent_auto_approve_seconds
 #   file_consent_auto_approve / file_consent_auto_approve_seconds
 #   network_consent_auto_approve / network_consent_auto_approve_seconds
-CONSENT_KINDS = ("python", "url", "file", "network")
+CONSENT_KINDS = ("python", "url", "file", "network", "subprocess")  # (2026-10-24)
 #: settings.json key names per kind (python keeps its historical python_exec_* keys).
 CONSENT_SETTING_KEYS = {
     "python":  ("python_exec_auto_approve",        "python_exec_auto_approve_seconds"),
     "url":     ("url_consent_auto_approve",        "url_consent_auto_approve_seconds"),
     "file":    ("file_consent_auto_approve",       "file_consent_auto_approve_seconds"),
     "network": ("network_consent_auto_approve",    "network_consent_auto_approve_seconds"),
+    "subprocess": ("subprocess_consent_auto_approve", "subprocess_consent_auto_approve_seconds"),  # (2026-10-24)
 }
 CONSENT_AUTO_APPROVE_DEFAULT = "manual"
 CONSENT_AUTO_APPROVE_SECONDS_DEFAULT = 5

@@ -8,6 +8,7 @@ The four categories are the SAME dialog with different inputs:
     url       browser tool (goto/check_url/download_file) to a local target  the URL
     file      sandboxed python_exec touching a path OUTSIDE working_root     op + path line
     network   sandboxed python_exec connecting OUTSIDE this machine          socket call line
+    subprocess  sandboxed python_exec SPAWNING a shell/interpreter/network tool (2026-10-24)  the command
 
 Everything funnels through ONE frame builder (:func:`build_frame`) and ONE ask flow
 (:class:`ConsentDialog.ask`): build frame -> send -> await the per-run future owned by
@@ -40,7 +41,7 @@ logger = logging.getLogger("COOLEMS.ChatBus.ConsentDialog")
 
 
 #: Canonical card kinds - every frame built by build_frame() carries one of these.
-KINDS = ("python", "url", "file", "network")
+KINDS = ("python", "url", "file", "network", "subprocess")  # (2026-10-24) subprocess: sandboxed python_exec spawn of a shell/interpreter/network tool
 
 #: Every kind's card offers the "Allow until task done" (allow_category_until_done) button. 2026-07-18 rev4:
 #: grants are PER KIND - clicking it on a python card only unlocks later python cards; url /

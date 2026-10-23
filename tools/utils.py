@@ -67,6 +67,7 @@ import base64
 import contextvars
 import logging
 import os
+import re
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,51 @@ EXCLUDED_FOLDERS: set = {
     '__pycache__', 'node_modules', '.git', '.venv', 'venv', 'env',
     '.vscode', '.idea', '.pytest_cache', '.mypy_cache',
 }
+
+
+# ---------------------------------------------------------------------------
+# LINE-ENDING POLICY (2026-10-23)
+#
+# The repository ships .gitattributes with "* text=auto eol=lf"; GitHub stores LF.
+# Tools that write text used to preserve whatever mix the model supplied, and on
+# Windows text-mode writes translated "\n" to CRLF (and "\r\n" to "\r\r\n"). The
+# result was noisy/full-file diffs and at least one corrupted source file.
+#
+# Policy:
+#   * every text file is normalized to LF before it is written;
+#   * .bat/.cmd are the ONLY exception -- cmd.exe needs CRLF, matching .gitattributes;
+#   * "\r\r\n" is treated as one newline (it is a double-translation artifact), so
+#     the normalizer also repairs files that were already corrupted.
+# ---------------------------------------------------------------------------
+
+CRLF_LINE_ENDING_SUFFIXES = (".bat", ".cmd")
+
+
+def normalize_line_endings(text, filename: str = "") -> str:
+    """Return *text* with the repository's line-ending policy applied.
+
+    Args:
+        text: The text to normalize. Non-str input is returned unchanged.
+        filename: Optional target file name; a .bat/.cmd suffix selects CRLF.
+
+    Returns:
+        The normalized text. Files without any newline are returned byte-identical.
+    """
+    if not isinstance(text, str) or ("\n" not in text and "\r" not in text):
+        return text
+    # Collapse CR runs before LF FIRST: "\r\r\n" is a double-translation artifact,
+    # not two line breaks. Then any remaining lone CR becomes a line break.
+    text = re.sub(r"\r+\n", "\n", text)
+    text = text.replace("\r", "\n")
+    lowered = (filename or "").lower()
+    if lowered.endswith(CRLF_LINE_ENDING_SUFFIXES):
+        text = text.replace("\n", "\r\n")
+    return text
+
+
+def line_ending_name(filename: str = "") -> str:
+    """Return 'CRLF' or 'LF' for the policy that applies to *filename*."""
+    return "CRLF" if (filename or "").lower().endswith(CRLF_LINE_ENDING_SUFFIXES) else "LF"
 
 
 # NOTE (2026-08-19): the Windows extended-length prefix helper that used to live here was

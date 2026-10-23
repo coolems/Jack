@@ -30,6 +30,29 @@ made it hard to test and audit. It is now split into small, documented modules:
   * _pattern_scan.py-- regex defense-in-depth over tokenize-masked source, so string
                        literals can neither trigger rules nor hide payloads.
 
+PREDICTABILITY PASS (2026-10-23)
+================================
+Three classes of real-world failures were reproduced and fixed here:
+
+  1. USER SOURCE IS NO LONGER REWRITTEN. The child compiles the submitted snippet
+     as-is under the stable filename "<python_exec>". This fixes:
+       - decorated defs/classes (the old marker injection split "@deco" from "def"),
+       - "from __future__ import ..." (the old __main__ indentation made it illegal),
+       - tracebacks/SyntaxErrors that pointed at payload line ~1670 instead of the
+         user's real line,
+       - "__file__" raising NameError.
+     Debug breadcrumbs now use sys.settrace (opt-in), not inserted code lines.
+  2. LINE ENDINGS ARE NEVER TRANSLATED BY PYTHON_EXEC. The sandbox's text-mode open()
+     wrapper defaults writes to newline="\\n" (no OS CRLF translation). Previously
+     "open(p, 'w')" on Windows wrote CRLF, and a read-modify-write of an LF file
+     converted the WHOLE file to CRLF; content that already contained CRLF became
+     "\\r\\r\\n" (observed corruption, e.g. tools/web_interact/goto.py). The write_file
+     tool applies the repository policy instead (LF everywhere, CRLF for .bat/.cmd).
+  3. BAD-CASE RESULTS ARE DIAGNOSTIC. Internal frames are stripped, user line numbers
+     are preserved, stderr is surfaced even on success, partial stdout is kept when
+     code fails or times out, sandbox denials are labeled, and a user sys.exit(3) is
+     no longer mistaken for a bootstrap init failure.
+
 CLIENT DELIVERY: the CLIENT's dynamic_loader compiles this file with exec() and
 cannot resolve package imports -- BUT same-package relative imports ARE handled:
 tool_scanner._find_same_package_imports() detects 'from ._x import y' lines, ships
@@ -108,7 +131,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "python_exec",
-        "description": "Execute Python code. Use for calculations, data processing, git commands, or any task that requires running Python code.",
+        "description": "Execute Python code. Use for calculations, data processing, git commands, or any task that requires running Python code. Text-mode open() writes do not translate newlines (no CRLF conversion); use write_file for repository files that need enforced LF endings.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -129,10 +152,11 @@ __tool_description__ = {
 
 import json
 import logging
+import math
 import os
+import re
 import subprocess
 import sys
-import textwrap
 import threading
 import time
 
@@ -291,12 +315,23 @@ def _make_net_ask_callback(ctx, working_dir):
             state = getattr(channel, "exec_approval", None) if channel is not None else None
             if state is None or not hasattr(state, "wait_for_decision"):
                 return "deny"  # fail closed: no live approval state for this chat
-            kind = str(req.get("kind", "")).strip() or "network"  # 'file' | 'network'
+            kind = str(req.get("kind", "")).strip() or "network"  # 'file' | 'network' | 'subprocess' (2026-10-24)
             # (2026-07-18 rev4) per-kind grant: an earlier card of THIS SAME KIND granted
             # "Allow until task done" this run - allow without asking. Other kinds still ask.
             if getattr(state, "is_allowed_till_task_done", lambda k: False)(kind):
                 return "allow"
-            if kind == "file":
+            if kind == "subprocess":
+                # OUT-OF-SANDBOX SUBPROCESS CONSENT (2026-10-24): the approved script wants to
+                # SPAWN a shell / interpreter / network tool that the sandbox denies by default.
+                what = str(req.get("what", "?"))
+                command = str(req.get("command", "?"))
+                payload = ("# attempted by the approved python_exec code\n" + command)
+                description = ("The Python code you approved is trying to RUN AN EXTERNAL PROGRAM "
+                               "that the python_exec sandbox normally blocks: %s. Command: %s. "
+                               "Allow runs exactly this one spawn (each different command asks "
+                               "again); Deny keeps it blocked. NOTE: an allowed program runs at OS "
+                               "level, outside the sandbox's file containment." % (what, command))
+            elif kind == "file":
                 # OUT-OF-SANDBOX FILE CONSENT (2026-11-24): the approved script wants to
                 # touch a path outside working_root. Show the exact operation + path.
                 op = str(req.get("op", "?"))
@@ -377,13 +412,13 @@ def _make_net_ask_callback(ctx, working_dir):
 #                          -> 10 output captured -> 11 returning result
 #   child process:         C1 entry ran (payload read from stdin, fd 0 closed so spawned
 #                          tools get EOF instead of a live pipe) -> C2 sandbox bootstrap
-#                          installed OK -> C4a/C4b per-user-line tracer (flat code only:
-#                          "line N of M" = which line of YOUR code was executing when it
-#                          stopped) -> C5 user code finished.
+#                          installed -> C3 user source compiled -> C4 per-line tracer
+#                          (opt-in; reports "user line N" via sys.settrace, no source
+#                          rewriting) -> C5 user code finished.
 #   Child markers ALSO append to <working_root>/.temp/.jack_pyexec_child.log from the child
 #   itself, so they survive even when the parent captures stderr into a pipe and never
 #   returns it -- that is what made Mac hangs at #7 blind. After a hang, read that file:
-#   its LAST line says exactly where the child stopped (C1 = bootstrap stage, C4a N/M =
+#   its LAST line says exactly where the child stopped (C1 = bootstrap stage, C4 line N =
 #   your line N). ALL [PYEXEC] marker output (parent stderr + both .temp/ log files) is
 #   OFF by default (2026-09-18 file cleanup, 2026-09-30 stderr/client-console cleanup); set env
 #   JACK_PYEXEC_DEBUG=1 to opt back in.
@@ -429,7 +464,7 @@ def _pyexec_dbg(msg, working_dir=None):
 # with zero child-side visibility. _jpsd_log() therefore appends every C* marker BY
 # THE CHILD to <working_root>/.temp/.jack_pyexec_child.log: readable even when the run
 # never returns. Its LAST line says exactly where the child stopped (C1 = bootstrap,
-# C4a/C4b N/M = which top-level statement of YOUR code was executing/finished).
+# C4 = the exact line of YOUR code that was executing; opt-in sys.settrace hook).
 
 _CHILD_PREAMBLE_LINES = [
     "import sys as _jps_sys, os as _jps_os",
@@ -671,70 +706,355 @@ def _safe_strip(value):
 
 
 
-def _wrap_user_code(user_code):
-    """Wrap user code in __main__ guard for subprocess execution.
+def _to_lf(text, lone_cr=False):
+    """Normalize a tool-facing string to LF.
 
-    The ``if __name__ == "__main__":`` wrapper is what makes globals()['__builtins__']
-    a MODULE inside the child (script context) -- which is exactly why the hard floor
-    in _ast_guard.py treats that expression as dangerous. Do not remove it without
-    re-auditing the guardrail battery (tests/test_python_exec_round3.py and
-    tests/test_sandbox_bootstrap.py).
-
-    Every top-level statement additionally gets C4a/C4b breadcrumbs via _jpsd_log so a
-    hang localizes to the exact user statement (2026-09-17 macOS hang fix; round 4 made
-    this STRUCTURE-AWARE): markers are injected only BETWEEN complete top-level
-    statements, using AST line ranges on the RAW source -- never inside an indented
-    block and never splitting a multi-line statement. The old per-LINE injection broke
-    any snippet containing indentation with an IndentationError (verified 2026-09-17),
-    which is why structured code previously had zero breadcrumbs: on Mac it hung at
-    'C2: sandbox bootstrap installed OK' and the stopping line could not be localized.
-    Unparseable code gets no markers -- it fails naturally with its own SyntaxError.
+    Child stdout/stderr are TextIOWrapper streams on Windows, so Python translates
+    every ``\\n`` to ``\\r\\n`` before it reaches our binary pipe. Returning CRLF to
+    the model made tool output look inconsistent with file content and sometimes
+    leaked into generated files. ``lone_cr`` additionally maps a bare CR to LF (used
+    for diagnostics only; stdout keeps a lone CR so progress barriers survive).
     """
-    lines = user_code.strip().splitlines() or ["pass"]
+    if not isinstance(text, str) or not text:
+        return ""
+    text = text.replace("\r\n", "\n")
+    if lone_cr:
+        text = text.replace("\r", "\n")
+    return text
 
-    # AST-based statement ranges (1-based, inclusive). A marker may only sit where a
-    # top-level statement has fully ended / is about to start -- that keeps multi-line
-    # statements (with/for/if bodies, backslash continuations) intact. NOTE: parse the
-    # STRIPPED text joined back together -- ast line numbers must match `lines` exactly;
-    # parsing user_code directly would offset every number by its leading blank lines
-    # (verified bug 2026-09-17 round 4: marker landed inside a def body).
-    import ast as _ast_dbg
+
+def _clean_output(text):
+    """Normalize stdout to LF and drop only TRAILING newlines.
+
+    Leading whitespace is significant for tables/JSON/CSV, so this deliberately
+    does not use .strip() (the old code silently ate the first indent of output).
+    """
+    return _to_lf(text).rstrip("\n")
+
+
+def _truncate(text, limit, label="truncated"):
+    """Truncate *text* to *limit* chars, stating exactly how much was shown."""
+    if text is None:
+        return ""
+    if limit is None or len(text) <= limit:
+        return text
+    return (text[:limit]
+            + "\n\n...[%s: showing first %d of %d chars]..." % (label, limit, len(text)))
+
+
+def _truncate_tail(text, limit, label="truncated"):
+    """Truncate while keeping the END of *text* -- tracebacks put the exception last.
+
+    Keeping only the first N chars used to cut off the actual error line of a long
+    traceback, which is the one line an AI needs. This keeps a small head plus the
+    tail (where the exception is).
+    """
+    if text is None:
+        return ""
+    if limit is None or len(text) <= limit:
+        return text
+    head = max(200, limit // 4)
+    tail = max(400, limit - head)
+    omitted = len(text) - head - tail
+    if omitted <= 0:
+        return text[:limit]
+    return (text[:head]
+            + "\n\n...[%s: %d middle chars omitted]...\n\n" % (label, omitted)
+            + text[-tail:])
+
+
+def _decode_part(value):
+    """Decode a TimeoutExpired output field that may be str or bytes."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+# Frames that belong to the python_exec infrastructure, not to the user's code.
+# The child entry runs under "<string>" (python -c) and the payload under
+# "<python_exec_payload>"; neither helps an AI fix the user's snippet.
+def _clean_child_stderr(text):
+    """Return child stderr with python_exec's own traceback frames removed.
+
+    The user's frames are compiled as ``<python_exec>`` and keep their exact source
+    line numbers. We drop only the FIRST ``<string>`` frame (the ``python -c`` entry)
+    so a user snippet that deliberately uses ``compile(..., "<string>", ...)`` keeps
+    its own frames.
+    """
+    text = _to_lf(text, lone_cr=True)
+    if not text:
+        return ""
+    kept = []
+    string_frames_seen = 0
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith('File "<python_exec_payload>"'):
+            continue
+        if stripped.startswith('File "<string>"'):
+            string_frames_seen += 1
+            if string_frames_seen == 1:
+                continue
+        kept.append(line)
+    # Collapse runs of blank lines produced by removing frames.
+    out = []
+    blank = 0
+    for line in kept:
+        if line.strip() == "":
+            blank += 1
+            if blank > 1:
+                continue
+        else:
+            blank = 0
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _user_lineno(text):
+    """Extract the LAST ``<python_exec>`` line number from a traceback, or None."""
+    if not text:
+        return None
+    matches = re.findall(r'File "<python_exec>", line (\d+)', text)
+    if not matches:
+        return None
     try:
-        _tree_dbg = _ast_dbg.parse("\n".join(lines))
-    except SyntaxError:
-        _tree_dbg = None
+        return int(matches[-1])
+    except Exception:
+        return None
 
-    body_lines = []
-    if _tree_dbg is not None and getattr(_tree_dbg, "body", []):
-        ranges = []
-        for _st in _tree_dbg.body:
-            try:
-                ranges.append((_st.lineno, _st.end_lineno))
-            except Exception:
-                pass
-        start_no = dict((s, n) for n, (s, e) in enumerate(ranges, 1))
-        end_no = dict((e, n) for n, (s, e) in enumerate(ranges, 1))
-        total = len(ranges)
-        for _li, _ln in enumerate(lines, 1):
-            if _li in start_no and lines[_li - 1].strip() != "":
-                body_lines.append(
-                    "_jpsd_log('C4a: child executing user statement %d/%d')" % (start_no[_li], total)
-                )
-            body_lines.append(_ln)
-            if _li in end_no and lines[_li - 1].strip() != "":
-                body_lines.append(
-                    "_jpsd_log('C4b: child finished user statement %d')" % end_no[_li]
-                )
+
+def _source_line(code, lineno):
+    """Return the user's source line *lineno* (1-based), stripped, or ''."""
+    if not code or not lineno:
+        return ""
+    try:
+        lines = code.splitlines()
+        if 1 <= lineno <= len(lines):
+            return lines[lineno - 1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _last_nonempty_line(text):
+    for line in reversed((text or "").split("\n")):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _coerce_timeout(timeout):
+    """Validate/coerce the tool's timeout argument.
+
+    Returns (seconds, None) on success or (None, "Error: ...") on bad input. Doing
+    this BEFORE spawning turns a TypeError deep in the poll loop into a clear,
+    actionable message.
+    """
+    raw = FILE_EXEC_TIMEOUT if timeout is None else timeout
+    try:
+        if isinstance(raw, bool):
+            raise TypeError("bool")
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None, ("Error: timeout must be a number of seconds "
+                      "(for example 30). Got: %r" % (timeout,))
+    if not math.isfinite(value) or value <= 0:
+        return None, "Error: timeout must be a positive number of seconds."
+    if value > 86400:
+        return None, "Error: timeout is too large (maximum 86400 seconds = 24 hours)."
+    return value, None
+
+
+def _format_success(stdout, stderr):
+    """Render a successful run, surfacing non-fatal stderr instead of dropping it."""
+    out = _clean_output(stdout)
+    err = _clean_child_stderr(stderr)
+    if not out.strip() and not err:
+        return "Executed successfully (no output)"
+    parts = []
+    if out.strip():
+        parts.append(_truncate(out, FILE_EXEC_OUTPUT_TRUNCATE_CHARS, "output truncated"))
     else:
-        # No AST (unparseable) -- emit the raw lines only; the run will fail naturally.
-        body_lines = list(lines)
+        parts.append("Executed successfully (no output on stdout)")
+    if err:
+        # Warnings, logging and progress written to stderr used to be discarded on
+        # rc=0. They are often the ONLY clue an AI needs to fix a subtle bug.
+        parts.append("--- stderr (warnings/logs; execution succeeded) ---\n"
+                     + _truncate_tail(err, FILE_EXEC_ERROR_TRUNCATE_CHARS, "stderr truncated"))
+    return "\n\n".join(parts)
 
-    indented = textwrap.indent("\n".join(body_lines), "    ")
-    return (
-        'if __name__ == "__main__":\n'
-        + indented
-        + "\n    _jpsd_log('C5: child user code finished')"
+
+def _format_failure(code, returncode, stdout, stderr):
+    """Render a failed run with a clean, AI-actionable diagnosis.
+
+    Contract: every bad-case result starts with a one-line category, then the user's
+    source line (when known), then the cleaned traceback and any stdout emitted
+    before the failure. Nothing points at python_exec's internal payload lines.
+    """
+    out = _clean_output(stdout)
+    err = _clean_child_stderr(stderr)
+    detail = err or out
+    lineno = _user_lineno(err) or _user_lineno(out)
+    exc_line = _last_nonempty_line(err) or _last_nonempty_line(out)
+
+    # Fail-closed bootstrap init: the child exits 3 BEFORE user code runs. Do not
+    # confuse this with user code calling sys.exit(3) -- require the bootstrap's
+    # exact failure marker text.
+    if returncode == 3 and "python_exec sandbox INIT FAILED" in detail:
+        return (
+            "EXECUTION BLOCKED by python_exec runtime sandbox (fail-closed init).\n\n"
+            + _truncate_tail(detail, FILE_EXEC_ERROR_TRUNCATE_CHARS, "detail truncated")
+            + "\n\nThe child process could not verify the working_root lock and was "
+              "terminated before any code ran. Configure working_root first."
+        )
+
+    if returncode is not None and returncode < 0:
+        head = ("Error: the Python child process was killed by signal %d "
+                "(the host or the sandbox terminated it)." % (-returncode))
+    elif "SyntaxError" in err or "IndentationError" in err or "TabError" in err:
+        head = "Error: your Python code has a syntax error"
+        if lineno:
+            head += " at line %d" % lineno
+        head += "."
+    elif "python_exec sandbox" in err:
+        head = ("SANDBOX BLOCKED: the python_exec runtime sandbox denied an operation. "
+                "This is a containment/policy block, not a syntax error.")
+    elif "ModuleNotFoundError" in err:
+        m = re.search(r"ModuleNotFoundError: No module named '([^']+)'", err)
+        if m:
+            head = ("Error: Python module '%s' is not available in the python_exec "
+                    "environment. Install it or use the standard library." % m.group(1))
+        else:
+            head = "Error: a required Python module is not available in this environment."
+    elif "MemoryError" in err:
+        head = "Error: the code ran out of memory inside python_exec."
+    elif "RecursionError" in err:
+        head = "Error: maximum recursion depth exceeded."
+    elif returncode == 3:
+        head = ("Error: the Python process exited with code 3 (user code called "
+                "exit(3) or SystemExit(3)); this is NOT a sandbox init failure.")
+    elif not err:
+        head = ("Error: the Python process exited with code %s without writing to "
+                "stderr (user code may have called os._exit() or the interpreter was "
+                "terminated)." % returncode)
+    else:
+        head = "Error: your Python code failed%s." % ((" (%s)" % exc_line) if exc_line else "")
+
+    parts = [head]
+    if lineno:
+        src = _source_line(code, lineno)
+        if src:
+            parts.append("Your code line %d: %s" % (lineno, src))
+        else:
+            parts.append("Failing user line: %d" % lineno)
+    if err:
+        parts.append("--- traceback (line numbers refer to YOUR code) ---\n"
+                     + _truncate_tail(err, FILE_EXEC_ERROR_TRUNCATE_CHARS, "traceback truncated"))
+    elif out and not exc_line:
+        parts.append("(the child produced no stderr)")
+    if out:
+        parts.append("--- stdout before the failure ---\n"
+                     + _truncate(out, FILE_EXEC_OUTPUT_TRUNCATE_CHARS, "output truncated"))
+    return "\n\n".join(parts)
+
+
+def _format_timeout(exc, effective_timeout):
+    """Render a timeout with partial stdout/stderr and a concrete next step."""
+    out = _clean_output(_decode_part(getattr(exc, "stdout", None)))
+    err = _clean_child_stderr(_decode_part(getattr(exc, "stderr", None)))
+    parts = [
+        "EXECUTION TIMEOUT: code execution exceeded %g second%s."
+        % (effective_timeout, "" if effective_timeout == 1 else "s"),
+        "The child process (and its whole process tree on POSIX) was terminated.",
+    ]
+    if out:
+        parts.append("--- partial stdout (before timeout) ---\n"
+                     + _truncate(out, FILE_EXEC_OUTPUT_TRUNCATE_CHARS, "output truncated"))
+    if err:
+        parts.append("--- partial stderr (before timeout) ---\n"
+                     + _truncate_tail(err, FILE_EXEC_ERROR_TRUNCATE_CHARS, "stderr truncated"))
+    parts.append(
+        "How to fix it:\n"
+        "  - Reduce the work per call (smaller input, fewer iterations) and split the task.\n"
+        "  - Remove blocking waits: stdin is CLOSED in python_exec (input() raises), and\n"
+        "    non-loopback network access needs explicit user consent.\n"
+        "  - Add progress prints/flush so the next failure shows how far it got.\n"
+        "  - Raise the 'timeout' argument only when the work is genuinely long."
     )
+    return "\n\n".join(parts)
+
+
+def _wrap_user_code(user_code):
+    """Build the child-side exec block for *user_code* (2026-10-23 rewrite).
+
+    WHY THIS IS NO LONGER A TEXT WRAPPER
+    ====================================
+    The old implementation physically inserted ``_jpsd_log(...)`` lines between
+    top-level statements and indented everything under ``if __name__ == "__main__":``.
+    That looked harmless but produced three verified classes of failures:
+
+      1. DECORATOR SPLIT: a decorated ``def``/``class`` has ``node.lineno`` on the
+         ``def``/``class`` keyword, NOT on the ``@decorator`` line. The marker was
+         inserted between them, so ANY decorated function/class died with
+         ``SyntaxError: invalid syntax`` -- and decorators are everywhere
+         (``@dataclass``, ``@property``, ``@pytest.fixture``, Flask routes, ...).
+      2. FUTURE IMPORTS: ``from __future__ import annotations`` must be the first
+         statement in the file. Indented inside the ``if`` block it raised
+         ``SyntaxError: from __future__ imports must occur at the beginning``.
+      3. USELESS LINE NUMBERS: markers shifted user lines, so tracebacks pointed at
+         ``<python_exec_payload>`` line ~1670 instead of the user's line 3.
+
+    The fix is to stop rewriting the user's source entirely. The child compiles the
+    ORIGINAL source with a stable filename (``<python_exec>``) and executes it at
+    module scope. This:
+      * preserves exact user line numbers in SyntaxError/traceback output;
+      * keeps decorators, future imports, multi-line statements and comments intact;
+      * makes ``__file__`` deterministic instead of raising NameError;
+      * allows debug breadcrumbs via ``sys.settrace`` (only when JACK_PYEXEC_DEBUG=1),
+        so the C4 line markers no longer mutate the code at all.
+
+    SECURITY NOTE: the old ``if __name__ == "__main__":`` wrapper was believed to be
+    what makes ``globals()['__builtins__']`` a builtins MODULE in the child. That is
+    actually a property of ``python -c`` script context, not of the guard: the child
+    entry already runs as ``__main__`` and ``exec`` shares those globals, so the
+    guardrail model in _ast_guard.py is unchanged. The full escape battery is rerun
+    by the regression tests in tools/test_tools/test_python_exec_regressions.py.
+    """
+    return "\n".join([
+        "_USER_FILENAME = '<python_exec>'",
+        "_USER_SOURCE = " + repr(user_code),
+        # Deterministic __file__: snippets that do Path(__file__).parent or log the
+        # script name no longer die with NameError. It is a label, not a real path.
+        "__file__ = _USER_FILENAME",
+        # argv[0] used to be "-c" (the interpreter flag). Give it the same stable
+        # label so argparse-style code does not show a confusing program name.
+        "_jps_sys.argv = ['<python_exec>']",
+        "_jpsd_log('C3: compiling user code (%d chars)' % len(_USER_SOURCE))",
+        "try:",
+        "    _USER_CODE = compile(_USER_SOURCE, _USER_FILENAME, 'exec')",
+        "except SyntaxError:",
+        "    raise",
+        # C4 breadcrumbs: opt-in line tracing on the ORIGINAL source. No source
+        # mutation, no line offsets, no decorator hazard. Only when debug is on.
+        "if _jps_os.environ.get('JACK_PYEXEC_DEBUG', '0') != '0':",
+        "    def _jpsd_trace(frame, event, arg):",
+        "        try:",
+        "            if event == 'line' and frame.f_code.co_filename == _USER_FILENAME:",
+        "                _jpsd_log('C4: child executing user line %d' % frame.f_lineno)",
+        "        except Exception:",
+        "            pass",
+        "        return _jpsd_trace",
+        "    _jps_sys.settrace(_jpsd_trace)",
+        "try:",
+        "    exec(_USER_CODE, globals())",
+        "finally:",
+        "    try:",
+        "        _jps_sys.settrace(None)",
+        "    except Exception:",
+        "        pass",
+        "_jpsd_log('C5: child user code finished')",
+    ])
 
 
 def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
@@ -869,6 +1189,13 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
             _pyexec_dbg("#7.3 stdin feed complete (%d chars delivered)" % len(payload), working_dir)
         except Exception as _fe:
             _pyexec_dbg("#7.4 stdin feed error: %r" % (_fe,), working_dir)  # gated like all other markers (2026-09-30)
+        finally:
+            # Always release the write end, even when the child died early. Without
+            # this the pipe (and its handle) leaked until GC.
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
 
     _out_chunks, _err_chunks = bytearray(), bytearray()
 
@@ -891,6 +1218,16 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
     _feed_thread.start()
     _out_thread.start()
     _err_thread.start()
+
+    def _close_proc_pipes():
+        """Close every pipe exactly once. Prevents ResourceWarning/handle leaks on
+        repeated calls (the old code relied on GC for stdout/stderr)."""
+        for _p in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if _p is not None:
+                    _p.close()
+            except Exception:
+                pass
 
     def _child_trace():
         # Child-side debug log (written BY THE CHILD -- C*/B* markers). The parent's own
@@ -958,11 +1295,19 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
         # Child exited -- let the drain threads finish reading the pipe tails.
         _out_thread.join(timeout=5)
         _err_thread.join(timeout=5)
+        _feed_thread.join(timeout=1.0)
+        _close_proc_pipes()
     except subprocess.TimeoutExpired:
         elapsed = time.time() - _t_dbg
         _pyexec_dbg(
             "#9.5 TIMEOUT after %.1fs -- killing child pid=%s (whole process group on POSIX) | CHILD TRACE: %s"
             % (elapsed, proc.pid, _child_trace()), working_dir)
+        # Unblock the feed thread first: closing the write end turns a pending
+        # pipe write into BrokenPipeError instead of letting it linger.
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
         try:
             if not _is_win and hasattr(os, "killpg"):
                 os.killpg(proc.pid, 9)      # SIGKILL the whole group (child + grandchildren)
@@ -970,13 +1315,21 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
                 proc.kill()                 # Windows / no killpg: direct child only
         except Exception as _ke:
             _pyexec_dbg("#9.5.1 kill raised %r" % (_ke,), working_dir)
+        try:
+            proc.wait(timeout=5)            # reap it; prevents "subprocess still running" leaks
+        except Exception:
+            pass
         _out_thread.join(timeout=5)
         _err_thread.join(timeout=5)
         _feed_thread.join(timeout=2)
+        # Capture BEFORE closing the pipe objects; the chunks live on their own.
+        _timeout_out = bytes(_out_chunks).decode("utf-8", "replace")
+        _timeout_err = bytes(_err_chunks).decode("utf-8", "replace")
+        _close_proc_pipes()
         raise subprocess.TimeoutExpired(
             cmd=_cmd, timeout=effective_timeout,
-            output=bytes(_out_chunks).decode("utf-8", "replace"),
-            stderr=bytes(_err_chunks).decode("utf-8", "replace"))
+            output=_timeout_out,
+            stderr=_timeout_err)
 
     # OUT-OF-SANDBOX NETWORK CONSENT cleanup: drop ONLY this run's request/decision
     # files (the delta vs the pre-run snapshot) so .temp/.jack_netreq stays empty
@@ -989,7 +1342,7 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
         except Exception:
             pass
 
-    _feed_thread.join(timeout=1.0)
+    # Pipes were closed right after the drain threads in the normal-exit path.
     # Decode at the edge (2026-09-22): pipes are binary; errors='replace' keeps a
     # stray non-UTF8 byte from ever breaking result assembly.
     out_s = bytes(_out_chunks).decode("utf-8", "replace")
@@ -1023,8 +1376,10 @@ def python_exec(code, timeout=None):
 
     Returns:
         str - the subprocess stdout on success ("Executed successfully (no output)"
-        when empty), or an "Error:" / "EXECUTION BLOCKED" / "EXECUTION TIMEOUT"
-        message describing what went wrong.
+        when empty). Non-fatal stderr is appended under a clearly marked block.
+        Failures return a one-line category, the failing user line + source, a
+        cleaned traceback whose line numbers refer to the SUBMITTED code, and any
+        stdout produced before the failure. Timeouts include partial stdout/stderr.
     """
 
     if not isinstance(code, str):
@@ -1039,9 +1394,28 @@ def python_exec(code, timeout=None):
         _pyexec_dbg("#2 params invalid: code exceeds 1 MB (%d chars)" % len(code))
         return "Error: code exceeds 1 MB limit. Please shorten your snippet."
 
+    if "\x00" in code:
+        _pyexec_dbg("#2 params invalid: code contains a NUL byte")
+        return ("Error: code contains a NUL (\\x00) byte and cannot be compiled. "
+                "Remove binary/NUL data from the snippet.")
+
+    try:
+        code.encode("utf-8")
+    except UnicodeEncodeError as _ue:
+        _pyexec_dbg("#2 params invalid: code is not UTF-8 encodable")
+        return ("Error: code contains characters that cannot be encoded as UTF-8 "
+                "(%s). Replace them with normal Unicode text." % _ue)
+
+    # Validate/coerce timeout BEFORE any spawn: a string, zero, negative or NaN
+    # timeout used to fail later inside the poll loop with an opaque TypeError.
+    effective_timeout, _timeout_err = _coerce_timeout(timeout)
+    if _timeout_err:
+        _pyexec_dbg("#2 params invalid: %s" % _timeout_err)
+        return _timeout_err
+
     # DEBUG MARKERS (2026-09-16): numbered checkpoints for hang diagnosis -- see
     # the _pyexec_dbg() docstring above for the full stage map. The LAST number in
-# stderr / <working_root>/.temp/.jack_pyexec_debug.log is where execution stopped.
+    # stderr / <working_root>/.temp/.jack_pyexec_debug.log is where execution stopped.
     import time as _t_pe
     _pe_t0 = _t_pe.time()
     _pyexec_dbg("#1 python_exec() entered (code=%d chars, timeout=%r)" % (len(code), timeout))
@@ -1077,10 +1451,15 @@ def python_exec(code, timeout=None):
 
     if active_blocked_libs:  # non-empty blocklist = profile restricted -> guardrails on
 
-        # PATH-SCOPE GUARDRAIL (2026-08-23, gated by the per-profile set since 2026-08-26):
-        # pre-exec scan of all string literals; any path that resolves OUTSIDE
-        # working_root (or a '..' traversal) blocks the run before it starts. Skipped
-        # when the profile set is EMPTY (admin clean set).
+        # PATH-SCOPE GUARDRAIL (2026-08-23, narrowed 2026-10-23):
+        # pre-exec scan of path arguments that resolves each literal against
+        # working_root. Only literals actually passed to a filesystem API (open,
+        # os.path.*, shutil.*, Path(...), ...) or to a path-named keyword are
+        # checked -- see run_path_scope_check() in _ast_guard.py for the contract.
+        # This removes the old false positives where ANY string starting with an
+        # absolute-looking path (print("/api/v1/users"), a Windows path in a log
+        # message, ...) blocked perfectly safe code. The runtime sandbox below is
+        # still the hard boundary for dynamically built paths.
         if _path_scope_enabled():
             _pyexec_dbg("#5 path-scope pre-exec check running", working_dir)
             try:
@@ -1111,13 +1490,17 @@ def python_exec(code, timeout=None):
                 f"This code cannot be executed. The python_exec tool is restricted "
                 f"to calculations, data processing, and safe operations only. "
                 f"File I/O, subprocess calls, network access, and other dangerous "
-                f"operations are not allowed."
+                f"operations are not allowed by this profile.\n\n"
+                f"If you need to edit a file, use the read_file / write_file tools "
+                f"instead of open() inside python_exec; if this is unexpected, ask "
+                f"the user or an admin to review the profile's python_exec blocked-libs "
+                f"set."
             )
 
     # Execute in isolated subprocess with the UNCONDITIONAL runtime sandbox:
     # the bootstrap prefix pins all filesystem access to working_root at runtime,
     # for every profile including the empty admin clean set (2026-08-31 hard floor).
-    effective_timeout = timeout if timeout is not None else FILE_EXEC_TIMEOUT
+    # effective_timeout was validated/coerced at the top of this function.
     os.makedirs(working_dir, exist_ok=True)
 
     # OUT-OF-SANDBOX NETWORK CONSENT (2026-11-24): when this call came through the CLIENT
@@ -1127,83 +1510,43 @@ def python_exec(code, timeout=None):
     _net_ctx = _get_caller_context()
     net_ask_callback = _make_net_ask_callback(_net_ctx, working_dir) if _net_ctx else None
 
-    wrapped_code = _wrap_user_code(code)  # injects child-side C4a/C4b/C5 markers
+    # Build the child-side block: the user's source is compiled as-is (filename
+    # "<python_exec>") so line numbers and decorators/future imports are preserved.
+    wrapped_code = _wrap_user_code(code)
 
     try:
         proc = _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
                                          net_ask_callback=net_ask_callback)
 
-        stdout = _safe_strip(proc.stdout)
-        stderr = _safe_strip(proc.stderr)
+        # Do NOT strip leading whitespace: it is data for tables/JSON/CSV. The
+        # formatters only remove trailing newlines and normalize CRLF.
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
         # (2026-07-18 unified consent dialog) surface any "Explain request" instructions the
         # user triggered on file/network cards DURING this run, so the AI gets them in THIS
         # tool result and can answer + re-issue python_exec.
         _explain_block = drain_explain_instructions()
         _pyexec_dbg("#10 output captured (stdout=%d, stderr=%d chars), total %.1fs" % (len(stdout), len(stderr), time.time() - _pe_t0), working_dir)
 
-        if proc.returncode == 3:
-            # Fail-closed init failure in the bootstrap (missing/invalid root).
-            _pyexec_dbg("#11 returning fail-closed rc=3 result", working_dir)
-            detail = stderr or stdout
-            return (
-                "EXECUTION BLOCKED by python_exec runtime sandbox (fail-closed init).\n\n"
-                f"{detail[:FILE_EXEC_ERROR_TRUNCATE_CHARS]}\n\n"
-                "The child process could not verify the working_root lock and was "
-                "terminated before any code ran. Configure working_root first."
-            ) + _explain_block
-
         if proc.returncode != 0:
             _pyexec_dbg("#11 returning non-zero rc=%s result" % proc.returncode, working_dir)
-            error_msg = stderr if stderr else stdout
-            if not error_msg:
-                error_msg = f"Process exited with code {proc.returncode} (no output)"
-            truncated = error_msg[:FILE_EXEC_ERROR_TRUNCATE_CHARS]
-            return f"Error:\n\n{truncated}" + _explain_block
+            return _format_failure(code, proc.returncode, stdout, stderr) + _explain_block
 
         _pyexec_dbg("#11 returning success result (%d chars), total %.1fs" % (len(stdout) if stdout else 0, time.time() - _pe_t0), working_dir)
-        if not stdout:
-            return "Executed successfully (no output)" + _explain_block
-
-        if len(stdout) > FILE_EXEC_OUTPUT_TRUNCATE_CHARS:
-            return stdout[:FILE_EXEC_OUTPUT_TRUNCATE_CHARS] + "\n\n...[truncated, output too long]..." + _explain_block
-
-        return stdout + _explain_block
+        return _format_success(stdout, stderr) + _explain_block
 
     except subprocess.TimeoutExpired as exc:
         _pyexec_dbg("#9.5 TIMEOUT fired after %ss -- child did not finish in time" % effective_timeout, working_dir)
-        timeout_msg = (
-            f"EXECUTION TIMEOUT: Code execution exceeded {effective_timeout} seconds.\n\n"
-            f"Your Python code took too long to complete and was terminated.\n\n"
-            f"IMPORTANT: You need to optimize your code. Consider:\n"
-            f"  - Reduce the amount of data processed\n"
-            f"  - Break the task into smaller steps\n"
-            f"  - Remove unnecessary loops or heavy operations\n"
-            f"  - Use more efficient algorithms and data structures\n"
-            f"  - Add early exit conditions\n\n"
-            f"Please rewrite your code with a shorter execution time and try again."
-        )
-
-        partial = ""
-        if exc.stdout:
-            raw = exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode(errors="replace")
-            partial = _safe_strip(raw)
-        if partial:
-            timeout_msg += f"\n\n--- Partial output (before timeout) ---\n{partial[:FILE_EXEC_OUTPUT_TRUNCATE_CHARS]}"
-
-        # Child debug trace (2026-09-17 macOS hang fix): on POSIX the old TimeoutExpired
-        # carried NO partial output, so exactly when a run timed out we lost the child's
-        # last C* marker -- the one line that says where it hung. The manual Popen loop
-        # now raises with stderr attached; surface it (it holds the C1..C5 trail).
-        if exc.stderr:
-            raw_err = exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode(errors="replace")
-            err_partial = _safe_strip(raw_err)
-            if err_partial:
-                timeout_msg += f"\n\n--- Child debug trace (stderr before kill; last marker = where it stopped) ---\n{err_partial[-FILE_EXEC_ERROR_TRUNCATE_CHARS:]}"
-
-        return timeout_msg
+        # Always append any Explain instruction stashed by a consent card during the run.
+        return _format_timeout(exc, effective_timeout) + drain_explain_instructions()
 
     except Exception as e:
         _pyexec_dbg("#12 EXCEPTION in python_exec(): %r (total %.1fs)" % (e, time.time() - _pe_t0), working_dir)
         import traceback
-        tb = traceback.format_exc()
-        return f"Error: {str(e)}\n\n{tb[:FILE_EXEC_ERROR_TRUNCATE_CHARS]}"
+        tb = _to_lf(traceback.format_exc(), lone_cr=True)
+        return _truncate(
+            "Error: python_exec itself failed before returning a result: %s\n\n%s"
+            % (str(e), tb),
+            FILE_EXEC_ERROR_TRUNCATE_CHARS,
+            "traceback truncated",
+        ) + drain_explain_instructions()

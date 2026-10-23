@@ -415,7 +415,7 @@
                         <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
                                 <label>🌐 URL Open Dialog Behavior</label>
                                 <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
-                                    When this consent dialog appears, choose how it behaves. Each category has its OWN auto-allow timer - fully independent from the others (2026-07-18 unified consent dialog).
+                                    Applies to every blocked-but-consentable URL target the AI wants to open (local files in your working folder, localhost and private/LAN or metadata-range addresses). Each category has its OWN auto-allow timer - fully independent from the others (2026-07-18 unified consent dialog; 2026-10-23 all blocked URL targets became user-decidable).
                                 </p>
                                 <div style="display: flex; gap: 16px; margin-bottom: 10px;">
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -477,6 +477,30 @@
                                 </div>
                                 <div id="networkConsentSecondsGroup" style="display:none; align-items:center; gap:8px;">
                                     <input type="number" id="networkConsentSeconds" min="1" max="3600" step="1" value="5"
+                                    autocomplete="off" onchange="saveRuntimeSettings()"
+                                    style="width: 90px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                        background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                                    <span style="color: var(--text-secondary); font-size: 13px;">seconds (1 - 3600) - the dialog still opens, then approves by itself</span>
+                                </div>
+                            </div>
+
+                            <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                                <label>🖨️ External Program Dialog Behavior</label>
+                                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                    When the approved Python code tries to run an external program that the python_exec sandbox normally blocks (shells, interpreters like a second Python/Node, or network tools like curl/wget), this dialog lets you decide. Each category has its OWN auto-allow timer - fully independent from the others (2026-10-24). Note: an allowed program runs at OS level, outside the sandbox's file containment.
+                                </p>
+                                <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="subprocessConsentBehavior" id="subprocessConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        Wait for my decision (default)
+                                    </label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="subprocessConsentBehavior" id="subprocessConsentAuto" value="auto" onchange="saveRuntimeSettings()">
+                                        Auto-approve after
+                                    </label>
+                                </div>
+                                <div id="subprocessConsentSecondsGroup" style="display:none; align-items:center; gap:8px;">
+                                    <input type="number" id="subprocessConsentSeconds" min="1" max="3600" step="1" value="5"
                                     autocomplete="off" onchange="saveRuntimeSettings()"
                                     style="width: 90px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
                                         background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
