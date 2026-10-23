@@ -675,8 +675,8 @@ FILE_EXEC_TIMEOUT: int = 300
 # (tool_executor, bootstrap) importable before any tools_response arrives. The SERVER ships the
 # same names in tools_response 'config_constants' for delivered tool sources.
 IMAGE_SUBPROCESS_TIMEOUT: int = 300                     # Max wait (s) for image gen subprocess
-IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD: int = 900             # Max wait (s) for GPU-offloaded tiers (FP8 + cpu offload on <16 GB cards): slower warm-up + first-run ~14 GB download safety net
-TOOLS_BOOTSTRAP_TIMEOUT_SEC: int = 2400                 # Max wait (s) for a self-unpacking tool's first-run setup (venv + pip install)
+IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD: int = 1800            # Max wait (s) for GPU-offloaded tiers (v21: the Qwen high tier streams a 20B MMDiT through CPU offload at every step; low tier likewise): slower warm-up + first-run multi-GB download safety net
+TOOLS_BOOTSTRAP_TIMEOUT_SEC: int = 10800                # Max wait (s) for a self-unpacking tool's first-run setup (venv + pip install + large model download; 3h safety net so slow links can finish multi-GB downloads)
 
 # --- Derived Helpers ---
 

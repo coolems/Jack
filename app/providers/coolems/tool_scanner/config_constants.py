@@ -33,7 +33,7 @@ def extract_config_constants():
         # Vision tools (transcribe_image, generate_image)
         'OCR_TIMEOUT',
         'IMAGE_SUBPROCESS_TIMEOUT',
-        # GPU-offloaded image tiers (FP8 + cpu offload on <16 GB cards) get a larger budget
+        # GPU-offloaded image tiers (Qwen high tier, small-card SANA) get a larger budget
         'IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD',
         # User-defined model-line pin for generate_image ('auto'|'high'|'mid'|'low') -
         # lets the user pick a smaller/faster model even on big hardware (2026-09-20)

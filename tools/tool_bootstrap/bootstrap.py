@@ -18,12 +18,12 @@ from .pip_parse import (_apply_pip_progress, _public_pip_snapshot, apply_pip_eve
                         parse_pip_line, parse_pip_progress_line, _strip_internal_markers)
 from .runtime_paths import (_migrate_legacy_runtime, _run_checked, _venv_python,
                             resolve_runtime_dir)
-from .setup_progress import PROGRESS_FILENAME, SetupProgress, sha256_prefix
+from .setup_progress import PROGRESS_FILENAME, SetupProgress, sha256_prefix  # noqa: F401 - PROGRESS_FILENAME is re-exported for callers
 from .streaming import run_streaming
 
 def ensure_tool_runtime(manifest: dict, worker_source: str = None,
                         worker_filename: str = "worker.py",
-                        bootstrap_timeout: int = 2400) -> dict:
+                        bootstrap_timeout: int = 10800) -> dict:
     """Unfold (or reuse) a self-unpacking tool's runtime on the user machine.
 
     Args:
@@ -59,6 +59,11 @@ def ensure_tool_runtime(manifest: dict, worker_source: str = None,
 
     os.makedirs(runtime_dir, exist_ok=True)
     progress = SetupProgress(runtime_dir)  # informational channel for the UI (2026-09-21)
+    # Retire rows a killed run left as 'running' (crash / power loss) BEFORE doing any
+    # work: the UI treats 'running' as live, so an orphaned row pins a frozen card
+    # forever. Keeps the model row's file rows so a resumed download still shows its
+    # on-disk bytes. No-op (and no write) on a machine without stale rows.
+    progress.begin_run()
 
     # 1) Worker script - write only when missing or changed (hash-verified).
     if worker_source:

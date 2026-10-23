@@ -225,18 +225,18 @@ FILE_EXEC_TIMEOUT: int = 300                            # Timeout (s) for python
 
 # --- Image Generation (shipped to CLIENT tools via config_constants) ---
 IMAGE_SUBPROCESS_TIMEOUT: int = 300                     # Max wait (s) for image gen subprocess
-IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD: int = 900             # Max wait (s) for GPU-offloaded tiers (FP8 + cpu offload on <16 GB cards): slower warm-up + first-run ~14 GB download safety net
+IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD: int = 1800            # Max wait (s) for GPU-offloaded tiers (v21: the Qwen high tier streams a 20B MMDiT through CPU offload at every step; low tier likewise): slower warm-up + first-run multi-GB download safety net
 # (2026-09-20 user-defined tier override) Pin the image-gen model line INSTEAD of letting
 # generate_image auto-classify by probed VRAM:
 #   'auto' = classify by GPU VRAM (high / mid / low - see tools/generate_tool TIER_MODELS)
-#   'high' = Z-Image-Turbo bf16 resident (~23 GB peak; needs a >= 24 GB card)
-#   'mid'  = SANA-Sprint 1.6B resident, EXACTLY 2 steps (~11 GB peak; needs >= 12 GB)
+#   'high' = Qwen/Qwen-Image fp8 + cpu offload (img2img via Qwen/Qwen-Image-Edit; needs a >= 24 GB card)
+#   'mid'  = Z-Image-Turbo fp8, ~9 guidance-free steps (~17 GB peak resident, auto-offloaded below ~18 GB)
 #   'low'  = SANA-Sprint + cpu offload (peak ~5.3 GB, resolution-clamped) - smallest model,
 #            fastest generation and the smallest download even on a big card like a 5090.
 # SAFETY: if the probed GPU has less VRAM than the pinned tier's minimum, generate_image
 # falls back to the auto-classified tier instead of OOMing (logged loudly).
 IMAGE_GEN_TIER_OVERRIDE: str = "low"
-TOOLS_BOOTSTRAP_TIMEOUT_SEC: int = 2400                 # Max wait (s) for a self-unpacking tool's first-run setup (venv create + pip install of torch/diffusers-class deps)
+TOOLS_BOOTSTRAP_TIMEOUT_SEC: int = 10800                # Max wait (s) for a self-unpacking tool's first-run setup (venv create + pip install + large model download; 3h safety net so slow links can finish multi-GB downloads)
 
 
 # Path to the hand-editable llama server instance list (single source of truth for which

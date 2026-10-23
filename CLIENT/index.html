@@ -499,12 +499,12 @@
                                 <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
                                     <input type="radio" name="imageGenTier" id="imgTierHigh" value="high"
                                     onchange="saveRuntimeSettings()">
-                                High - Z-Image-Turbo bf16 (needs a &ge; 24 GB card)
+                                High - Qwen-Image + Edit, fp8 offloaded (needs a &ge; 24 GB card)
                                 </label>
                                 <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
                                     <input type="radio" name="imageGenTier" id="imgTierMid" value="mid"
                                     onchange="saveRuntimeSettings()">
-                                Mid - SANA-Sprint 1.6B, 2 steps (needs a &ge; 12 GB card)
+                                Mid - Z-Image-Turbo fp8, ~9 steps (needs a &ge; 12 GB card)
                                 </label>
                                 <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
                                     <input type="radio" name="imageGenTier" id="imgTierLow" value="low"
@@ -566,7 +566,7 @@
     <script src="/static/ui/message.js?v=20261005a">
     
     </script>
-    <script src="/static/ui/setup-progress.js?v=20260922b"></script>
+    <script src="/static/ui/setup-progress.js?v=20261023a"></script>
     
     <!-- Syntax Highlighting Modules (load in order) -->
     <script src="/static/ui/syntax/base.js?v=20260830a">

@@ -29,7 +29,7 @@ Hugging Face (Apache 2.0, free for commercial use) - and since 2026-09-12 EVERY 
 the tool needs lives in ONE place, inside its own runtime folder (see _tool_env /
 _migrate_legacy_model_cache below):
 
-    <CLIENT_DIR>/tools/runtimes/generate_tool/hf_cache/   <- model weights (~30 GB)
+    <CLIENT_DIR>/tools/runtimes/generate_tool/hf_cache/   <- model weights (5-80 GB per tier)
 
 Both subprocesses this tool spawns run with HF_HOME pointed at that folder, so the
 model never lands in the user's default %USERPROFILE%\\.cache\\huggingface. Deleting
@@ -60,11 +60,12 @@ At every call this tool PROBES THE PC FIRST (nvidia-smi, stdlib only) and picks 
 model files + pipeline mode that fit the GPU - one tool works comfortably from a
 6 GB laptop card to a 5090:
 
-    high (>= 24 GB VRAM): Tongyi-MAI/Z-Image-Turbo bf16 fully resident (~23 GB peak)
-                          - the original fast path for truly big cards (5090, A6000).
-    mid  (12-23.9 GB)   : NVIDIA SANA-Sprint 1.6B (SanaSprintPipeline), bf16 fully
-                          resident, EXACTLY 2 sCM steps, native 1024px (~11 GB peak).
-                          Fast on laptop/desktop cards: no offload traffic at all.
+    high (>= 24 GB VRAM): Qwen/Qwen-Image in FP8 storage + cpu offload (v21, manifest-shipped)
+                          - the strongest open image model in the lineup; ~50 FlowMatchEuler
+                          steps, true_cfg_scale default 4.0. img2img loads the SEPARATE repo
+                          Qwen/Qwen-Image-Edit via QwenImageEditPipeline (instruction-based).
+    mid  (12-23.9 GB)   : Tongyi-MAI/Z-Image-Turbo in FP8 storage (~9 guidance-free steps;
+                          ~17 GB peak resident; cpu offload auto-added below ~18 GB probed VRAM).
     low  (< 12 GB)      : int8-quantized SANA-Sprint 0.6B (v9) - ~5 GB download instead of
                           ~9.7 GB bf16; the worker dequantizes to the SAME bf16 tensors at load,
                           so VRAM/speed are unchanged (peak ~4.3 GB offloaded). Quality is a notch
@@ -99,7 +100,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "generate_image",
-        "description": "Generate an image from a text prompt using ZImagePipeline. Creates a PNG file in the working_root folder and returns the image data.",
+        "description": "Generate an image from a text prompt using the GPU-tier-appropriate diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Creates a PNG file in the working_root folder and returns the image data.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -109,11 +110,11 @@ __tool_description__ = {
                 },
                 "height": {
                     "type": "integer",
-                    "description": "Height of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 16 on high tier (Z-Image), 32 on mid/low (SANA-Sprint) - and clamps to the tier's max-pixel budget)"
+                    "description": "Height of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget)"
                 },
                 "width": {
                     "type": "integer",
-                    "description": "Width of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 16 on high tier (Z-Image), 32 on mid/low (SANA-Sprint) - and clamps to the tier's max-pixel budget)"
+                    "description": "Width of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget)"
                 },
                 "num_inference_steps": {
                     "type": "integer",
@@ -168,11 +169,19 @@ working_root, printing a single JSON result line to stdout. The model is loaded
 per invocation inside this dedicated subprocess and venv - it never touches the
 server or the main LLM process.
 
-GPU-ADAPTIVE LOADING (2026-09-12 / SANA-Sprint v7 2026-09-13): the task carries
-'pipeline' ('zimage'|'sana_sprint'), 'model_id', 'dtype' ('bf16'|'fp8'|'int8'), 'offload'
-and 'max_pixels' chosen by the caller after probing the client GPU:
+GPU-ADAPTIVE LOADING (2026-09-12 / SANA-Sprint v7 2026-09-13, Qwen v21 2026-10-23): the task
+carries 'pipeline' ('qwen_image'|'zimage'|'sana_sprint'), 'model_id', 'dtype'
+('bf16'|'fp8'|'int8'), 'offload' and 'max_pixels' chosen by the caller after probing
+the client GPU:
 
-  * zimage (high tier, >= 24 GB): ZImagePipeline / ZImageImg2ImgPipeline. dtype='fp8'
+  * qwen_image (high tier, >= 24 GB, v21): Qwen/Qwen-Image via QwenImagePipeline in FP8
+    storage + cpu offload - the strongest open image model in the lineup. It uses true
+    CFG: guidance_scale <= 1 means 'use the repo default' (true_cfg_scale=4.0 with a
+    negative prompt), and it needs ~50 FlowMatchEuler steps (the worker defaults to 50
+    when the task carries no explicit step count). Dimensions snap to multiples of 32.
+    img2img loads the SEPARATE repo Qwen/Qwen-Image-Edit via QwenImageEditPipeline -
+    instruction-based editing with NO strength parameter (image + prompt only).
+  * zimage (mid tier, 12-23.9 GB): ZImagePipeline / ZImageImg2ImgPipeline. dtype='fp8'
     keeps the transformer in FP8 e4m3fn STORAGE with bf16 compute via diffusers'
     enable_layerwise_casting() (>= 0.40) - half the VRAM of a resident bf16
     transformer, no Transformer Engine needed on any NVIDIA card.
@@ -238,13 +247,15 @@ def _clamp_resolution(task, snap=32):
     """Clamp width/height to a tier-safe multiple (snap), then to the max_pixels budget.
 
     Returns (width, height) actually used for generation. Every pipeline this tool can
-    load validates its resolution BEFORE generating: Z-Image requires both dimensions
-    divisible by vae_scale_factor * 2 = 16, SANA-Sprint requires divisibility by 32 - so
-    the caller passes snap=16 for the high tier (Z-Image) and snap=32 for mid/low
-    (SANA-Sprint). The user's dimensions are snapped to the nearest LOWER multiple of
-    snap FIRST; the max_pixels budget loop below then only ever subtracts whole snaps,
-    so the returned pair can never break that validation. (2026-10-05: high tier no
-    longer forced to multiples of 32 - Z-Image accepts any multiple of 16.)
+    load validates its resolution BEFORE generating: Z-Image (mid tier) requires both
+    dimensions divisible by vae_scale_factor * 2 = 16, SANA-Sprint (low tier) requires
+    divisibility by 32, and Qwen-Image (high tier) requires 32 as well - so the caller
+    passes snap=16 only for Z-Image and snap=32 for qwen_image / sana_sprint. The user's
+    dimensions are snapped to the nearest LOWER multiple of snap FIRST; the max_pixels
+    budget loop below then only ever subtracts whole snaps, so the returned pair can
+    never break that validation. (2026-10-05: mid tier no longer forced to multiples of
+    32 - Z-Image accepts any multiple of 16. v21: the high tier moved to Qwen/Qwen-Image,
+    which requires multiples of 32 and snaps like SANA.)
     """
     width = int(task.get("width", 600)) // snap * snap
     height = int(task.get("height", 400)) // snap * snap
@@ -400,13 +411,13 @@ def _load_pipeline(pipeline_cls, task):
         except Exception:
             pipe = pipeline_cls.from_pretrained(model_id, torch_dtype=torch.bfloat16)
 
-    # fp8 tier (Z-Image only): keep the transformer in FP8 e4m3fn STORAGE with bf16
-    # compute via diffusers' layerwise casting (>= 0.40). The upcast happens per-layer
-    # on the fly - half the VRAM of a resident bf16, no Transformer Engine needed on
-    # any NVIDIA card. Precision-critical layers (norms/embeddings/projections) stay in
-    # the compute dtype by default, so quality is near-bf16. Loading starts from bf16 so
-    # F8_E4M3 checkpoint tensors are cast to a usable module dtype first; layerwise
-    # casting then shrinks storage back to fp8.
+    # fp8 tier (v21: Qwen high tier + Z-Image mid tier): keep the transformer in FP8
+    # e4m3fn STORAGE with bf16 compute via diffusers' layerwise casting (>= 0.40). The
+    # upcast happens per-layer on the fly - half the VRAM of a resident bf16, no
+    # Transformer Engine needed on any NVIDIA card. Precision-critical layers
+    # (norms/embeddings/projections) stay in the compute dtype by default, so quality is
+    # near-bf16. Loading starts from bf16 so F8_E4M3 checkpoint tensors are cast to a
+    # usable module dtype first; layerwise casting then shrinks storage back to fp8.
     if dtype_name == "fp8":
         try:
             pipe.transformer.enable_layerwise_casting(
@@ -455,17 +466,48 @@ def _save_and_encode(task, image):
     }
 
 
+def _qwen_cfg_scale(task):
+    """True-CFG scale for Qwen/Qwen-Image (v21 high tier).
+
+    The repo default is true_cfg_scale=4.0 with a negative prompt. A caller value of
+    0 / missing / <= 1 means 'use the model default'; a larger explicit value is
+    honored as-is - same convention SANA-Sprint's guidance helper uses.
+    """
+    try:
+        gs = float(task.get("guidance_scale") or 0.0)
+    except (TypeError, ValueError):
+        gs = 0.0
+    return gs if gs > 1.0 else 4.0
+
+
 def generate_text_to_image(task):
     """Generate image from text prompt (pipeline chosen by the GPU tier)."""
     pipeline_name = str(task.get("pipeline") or "zimage").lower()
 
     prompt = task["prompt"]
-    # Tier-aware snap (2026-10-05): Z-Image (high tier) validates multiples of 16;
-    # SANA-Sprint (mid/low) hard-requires multiples of 32.
-    width, height = _clamp_resolution(task, snap=16 if pipeline_name == "zimage" else 32)
+    # Tier-aware snap (2026-10-05, v21): Qwen-Image (high) and SANA-Sprint (low) require
+    # multiples of 32; Z-Image (mid) validates multiples of 16.
+    width, height = _clamp_resolution(task, snap=32 if pipeline_name in ("qwen_image", "sana_sprint") else 16)
     task["_used_width"], task["_used_height"] = width, height
 
-    if pipeline_name == "sana_sprint":
+    if pipeline_name == "qwen_image":
+        from diffusers import QwenImagePipeline
+
+        # v21 high tier: ~50 FlowMatchEuler steps is the model's tuned trajectory; an
+        # explicit caller step count (task carries one) always wins.
+        num_inference_steps = task.get("num_inference_steps") or 50
+        pipe, lm_id, ld_ty = _load_pipeline(QwenImagePipeline, task)
+        task["_loaded_model_id"], task["_loaded_dtype"] = lm_id, ld_ty
+        image = pipe(
+            prompt=prompt,
+            negative_prompt="",
+            true_cfg_scale=_qwen_cfg_scale(task),
+            height=height,
+            width=width,
+            num_inference_steps=num_inference_steps,
+        ).images[0]
+
+    elif pipeline_name == "sana_sprint":
         from diffusers import SanaSprintPipeline
 
         # 2-step sCM-distilled model at native 1024px - the tier's max_pixels clamp
@@ -480,7 +522,7 @@ def generate_text_to_image(task):
             num_inference_steps=_sana_steps(),
             guidance_scale=_sana_guidance(task),
         ).images[0]
-    else:
+    elif pipeline_name in ("zimage", "z_image"):
         from diffusers import ZImagePipeline
 
         num_inference_steps = task.get("num_inference_steps", 9)
@@ -496,10 +538,31 @@ def generate_text_to_image(task):
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
         ).images[0]
+    else:
+        # A manifest naming a pipeline this worker does not know must fail LOUDLY - the
+        # old catch-all silently rendered with Z-Image even when the tier asked for
+        # something else (2026-10-23: that is how the Qwen remap crashed with a FrozenDict
+        # error instead of a clear message).
+        raise ValueError(f"Unknown pipeline {pipeline_name!r} for text2img "
+                         f"(this worker supports qwen_image, sana_sprint, zimage)")
 
     result = _save_and_encode(task, image)
     result["message"] = "Image generated successfully"
     return result
+
+
+def _qwen_edit_task(task):
+    """A copy of the task re-pointed at the Edit repo (img2img high tier, v21).
+
+    Qwen-Image-Edit is a SEPARATE repo/architecture from Qwen-Image, so the pipeline
+    must be loaded from `edit_model_id` while every other task field (dtype/offload/
+    max_pixels) stays as the tier configured it. Falling back to the built-in id keeps
+    a tier table that predates `edit_model_id` working instead of loading the base
+    model into QwenImageEditPipeline (which fails on a missing component).
+    """
+    t = dict(task)
+    t["model_id"] = str(t.get("edit_model_id") or "").strip() or _QWEN_EDIT_MODEL_ID
+    return t
 
 
 def generate_image_to_image(task):
@@ -511,9 +574,9 @@ def generate_image_to_image(task):
 
     prompt = task["prompt"]
     reference_image_path = task["reference_image"]
-    # Tier-aware snap (2026-10-05): Z-Image (high tier) validates multiples of 16;
-    # SANA-Sprint (mid/low) hard-requires multiples of 32.
-    width, height = _clamp_resolution(task, snap=16 if pipeline_name == "zimage" else 32)
+    # Tier-aware snap (2026-10-05, v21): Qwen-Image (high) and SANA-Sprint (low) require
+    # multiples of 32; Z-Image (mid) validates multiples of 16.
+    width, height = _clamp_resolution(task, snap=32 if pipeline_name in ("qwen_image", "sana_sprint") else 16)
     task["_used_width"], task["_used_height"] = width, height
     strength = task.get("strength", 0.6)
 
@@ -521,7 +584,26 @@ def generate_image_to_image(task):
     init_image = load_image(reference_image_path).resize((width, height))
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if pipeline_name == "sana_sprint":
+    if pipeline_name == "qwen_image":
+        # v21 high tier img2img: the SEPARATE Edit repo - instruction-based editing.
+        # QwenImageEditPipeline has NO strength parameter (image + prompt only), so
+        # task["strength"] is intentionally ignored on this path.
+        from diffusers import QwenImageEditPipeline
+
+        num_inference_steps = task.get("num_inference_steps") or 50
+        pipe, lm_id, ld_ty = _load_pipeline(QwenImageEditPipeline, _qwen_edit_task(task))
+        task["_loaded_model_id"], task["_loaded_dtype"] = lm_id, ld_ty
+        image = pipe(
+            image=init_image,
+            prompt=prompt,
+            negative_prompt="",
+            true_cfg_scale=_qwen_cfg_scale(task),
+            height=height,
+            width=width,
+            num_inference_steps=num_inference_steps,
+        ).images[0]
+
+    elif pipeline_name == "sana_sprint":
         from diffusers import SanaSprintImg2ImgPipeline
 
         pipe, lm_id, ld_ty = _load_pipeline(SanaSprintImg2ImgPipeline, task)
@@ -534,7 +616,7 @@ def generate_image_to_image(task):
             guidance_scale=_sana_guidance(task),
             generator=torch.Generator(device).manual_seed(42),
         ).images[0]
-    else:
+    elif pipeline_name in ("zimage", "z_image"):
         from diffusers import ZImageImg2ImgPipeline
 
         num_inference_steps = task.get("num_inference_steps", 9)
@@ -550,6 +632,9 @@ def generate_image_to_image(task):
             guidance_scale=guidance_scale,
             generator=torch.Generator(device).manual_seed(42),
         ).images[0]
+    else:
+        raise ValueError(f"Unknown pipeline {pipeline_name!r} for img2img "
+                         f"(this worker supports qwen_image, sana_sprint, zimage)")
 
     result = _save_and_encode(task, image)
     result["message"] = "Image transformed successfully"
@@ -609,7 +694,7 @@ if __name__ == "__main__":
 
 _DEFAULT_MANIFEST = {
         "name": "generate_image",
-        "version": 20,  # v20 (2026-10-05): high-tier Z-Image snaps to multiples of 16 instead of forced 32 (its real VAE requirement); mid/low SANA-Sprint keep 32
+        "version": 23,  # mirrors tools/generate_tool/tool_manifest.json - only used when a legacy SERVER ships no TOOL_MANIFEST at all
         "runtime_name": "generate_tool",
         "requirements": ["torch==2.9.1+cu128", "diffusers>=0.40", "transformers", "accelerate>=0.17.0"],
         "extra_index_urls": ["https://download.pytorch.org/whl/cu128"],
@@ -623,8 +708,16 @@ _WORKER_FILENAME = "image_worker.py"
 # table below picks which one each machine downloads and loads.
 # ---------------------------------------------------------------------------
 
-#: Legacy / high-tier model - Z-Image-Turbo bf16 fully resident (~23 GB peak VRAM),
-#: the original fast path kept only where a card can truly afford it (>= 24 GB).
+#: v21 high-tier model - Qwen/Qwen-Image (20B MMDiT + Qwen2.5-VL-7B encoder), the strongest
+#: open image model in the lineup. Runs FP8-stored with cpu offload on >= 24 GB cards;
+#: img2img uses the separate Edit repo below via QwenImageEditPipeline (instruction-based).
+_QWEN_MODEL_ID = "Qwen/Qwen-Image"
+
+#: v21 high-tier img2img model - instruction-based editing, NO strength parameter.
+_QWEN_EDIT_MODEL_ID = "Qwen/Qwen-Image-Edit"
+
+#: Mid-tier model (v21) - Z-Image-Turbo in FP8 storage (~9 guidance-free steps). Pre-v21 it
+#: was the high tier's bf16 resident line; v7 kept SANA-Sprint for mid only until then.
 _MODEL_ID = "Tongyi-MAI/Z-Image-Turbo"
 
 #: v7 mid/low-tier model - NVIDIA SANA-Sprint 1.6B, sCM-distilled to EXACTLY 2 steps
@@ -675,6 +768,8 @@ def _int8_model_ready(model_id: str) -> bool:
 #: Every repo this tool may cache - _migrate_legacy_model_cache must never move away
 #: a cache that already holds ANY of these (e.g. an FP8 or SANA variant).
 KNOWN_MODEL_IDS = [
+        _QWEN_MODEL_ID,
+        _QWEN_EDIT_MODEL_ID,
         "Tongyi-MAI/Z-Image-Turbo",
         "ykarout/Z-Image-Turbo-FP8-Full",
         _SANA_MODEL_ID,
@@ -692,21 +787,24 @@ KNOWN_MODEL_IDS = [
 #     keeps activations small (laptop 4070 8GB, laptop 3060 6GB).
 TIER_MODELS = {
     "high": {
-        # >= 24 GB: full bf16 Z-Image pipeline fully resident - the original fast path.
-        "model_id": _MODEL_ID,
-        "dtype": "bf16",
-        "offload": False,
-        "max_pixels": None,
-        "pipeline": "zimage",
+        # >= 24 GB (v21): Qwen/Qwen-Image FP8 storage + cpu offload - the strongest open
+        # model in the lineup; img2img via the separate Edit repo (edit_model_id).
+        "model_id": _QWEN_MODEL_ID,
+        "edit_model_id": _QWEN_EDIT_MODEL_ID,
+        "dtype": "fp8",
+        "offload": True,
+        "max_pixels": 1024 * 1024,
+        "pipeline": "qwen_image",
     },
     "mid": {
-        # 12-23.9 GB: SANA-Sprint fully resident - 2 steps at native 1024px, NO offload
-        # traffic (the fix for the 'super slow' laptop cards that v6 offloaded a 6B model).
-        "model_id": _SANA_MODEL_ID,
-        "dtype": "bf16",
+        # 12-23.9 GB (v21): Z-Image-Turbo in FP8 storage - ~9 guidance-free steps; fp8 halves
+        # transformer storage (~17 GB peak resident). On probed VRAM below ~18 GB the caller
+        # adds cpu offload so 12/16 GB cards run it without OOM.
+        "model_id": _MODEL_ID,
+        "dtype": "fp8",
         "offload": False,
         "max_pixels": 1024 * 1024,
-        "pipeline": "sana_sprint",
+        "pipeline": "zimage",
     },
     "low": {
         # < 12 GB: int8 SANA-Sprint 0.6B (v9) - ~5 GB download instead of ~9.7 GB bf16; the
@@ -723,7 +821,10 @@ TIER_MODELS = {
 }
 
 #: Fallback budget (s) for offloaded first runs when the server constant is absent.
-_OFFLOAD_TIMEOUT_FALLBACK = 900
+#: v21: raised 900 -> 1800 - the high tier's Qwen/Qwen-Image loads a ~40 GB FP8-stored
+#: transformer through cpu offload and then runs ~50 FlowMatchEuler steps; first warm on a
+#: cold page cache can exceed 900 s even on good hardware.
+_OFFLOAD_TIMEOUT_FALLBACK = 1800
 
 
 def _probe_gpu() -> dict:
@@ -779,9 +880,9 @@ def _classify_tier(gpu_info: dict) -> str:
 #: Used only as the SAFETY NET for IMAGE_GEN_TIER_OVERRIDE: if the user pins a tier their
 #: GPU cannot afford, generate_image keeps the auto-classified tier instead of crashing.
 TIER_MIN_VRAM_MIB = {
-    "high": 24 * 1024,   # Z-Image bf16 resident peaks ~23 GB
-    "mid": 12 * 1024,    # SANA-Sprint resident peaks ~11 GB
-    "low": 0,            # offloaded - fits any card (peak ~4.3-5.3 GB)
+    "high": 24 * 1024,   # v21 Qwen/Qwen-Image fp8 + cpu offload (20B MMDiT + 7B encoder)
+    "mid": 12 * 1024,    # v21 Z-Image-Turbo fp8 resident peaks ~17 GB; offloaded below ~18 GB
+    "low": 0,            # SANA-Sprint offloaded - fits any card (peak ~4.3-5.3 GB)
 }
 
 
@@ -897,12 +998,13 @@ def _tier_config_for(tier: str) -> dict:
 def _effective_timeout(cfg: dict) -> int:
     """Subprocess budget for the generation step.
 
-    Resident tiers (high Z-Image, mid SANA-Sprint): IMAGE_SUBPROCESS_TIMEOUT - a warm
-    resident model generates in seconds, so the original 300 s is plenty. Offloaded
-    low tier gets a larger budget: first runs are slower to warm up and, on a fresh
-    machine, may still be finishing their ~10 GB download here when pre-flight was
-    skipped offline. The server constant IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD wins when
-    injected; otherwise the in-file fallback applies.
+    Resident tiers (mid Z-Image fp8, low SANA-Sprint when not offloaded): 
+    IMAGE_SUBPROCESS_TIMEOUT - a warm resident model generates in seconds. Offloaded
+    tiers (high Qwen/Qwen-Image on every call, low SANA-Sprint below 12 GB) get a larger
+    budget: the first run warms slowly and, on a fresh machine, may still be finishing
+    its multi-GB download here when pre-flight was skipped offline. The server constant
+    IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD wins when injected; otherwise the in-file fallback
+    applies.
     """
     if cfg.get("offload"):
         v = globals().get("IMAGE_SUBPROCESS_TIMEOUT_OFFLOAD")  # noqa: B009
@@ -1026,6 +1128,11 @@ class ProgressTqdm:
             self._last_emit = 0.0   # throttle anchor (~0.5 s)
             self._dirty = False     # n/total changed since the last emit
             self._closed = False
+            # Network bytes received for this file (xet 'downloading bytes' side of the
+            # bar). hf 1.33 shares ONE bar between transfer and reconstruction and calls
+            # update_transfer() continuously while update() (bytes assembled on disk) may
+            # not move until the file is finished - see _live.
+            self._transfer = 0
             try:
                 ProgressTqdm._bars[id(self)] = self
             except Exception:
@@ -1059,11 +1166,29 @@ class ProgressTqdm:
             self._dirty = True
 
         # -- emit --------------------------------------------------------------------
+        @property
+        def _live(self):
+            """Live byte count for THIS file: reconstruction or network, whichever is ahead.
+
+            Verified against huggingface_hub 1.33 + hf_xet (real 253 MB download): the xet
+            path calls update_transfer() ~every 0.1 s with network bytes, but calls
+            update() only at the very END (67 MB, then 186 MB, then close). Reporting only
+            `n` therefore froze the UI for the entire file - minutes of "4.6 GB / 4.6 GB"
+            while the network was clearly busy. The transfer counter is the only live
+            signal during an xet download, so the row reports max(n, transfer), capped at
+            the file size. When the file completes, `n` reaches total and wins anyway.
+            """
+            n = int(self._n)
+            transfer = int(getattr(self, "_transfer", 0) or 0)
+            live = n if n >= transfer else transfer
+            total = int(self._total or 0)
+            return min(live, total) if total > 0 else live
+
         def _speed_bps(self, now):
             """Bytes/second average since the first update - stable, no burst spikes."""
             if self._t_start is None or now <= self._t_start:
                 return 0.0
-            return max(0.0, float(self._n)) / max(now - self._t_start, 1e-6)
+            return max(0.0, float(self._live)) / max(now - self._t_start, 1e-6)
 
         @staticmethod
         def _aggregate():
@@ -1074,7 +1199,7 @@ class ProgressTqdm:
                     if getattr(b, "_kind", None) != "file":
                         continue
                     t = int(getattr(b, "_total", 0) or 0)
-                    n = min(int(getattr(b, "_n", 0) or 0), t) if t else int(getattr(b, "_n", 0) or 0)
+                    n = int(getattr(b, "_live", 0) or 0)
                     size += t
                     done += n
             except Exception:
@@ -1091,13 +1216,14 @@ class ProgressTqdm:
                 elif self._kind == "file":
                     speed = self._speed_bps(now)
                     agg_done, agg_size = self._aggregate()
+                    live = self._live
                     payload["filename"] = self._clean_name(self.desc)
                     payload["size"] = self._total
-                    payload["downloaded"] = min(self._n, self._total) if self._total else self._n
+                    payload["downloaded"] = live
                     if speed > 0:
                         payload["speed_bps"] = round(speed, 1)
-                        if self._total > self._n:
-                            payload["eta_sec"] = round(min((self._total - self._n) / max(speed, 1.0), 86400.0), 1)
+                        if self._total > live:
+                            payload["eta_sec"] = round(min((self._total - live) / max(speed, 1.0), 86400.0), 1)
                     payload["agg_done"] = agg_done
                     payload["agg_size"] = agg_size
                 else:  # total / phase aggregates (snapshot level)
@@ -1120,6 +1246,18 @@ class ProgressTqdm:
             except Exception:
                 pass
 
+        def _maybe_emit(self, force=False):
+            """Throttled emit: at most ~2 JSON lines/second per bar while it is active."""
+            now = _time.time()
+            if not force:
+                if (now - self._last_emit) < 0.5:
+                    return
+                if not self._dirty:
+                    return
+            self._last_emit = now
+            self._dirty = False
+            self._emit()
+
         def update(self, n=1):
             try:
                 now = _time.time()
@@ -1133,18 +1271,31 @@ class ProgressTqdm:
                 if done:
                     if not self._dirty and not self._closed and getattr(self, "_done_emitted", False):
                         return
-                    self._last_emit = now
-                    self._dirty = False
                     self._done_emitted = True
-                    self._emit()
+                    self._maybe_emit(force=True)
                     return
-                if (now - self._last_emit) < 0.5:
-                    return         # throttle: ~2 lines/second while active
-                if not self._dirty:
-                    return         # nothing new since the last emit
-                self._last_emit = now
-                self._dirty = False
-                self._emit()
+                self._maybe_emit()
+            except Exception:
+                pass  # progress must never break the download
+
+        def update_transfer(self, n=1):
+            """Network bytes received for this file (the xet path's ONLY live signal).
+
+            huggingface_hub 1.33 shares one bar between the transfer and reconstruction
+            reporters: update_transfer() fires every ~0.1 s while the file streams,
+            update() (bytes assembled) can stay at 0 until the download is over. Ignoring
+            this method - which the previous shim did - meant a 5 GB shard produced NO
+            event for its whole download and the UI showed the previous finished file for
+            minutes. The counter feeds _live and drives the same throttled emit.
+            """
+            try:
+                added = int(n) if n else 0
+                if added > 0:
+                    self._transfer = int(getattr(self, "_transfer", 0) or 0) + added
+                    if self._t_start is None:
+                        self._t_start = _time.time()
+                    self._dirty = True
+                    self._maybe_emit()
             except Exception:
                 pass  # progress must never break the download
 
@@ -1153,6 +1304,10 @@ class ProgressTqdm:
                 if self._closed:
                     return
                 self._closed = True
+                # A closed file bar means the file is complete: report it at its full size
+                # even when the live counters lagged (xet reconstruction may under-report).
+                if self._total > 0 and self._n < self._total:
+                    self._n = self._total
                 self._emit()       # final state (done=True) - the UI marks this file finished
             except Exception:
                 pass
@@ -1166,9 +1321,7 @@ class ProgressTqdm:
         def refresh(self, *args, **kwargs):
             try:
                 if not self._closed and self._dirty:
-                    self._last_emit = _time.time()  # hf calls this right after total growth
-                    self._dirty = False
-                    self._emit()
+                    self._maybe_emit(force=True)  # hf calls this right after total growth
             except Exception:
                 pass
 
@@ -1190,17 +1343,10 @@ class ProgressTqdm:
             self.set_description(desc)
 
         # Defensive no-ops for the xet reporter surface (direct-download mode only).
+        # NOTE: update_transfer is NOT a no-op - it is the only live signal on the xet
+        # path and is defined above with the emit logic.
         def set_postfix_str(self, postfix=None, refresh=False):
             pass
-
-        def update_transfer(self, n=1):
-            try:
-                added = int(n) if n else 0
-                self.n += added
-                if added > 0 and self._t_start is None:
-                    self._t_start = _time.time()
-            except Exception:
-                pass
 
         def set_transfer_postfix_str(self, postfix=None, refresh=False):
             pass
@@ -1220,9 +1366,37 @@ class ProgressTqdm:
             return False
 
 
-def _progress_tqdm():
-        """Factory huggingface_hub passes as tqdm_class (it calls it once per bar)."""
-        return ProgressTqdm
+def _progress_tqdm(full_path=None):
+        """Factory huggingface_hub passes as tqdm_class (it calls it once per bar).
+
+        *full_path* is the repo-relative path of the file being downloaded. hf's xet bar
+        is described with the BASENAME only, so when the full path is known the bar's
+        description is upgraded to it - the UI then names 'vae/config.json' instead of a
+        bare 'config.json' that exists in three components of the same repo, and the
+        server-side merge matches the manifest row exactly instead of guessing by suffix.
+        """
+        if not full_path:
+            return ProgressTqdm
+        full_path = str(full_path)
+        base = full_path.rsplit("/", 1)[-1]
+
+        class _NamedProgressTqdm(ProgressTqdm):
+            def __init__(self, *args, **kwargs):
+                desc = kwargs.get("desc")
+                if desc is None and args:
+                    desc = args[0]
+                d = str(desc or "")
+                # Only upgrade a BARE basename: some hf paths already pass the repo path
+                # (then replacing would produce 'vae/vae/...').
+                if base and base in d and full_path not in d:
+                    d = d.replace(base, full_path, 1)
+                    if args:
+                        args = (d,) + tuple(args[1:])
+                    else:
+                        kwargs["desc"] = d
+                super().__init__(*args, **kwargs)
+
+        return _NamedProgressTqdm
 
 
 '''
@@ -1262,7 +1436,15 @@ def _pf_install():
 
     def wrapper(*args, **kwargs):
         try:
-            kwargs['tqdm_class'] = _progress_tqdm()
+            # hf's xet bar is described with incomplete_path.name = the BASENAME only
+            # ('config.json'), which is ambiguous across text_encoder/ transformer/ vae/
+            # and can be matched to the wrong manifest row. The full repo path is right
+            # here in the call - hand it to the bar so the UI shows (and the merge
+            # matches) 'vae/config.json'.
+            filename = kwargs.get('filename')
+            if filename is None and len(args) > 1:
+                filename = args[1]
+            kwargs['tqdm_class'] = _progress_tqdm(filename)
         except Exception:
             pass  # progress is informational only - never break the download
         return orig(*args, **kwargs)
@@ -1381,7 +1563,7 @@ def _model_prep_script(model_ids=None) -> str:
 
             "    _sys.exit(2)\n"
 
-            "for model_id in models:\n"
+            "for i, model_id in enumerate(models):\n"
 
             "    try:\n"
 
@@ -1393,17 +1575,29 @@ def _model_prep_script(model_ids=None) -> str:
 
             "        if mfiles:\n"
 
-            "            print(_json.dumps({'type': 'manifest', 'files': mfiles}), flush=True)\n"
+            "            print(_json.dumps({'type': 'manifest', 'repo_index': i + 1, 'repo_count': len(models), 'files': mfiles}), flush=True)\n"
 
             "        try:\n"
 
-            # tqdm_class=None keeps the legacy behavior on hf versions that reject it.
+            # SEQUENTIAL DOWNLOAD (2026-10-05): max_workers=1 - exactly ONE file in flight at a time.
+            # The UI shows one stable per-file row with live bytes/speed/ETA from the first
+            # download to the last; parallel bars interleaved and re-opened rows, which is
+            # what produced the "file in progress -> same file again from zero" display.
+            # Resume is unaffected (HF .incomplete + Range still apply).
 
-            "            path = snapshot_download(model_id, ignore_patterns=ig, tqdm_class=_progress_tqdm())\n"
+            "            path = snapshot_download(model_id, ignore_patterns=ig, max_workers=1, tqdm_class=_progress_tqdm())\n"
 
             "        except TypeError:\n"
 
-            "            path = snapshot_download(model_id, ignore_patterns=ig)\n"
+            # Older huggingface_hub may reject one of the kwargs - degrade gracefully.
+
+            "            try:\n"
+
+            "                path = snapshot_download(model_id, ignore_patterns=ig, max_workers=1)\n"
+
+            "            except TypeError:\n"
+
+            "                path = snapshot_download(model_id, ignore_patterns=ig)\n"
 
             "        except Exception:\n"
 
@@ -1528,77 +1722,121 @@ def _setup_progress(rt: dict):
         return None
 
 
-def _match_known_file(model_state: dict, name: str):
+def _norm_bar_name(name: str):
+    """Normalize a per-file bar name for matching (2026-10-05 audit fix).
+
+    The prep script strips the xet suffixes (': reconstructing file' / ': downloading
+    bytes') and the truncation markers, but variants survive: a name that is EXACTLY
+    the file path plus a bare colon (suffix cut at the 300-char cap) or the full suffix.
+    Such names match no manifest row and would spawn a phantom twin row. Cut everything
+    from the first ': ' onward, then strip trailing colons - the file path part always
+    precedes any xet suffix (HF repo paths never contain ':').
+    """
+    n = str(name or "").strip()
+    cut = n.find(": ")
+    if cut > 0:
+        n = n[:cut]
+    while n.endswith(":"):
+        n = n[:-1].rstrip()
+    return n
 
 
+def _match_known_file(model_state: dict, name: str, size=None):
     """Match a per-file bar's (possibly truncated) name to its manifest row.
 
-
-
     hf truncates long names for display - http_get keeps the LAST 40 chars with a
-
     leading '(...)', xet_get keeps the FIRST 40 + trailing '(...)'. The prep script
-
     already strips those markers, so here we match by exact path first, then by
+    suffix (handles both truncation styles), then by prefix. Matching is scoped to
+    the CURRENT repo's rows (2026-10-05 sequential fix) - a file name that exists in
+    an earlier repo must not be re-used for this repo's bar.
 
-    suffix (handles both truncation styles), then by prefix. Returns the canonical
+    A bar may also carry only the BASENAME (hf's xet path, and any name long enough to be
+    truncated): several components of a repo ship 'config.json', so an ambiguous match is
+    resolved by the event's own size when exactly one candidate has it. If that still
+    leaves several candidates we deliberately report 'unknown' rather than misattribute a
+    multi-GB shard to the wrong row.
 
-    manifest filename or the given name when unknown.
-
-
-
+    Returns (canonical_name, exact_match): exact_match=False means no manifest row
+    matched and canonical_name is the raw given name - the caller must then treat it
+    as UNKNOWN and never create a duplicate row blindly (see _merge_model_progress).
     """
-
-
     files = model_state.get("files") or {}
-
-
     if not files:
+        return name, True
+    n = _norm_bar_name(name)
+    if not n:
+        return name, True
+    cur_repo = model_state.get("current_repo")
+    try:
+        want_size = int(size) if size is not None else 0
+    except (TypeError, ValueError):
+        want_size = 0
 
-        return name
+    def _scoped():
+        for key in files:
+            v = files[key]
+            if cur_repo is not None and v.get("_repo") not in (None, cur_repo):
+                continue  # row belongs to an earlier repo - out of scope
+            yield key, v
 
-    n = str(name).strip()
+    def _path(key):
+        # Row keys are "<repo>:<path>" (per-repo scoping); match on the bare path part.
+        return key.split(":", 1)[1] if ":" in key else key
 
-    # 1) exact (manifest rows are the keys)
+    def _narrow(hits):
+        """One candidate, or the single candidate whose manifest size matches the event."""
+        if len(hits) == 1:
+            return hits[0]
+        if want_size > 0:
+            by_size = [k for k in hits if int(files[k].get("size") or 0) == want_size]
+            if len(by_size) == 1:
+                return by_size[0]
+        return None
 
-    if n in files and "size" in files[n]:
-
-        return n
-
+    # 1) exact (manifest rows' bare paths)
+    for key, v in _scoped():
+        if _path(key) == n and "size" in v:
+            return key, True
     # 2) suffix match - a truncated tail is always a suffix of the full path
-
-    for key in files:
-
-        if len(n) >= 8 and key.endswith(n):
-
-            return key
-
+    hits = [k for k, v in _scoped() if len(n) >= 4 and _path(k).endswith(n)]
+    pick = _narrow(hits)
+    if pick:
+        return pick, False
     # 3) prefix match (xet keeps the FIRST 40 chars + marker)
-
-    for key in files:
-
-        if len(n) >= 12 and key.startswith(n[:40]):
-
-            return key
-
-    return name
+    hits = [k for k, v in _scoped() if len(n) >= 12 and _path(k).startswith(n[:40])]
+    pick = _narrow(hits)
+    if pick:
+        return pick, False
+    # 4) same basename as an existing current-repo row - a display variant of a file we already track
+    base = n.rsplit("/", 1)[-1]
+    if len(base) >= 4:
+        pick = _narrow([k for k, v in _scoped() if _path(k).rsplit("/", 1)[-1] == base])
+        if pick:
+            return pick, False
+    return n, False
 
 
 def _pick_current_file(model_state: dict):
-    """The file to show on the UI Current line (v14).
+    """The file to show on the UI Current line (v14/v15 + repo-scoped, 2026-10-05).
 
     Only rows that received a REAL per-file bar event (_seen=True) are eligible -
-    manifest-only rows sit at 0 bytes and must never be named as 'current' (that is
-    what produced the fake 'LICENSE / starting…' lines: hf 1.x skips or finishes some
-    files without ever creating their progress bar, so those rows stay at 0 bytes).
-    Pass 1: among seen + unfinished rows the most recently updated one wins (global _seq
-    recency marker; ties break toward more bytes downloaded). Pass 2 (v15): when nothing is in
-    flight but some seen row already holds real bytes, that most recently updated row is returned
-    so the UI Current line keeps showing a REAL file with its real numbers instead of an aggregate
-    label. Returns None only while zero bytes are on the ground - then the UI shows a plain 'Downloading model files…' line.
+    manifest-only rows sit at 0 bytes and must never be named as 'current'. Rows of
+    the CURRENT repo win over earlier repos' leftovers (between-repo gap: the previous
+    repo's just-finished row may still be shown, which is honest). Pass 1: among seen
+    + unfinished rows the most recently updated one wins (global _seq recency marker;
+    ties break toward more bytes downloaded). Pass 2: when nothing is in flight but a
+    seen row already holds real bytes, that most recently updated row is returned so
+    the UI Current line keeps showing a REAL file with its real numbers. Returns None
+    only while zero bytes are on the ground - then the UI shows a plain
+    'Downloading model files' line.
     """
-
     files = model_state.get("files") or {}
+    cur_repo = model_state.get("current_repo")
+
+    def _repo_rank(v):
+        return 1 if (cur_repo is None or v.get("_repo") in (None, cur_repo)) else 0
+
     best, best_key = None, (-1, -1, -1)
     for k in files:
         v = files[k]
@@ -1610,17 +1848,16 @@ def _pick_current_file(model_state: dict):
         sz = int(v.get("size") or 0)
         if sz and got >= sz:
             continue  # effectively finished even without the explicit flag
-        key = (int(v.get("_upd") or 0), 1 if got > 0 else 0, got)
+        key = (_repo_rank(v), int(v.get("_upd") or 0), 1 if got > 0 else 0, got)
         if key > best_key:
             best, best_key = k, key
     if best is not None:
         return best
-    # v15 pass 2 - nothing in flight right now (between files / finalize tail): name the most
-    # recently updated row that has REAL bytes. The UI Current line must always show a real file
-    # with its real numbers, never an aggregate label like 'All files downloaded' (which
-    # contradicted the Total bar while bytes were still moving). Manifest-only rows (0 bytes)
+    # Pass 2 - nothing in flight right now (between files / finalize tail): name the most
+    # recently updated row that has REAL bytes. The UI Current line must always show a real
+    # file with its real numbers, never an aggregate label. Manifest-only rows (0 bytes)
     # are still excluded - they have nothing to show.
-    best, best_key = None, (-1, -1)
+    best, best_key = None, (-1, -1, -1)
     for k in files:
         v = files[k]
         if not v.get('_seen'):
@@ -1629,7 +1866,7 @@ def _pick_current_file(model_state: dict):
         sz = int(v.get("size") or 0)
         if not (sz and got > 0):
             continue
-        key = (int(v.get("_upd") or 0), got)
+        key = (_repo_rank(v), int(v.get("_upd") or 0), got)
         if key > best_key:
             best, best_key = k, key
     return best
@@ -1639,27 +1876,27 @@ def _sweep_ghost_rows(model_state: dict, final: bool = False) -> None:
     """Mark manifest-only rows done once NO bytes can be in flight anymore (v14).
 
     hf 1.x returns early without creating any progress bar for files that are already
-    cached or land too fast to ever open a bar (verified in v1.32.0 source: the early
-    'if destination_path.exists(): return' / etag-matched copy paths in file_download).
-    Those rows would stay at 0 bytes / done=false forever and pin the UI Current line
-    on a fake 'starting…' file - exactly what happened with LICENSE at run end.
+    cached or land too fast to ever open a bar. Those rows would stay at 0 bytes /
+    done=false forever and pin the UI Current line on a fake 'starting' file.
 
     Triggers are AUTHORITATIVE completion signals only - never byte arithmetic:
-      * final=True - the prep script printed MODEL_READY: snapshot_download returned
-        for every requested model, so anything left over is definitively on disk;
+      * final=True - the prep script printed MODEL_READY for this repo's run:
+        snapshot_download returned, so anything left over is definitively on disk;
       * the 'Fetching N files' counter reports all files finished (files_done ==
-        files_total) - hf's own completion signal from hf_thread_map.
+        files_total) - hf's own completion signal.
 
-    A byte-based trigger ('downloaded >= total_size') was deliberately rejected:
-    cached files never flow through the aggregate bars, so that condition can never
-    be true in exactly this scenario (total stays short by the ghosts' bytes), and a
-    queued-but-not-started file would make any byte inference unsafe mid-run.
+    2026-10-05 sequential fix: a per-repo counter completion must ONLY sweep the
+    CURRENT repo's rows - earlier repos' manifest-only rows are already settled and
+    their done flags / bytes must not be touched again (that is what made finished
+    files look like they restarted from zero when the next repo began).
 
-    Only rows that never received a real per-file event (_seen unset) are swept; a row
-    with live progress is left alone. Informational only: this changes what the state
-    file shows, never the download itself.
+    Mid-run (counter completion) only rows that never received a real per-file event
+    (_seen unset) are swept; a row with live progress is left to its own close event.
+    final=True is the end of the WHOLE run (MODEL_READY for every repo), so every row
+    still marked unfinished is completed at full size - including seen rows whose bar
+    never reported its close (2026-10-23: those left the Total line below 100%).
+    Informational only: this changes what the state file shows, never the download.
     """
-
     files = model_state.get("files") or {}
     if not files:
         return
@@ -1671,58 +1908,47 @@ def _sweep_ghost_rows(model_state: dict, final: bool = False) -> None:
     counter_done = f_total > 0 and f_done >= f_total
     if not (final or counter_done):
         return
+    cur_repo = model_state.get("current_repo")
     for v in files.values():
-        if v.get("_seen") or v.get("done"):
+        if v.get("done"):
             continue
+        if not final:
+            # Mid-run counter completion: only rows that never opened a bar can be swept
+            # (a seen row may still be finishing its own bar); earlier repos are settled.
+            if v.get("_seen"):
+                continue
+            if cur_repo is not None and v.get("_repo") not in (None, cur_repo):
+                continue  # earlier repo's row - already settled by its own sweep
+        # final=True runs only after the prep script printed MODEL_READY for EVERY repo -
+        # snapshot_download returned, so whatever row is left IS on disk. That includes
+        # seen rows whose bar never reported its close (2026-10-23: trusting only the
+        # explicit flag left such rows below 100% forever).
         sz = int(v.get("size") or 0)
         v["done"] = True
-        if sz > 0 and not int(v.get("downloaded") or 0):
+        if sz > 0 and int(v.get("downloaded") or 0) < sz:
             v["downloaded"] = sz  # it was on disk - show the row complete, not 0%
 
 
 def _parse_model_progress_line(line: str):
-
-
     """Parse one prep-script stdout line; returns (event_dict | None, is_contract_line).
 
-
-
     Contract lines ('MODEL_READY'/'MODEL_NOT_READY') are detected separately so the
-
     existing ready-check logic keeps working byte-for-byte. JSON progress events from
-
     the tqdm class arrive as {'type': 'count'|'total'|'phase'|'file', ...}; the prep
-
     script also emits one {'type': 'manifest', 'files': [...]} line per repo (v12).
 
     Anything else is ignored. Informational only - a parse failure never affects the
-
     download.
-
-
-
     """
-
-
     s = (line or "").strip()
-
-
     if not s:
-
         return None, False
-
     if s.startswith("MODEL_READY:") or s.startswith("MODEL_NOT_READY:"):
-
         return None, True
-
     try:
-
         ev = json.loads(s)
-
     except Exception:
-
         return None, False
-
     if isinstance(ev, dict) and ev.get("type") in ("count", "total", "phase", "file", "manifest"):
 
         return ev, False
@@ -1730,90 +1956,201 @@ def _parse_model_progress_line(line: str):
     return None, False
 
 
+def _repo_rows(model_state: dict):
+    """File rows belonging to the CURRENT repo (rows without a tag count as current)."""
+    files = model_state.get("files") or {}
+    cur = model_state.get("current_repo")
+    if cur is None:
+        return list(files.values())
+    return [v for v in files.values() if v.get("_repo") in (None, cur)]
+
+
+def _recompute_totals(model_state: dict) -> None:
+    """Rebuild the stage totals from file rows (in place).
+
+    With max_workers=1 the per-file rows are complete and monotonic - they ARE the
+    statistics. The LIVE numbers (total_size / downloaded / files_done) describe the repo
+    being fetched right now, so a multi-repo run shows each repo's own 0->100% arc; the
+    grand totals across ALL repos are kept separately as *_grand for context."""
+    files = model_state.get("files") or {}
+    if not files:
+        return
+    vals = _repo_rows(model_state)
+    cur_total = sum(int(v.get("size") or 0) for v in vals)
+    cur_bytes = sum(int(v.get("downloaded") or 0) for v in vals)
+    cur_done = sum(1 for v in vals if v.get("done"))
+
+    all_total = sum(int(v.get("size") or 0) for v in files.values())
+    all_bytes = sum(int(v.get("downloaded") or 0) for v in files.values())
+    all_done = sum(1 for v in files.values() if v.get("done"))
+
+    # live (current repo) - monotonic within the run: re-emitted events must never push
+    # numbers backwards. A NEW repo's manifest resets its own arc to 0 (see manifest branch).
+    if cur_total > int(model_state.get("total_size") or 0):
+        model_state["total_size"] = cur_total
+    if cur_bytes > int(model_state.get("downloaded") or 0):
+        model_state["downloaded"] = cur_bytes
+    if cur_done > int(model_state.get("files_done") or 0):
+        model_state["files_done"] = cur_done
+
+    # grand totals across all repos (context for the UI's 'Repo X of Y' line)
+    if all_total > int(model_state.get("total_size_grand") or 0):
+        model_state["total_size_grand"] = all_total
+    if all_bytes > int(model_state.get("downloaded_grand") or 0):
+        model_state["downloaded_grand"] = all_bytes
+    if all_done > int(model_state.get("files_done_grand") or 0):
+        model_state["files_done_grand"] = all_done
+
+
+def _update_stage_speed(model_state: dict, ev_speed=None) -> None:
+    """Live stage speed/ETA for the Total line, derived from this repo's byte arc.
+
+    The timing anchor is set by the repo's manifest (or lazily by its first event), so
+    the rate is 'bytes moved since this repo started / wall time since then'. That is
+    stable under max_workers=1 and - unlike the old aggregate-bar average - still correct
+    when huggingface_hub emits only per-file events (2026-10-23: a file-only stream left
+    the Total line permanently without speed/ETA). Falls back to the event's own average
+    for the first ~1.5 s, before the anchor has enough movement to be meaningful.
+    """
+    try:
+        cur_repo = model_state.get("current_repo")
+        if "_repo_t0" not in model_state or model_state.get("_t0_repo") != cur_repo:
+            model_state["_repo_t0"] = _time.time()
+            model_state["_t0_bytes"] = int(model_state.get("downloaded") or 0)
+            model_state["_t0_repo"] = cur_repo
+        t0 = float(model_state.get("_repo_t0") or 0)
+        elapsed = _time.time() - t0 if t0 else 0.0
+        moved = int(model_state.get("downloaded") or 0) - int(model_state.get("_t0_bytes") or 0)
+        speed = (moved / elapsed) if (elapsed > 1.5 and moved > 0) else \
+            (float(ev_speed) if isinstance(ev_speed, (int, float)) and ev_speed > 0 else 0.0)
+        if speed <= 0:
+            return
+        model_state["speed_bps"] = round(speed, 1)
+        total = int(model_state.get("total_size") or 0)
+        done = int(model_state.get("downloaded") or 0)
+        if total > done:
+            model_state["eta_sec"] = round(min((total - done) / speed, 86400.0), 1)
+        else:
+            model_state.pop("eta_sec", None)
+    except Exception as e:  # informational only - never break the download
+        logger.debug(f"  stage speed update failed (ignored): {e}")
+
+
 def _merge_model_progress(model_state: dict, ev: dict) -> None:
-
-
     """Merge one progress event into the 'model' stage dict (in place).
 
-
-
     Event types (emitted by ProgressTqdm in the tool venv - see _PROGRESS_TQDM_SOURCE):
-
-      manifest - repo file list + sizes (prep script pre-fetch, v12) -> files{} rows
-
-                 with known size from second 0; total_size = sum of all sizes.
-
-      count    - "Fetching N files" counter        -> files_total / files_done
-
-      total    - "Downloading bytes" aggregate     -> downloaded (max) + speed_bps
-
-      phase    - "Reconstructing ..." on-disk bar  -> downloaded (max), size = true repo
-
-                                                     size, label, speed_bps
-
+      manifest - repo file list + sizes (prep script pre-fetch, v12) -> files{} rows with
+                 known size from second 0; carries repo_index/repo_count (sequential rework
+                 2026-10-05) so the UI can show 'Repo X of Y'.
+      count    - "Fetching N files" counter        -> files_total / files_done (per repo)
+      total    - "Downloading bytes" aggregate     -> downloaded floor, speed fallback
+      phase    - "Reconstructing ..." on-disk bar  -> downloaded floor, label, speed/ETA
       file     - per-file download bar (REAL name; http desc or xet '<name>: ...')
+                 -> files[<canonical>] row with its own bytes/speed/ETA.
 
-                 -> files[<canonical>] row with its own bytes/speed/ETA. v13: the UI
+    SEQUENTIAL REWORK (2026-10-05) - what changed and why:
+      * downloads now run max_workers=1, so exactly ONE file is in flight at a time; the
+        per-file rows are the source of truth for total_size / downloaded / files_done,
+        giving continuous statistics from the first download to the last.
+      * repo awareness: current_repo/repo_index/repo_count track which repo is being
+        fetched; earlier repos' rows are never re-touched, so finished files cannot look
+        like they restarted at zero when the next repo begins (a new repo's manifest
+        starts its own fresh arc instead of wiping the shared state).
+      * duplicate-row guard: a per-file bar whose name does NOT match any manifest row
+        updates an existing same-basename current-repo row if there is exactly one; it only
+        creates a brand-new row when nothing matches - no more phantom 0-byte rows for a
+        file that is already in flight.
+      * stage speed/ETA: bytes moved since this repo's manifest / elapsed wall time -
+        stable under sequential download and correct even when only per-file events
+        arrive (the aggregate-bar average was bursty and sometimes absent entirely).
 
-                 'Current' line follows current_file = the ACTIVE row (_pick_current_file:
-
-                 most recently updated unfinished file, global _seq recency marker).
-
-
-
-    The stage dict ends up with: status, phase ('downloading'|'finalizing'),
-    total_size (v15: ONLY the manifest sum or per-file row sizes - aggregate bar totals are not
-    repo size and must never set it), downloaded, speed_bps/eta_sec (Total line - from the
-    aggregate bars only, v13), current_file? (the ACTIVE row for the Current line; v15 pass 2
-    keeps a real finished file named between files), files_total, files_done and files{} - each
-    file row has filename/size/downloaded/speed_bps? eta_sec?/done? plus an internal _upd marker.
-
-
-
+    The stage dict ends up with: status, phase ('downloading'|'finalizing'), total_size,
+    downloaded, speed_bps/eta_sec (Total line), current_file? (the ACTIVE row for the
+    Current line), files_total, files_done, repo_index/repo_count and files{} - each file
+    row has filename/size/downloaded/speed_bps? eta_sec?/done? plus internal _upd/_repo.
     """
-
-
     kind = ev.get("type")
 
-
     if kind == "manifest":
+        # Repo context first: a new manifest = this repo is about to be fetched.
+        try:
+            idx = int(ev.get("repo_index") or 1)
+        except (TypeError, ValueError):
+            idx = model_state.get("current_repo")
+        if isinstance(ev.get("repo_count"), int) and ev["repo_count"] > 0:
+            model_state["repo_count"] = int(ev["repo_count"])
 
         rows = []
-
         try:
-
             for r in (ev.get("files") or []):
-
                 fn = str(r.get("filename") or "").strip()
-
                 sz = int(r.get("size") or 0)
-
                 if fn and sz > 0:
-
                     rows.append((fn, sz))
-
         except Exception:
-
             rows = []
 
         files = model_state.setdefault("files", {})
-
-        total = 0
-
         for fn, sz in rows:
-
-            f = files.setdefault(fn, {"filename": fn})
-
+            # Row keys are PER-REPO (2026-10-05 audit fix): two repos can ship the SAME
+            # relative path (e.g. Qwen base + Edit both carry 'transformer/diffusion_...').
+            # A bare-path key would merge repo 2's row into repo 1's - the first repo's done
+            # flag/bytes would belong to the wrong file and repo 2's arc would start at a
+            # phantom 100%. '<repo>:<path>' keeps every row distinct while the UI-facing
+            # 'filename' field stays the bare path.
+            key = (f"{idx}:" + fn) if idx is not None else fn
+            f = files.setdefault(key, {"filename": fn})
+            # One-time migration: pre-per-repo-keys state used the BARE path as key.
+            # Fold that legacy row's real progress into this repo-scoped row and drop
+            # it - an untagged half-done ghost would pin the UI Current line forever.
+            if fn != key and fn in files:
+                leg = files[fn]
+                for fk in ("downloaded", "size"):
+                    fv = leg.get(fk)
+                    if isinstance(fv, (int, float)) and fv > int(f.get(fk) or 0):
+                        f[fk] = int(fv)
+                for fk in ("done", "_seen"):
+                    if leg.get(fk):
+                        f[fk] = True
+                del files[fn]
+            # tag the row with its repo - existing rows keep their original tag so a
+            # re-emitted manifest never re-homes old rows.
+            if "_repo" not in f and idx is not None:
+                f["_repo"] = idx
             if sz > int(f.get("size") or 0):
-
                 f["size"] = sz          # manifest size is authoritative; never shrink
 
-            total += int(f.get("size") or 0)
-
-        if total > int(model_state.get("total_size") or 0):
-
-            model_state["total_size"] = total   # the true repo size from second 0
-
+        if idx != model_state.get("_arc_repo"):
+            # A NEW repo's arc starts here: the live numbers describe THIS repo from now on.
+            # Earlier repos' rows keep their done flags and bytes - nothing resets to zero.
+            model_state["_arc_repo"] = idx
+            model_state["current_repo"] = idx
+            # UI-facing alias: the Total line shows "Repo X of Y" from these two keys.
+            model_state["repo_index"] = idx
+            vals = [v for v in files.values() if v.get("_repo") in (None, idx)]
+            model_state["total_size"] = sum(int(v.get("size") or 0) for v in vals)
+            # resume: bytes already on disk from a previous attempt are re-claimed here
+            model_state["downloaded"] = sum(int(v.get("downloaded") or 0) for v in vals)
+            # PER-REPO done count (2026-10-23 audit re-check): files_total is reset to 0 above
+            # and refilled by THIS repo's own 'Fetching N files' counter, so files_done must be
+            # this repo's arc too - a cumulative count would (a) show 'Files: X of Y done' with
+            # the wrong numerator on the UI and (b) trip _sweep_ghost_rows' f_done >= f_total
+            # trigger instantly, marking every not-yet-downloaded manifest row 100%.
+            model_state["files_done"] = sum(1 for v in vals if v.get("done"))
+            # per-repo counter arc: reset so the previous repo's N/M cannot leak into
+            # this repo's 'Files done' line until its own count event arrives.
+            model_state["files_total"] = 0
+            model_state.pop("speed_bps", None)
+            model_state.pop("eta_sec", None)
+            # speed/ETA anchor for THIS repo: wall clock + bytes already on disk (resume
+            # counts as the starting floor, so the rate is not inflated by old bytes).
+            model_state["_repo_t0"] = _time.time()
+            model_state["_t0_bytes"] = int(model_state["downloaded"] or 0)
+            model_state["_t0_repo"] = idx
+        else:
+            # same repo (re-emitted manifest / retry of the same run) - monotonic only
+            _recompute_totals(model_state)
         return
 
     if kind == "count":
@@ -1823,219 +2160,216 @@ def _merge_model_progress(model_state: dict, ev: dict) -> None:
         if isinstance(_cd, bool):
             _cd = None
         try:
-            model_state["files_total"] = int(ev.get("total") or 0)
+            ft = int(ev.get("total") or 0)
+            # per-repo counter - only adopt it for the current repo's rows. files_done is
+            # monotonic within a run so an early/stale close event can never push it back.
+            if model_state.get("files_total") != ft:
+                model_state["files_total"] = ft
             if _cd is not None:
-                model_state["files_done"] = int(_cd)
+                cd = min(int(_cd), int(model_state.get("files_total") or int(_cd)))
+                if cd > int(model_state.get("files_done") or 0):
+                    model_state["files_done"] = cd
         except (TypeError, ValueError):
             pass
 
-        # v14: NO early return here - the tail below must run for count events too:
-        # when the counter reports completion it is what triggers the ghost sweep.
-
     downloaded = ev.get("downloaded")
-
     if not isinstance(downloaded, (int, float)) or downloaded < 0:
-
         downloaded = None
-
     size = ev.get("size")
-
     if not isinstance(size, (int, float)) or size <= 0:
-
         size = None
 
     if kind == "file":
-
         raw_name = str(ev.get("filename") or "file")[:300]
-
-        fname = _match_known_file(model_state, raw_name)
-
+        fname, _exact = _match_known_file(model_state, raw_name, size)
         files = model_state.setdefault("files", {})
-
-        f = files.setdefault(fname, {"filename": fname})
+        f = files.get(fname)
+        if f is None:
+            # Unknown name (no manifest row matched): create a NEW row only when nothing
+            # with the same basename exists in this repo - otherwise we would double-list an
+            # already-in-flight file at 0 bytes ("same file again from zero").
+            base = _norm_bar_name(raw_name).rsplit("/", 1)[-1]  # path part, suffix cut
+            alt = None
+            if len(base) >= 4:  # repo-scoped rows make short basenames safe to merge on
+                hits = []
+                for k, v in files.items():
+                    if k == fname or v.get("_repo") not in (None, model_state.get("current_repo")):
+                        continue
+                    kb = (k.split(":", 1)[1] if ":" in k else k).rsplit("/", 1)[-1]
+                    # exact basename, or a display variant that CARRIES it on a word
+                    # boundary - e.g. the xet suffix cut mid-word at the 300-char cap
+                    # ("...model.safetensors: reconstructing" -> base ends with kb).
+                    if kb == base or (len(kb) >= 4 and base.endswith(kb)
+                                      and not base[-len(kb)-1].isalnum()):
+                        hits.append(k)
+                if len(hits) == 1:
+                    alt = hits[0]
+            f = files.setdefault(alt or fname, {"filename": alt or fname})
+        if "_repo" not in f and model_state.get("current_repo") is not None:
+            f["_repo"] = model_state["current_repo"]
 
         if size:
-
             f["size"] = int(max(int(f.get("size") or 0), int(size)))
-
         if downloaded is not None:
-
             cap = f.get("size") or downloaded
-
-            f["downloaded"] = int(max(0, min(downloaded, cap)))
-
+            # monotonic per row - a re-opened bar (resume) must never push bytes backwards
+            new_val = max(0, min(downloaded, cap))
+            f["downloaded"] = int(max(int(f.get("downloaded") or 0), new_val))
         speed = ev.get("speed_bps")
-
         if isinstance(speed, (int, float)) and speed >= 0:
-
             f["speed_bps"] = round(float(speed), 1)
-
         eta = ev.get("eta_sec")
-
         if isinstance(eta, (int, float)):
-
             f["eta_sec"] = round(max(0.0, float(eta)), 1)
 
-        # v14: this row received a REAL per-file bar event - it is a live download
-        # row, not just a manifest seed. The Current line only ever names _seen rows.
+        # v14: this row received a REAL per-file bar event - it is a live download row.
         f["_seen"] = True
 
-        # v13: recency marker for the Current line - a GLOBAL sequence shared by all
-        # file rows (per-file counters would tie between parallel downloads and the
-        # picker could not tell which file was updated LAST).
+        # recency marker for the Current line (global sequence shared by all file rows).
         seq = int(model_state.get("_seq") or 0) + 1
         model_state["_seq"] = seq
         f["_upd"] = seq
 
-        # done flag: explicit close event OR reached its own size (xet bars stay open).
-
+        # done flag: ONLY the explicit completion signal counts (close, or the bar's own
+        # byte count reaching the total). 2026-10-23: byte arithmetic on downloaded >= size
+        # must not complete a row - xet transfer bytes are capped at the file size, so a
+        # still-downloading file could otherwise be marked done at "100%" and the Current
+        # line would jump to the next file while this one was still on the wire.
         if ev.get("done"):
-
             f["done"] = True
+            # A finished file is exactly its manifest size, whatever the live counters said
+            # (xet transfer bytes are compressed/deduplicated and can land below it).
+            if f.get("size"):
+                f["downloaded"] = max(int(f.get("downloaded") or 0), int(f["size"]))
 
-        elif f.get("size") and int(f.get("downloaded") or 0) >= int(f["size"]):
-
-            f["done"] = True
-
-        # v13: the Current line follows the ACTIVE row (most recently updated),
-        # not blindly the last event - a finished file must not pin the display.
-        model_state["current_file"] = _pick_current_file(model_state)
-
-    # total / phase aggregates - and file rows count toward the totals too
-
+    # total / phase aggregates - feed stage.downloaded as a floor (rows are the truth).
     if downloaded is not None:
-
         cur = int(model_state.get("downloaded") or 0)
-
         if downloaded > cur:
-
             model_state["downloaded"] = int(downloaded)
 
-    # v15: aggregate bar sizes are deliberately NOT used as total_size - they are not the repo
-    # size. hf seeds them per file and _update_transfer_bar() GROWS the transfer total by a 1.25x
-    # hack when network bytes exceed the estimate (dedup/compression), while cached/fast files
-    # skip bars entirely: 'X / Y GB' would show e.g. 4.9/9.1 with everything already on disk.
-    # The denominator comes only from the manifest sum or per-file row sizes (below). Aggregate
-    # bytes/speed still feed stage.downloaded and the Total line's live numbers via max() above.
-
     if kind == "phase":
-
         label = str(ev.get("label") or "")[:200]
-
         low = label.lower()
-
         if "complete" in low:
-
             model_state["phase"] = "finalizing"
-
         elif "reconstruct" in low:
-
             model_state["phase"] = "finalizing"
-
         else:
-
             model_state["phase"] = model_state.get("phase") or "downloading"
 
-    # v13: the stage-level speed/eta (Total line) comes ONLY from the aggregate bars.
-    # Per-file events carry each file's OWN average speed - feeding them into the
-    # stage would make the Total line jump between files' speeds under parallel
-    # downloads. The per-file row keeps its own speed for the Current line.
-    if kind in ("total", "phase"):
-        speed = ev.get("speed_bps")
+    # Stage-level speed/ETA (Total line) is computed AFTER the totals are summed from the
+    # rows - see _update_stage_speed below. It is row-driven, not aggregate-bar-driven, so
+    # a stream that carries only per-file events still shows live speed (2026-10-23).
 
-        if isinstance(speed, (int, float)) and speed > 0:
-
-            model_state["speed_bps"] = round(float(speed), 1)
-
-            # ETA for the whole download at this aggregate speed.
-
-            total = int(model_state.get("total_size") or 0)
-
-            done = int(model_state.get("downloaded") or 0)
-
-            if total > done:
-
-                model_state["eta_sec"] = round(min((total - done) / float(speed), 86400.0), 1)
-
-    # Per-file totals (v12): rows are the source of truth for bytes + finished count;
-
-    # they also cover older hf versions that emit per-file rows only.
-
-    files = model_state.get("files") or {}
-
-    if files:
-
-        f_total = sum(int(v.get("size") or 0) for v in files.values())
-
-        f_done_bytes = sum(int(v.get("downloaded") or 0) for v in files.values())
-
-        f_finished = sum(1 for v in files.values() if v.get("done"))
-
-        if f_total > int(model_state.get("total_size") or 0):
-
-            model_state["total_size"] = f_total
-
-        if f_done_bytes > int(model_state.get("downloaded") or 0):
-
-            model_state["downloaded"] = f_done_bytes
-
-        if kind != "count" and f_finished > int(model_state.get("files_done") or 0):
-
-            # count events are authoritative when present; rows only fill the gaps
-
-            # (xet leaves bars open, so done=True comes from the final event).
-
-            model_state["files_done"] = min(f_finished, int(model_state.get("files_total") or f_finished))
-
-    # v14: once every byte is accounted for (aggregate full or counter complete),
-    # manifest-only rows - cached/fast files that never opened a bar - are marked
-    # done so they cannot pin the Current line on a fake "starting…" file.
+    # Per-file rows are the source of truth for bytes + finished count (sequential rework).
+    # Sweep FIRST, then sum: a swept (cached/fast) row that never opened a bar now carries
+    # its real size, so the Total line lands on 100% instead of stalling mid-repo.
     _sweep_ghost_rows(model_state)
+    _recompute_totals(model_state)
+    _update_stage_speed(model_state, ev.get("speed_bps"))
     model_state["current_file"] = _pick_current_file(model_state)
 
 
-def _ensure_model_cached(rt: dict, model_id: str = None) -> bool:
-    """Prepare the HF model cache BEFORE the generation subprocess starts (2026-09-12).
+def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
+    """Prepare the HF model cache(s) BEFORE the generation subprocess starts (2026-09-12).
+
+    *model_ids* may be a single id or a LIST - every repo is downloaded in ONE prep-script
+    run with SEQUENTIAL per-file downloads (max_workers=1, 2026-10-05) and ONE shared
+    progress state, so the UI shows continuous statistics from the first file of the first
+    repo to the last file of the last repo - no restart at zero between repos.
 
     WHY THIS EXISTS - client-machine field failure: on a FRESH machine the first run
-    must download the tier's weights (~30 GB bf16 Z-Image / ~14 GB FP8 / ~10 GB
-    SANA-Sprint) into <runtime_dir>/hf_cache. Doing that inside the worker burned the
-    whole subprocess timeout and reported a misleading 'generation timed out'. The
-    pre-flight now gets its own generous budget (TOOLS_BOOTSTRAP_TIMEOUT_SEC) and is
-    resumable; when everything is already cached it finishes in a couple of seconds.
+    must download the tier's weights (~80 GB for the high tier's two Qwen repos, ~17 GB
+    for mid Z-Image) into
+    <runtime_dir>/hf_cache. Doing that inside the worker burned the whole subprocess
+    timeout and reported a misleading 'generation timed out'. The pre-flight now gets its
+    own generous budget (TOOLS_BOOTSTRAP_TIMEOUT_SEC) and is resumable; when everything is
+    already cached it finishes in a couple of seconds.
 
-    LIVE PROGRESS (2026-09-21): the script's stdout is STREAMED line-by-line (instead
-    of captured-and-forgotten); per-file JSON events are merged into <runtime_dir>/
-    .setup_progress.json stage 'model' so the UI shows size/downloaded/speed/ETA.
+    LIVE PROGRESS (2026-09-21, sequential rework 2026-10-05): the script's stdout is
+    STREAMED line-by-line; per-file JSON events are merged into <runtime_dir>/
+    .setup_progress.json stage 'model'. The state CARRIES across repos and retries - a
+    done file stays done, so an interrupted download visibly resumes where it stopped
+    instead of resetting every row to zero (the old per-repo reset() was the cause).
+
     LAZY STAGE (2026-09-24): the 'model' row is written only when a REAL progress event
-    arrives (something actually downloads / reconstructs). A fully-cached pre-flight emits
-    no events and therefore no row - the UI's Setup/Downloads section stays invisible on
-    machines where everything is already available. Errors/timeouts still write the row.
+    arrives. A fully-cached pre-flight emits no events and therefore no row - the UI's
+    Setup/Downloads section stays invisible on machines where everything is available.
 
     NON-FATAL by design: the worker itself falls back to a download inside its own
-    per-tier subprocess budget, so a slow/failed pre-flight only costs one retry - it
-    is logged as a warning and generation proceeds. Returns True when every requested
-    model is cached locally.
+    per-tier subprocess budget, so a slow/failed pre-flight only costs one retry. Returns
+    True when every requested model is cached locally.
     """
+    ids = ([str(m) for m in model_ids if str(m)] if isinstance(model_ids, (list, tuple))
+           else [str(model_ids)] if model_ids else None)
     _migrate_legacy_model_cache(rt)
-    cmd = [rt["python_exe"], "-c", _model_prep_script([model_id] if model_id else None)]
+    cmd = [rt["python_exe"], "-c", _model_prep_script(ids or [_MODEL_ID])]
 
     progress = _setup_progress(rt)
-    model_state: dict = {"status": "running"}
+    # current_file starts as an explicit None - the manifest branch returns early
+    # without touching it, and a missing key would make the UI's pickKey undefined.
+    model_state: dict = {"status": "running", "current_file": None}
     stage_started = [False]  # lazy write - see the LAZY STAGE note in this docstring
 
-    def _write_model_stage() -> None:
-        """Persist the model stage; on FIRST write also start a fresh generation so a"""
-        """retry after an interrupted download drops the previous attempt's stale rows and"""
-        """tells any orphaned old prep-script process to stop overwriting our state file."""
-        if progress is None or stage_started[0]:
+    def _reclaim_previous() -> None:
+        """Re-adopt the previous attempt's file rows ONCE, before any merge.
+
+        2026-10-05: NO progress.reset() anywhere - a fresh generation is claimed by the
+        SetupProgress constructor itself (it bumps the file's generation once per run), and
+        this makes resume visible from second 0: rows with real bytes (_seen) are copied
+        into the fresh state by stable row key, so when the first manifest event merges,
+        its arc sums already include "X GB on disk" and done flags - finished files cannot
+        look like they restarted at zero. A fresh machine has no previous rows: no-op.
+        """
+        if progress is None or prev_state[0] is not None:
             return
         try:
-            progress.reset(stages=["model"])
+            prev = progress.stage("model") or {}
         except Exception:
-            pass
+            prev = {}
+        if not isinstance(prev, dict):
+            return
+        # NOTE (2026-10-23 audit fix): only FILE ROWS are carried over - never the stage-level
+        # counters (total_size/downloaded/repo_index/repo_count). Those describe the PREVIOUS
+        # attempt's repo arc; copying them made a mid-repo-2 retry show "60 GB / 40 GB" (>100%)
+        # when repo 2's manifest reset total_size to its own arc. Row bytes are re-summed by each
+        # repo's manifest branch instead (rows carry their _repo tags), so resume is still visible
+        # from second 0 and the live numbers always describe exactly ONE repo.
+        pf = prev.get("files")
+        if isinstance(pf, dict):
+            files = model_state.setdefault("files", {})
+            for key, pv in pf.items():
+                if not isinstance(pv, dict) or not pv.get("_seen"):
+                    continue  # manifest-only rows have no real progress to carry
+                # filename must stay the BARE path - the row key is '<repo>:<path>', and a
+                # prefixed name would leak into the UI Current line on retry (2026-10-23 audit).
+                bare = str(key).split(":", 1)[1] if ":" in str(key) else str(key)
+                target = files.setdefault(str(key), {"filename": bare})
+                for fk in ("downloaded", "size"):
+                    fv = pv.get(fk)
+                    if isinstance(fv, (int, float)) and fv > int(target.get(fk) or 0):
+                        target[fk] = int(fv)
+                for fk in ("done", "_seen"):
+                    if pv.get(fk):
+                        target[fk] = True
+                # carry the repo tag (2026-10-23 audit fix): an untagged row is treated as
+                # CURRENT-repo by _repo_rows(), so on a retry every reclaimed row would be
+                # counted into this run's first arc - including rows of OTHER repos.
+                if pv.get("_repo") is not None:
+                    target["_repo"] = pv["_repo"]
+
+    prev_state = [None]  # set on first read so the re-claim runs exactly once
+
+    def _write_model_stage() -> None:
+        """Persist the model stage on FIRST real event (lazy row - see LAZY STAGE note)."""
+        if progress is None or stage_started[0]:
+            return
         stage_started[0] = True
         try:
+            if prev_state[0] is None:  # defensive - _on_line already re-claims first
+                _reclaim_previous()
+                prev_state[0] = True
             progress.set_stage("model", **model_state)
         except Exception:
             pass
@@ -2047,6 +2381,11 @@ def _ensure_model_cached(rt: dict, model_id: str = None) -> bool:
         if not ev or progress is None:
             return
         try:
+            # Re-claim the previous attempt's rows ONCE, before ANY merge - the first
+            # manifest event must already see "X GB on disk" in its arc sums.
+            if prev_state[0] is None:
+                _reclaim_previous()
+                prev_state[0] = True
             _merge_model_progress(model_state, ev)
             # First REAL event = the pre-flight genuinely has work to do (a manifest with
             # files to fetch / a download bar). Only NOW does the model stage appear in
@@ -2060,8 +2399,16 @@ def _ensure_model_cached(rt: dict, model_id: str = None) -> bool:
             logger.debug(f"  model progress update failed (ignored): {e}")
 
     try:
-        rc, out_lines, err_text = run_streaming(cmd, timeout=_bootstrap_timeout(),
-                                                env=_tool_env(rt), on_line=_on_line)
+        # Resolve the shared streaming runner the same way every other tool_bootstrap
+        # symbol is resolved: injected exec global on the CLIENT, real package import in
+        # local dev. A bare call to run_streaming() is a NameError outside the CLIENT
+        # (2026-10-23: the model pre-flight could never run in local dev because of it).
+        stream_fn = globals().get("run_streaming") or _tb_symbol("run_streaming")  # noqa: B009
+        if stream_fn is None:
+            logger.warning("  Model pre-flight skipped: run_streaming is unavailable")
+            return False
+        rc, out_lines, err_text = stream_fn(cmd, timeout=_bootstrap_timeout(),
+                                            env=_tool_env(rt), on_line=_on_line)
     except subprocess.TimeoutExpired:
         if progress is not None and stage_started[0]:
             model_state["status"] = "error"
@@ -2080,10 +2427,11 @@ def _ensure_model_cached(rt: dict, model_id: str = None) -> bool:
     if rc == 0 and "MODEL_READY" in out:
         logger.info(f"  Model cache ready ({out.splitlines()[-1]})")
         if progress is not None and stage_started[0]:
-            # v14 final reconciliation: MODEL_READY means snapshot_download returned for
-            # every model - any row that never opened a bar (cached/fast file) is done.
+            # Final reconciliation: MODEL_READY means snapshot_download returned for every
+            # requested repo - any row that never opened a bar (cached/fast file) is done.
             try:
                 _sweep_ghost_rows(model_state, final=True)
+                _recompute_totals(model_state)  # swept rows now hold their real sizes
                 model_state["current_file"] = None
             except Exception:
                 pass  # informational only - the state file keeps whatever it has
@@ -2109,7 +2457,6 @@ def _ensure_model_cached(rt: dict, model_id: str = None) -> bool:
             pass
     return False
 
-
 def _active_manifest() -> dict:
     """The SERVER-shipped TOOL_MANIFEST global when present, else the in-file default."""
     m = globals().get("TOOL_MANIFEST")  # noqa: B009 - injected symbol by design
@@ -2119,11 +2466,16 @@ def _active_manifest() -> dict:
 
 
 def _bootstrap_timeout() -> int:
-    """First-run setup budget from the SERVER-shipped constant (injected global)."""
+    """First-run setup budget from the SERVER-shipped constant (injected global).
+
+    Falls back to the same 3 h value as config.TOOLS_BOOTSTRAP_TIMEOUT_SEC: a fresh
+    high-tier machine must pull BOTH Qwen repos (~40 GB each), so a 40-minute budget
+    would abort a download that is working perfectly.
+    """
     v = globals().get("TOOLS_BOOTSTRAP_TIMEOUT_SEC")  # noqa: B009
     if isinstance(v, int) and v > 0:
         return v
-    return 2400
+    return 10800
 
 
 def generate_image(
@@ -2141,16 +2493,18 @@ def generate_image(
     PROBES THE CLIENT'S NVIDIA GPU FIRST and picks the tier-appropriate model files +
     pipeline mode so any card from a 6 GB laptop 3060 to a 5090 runs comfortably:
 
-        high (>= 24 GB): Z-Image-Turbo bf16 resident - the original fast path.
-        mid  (12-23.9) : SANA-Sprint 1.6B resident, 2 sCM steps at native 1024px.
+        high (>= 24 GB): Qwen/Qwen-Image FP8 + cpu offload (v21); img2img via the separate
+                         Qwen/Qwen-Image-Edit repo (instruction-based, no strength).
+        mid  (12-23.9) : Z-Image-Turbo FP8 (~9 guidance-free steps; ~17 GB peak resident).
         low  (< 12 GB) : int8 SANA-Sprint 0.6B (v9, ~5 GB download; dequantized to the
                          same bf16 tensors at load) + cpu offload, resolution-clamped.
 
     DEFAULT RESOLUTION (2026-10-03): when width/height are omitted (None) they come from
     the user's Settings > Runtime tab ('image_gen_width'/'image_gen_height' in the CLIENT
     settings.json - read LIVE on every call, default 600x400); an explicit caller value
-    always wins. The worker still snaps to tier-safe multiples (16 on high tier / Z-Image,
-    32 on mid/low / SANA-Sprint) and clamps to the tier's max_pixels budget either way.
+    always wins. The worker still snaps to tier-safe multiples (32 on high / Qwen-Image
+    and low / SANA-Sprint, 16 on mid / Z-Image) and clamps to the tier's max_pixels
+    budget either way.
 
     The user can pin any line regardless of hardware via config IMAGE_GEN_TIER_OVERRIDE
     ('auto'|'high'|'mid'|'low') - see the module docstring for semantics and safety.
@@ -2174,6 +2528,17 @@ def generate_image(
                 height = ch if height is None else height
         width = int(width) if width is not None else 600
         height = int(height) if height is not None else 400
+        # Tool calls routinely send null for optional numbers (`"num_inference_steps": null`).
+        # Normalize ONCE here: the worker would otherwise pass None straight into a pipeline
+        # and fail with an opaque TypeError deep inside diffusers (2026-10-23).
+        try:
+            num_inference_steps = int(num_inference_steps)
+        except (TypeError, ValueError):
+            num_inference_steps = 9
+        try:
+            guidance_scale = float(guidance_scale)
+        except (TypeError, ValueError):
+            guidance_scale = 0.0
 
         logger.info("generate_image called - starting subprocess execution")
         logger.info(f"  prompt: {prompt}")
@@ -2204,6 +2569,13 @@ def generate_image(
                     logger.info(f"  IMAGE_GEN_TIER_OVERRIDE={tier!r} overrides auto classification "
                                 f"(auto would have picked '{auto_tier}')")
         cfg = _tier_config_for(tier)
+
+        # v21: Qwen/Qwen-Image is tuned for ~50 FlowMatchEuler steps; the tool schema ships
+        # 9 (a Z-Image-turbo number), so when the caller left the default in place we swap
+        # in the qwen trajectory. An explicit user step count always wins - detectable by
+        # any value other than the schema default of 9.
+        if str(cfg.get("pipeline") or "") == "qwen_image" and int(num_inference_steps) == 9:
+            num_inference_steps = 50
         # v9 publish gate: while our int8 SANA-Sprint 0.6B repo is unpublished (placeholder
         # id), the low tier runs the bf16 0.6B instead (~7.7 GB, NOT the 9.7 GB 1.6B - audit fix).
         if cfg.get("dtype") == "int8" and not _int8_model_ready(cfg["model_id"]):
@@ -2212,6 +2584,14 @@ def generate_image(
             cfg = dict(cfg)
             cfg["model_id"] = _SANA_06_MODEL_ID
             cfg["dtype"] = "bf16"
+
+        # v21 mid tier: Z-Image-Turbo FP8 resident peaks ~17 GB - probed VRAM below ~18 GB
+        # gets cpu offload added so 12/16 GB cards run it without OOM (manifest promise).
+        if str(cfg.get("pipeline") or "") == "zimage" and gpu_info \
+                and int(gpu_info.get("vram_mib") or 0) < 18 * 1024:
+            cfg = dict(cfg)
+            cfg["offload"] = True
+            logger.info(f"  Mid tier on {gpu_info['name']} (< 18 GB VRAM): cpu offload added")
         if gpu_info:
             logger.info(f"  GPU probe: {gpu_info['name']} | "
                         f"{gpu_info.get('vram_mib', 0)} MiB VRAM | sm_{gpu_info.get('compute_cap', '?')}")
@@ -2262,12 +2642,19 @@ def generate_image(
             }
 
         # Prepare the tier's model cache with its OWN budget BEFORE generation (2026-09-12).
-        # First run on a fresh machine downloads ~30 GB (Z bf16) / ~14 GB (FP8) /
-        # ~10 GB (SANA-Sprint 1.6B bf16; ~5 GB for the v9 int8 0.6B low-tier build once published)
-        # into <runtime_dir>/hf_cache; later runs are a couple of seconds. Non-fatal: the
-        # worker has its own per-tier download budget as a net.
+        # First run on a fresh machine downloads the tier's repos into <runtime_dir>/hf_cache
+        # - ~80 GB for the high tier (Qwen/Qwen-Image + Qwen/Qwen-Image-Edit, bf16 weights
+        # stored as fp8 at load), ~17 GB for mid (Z-Image fp8), ~7.7 GB for low (SANA bf16).
+        # Later runs are a couple of seconds. Non-fatal: the worker has its own per-tier
+        # download budget as a net.
         try:
-            _ensure_model_cached(rt, cfg["model_id"])
+            # High tier needs TWO repos (base + img2img Edit) - pass them as a list so ONE
+            # prep-script run downloads both sequentially with one shared progress state.
+            model_ids = [cfg["model_id"]]
+            edit_id = cfg.get("edit_model_id")
+            if isinstance(edit_id, str) and edit_id.strip() and edit_id != cfg["model_id"]:
+                model_ids.append(edit_id)
+            _ensure_model_cached(rt, model_ids)
         except Exception as e:
             logger.warning(f"  Model preparation failed ({e}) - the worker will attempt "
                            f"a download inside its own subprocess budget")
@@ -2285,6 +2672,8 @@ def generate_image(
             # GPU tier choice (2026-09-12 / v7 2026-09-13): which pipeline + files to load and how.
             "pipeline": cfg.get("pipeline", "zimage"),
             "model_id": cfg["model_id"],
+            # v21 high tier img2img: separate instruction-based Edit repo.
+            "edit_model_id": cfg.get("edit_model_id"),
             "dtype": cfg.get("dtype", "bf16"),
             "offload": bool(cfg.get("offload")),
             "max_pixels": cfg.get("max_pixels"),

@@ -47,6 +47,24 @@ def _runtimes_root() -> str:
         return ""
 
 
+def _public_stage(stage: dict) -> dict:
+    """Strip the writer's internal bookkeeping keys before sending a stage to the UI.
+
+    generate_image keeps merge internals in the same dict as the display fields
+    (`_repo`, `_upd`, `_seen`, `_seq`, `_repo_t0`, ...). They are not needed by the
+    browser and would ship several KB of noise per poll - drop every key beginning with
+    an underscore, at stage level and inside each file row.
+    """
+    pub = {k: v for k, v in stage.items() if not str(k).startswith("_")}
+    files = pub.get("files")
+    if isinstance(files, dict):
+        pub["files"] = {
+            key: {k: v for k, v in row.items() if not str(k).startswith("_")}
+            for key, row in files.items() if isinstance(row, dict)
+        }
+    return pub
+
+
 def _read_setup_progress(tool: str) -> dict | None:
     """Read one tool's .setup_progress.json, or None when it does not exist yet.
 
@@ -93,6 +111,10 @@ def create_downloads_router() -> APIRouter:
         data = _read_setup_progress(tool)
         if data is None:
             return {"tool": tool, "updated_at": None, "stages": {}}
+        stages = data.get("stages")
+        if isinstance(stages, dict):
+            data["stages"] = {name: _public_stage(st) for name, st in stages.items()
+                              if isinstance(st, dict)}
         data["tool"] = tool  # echo the requested name (file may predate a rename)
         return data
 

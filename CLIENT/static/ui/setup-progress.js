@@ -40,8 +40,14 @@
         'use strict';
 
         const POLL_MS = 1500;          // poll interval while a stage is running
+        const POLL_MS_FAST = 700;      // while model bytes are moving - the state file is
+                                       // rewritten ~2x/s, so 1.5 s polling was the main
+                                       // remaining quantization of the "realtime" display
         const MAX_POLLS_NO_STATE = 40; // ~60 s of empty responses before giving up quietly
-        const MODEL_GRACE_POLLS = 20;  // ~30 s after venv+pip finish: wait for the model stage
+        const MODEL_GRACE_POLLS = 60;  // ~90 s after venv+pip finish: the tool starts its
+                                       // model pre-flight right after bootstrap; keep the card
+                                       // alive until its first event lands (slow python/hf
+                                       // start-up must not make the download invisible)
 
         /** @type {Map<string, Object>} toolName -> live card controller */
         const activeCards = new Map();
@@ -144,25 +150,58 @@
             const err = stage.status === 'error';
             let html = '';
 
-            // ---- line 1: CURRENT DOWNLOAD - only the file downloading right now (v15) -----
+            // ---- line 1: CURRENT DOWNLOAD - only the file downloading right now (v15 + sequential rework) -----
             // current_file comes from the server = the ACTIVE row with a real per-file bar event;
             // pass 2 keeps naming the most recently updated REAL file between files / at finalize,
             // so this line always shows a real file name + its own live numbers. The only non-file
             // case is the first seconds before any bytes land: plain 'Downloading model files…'
             // with live speed and NO bar (overall progress lives on the Total line).
             let curName = null, curGot = null, curSize = null, curSpeed = null, curEta = null;
+            let curRow = null;  // active row object - its key may be '<repo>:<path>' (2026-10-05 audit)
             const files = stage.files || {};
+            // Server row keys are '<repo>:<path>' (two repos may ship the same relative path);
+            // the display name must always be the bare path, never the key.
+            function _bareName(key, row) {
+                const n = (row && row.filename) ? row.filename : String(key || '');
+                return n.replace(/^\d+:/, '');
+            }
+            // (2026-10-05 sequential rework) fallback: if the server's current_file is
+            // missing or points at a row that vanished, derive it from the rows themselves.
+            // max_workers=1 means at most ONE file is in flight, so prefer the row that has
+            // already received bytes and is still short of its size - picking an arbitrary
+            // not-yet-started row (manifest order) would show a file at 0% that is not
+            // downloading while the real one is.
+            function _fallbackCurrent() {
+                let best = null, bestKey = null, bestGot = -1;
+                Object.keys(files).forEach(k => {
+                    const f = files[k];
+                    if (!f || f.done) return;
+                    const sz = f.size || 0, got = f.downloaded || 0;
+                    if (sz && got >= sz) return;   // effectively finished
+                    if (got > bestGot) { best = f; bestKey = k; bestGot = got; }
+                });
+                return best ? { row: best, key: bestKey } : null;
+            }
             if (!done && !err) {
                 const pickKey = stage.current_file;
                 if (pickKey && files[pickKey]) {
                     const f = files[pickKey];
-                    curName = f.filename || pickKey; curGot = f.downloaded || 0; curSize = f.size || 0;
+                    curRow = f;
+                    curName = _bareName(pickKey, f); curGot = f.downloaded || 0; curSize = f.size || 0;
                     curSpeed = f.speed_bps; curEta = f.eta_sec;
-                } else if (stage.total_size > 0) {
-                    // No active file row right now (first seconds) - plain line, live speed, no bar.
-                    curName = 'Downloading model files';
-                    curGot = stage.downloaded || 0; curSize = stage.total_size || 0;
-                    curSpeed = stage.speed_bps; curEta = stage.eta_sec;
+                } else {
+                    const fb = _fallbackCurrent();
+                    if (fb) {
+                        curRow = fb.row;
+                        curName = _bareName(fb.key, fb.row); curGot = fb.row.downloaded || 0;
+                        curSize = fb.row.size || 0;
+                        curSpeed = fb.row.speed_bps; curEta = fb.row.eta_sec;
+                    } else if (stage.total_size > 0) {
+                        // No active file row right now (first seconds) - plain line, live speed, no bar.
+                        curName = 'Downloading model files';
+                        curGot = stage.downloaded || 0; curSize = stage.total_size || 0;
+                        curSpeed = stage.speed_bps; curEta = stage.eta_sec;
+                    }
                 }
             }
             if (curName != null) {
@@ -177,7 +216,7 @@
                 } else if (curSize > 0 && curGot != null) {
                     // real per-file row: its own live numbers; checkmark once that file is done
                     const starting = !done && !err && curGot <= 0;
-                    const check = files[curName] && files[curName].done ? ' ✓' : '';
+                    const check = curRow && curRow.done ? ' ✓' : '';
                     meta = starting ? ('waiting for first bytes…' + (bits.length ? ' <b>' + bits.join(' · ') + '</b>' : ''))
                          : fmtBytes(curGot) + ' / ' + fmtBytes(curSize) + ' (' + pct.toFixed(0) + '%)' + check +
                            (bits.length ? ' · <b>' + bits.join(' · ') + '</b>' : '');
@@ -201,11 +240,16 @@
             if (!done && !err && stage.speed_bps > 0) tBits.push(fmtSpeed(stage.speed_bps));
             if (!done && !err && stage.eta_sec != null && isFinite(stage.eta_sec)) tBits.push('ETA ' + fmtEta(stage.eta_sec));
             let tMeta = '';
+            // (2026-10-05 sequential rework) multi-repo context - the high tier downloads two
+            // repos back-to-back; each gets its own 0->100% arc, so name which one is active.
+            const repoIdx = stage.repo_index || 0;
+            const repoCnt = stage.repo_count || 0;
+            const repoPart = (repoCnt > 1 && repoIdx > 0) ? ('Repo ' + repoIdx + ' of ' + repoCnt) : '';
             const filePart = (fDone != null && fTotal != null) ? ('Files: ' + fDone + ' of ' + fTotal + ' done') : '';
             if (tSize > 0 || filePart) {
                 const pct = (tSize > 0) ? Math.min(100, tGot / tSize * 100) : 0;
                 const sizePart = (tSize > 0) ? (fmtBytes(tGot) + ' / ' + fmtBytes(tSize) + ' (' + pct.toFixed(0) + '%)') : '';
-                const parts = [filePart, sizePart].filter(Boolean);
+                const parts = [repoPart, filePart, sizePart].filter(Boolean);
                 tMeta = parts.join(' · ') + (tBits.length ? ' · <b>' + tBits.join(' · ') + '</b>' : '');
             } else if (!done && !err) {
                 tMeta = 'checking files…';
@@ -289,6 +333,13 @@
                     if (window.COOLEMS && COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
                 }
             }
+            // (2026-10-23) A card that WAS showing a crashed run's rows must not linger as an
+            // empty shell once those rows are retired: detach it, but keep the poll loop alive
+            // so a download starting moments later re-attaches it (see decideNext's no-rows grace).
+            if (card.attached && !Object.keys(st).length) {
+                card.el.remove();
+                card.attached = false;
+            }
         }
 
         function schedule(card, ms) {
@@ -296,11 +347,20 @@
             card.timer = setTimeout(() => poll(card), ms || POLL_MS);
         }
 
+        /** Poll faster while model bytes are actually moving; 1.5 s otherwise. */
+        function pollDelay(data) {
+            const m = data && data.stages && data.stages.model;
+            if (m && m.status === 'running' && (Number(m.downloaded) > 0 || Number(m.total_size) > 0)) {
+                return POLL_MS_FAST;
+            }
+            return POLL_MS;
+        }
+
         /** Decide whether polling continues after one response. Returns true when the next
          *  poll is scheduled, false when the run reached its end (caller finalizes). */
         function decideNext(card, data) {
             const st = _freshStages((data && data.stages) || {}, data);
-            if (Object.values(st).some(isActive)) { schedule(card); return true; }
+            if (Object.values(st).some(isActive)) { schedule(card, pollDelay(data)); return true; }
 
             // Nothing active. No state file yet: setup has not started (or the runtime is fully
             // cached from a previous run) - keep waiting up to ~60 s before dropping the card.
@@ -311,17 +371,31 @@
             }
 
             // (2026-09-24) Only stale leftovers from an EARLIER run remain - nothing happened this
-            // turn: finalize immediately. The card was never attached, so the section stays invisible.
-            if (!Object.keys(st).length) return false;
+            // turn: finalize. The card was never attached, so the section stays invisible.
+            // (2026-10-23) ...but a leftover file is NOT proof that this turn has no setup work:
+            // tool_start is emitted BEFORE the tool runs its first setup step, and begin_run()
+            // retires a crashed run's zombie rows at that same moment. Killing the card here
+            // meant a later model download was never shown. Give it the same ~60 s window a
+            // missing state file gets, then finalize for real.
+            if (!Object.keys(st).length) {
+                card.noRowsPolls = (card.noRowsPolls || 0) + 1;
+                if (card.noRowsPolls >= MAX_POLLS_NO_STATE) return false;
+                schedule(card);
+                return true;
+            }
+            card.noRowsPolls = 0;
 
             // venv + pip finished but no model stage yet: the tool starts its model pre-flight
-            // right after bootstrap - keep a short grace window open so that download is picked
+            // right after bootstrap - keep a grace window open so that download is picked
             // up live instead of being invisible. After the grace expires with nothing coming,
             // this run genuinely has no more setup work and can be finalized as complete.
+            // (2026-10-23) Either row ending is enough: a cached runtime may have no venv row
+            // at all (only pip), and requiring BOTH meant the card finalized before the
+            // download it was waiting for had even started.
             const venvDone = st.venv && st.venv.status === 'done';
             const pipDone = st.pip && st.pip.status === 'done';
             const modelPresent = !!(st.model && st.model.status);
-            if (venvDone && pipDone && !modelPresent) {
+            if (!modelPresent && (pipDone || venvDone)) {
                 card.gracePolls = (card.gracePolls || 0) + 1;
                 if (card.gracePolls < MODEL_GRACE_POLLS) { schedule(card); return true; }
             }
@@ -365,7 +439,7 @@
 
         function poll(card) {
             if (!activeCards.has(card.toolName)) return; // stopped in the meantime
-            fetch('/api/setup/status?tool=' + encodeURIComponent(card.toolName))
+            fetch('/api/setup/status?tool=' + encodeURIComponent(card.toolName) + '&_=' + Date.now(), { cache: 'no-store' })
                 .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
                 .then(data => {
                     if (!activeCards.has(card.toolName)) return;
@@ -419,7 +493,7 @@
         function settle(toolName) {
             const card = activeCards.get(toolName);
             if (!card) return;
-            fetch('/api/setup/status?tool=' + encodeURIComponent(card.toolName))
+            fetch('/api/setup/status?tool=' + encodeURIComponent(card.toolName) + '&_=' + Date.now(), { cache: 'no-store' })
                 .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
                 .then(data => {
                     if (!activeCards.has(card.toolName)) return;

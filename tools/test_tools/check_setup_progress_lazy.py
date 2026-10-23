@@ -6,11 +6,16 @@ Simulates the .setup_progress.json state file through the REAL code:
      ensure_tool_runtime must NOT write any venv/pip row and must not spawn anything;
      _ensure_model_cached must not start a 'model' stage -> UI gets an empty stages dict
      and drops its card.
-  B) fresh machine: the model stage appears only on the first REAL progress event, then
-     is finalized done (live download still fully visible).
+  B) fresh machine: the model stage appears only on the first REAL progress event,
+     previous attempt's rows are re-adopted (no reset - sequential rework),
+     then finalized done (live download still fully visible).
+  C) crashed run (2026-10-23): a killed setup leaves stages marked 'running'. begin_run()
+     must retire those zombie rows (the UI treats 'running' as live and would poll a
+     frozen card forever) while KEEPING the model row's file rows for resume.
 
 Run: python tools/test_tools/check_setup_progress_lazy.py
 """
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -76,8 +81,8 @@ def main() -> int:
 
     failures = []
 
-    def check(label, cond):
-        print(("PASS  " if cond else "FAIL  ") + label)
+    def check(label, cond, detail=""):
+        print(("PASS  " if cond else "FAIL  ") + label + (f"  [{detail}]" if detail and not cond else ""))
         if not cond:
             failures.append(label)
 
@@ -163,9 +168,17 @@ def main() -> int:
         # -------------------------------------------------------------- B) fresh
         calls2 = {"reset": 0, "set_stage": []}
 
+        _prev_state = {"files": {"a.safetensors": {"filename": "a.safetensors",
+                                                   "size": 100, "downloaded": 40,
+                                                   "_seen": True}},
+                       "total_size": 100, "downloaded": 40}
+
         class FakeProgress2:
             def reset(self, stages=None):
                 calls2["reset"] += 1
+
+            def stage(self, name):
+                return _prev_state if name == "model" else {}
 
             def set_stage(self, stage, **fields):
                 calls2["set_stage"].append((stage, dict(fields)))
@@ -187,11 +200,73 @@ def main() -> int:
         ok = gi._ensure_model_cached(rt, "fake-model")
         model_rows = [f for (s, f) in calls2["set_stage"] if s == "model"]
         check("B1 fresh model pre-flight returns True", ok is True)
-        check("B2 first write resets the previous attempt's rows once", calls2["reset"] == 1)
+        # Sequential rework (2026-10-05): NO reset() anymore - state carries across
+        # retries so resume is visible. The previous attempt's rows must be RE-ADOPTED
+        # into the first write instead of being wiped.
+        check("B2 no reset on first write (state carries across retries)", calls2["reset"] == 0)
+        if model_rows:
+            adopted = model_rows[0].get("files") or {}
+            prev_row = _prev_state["files"]["a.safetensors"]
+            # the re-claimed row is migrated to its per-repo key ("1:a.safetensors") by
+            # the first manifest event - check either form. The live bar then pushes
+            # bytes FORWARD from the on-disk floor (monotonic), so >= is the contract.
+            carried = (adopted.get("a.safetensors", {}).get("downloaded")
+                       or adopted.get("1:a.safetensors", {}).get("downloaded"))
+            check("B2b previous attempt's bytes re-adopted into first write (resume visible)",
+                  carried is not None and carried >= prev_row["downloaded"])
+            check("B2c stage total shows on-disk bytes from second 0",
+                  model_rows[0].get("downloaded") == prev_row["downloaded"])
         check("B3 model stage written (running on first real event)",
               any(f.get("status") == "running" for f in model_rows))
         check("B4 model stage finalized done",
               bool(model_rows) and model_rows[-1].get("status") == "done")
+
+        # ------------------------------------------------- C) crashed run zombies
+        # Reproduces the real file found on disk after the 2026-10-23 crash: a killed
+        # setup left 'venv' and 'model' marked running (14.9 / 57.7 GB, forever frozen).
+        sp_mod = sys.modules["tools.tool_bootstrap.setup_progress"]
+        zombie = {
+            "tool": "generate_tool", "updated_at": 1.0, "generation": 7,
+            "stages": {
+                "venv": {"status": "running"},
+                "pip": {"status": "done", "line": "Successfully installed"},
+                "model": {"status": "running", "phase": "finalizing",
+                          "total_size": 57720467613, "downloaded": 14949103432,
+                          "files_done": 31, "files_total": 39,
+                          "current_file": "2:transformer/x.safetensors",
+                          "files": {"2:transformer/x.safetensors":
+                                    {"filename": "transformer/x.safetensors",
+                                     "size": 1000, "downloaded": 400,
+                                     "_seen": True, "_repo": 2}}},
+            },
+        }
+        with open(prog_path, "w", encoding="utf-8") as f:
+            json.dump(zombie, f)
+
+        sp = sp_mod.SetupProgress(rt_dir)
+        sp.begin_run()
+        with open(prog_path, encoding="utf-8") as f:
+            after = json.load(f)
+        stages = after.get("stages") or {}
+        check("C1 zombie venv row retired", "venv" not in stages, str(sorted(stages)))
+        check("C2 finished pip row kept", (stages.get("pip") or {}).get("status") == "done")
+        m = stages.get("model") or {}
+        check("C3 model row no longer claims to be running", "status" not in m, str(m.get("status")))
+        check("C4 model file rows survive for resume",
+              (m.get("files") or {}).get("2:transformer/x.safetensors", {}).get("downloaded") == 400)
+        check("C5 current_file cleared so the UI cannot name a stale file",
+              "current_file" not in m)
+        check("C6 run claimed the file (generation bumped)", int(after.get("generation") or 0) > 7,
+              str(after.get("generation")))
+
+        # A clean file (nothing running) must NOT be rewritten - cached machines stay silent.
+        before_ts = after.get("updated_at")
+        sp2 = sp_mod.SetupProgress(rt_dir)
+        sp2.begin_run()
+        with open(prog_path, encoding="utf-8") as f:
+            again = json.load(f)
+        check("C7 begin_run is a no-op when no row is running",
+              again.get("updated_at") == before_ts, f"{before_ts} -> {again.get('updated_at')}")
 
         print()
         if failures:

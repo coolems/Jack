@@ -27,7 +27,7 @@
 - 🌐 **Browser automation** — drives a real Chrome via CDP: navigation, screenshots, precise mouse targeting, OCR of what's on screen
 - 🐍 **Python execution** — sandboxed code runs for calculation and data work
 - 🔎 **Web search & fetch** — live internet access with SSRF protection
-- 🖼️ **Image generation & vision** — ZImage pipeline + OCR transcription
+- 🖼️ **Image generation & vision** — GPU-tiered Qwen-Image / Z-Image-Turbo / SANA-Sprint pipelines + OCR transcription
 - ⏰ **Time tools** — local/UTC/city time, timezone differences
 - 🔁 **Model auto-switching with drain policy** — running requests finish on their backend; new ones are held back until every instance has reloaded
 - 🩹 **LLM self-heal** — a 90 s stream stall kills and restarts the llama-server automatically

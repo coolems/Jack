@@ -90,6 +90,43 @@ class SetupProgress:
         except Exception:
             return True  # unreadable file - keep writing (load() will rebuild it)
 
+    def begin_run(self) -> None:
+        """Claim this run and retire rows a killed run left marked 'running'.
+
+        A crash / power loss leaves the stage that was mid-flight with status 'running'
+        forever, and the UI treats 'running' as live: the card stays attached and polls
+        frozen numbers indefinitely (field case 2026-10-23: a 17 KB state file left 'venv'
+        and 'model' running for hours, showing 14.9 GB of 57.7 GB). A new run owns the
+        file (its generation is newer), so those rows cannot belong to live work any more:
+
+          * pip/venv rows are removed - they carry nothing worth resuming;
+          * the model row keeps its FILE ROWS (that is the resume data
+            generate_image._ensure_model_cached re-adopts) but loses its status, so the
+            UI hides it until the first real progress event rewrites it.
+
+        Writes ONLY when a stale row was actually found, so a fully-cached machine still
+        produces no progress file and no UI card (the 2026-09-24 rule).
+        """
+        try:
+            state = self.load()
+            stages = state.get("stages") or {}
+            changed = False
+            for name in list(stages.keys()):
+                st = stages.get(name)
+                if not isinstance(st, dict) or st.get("status") != "running":
+                    continue
+                if name == "model":
+                    st.pop("status", None)
+                    st.pop("current_file", None)
+                else:
+                    stages.pop(name, None)
+                changed = True
+            if changed:
+                self.save(state)
+                logger.debug(f"[bootstrap] retired stale 'running' rows in {self.path}")
+        except Exception as e:  # informational only - never break setup
+            logger.debug(f"[bootstrap] progress begin_run failed (ignored): {e}")
+
     def reset(self, stages=None) -> None:
         """Start a fresh generation and drop stale stage state before new work begins.
 
