@@ -49,6 +49,17 @@ function isPdfFile(filename) {
 
 
 
+// ADDED 2026-10-24: .docx preview - backend extracts text from word/document.xml.
+// Deliberately NOT in TEXT_EXTENSIONS, so the Edit button stays hidden (saving
+// extracted text back would corrupt the document; POST /api/file-content rejects it).
+function isDocxFile(filename) {
+
+    return getFileExtension(filename) === 'docx';
+
+}
+
+
+
 // Main preview function - uses PreviewManager if available
 
 async function previewFile(path) {
@@ -189,6 +200,45 @@ async function legacyPreviewFile(path) {
             </div>
 
         `;
+
+        return;
+
+    }
+
+
+
+    // ADDED 2026-10-24: .docx -> extracted plain text, read-only. Deliberately NOT in
+    // TEXT_EXTENSIONS, so the Edit button stays hidden (saving would corrupt the
+    // document; POST /api/file-content rejects .docx).
+    if (isDocxFile(filename)) {
+
+        try {
+
+            const r = await fetch(`/api/file-content?path=${encodeURIComponent(path)}`);
+
+            if (!r.ok) throw new Error('Failed to load');
+
+            const data = await r.json();
+
+            currentPreviewOriginalText = (data.content != null ? data.content : '');
+
+            contentEl.innerHTML = `
+
+                <div class="docx-preview-banner" style="padding:8px 14px;margin-bottom:8px;border-radius:6px;background:rgba(255,193,7,0.12);border:1px solid rgba(255,193,7,0.4);font-size:12px;color:#ffc107;">
+
+                    \u{1F4C4} .docx - extracted text view (read-only). Edit the file in Word/LibreOffice.
+
+                </div>
+
+                <div class="preview-text-display" id="previewTextDisplay">${escapeHtml(currentPreviewOriginalText)}</div>
+
+            `;
+
+        } catch (e) {
+
+            contentEl.innerHTML = `<div class="preview-empty"><p style="color:var(--danger);">Failed to load file content</p></div>`;
+
+        }
 
         return;
 

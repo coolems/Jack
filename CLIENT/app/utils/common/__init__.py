@@ -60,6 +60,7 @@ from .file_io import (
     is_image_file,
     encode_image_to_base64,
     read_text_file,
+    read_docx_as_text,  # ADDED 2026-10-24: .docx preview (extracted text)
     get_file_info,
 )
 
@@ -95,5 +96,6 @@ __all__ = [
     "is_image_file",
     "encode_image_to_base64",
     "read_text_file",
+    "read_docx_as_text",  # ADDED 2026-10-24
     "get_file_info",
 ]

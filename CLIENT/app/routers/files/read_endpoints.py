@@ -7,7 +7,7 @@ from typing import Dict
 from fastapi import APIRouter, File, UploadFile, Query, HTTPException
 from fastapi.responses import FileResponse
 
-from app.utils.common import is_text_file, read_text_file, get_working_root, FILE_MAX_WRITE_BYTES
+from app.utils.common import is_text_file, read_docx_as_text, read_text_file, get_working_root, FILE_MAX_WRITE_BYTES
 from .middleware import _safe_relative_path, _get_working_root_dir, _format_datetime, logger
 
 
@@ -167,6 +167,19 @@ def register_read_endpoints(router: APIRouter):
                 raise HTTPException(status_code=400, detail="Invalid path")
             if not os.path.isfile(safe_path):
                 raise HTTPException(status_code=404, detail="File not found")
+            # ADDED 2026-10-24: .docx is a ZIP archive - extracting raw bytes gave the
+            # previews panel binary garbage. Pull readable text out of word/document.xml
+            # instead; "extracted" tells the UI the view is read-only (saving extracted
+            # text back would corrupt the document, and POST /api/file-content already
+            # rejects .docx via is_text_file -> 415).
+            if os.path.splitext(safe_path)[1].lower() == ".docx":
+                # ADDED 2026-10-24: .docx preview as extracted plain text (read-only view).
+                # Saving stays impossible: POST /api/file-content rejects .docx via
+                # is_text_file -> 415.
+                return {
+                    "content": read_docx_as_text(safe_path),
+                    "extracted": True,
+                }
             content = read_text_file(safe_path)
             return {"content": content}
         except HTTPException:
@@ -198,7 +211,11 @@ def register_read_endpoints(router: APIRouter):
                 size = os.path.getsize(safe_path)
                 with open(safe_path, "rb") as f:
                     raw = f.read()
-                content = read_text_file(safe_path)
+                # ADDED 2026-10-24: .docx -> extracted text (same rule as GET /api/file-content).
+                if os.path.splitext(safe_path)[1].lower() == ".docx":
+                    content = read_docx_as_text(safe_path)
+                else:
+                    content = read_text_file(safe_path)
                 return safe_path, size, raw, content
 
             safe_path_a, size_a, raw_a, content_a = _load(path_a)

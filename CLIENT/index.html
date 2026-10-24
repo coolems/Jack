@@ -267,7 +267,7 @@
                         </p>
                         <div style="display: flex; gap: 16px; margin-bottom: 10px;">
                             <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                <input type="radio" name="connectionMode" id="connModeDirect" value="direct" onchange="saveConnectionMode()">
+                                <input type="radio" name="connectionMode" id="connModeDirect" value="direct" checked onchange="saveConnectionMode()">
                                 Direct (default)
                             </label>
                             <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -393,7 +393,7 @@
                         </p>
                         <div style="display: flex; gap: 16px; margin-bottom: 10px;">
                             <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                <input type="radio" name="pythonExecBehavior" id="pyExecManual" value="manual"
+                                <input type="radio" name="pythonExecBehavior" id="pyExecManual" value="manual" checked
                                 onchange="saveRuntimeSettings()">
                             Wait for my decision (default)
                             </label>
@@ -419,7 +419,7 @@
                                 </p>
                                 <div style="display: flex; gap: 16px; margin-bottom: 10px;">
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                        <input type="radio" name="urlConsentBehavior" id="urlConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        <input type="radio" name="urlConsentBehavior" id="urlConsentManual" value="manual" checked onchange="saveRuntimeSettings()">
                                         Wait for my decision (default)
                                     </label>
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -443,7 +443,7 @@
                                 </p>
                                 <div style="display: flex; gap: 16px; margin-bottom: 10px;">
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                        <input type="radio" name="fileConsentBehavior" id="fileConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        <input type="radio" name="fileConsentBehavior" id="fileConsentManual" value="manual" checked onchange="saveRuntimeSettings()">
                                         Wait for my decision (default)
                                     </label>
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -467,7 +467,7 @@
                                 </p>
                                 <div style="display: flex; gap: 16px; margin-bottom: 10px;">
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                        <input type="radio" name="networkConsentBehavior" id="networkConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        <input type="radio" name="networkConsentBehavior" id="networkConsentManual" value="manual" checked onchange="saveRuntimeSettings()">
                                         Wait for my decision (default)
                                     </label>
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -491,7 +491,7 @@
                                 </p>
                                 <div style="display: flex; gap: 16px; margin-bottom: 10px;">
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                        <input type="radio" name="subprocessConsentBehavior" id="subprocessConsentManual" value="manual" onchange="saveRuntimeSettings()">
+                                        <input type="radio" name="subprocessConsentBehavior" id="subprocessConsentManual" value="manual" checked onchange="saveRuntimeSettings()">
                                         Wait for my decision (default)
                                     </label>
                                     <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -518,7 +518,7 @@
                             </p>
                             <div style="display: flex; flex-direction: column; gap: 8px;">
                                 <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-                                    <input type="radio" name="imageGenTier" id="imgTierAuto" value="auto"
+                                    <input type="radio" name="imageGenTier" id="imgTierAuto" value="auto" checked
                                     onchange="saveRuntimeSettings()">
                                 Auto (default) - pick by GPU VRAM
                                 </label>
@@ -623,7 +623,7 @@
     <script src="/static/ui/diff/diff_view.js?v=20260827g">
     </script>
     <script src="/static/ui/diff/diff_ui.js?v=20260827a">
-    
+
     </script>
     
     <!-- Preview Manager (split into ES modules on 2026-09-18; depends on syntax and diff). -->
@@ -643,7 +643,7 @@
     <script src="/static/ui/files/tree-render-items.js?v=20260918a"></script>
     <script src="/static/ui/files/tree-render-children.js?v=20260918a"></script>
     <script src="/static/ui/files/tree-actions.js?v=20261005a"></script>
-    <script src="/static/ui/files/preview-core.js?v=20261005a"></script>
+    <script src="/static/ui/files/preview-core.js?v=20260918a"></script>
     <script src="/static/ui/files/preview-edit.js?v=20260918a"></script>
     <script src="/static/ui/files/file-chips.js?v=20260918a"></script>
     <script src="/static/ui/files/drop-to-folder.js?v=20260918a"></script>

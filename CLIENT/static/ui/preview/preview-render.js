@@ -55,6 +55,12 @@ Object.assign(PreviewManager.prototype, {
                     </div>
                 </div>
             `;
+        } else if (this.isExtractedView) {
+            // ADDED 2026-10-24: .docx shown as extracted plain text (read-only, no line
+            // numbers - the extraction is a document view, not source code).
+            html = `
+                <div class="preview-text-display" id="previewTextDisplay">${this.escapeHtml(content)}</div>
+            `;
         } else if (this.currentHighlighter && schema) {
             const highlighted = this.currentHighlighter.highlight(content, schema);
             const lines = content.split('\n');
@@ -81,6 +87,17 @@ Object.assign(PreviewManager.prototype, {
         }
 
         this.previewContent.innerHTML = html;
+
+        // ADDED 2026-10-24: re-add the .docx read-only banner here (not in loadFile) so it
+        // survives re-renders - renderPreview() wipes innerHTML on every schema change.
+        if (this.isExtractedView) {
+            const banner = document.createElement('div');
+            banner.style.cssText = 'padding:8px 14px;margin-bottom:8px;border-radius:6px;' +
+                'background:rgba(255,193,7,0.12);border:1px solid rgba(255,193,7,0.4);' +
+                'font-size:12px;color:#ffc107;';
+            banner.textContent = '\u{1F4C4} .docx - extracted text view (read-only). Edit the file in Word/LibreOffice.';
+            this.previewContent.prepend(banner);
+        }
 
         // ADDED (2026-09-18): fetch + render the rich metadata card for images.
         // Fire-and-forget: the <img> above is already visible; a slow/failed request

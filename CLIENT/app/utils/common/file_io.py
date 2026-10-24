@@ -158,6 +158,42 @@ def encode_image_to_base64(filepath: str) -> Optional[str]:
         return None
 
 
+def read_docx_as_text(filepath: str, max_size: int = MAX_TEXT_CONTENT_SIZE) -> str:
+    """Extract readable text from a .docx (Office Open XML) file.
+
+    ADDED 2026-10-24: the previews panel rendered raw ZIP bytes for .docx files
+    because read_text_file() decoded them as utf-8-with-ignore. A .docx is a ZIP
+    archive; its visible text lives in word/document.xml, one <w:t> run per
+    fragment and one <w:p> paragraph per line. This extracts that plain text so
+    the preview shows real content (read-only - saving extracted text back would
+    corrupt the document).
+
+    Raises
+    ------
+    Exception
+        Re-raises any exception (bad ZIP, missing document.xml, parse error) -
+        the caller turns it into an HTTP 500 with a clear message.
+    """
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+    size = os.path.getsize(filepath)
+    if size > max_size:
+        return f"File too large ({size} bytes), truncated to {max_size}"
+
+    with zipfile.ZipFile(filepath) as z:
+        xml_data = z.read("word/document.xml")
+
+    root = ET.fromstring(xml_data)
+    lines = []
+    for p in root.iter(W_NS + "p"):
+        text = "".join(t.text or "" for t in p.iter(W_NS + "t"))
+        lines.append(text)
+    return "\n".join(lines)
+
+
 def read_text_file(filepath: str, max_size: int = MAX_TEXT_CONTENT_SIZE) -> str:
     """Read text file with encoding detection.
 

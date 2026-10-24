@@ -24,6 +24,7 @@ Object.assign(PreviewManager.prototype, {
         // BUG FIX (2026-08-27): a new user-initiated open cancels any pending close.
         this._closing = false;
         const loadSeq = ++this._loadSeq;
+        this.isExtractedView = false;  // ADDED 2026-10-24 (docx extracted-view flag)
         this.currentFile = { path: filePath, name: filename };
         
         this.showLoading();
@@ -73,8 +74,12 @@ Object.assign(PreviewManager.prototype, {
             // the panel - that was the "close sometimes reopens" bug.
             if (loadSeq !== this._loadSeq || this._closing) return;
 
+            // ADDED 2026-10-24: for .docx the backend sends extracted plain text in
+            // "content" (read-only view). The Edit button is already hidden for .docx
+            // (not in the editable extension list).
+            this.isExtractedView = !!data.extracted;
             this.currentContent = data.content;
-            this.originalContent = data.content;
+            this.originalContent = this.currentContent;
             
             if (window.SyntaxRegistry) {
                 this.currentHighlighter = window.SyntaxRegistry.getHighlighterForFile(filename);

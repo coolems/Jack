@@ -29,7 +29,7 @@
 // python_exec dialog showed "no time limit" even when settings.json said "auto after 5s".
 // approvals[kind] (2026-07-18 unified consent dialog): per-kind auto-approve settings,
 // fully detached per category - python / url / file / network each have their own mode+seconds.
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 } };  // (2026-10-24) subprocess consent cards
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess consent cards
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
 let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
@@ -42,10 +42,11 @@ async function refreshRuntimeSettingsFromApi() {
     let data = null;
     try {
         const r = await fetch('/api/settings');
-        if (!r.ok) return false;
+        if (!r.ok) { _ensureDefaultRadioSelection(); return false; }
         data = await r.json();
     } catch (e) {
         console.error('[RUNTIME SETTINGS] Failed to load:', e);
+        _ensureDefaultRadioSelection(); // (2026-11-23) never leave every radio unselected
         return false;
     }
 
@@ -136,6 +137,26 @@ function ensureRuntimeSettingsLoaded() {
     return _runtimeRefreshInFlight;
 }
 
+// (2026-11-23) Guarantee a consistent default selection in the Runtime tab: if NO radio of a
+// group is checked (e.g. a failed /api/settings sync before any fill), check the FIRST option
+// of that group - so the UI never shows an all-unselected row. Groups with a valid saved
+// selection are left untouched (refreshRuntimeSettingsFromApi fills those from settings.json).
+function _ensureDefaultRadioSelection() {
+    const groups = [
+        ['pyExecManual', 'pyExecAuto'],
+        ['urlConsentManual', 'urlConsentAuto'],
+        ['fileConsentManual', 'fileConsentAuto'],
+        ['networkConsentManual', 'networkConsentAuto'],
+        ['subprocessConsentManual', 'subprocessConsentAuto'],
+        ['imgTierAuto', 'imgTierHigh', 'imgTierMid', 'imgTierLow']
+    ];
+    groups.forEach(function (ids) {
+        const els = ids.map(function (id) { return document.getElementById(id); }).filter(Boolean);
+        if (!els.length) return;
+        if (!els.some(function (el) { return el.checked; })) els[0].checked = true;
+    });
+}
+
 /** Fill the Runtime tab UI from a /api/settings response (called on every openSettings). */
 async function loadRuntimeSettings() {
     await refreshRuntimeSettingsFromApi(); // openSettings path: always take the freshest values from the backend
@@ -179,7 +200,7 @@ function readApprovalsFromControls() {
     let pySeconds = pySec ? parseInt(pySec.value, 10) : NaN;
     if (!Number.isFinite(pySeconds)) pySeconds = 5;
     out.python = { mode: pyMode, seconds: Math.min(3600, Math.max(1, pySeconds)) };
-        ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
+    ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
         const autoEl = document.getElementById(kind + 'ConsentAuto');
         const secInput = document.getElementById(kind + 'ConsentSeconds');
         let s = secInput ? parseInt(secInput.value, 10) : NaN;
@@ -218,7 +239,7 @@ async function saveRuntimeSettings() {
     // (2026-11-24 fix) show/hide EACH kind's seconds input when its radio changes -
     // previously only the python group was toggled, so selecting "Auto-approve after"
     // on URL / File Access / Network never revealed their seconds field.
-        ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
+    ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
         toggleConsentSecondsGroup(kind, approvalsNow[kind].mode === 'auto');
     });
 
@@ -248,7 +269,11 @@ async function saveRuntimeSettings() {
                     file_consent_auto_approve: approvalsNow.file.mode,
                     file_consent_auto_approve_seconds: approvalsNow.file.seconds,
                     network_consent_auto_approve: approvalsNow.network.mode,
-                    network_consent_auto_approve_seconds: approvalsNow.network.seconds
+                    network_consent_auto_approve_seconds: approvalsNow.network.seconds,
+                    // (2026-11-23) subprocess (External Program) consent was read from the controls
+                    // but never sent - its selection was silently dropped on every save.
+                    subprocess_consent_auto_approve: approvalsNow.subprocess.mode,
+                    subprocess_consent_auto_approve_seconds: approvalsNow.subprocess.seconds
             }))
         });
 
