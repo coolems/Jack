@@ -74,3 +74,11 @@ async def chat_non_streaming(
         raise ConnectionError("llama.cpp service is not running.") from e
     except httpx.TimeoutException as e:
         raise TimeoutError(f"llama.cpp request timed out after {timeout} seconds.") from e
+    except httpx.HTTPError as e:
+        # Backend died mid-request (crash / restart) - same expected-condition treatment
+        # as the streaming path so chat_relay logs one clean line instead of a traceback.
+        logger.warning(f"[LLAMA] llama.cpp connection dropped for model '{model}' "
+                       f"({type(e).__name__}: {e})")
+        raise ConnectionError(
+            "llama.cpp connection dropped mid-response (backend died or was restarted). Please try again."
+        ) from None

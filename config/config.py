@@ -295,11 +295,12 @@ class LlamaServerInstance:
                     remote machine running its own llama-server.
       port        - integer TCP port of that instance's HTTP endpoint.
       concurrency - requests this instance may run at once (llama.cpp --parallel N).
-                    LOCAL (loopback) entries: defaults to LLAMA_SERVER_PARALLEL and is used
-                    to SPAWN the process (and to scale --ctx-size by N).
-                    REMOTE entries: default None = DISCOVERED at boot from the node's
-                    /props.total_slots; the node launcher owns that number, so the brain
-                    does not duplicate it here. Set an int only to cap a remote node.
+                    OPTIONAL everywhere (2026-10 discovery model): None = DISCOVERED from
+                    the node's /props.total_slots, which is then the routing capacity.
+                    LOCAL entries: an explicit int is also used to SPAWN the process
+                    (--parallel N, scaling --ctx-size by N); with None the spawn falls
+                    back to LLAMA_SERVER_PARALLEL and discovery takes over afterwards.
+                    REMOTE entries: attach-only - set an int only to CAP a remote node.
 
     Every LOCAL instance runs the SAME model + launch args from this config module
     (LLAMA_SERVER_*) - one knob stays in one place.
@@ -322,29 +323,34 @@ class LlamaServerInstance:
 def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Optional[int]:
     """Validate one llama_servers.json 'concurrency' (alias 'parallel') value.
 
-    LOCAL: always returns an int (falls back to LLAMA_SERVER_PARALLEL on bad input)
-           because it is needed to build the launch command.
-    REMOTE: returns None on missing/bad input - None means "discover from /props".
-           An explicit int is treated as an UPPER BOUND for that node.
+    LOCAL and REMOTE alike: returns None on missing/bad input - None means "DISCOVER
+    from /props.total_slots" (the 2026-10 discovery model; the node owns its slot count).
+    A local instance with concurrency=None is SPAWNED with --parallel LLAMA_SERVER_PARALLEL
+    as a launch fallback, after which discovery takes over and the worker pool reconciles.
+    An explicit int is an UPPER BOUND (and the exact spawn value for local instances).
     """
     raw = entry.get("concurrency", entry.get("parallel"))
     if raw is None:
-        return LLAMA_SERVER_PARALLEL if loopback else None
+        return None
 
     # bool is a subclass of int in Python - reject it explicitly.
     if isinstance(raw, bool) or not isinstance(raw, int):
         _logger.warning(
-            "[CONFIG] llama_servers.json entry #%d has an invalid 'concurrency' (%r) - %s",
-            index, raw, f"using {LLAMA_SERVER_PARALLEL}" if loopback else "will discover it from /props",
+            "[CONFIG] llama_servers.json entry #%d has an invalid 'concurrency' (%r) - "
+            "%s", index, raw,
+            f"spawning with {LLAMA_SERVER_PARALLEL} slot(s), then discovering from /props"
+            if loopback else "will discover it from /props",
         )
-        return LLAMA_SERVER_PARALLEL if loopback else None
+        return None
 
     if raw < 1:
         _logger.warning(
             "[CONFIG] llama_servers.json entry #%d has 'concurrency' < 1 (%r) - %s",
-            index, raw, f"using {LLAMA_SERVER_PARALLEL}" if loopback else "will discover it from /props",
+            index, raw,
+            f"spawning with {LLAMA_SERVER_PARALLEL} slot(s), then discovering from /props"
+            if loopback else "will discover it from /props",
         )
-        return LLAMA_SERVER_PARALLEL if loopback else None
+        return None
 
     if raw > LLAMA_MAX_CONCURRENCY:
         _logger.warning(
@@ -357,8 +363,11 @@ def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Opti
 
 
 def _default_local_instance() -> "LlamaServerInstance":
-    """The always-present local instance (legacy single-server behaviour)."""
-    return LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT, LLAMA_SERVER_PARALLEL)
+    """The always-present local instance (legacy single-server behaviour).
+
+    concurrency=None: slots are DISCOVERED from /props after the spawn (the spawn itself
+    uses --parallel LLAMA_SERVER_PARALLEL as a launch fallback - see ensure_started())."""
+    return LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT, None)
 
 
 def _write_default_local_file(path: str) -> None:
@@ -367,8 +376,7 @@ def _write_default_local_file(path: str) -> None:
     """
     try:
         payload = _json.dumps(
-            [{"name": "local", "host": "127.0.0.1", "port": LLAMA_SERVER_PORT,
-              "concurrency": LLAMA_SERVER_PARALLEL}],
+            [{"name": "local", "host": "127.0.0.1", "port": LLAMA_SERVER_PORT}],
             indent=2,
         ) + "\n"
         with open(path, "w", encoding="utf-8") as f:

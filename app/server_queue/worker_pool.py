@@ -202,7 +202,7 @@ class WorkerPool:
             backend.bump_error("request dropped: backend unhealthy at pickup")
             await self._send(req.sink, {
                 "type": "error",
-                "message": f"LLM backend {backend.label} is unavailable - please retry.",
+                "message": "LLM backend is unavailable - please retry.",
                 "retryable": True,
                 "backend": backend.info(),
             })

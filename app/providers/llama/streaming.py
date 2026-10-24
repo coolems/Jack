@@ -690,6 +690,20 @@ async def chat_stream(
     except httpx.TimeoutException as e:
         logger.error(f"llama.cpp timeout after {timeout}s: {e}")
         raise TimeoutError(f"llama.cpp request timed out after {timeout} seconds.")
+    except httpx.HTTPError as e:
+        # Expected user-facing condition: llama-server DIED MID-STREAM (crash, OOM kill,
+        # manual restart) after the response had already started. ConnectError and
+        # TimeoutException are subclasses of HTTPError so they keep their own handlers
+        # above; what lands here is ReadError / RemoteProtocolError & co. Log ONE clean
+        # line (no traceback) and re-raise as ConnectionError with an actionable message,
+        # so chat_relay's expected-condition guard handles it the same way as a downed server.
+        logger.warning(
+            f"[LLAMA] llama.cpp connection dropped mid-stream for model '{model}' "
+            f"({type(e).__name__}: {e}). The backend likely crashed or was restarted - retrying will re-route to a healthy node."
+        )
+        raise ConnectionError(
+            "llama.cpp connection dropped mid-response (backend died or was restarted). Please try again."
+        ) from None
     except VisionNotAvailableError as e:
         # Expected user-facing condition (image sent to a model without mmproj), NOT a
         # server fault — log one clean line, no traceback. The typed error still propagates

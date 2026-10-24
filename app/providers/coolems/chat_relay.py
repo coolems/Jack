@@ -20,6 +20,8 @@ from typing import Tuple, Type, Optional
 # (the same value llama-server itself is started with) instead of a hardcoded 0.7.
 from config import LLAMA_SERVER_TEMP
 
+import httpx
+
 # Typed, EXPECTED user-facing condition: image sent to a model without mmproj.
 # Caught specifically below so it logs ONE clean line instead of a full traceback.
 from ..llama.vision_support import VisionNotAvailableError
@@ -243,6 +245,14 @@ async def run_chat_core(server_provider, provider, sink, *, model: str, messages
         # that dedicated card instead of a generic provider error.
         logger.warning(f"[SERVER] Vision unavailable for conv={conv_id}: {e}")
         await _sink_send_frame(sink, {"type": "error", "message": str(e), "error_type": e.error_type})
+
+    except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
+        # Expected user-facing condition: the llama backend is down, unreachable or
+        # dropped mid-stream (e.g. the user stopped/restarted llama-server themselves).
+        # Log ONE clean line - no traceback. The client already receives a clear,
+        # actionable message below.
+        logger.warning(f"[SERVER] LLM backend unavailable for conv={conv_id} (expected): {e}")
+        await _sink_send_frame(sink, {"type": "error", "message": f"LLM request failed on SERVER: {str(e)[:800]}"})
 
     except Exception as e:
         # L6 fix: type/close-code based detection instead of substring matching on str(e)

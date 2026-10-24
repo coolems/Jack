@@ -42,7 +42,7 @@ Two independent mechanisms make Jack usable as a shared team service:
 
 **2. One queue per model, one worker per slot.** Every request lands in the bounded FIFO queue of the model it names (`QUEUE_MAX_PENDING = 32` per model group by default). Each `llama-server` exposes N inference slots (`--parallel N`, discovered from `/props`) and the `WorkerPool` runs exactly one worker per slot. Whichever slot frees first takes the next request **of its own model group** — Qwen traffic never delays Gemma and vice versa. A full group gets a 5-second grace to free a slot; if none frees, the client gets a retryable *"Resend request in a min as server is full"* (no penalty — the rate-limit token is refunded). Per-user caps (`max_parallel_slots` in `profiles.json`) count **across the whole fleet**.
 
-**`config/llama_servers.json` is the single source of truth for the fleet.** Local entries (`127.0.0.1`) are spawned by the SERVER with an explicit `"concurrency": N`; remote LAN entries are attach-only — the registry probes `/health` + `/props` every 30 s, learns each node's **model, slot count and per-slot context**, and routes by model. Adding a GPU box is one `{name, host, port}` entry; its slot count is discovered, never duplicated. Models are identified by GGUF filename, so keep filenames unique across the fleet.
+**`config/llama_servers.json` is the single source of truth for the fleet.** Every entry's slot count is **discovered from `/props.total_slots`** — `"concurrency"` is optional on ALL entries (local and remote) and, when present, only acts as an upper bound. Local entries (`127.0.0.1`) are spawned by the SERVER; if you omit `concurrency`, it launches with a default slot count, asks `/props` what the server actually reports, and relaunches once to match (so routing capacity always equals real slots). Remote LAN entries are attach-only — the registry probes `/health` + `/props` every 30 s, learns each node's **model, slot count and per-slot context**, and routes by model. Adding a GPU box is one `{name, host, port}` entry; its slot count is discovered, never duplicated. Models are identified by GGUF filename, so keep filenames unique across the fleet.
 
 ## Architecture
 
@@ -350,13 +350,13 @@ The SERVER routes each request to a node that serves the requested model. A node
 
    ```json
    [
-     { "name": "local",   "host": "127.0.0.1",    "port": 5000, "concurrency": 1 },
+     { "name": "local",   "host": "127.0.0.1",    "port": 5000 },
      { "name": "h200-a",  "host": "192.168.1.60", "port": 5000 },
      { "name": "h200-b",  "host": "192.168.1.61", "port": 5000 }
    ]
    ```
 
-   Remote entries need no `concurrency` — the SERVER reads each node's slot count, model and per-slot context from `/props` every 30 s. Restart the SERVER.
+   No entry needs `concurrency` — the SERVER reads each node's slot count, model and per-slot context from `/props` every 30 s (local instances are relaunched once at boot to match what they report). Set `"concurrency": N` only to CAP a node below its reported slots. Restart the SERVER.
 5. **Firewall:** allow the node's port (5000) inbound from the SERVER.
 
 Notes:
@@ -391,7 +391,7 @@ Notes:
 ## Configuration (summary)
 
 - **SERVER** config lives in `config/` — real values (API keys, profiles, backend list, per-machine state) are **gitignored**; only `.example` templates are tracked and used to bootstrap first runs. See steps 2–3 above for the exact file shapes.
-  - **`llama_servers.json`** — the fleet: one entry per llama-server instance: `name`, `host`, `port`, plus `concurrency` for LOCAL (`127.0.0.1`) entries that the SERVER spawns. Remote hosts are attach-only: probed every 30 s via `/health` + `/props` (model, slots, context), never started/stopped. Remote slot counts are discovered, not configured.
+    - **`llama_servers.json`** — the fleet: one entry per llama-server instance: `name`, `host`, `port`, plus OPTIONAL `concurrency` (upper bound only). LOCAL (`127.0.0.1`) entries are spawned by the SERVER; remote hosts are attach-only, probed every 30 s via `/health` + `/props`. Slot counts for ALL entries are discovered from `/props.total_slots`, not configured.r llama-server instance: `name`, `host`, `port`, plus `concurrency` for LOCAL (`127.0.0.1`) entries that the SERVER spawns. Remote hosts are attach-only: probed every 30 s via `/health` + `/props` (model, slots, context), never started/stopped. Remote slot counts are discovered, not configured.
   - **`llama_node.json`** — per GPU machine, written by `ZZZ_LLAMA_NODE.bat`: `name`, `model`, `bind`, `port`, `concurrency` (`--parallel`), `ctx_per_slot`, `threads`, `gpu_layers`, `extra_args`. The node launcher uses it; the SERVER never reads it.
   - **`profiles.json`** — per role: `allowed_models` (GGUF **filenames**, `null` = all), **required** `max_parallel_slots` (parallel generations across the whole fleet; missing/invalid = authentication denied), `max_connections`, `max_rate_limit`, tools.
   - **`config.py`** — queue limits: `QUEUE_MAX_PENDING` (32 **per model group**), `QUEUE_FULL_GRACE_SEC` (5 s), `QUEUE_FULL_RETRY_AFTER_SEC` (60 s), `QUEUE_MODEL_WAIT_SEC` (120 s, model configured but all nodes down), `LLAMA_MAX_CONCURRENCY` (8).

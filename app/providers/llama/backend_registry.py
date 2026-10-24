@@ -26,6 +26,7 @@ from config import (
     LlamaServerInstance,
     get_llama_server_instances,
     LLAMA_MAX_CONCURRENCY,
+    LLAMA_SERVER_PARALLEL,
     CONTEXT_WINDOW_TOKENS,
 )
 from .model_state import key_for_api_url
@@ -59,6 +60,10 @@ class LlmBackend:
         self.build: str = ""                     # llama.cpp build_info
         self.props_at: float = 0.0
         self.props_error: str = ""
+        # Discovery-driven spawn: how many times we relaunched a LOCAL instance to match
+        # its reported slot count after booting with the LLAMA_SERVER_PARALLEL fallback.
+        # Capped so a pathological /props can never cause a restart loop.
+        self._discovery_relaunches = 0
         # One-shot operator warnings (a 30 s poll must not repeat them forever).
         self._warned_slots = False
         self._warned_ctx = False
@@ -85,16 +90,18 @@ class LlmBackend:
 
     @property
     def configured_capacity(self) -> Optional[int]:
-        """Explicit limit from config. LOCAL: always an int. REMOTE: None = discovered."""
+        """Explicit cap from config (local AND remote). None = DISCOVERED from /props."""
         return self.instance.concurrency
 
     @property
     def capacity(self) -> int:
-        """Effective concurrent-request capacity for routing.
+        """Effective concurrent-request capacity for routing (discovery-driven).
 
-        * local: exactly what we launched with (warned at boot if /props disagrees);
-        * remote without an explicit cap: whatever the node reports;
-        * remote with an explicit cap: min(cap, reported) so we never over-admit.
+        * no explicit config value (local or remote): whatever the node reports via
+          /props.total_slots - this is the default path, 1 until the first poll lands;
+        * explicit config value + not yet discovered: that value (it is also the spawn
+          --parallel for local instances);
+        * explicit config value AND reported: min(cap, reported) so we never over-admit.
 
         Never exceeds LLAMA_MAX_CONCURRENCY.
         """
@@ -284,22 +291,94 @@ class LlmBackend:
     # --- lifecycle ------------------------------------------------------------
 
     async def ensure_started(self) -> bool:
-        """Make sure this instance is up. Local: spawn + wait for health; remote: probe only."""
+        """Make sure this instance is up. Local: spawn + wait for health; remote: probe only.
+
+        (2026-10 discovery model) The SPAWN slot count is the explicit config value when
+        present, else LLAMA_SERVER_PARALLEL as a launch fallback - after /props lands the
+        DISCOVERED total_slots own routing capacity and the worker pool reconciles to it.
+
+        If no explicit concurrency was configured AND the server reports a different slot
+        count than we launched with (e.g. a manually-started llama-server on our port runs
+        --parallel 4), relaunch ONCE with the discovered number so process reality matches
+        routing capacity - otherwise we would over-admit requests into fewer real slots.
+
+        A MATCHING report never touches the running server: terminate+respawn only happens
+        inside the mismatch branch (audit fix 2026-10 - the old structure terminated our own
+        tracked process unconditionally and then skipped the respawn, killing llama at boot
+        while still reporting HEALTHY).
+        """
         from .server import start_server
         if not self.local:
             return await self.probe_health()
+
+        launch_slots = self.configured_capacity or LLAMA_SERVER_PARALLEL
         ok = await start_server(
             self.api_url,
             host=self.instance.host,
             port=self.instance.port,
-            concurrency=self.configured_capacity or 1,
+            concurrency=launch_slots,
         )
-        if ok:
-            # Same ordering rule as probe_health: discovery BEFORE workers can wake.
-            props_ok = await self.refresh_props()
-            self.healthy = bool(props_ok)
-        else:
+        if not ok:
             self.healthy = False
+            return False
+
+        # Same ordering rule as probe_health: discovery BEFORE workers can wake.
+        props_ok = await self.refresh_props()
+
+        # Discovery-driven relaunch (only when the operator gave no explicit value AND the
+        # server's real slot count differs from what we launched with). The terminate+respawn
+        # happens ONLY inside that branch: a matching report must never kill a healthy server.
+        reported = self.total_slots if isinstance(self.total_slots, int) and self.total_slots > 0 else None
+        need_relaunch = bool(
+            props_ok and self.configured_capacity is None and reported is not None
+            and reported != launch_slots
+        )
+
+        if need_relaunch:
+            if self._discovery_relaunches < 2:
+                # NOTE: start_server() fast-paths "we already own a tracked process", so we
+                # must terminate our OWN process first to force a real respawn with the new
+                # --parallel. Under restart_lock so a worker-side pre-flight/stall restart of
+                # this node can never interleave with this relaunch (see streaming.py).
+                from .process_mgmt import (_server_processes, _terminate_process,
+                                           wait_for_port_free_async)
+                async with self.restart_lock:
+                    logger.info(
+                        "[REGISTRY] %s reports %d slot(s) but was launched with --parallel %d "
+                        "(no explicit 'concurrency' in config) - relaunching with the discovered count",
+                        self.label, reported, launch_slots,
+                    )
+                    _proc = _server_processes.get(self.key)
+                    if _proc is not None and _proc.poll() is None:
+                        logger.info("[REGISTRY] %s terminating our tracked llama-server (PID %d) "
+                                    "for a discovery relaunch", self.label, _proc.pid)
+                        await asyncio.to_thread(_terminate_process, _proc)
+                    # Wait for the port to actually free: start_server()'s fast path would
+                    # otherwise attach to whatever still answers /health instead of respawning.
+                    if not await wait_for_port_free_async(self.instance.port):
+                        logger.warning("[REGISTRY] %s port %d still busy after terminate - "
+                                       "marking node DOWN; health poller will retry",
+                                       self.label, self.instance.port)
+                        ok = False   # we killed our own server and the port is still taken
+                    else:
+                        self._discovery_relaunches += 1
+                        ok = await start_server(
+                            self.api_url,
+                            host=self.instance.host,
+                            port=self.instance.port,
+                            concurrency=reported,
+                        )
+                if not ok:
+                    logger.warning("[REGISTRY] %s relaunch with discovered slots failed - "
+                                   "node is DOWN now; health poller will retry", self.label)
+            else:
+                logger.warning(
+                    "[REGISTRY] %s still reports %d slot(s) after %d discovery relaunch(es) - "
+                    "stopping automatic relaunches; routing capacity follows /props",
+                    self.label, reported, self._discovery_relaunches,
+                )
+
+        self.healthy = bool(props_ok and ok)
         if self.healthy:
             self._healthy_event.set()
         else:
