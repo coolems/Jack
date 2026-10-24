@@ -191,7 +191,8 @@ def _estimate_prompt_chars(messages, tools):
 
 async def run_chat_core(server_provider, provider, sink, *, model: str, messages: list,
                         temperature: float = LLAMA_SERVER_TEMP, enable_thinking: bool = False,
-                        conv_id: str = "", tools=None, stop_event=None):
+                        conv_id: str = "", tools=None, stop_event=None,
+                        context_window: Optional[int] = None):
     """Run one chat turn against *provider* and stream every frame through *sink*.
 
     *sink* needs ``send_text(str)`` + ``is_closed`` — satisfied by both _WSAdapter (legacy
@@ -212,7 +213,8 @@ async def run_chat_core(server_provider, provider, sink, *, model: str, messages
             model=model, messages=messages, websocket=sink,
             temperature=temperature, enable_thinking=enable_thinking,
             conv_id=conv_id, tools=tools,
-            stop_event=stop_event  # abort llama.cpp generation on client stop/disconnect
+            stop_event=stop_event,  # abort llama.cpp generation on client stop/disconnect
+            context_window=context_window,  # per-node context (2026-10 fleet)
         )
 
         # Check if client disconnected during streaming — skip sending response

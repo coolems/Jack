@@ -50,7 +50,12 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
                       mmproj_file: Optional[str] = None,
                       enable_mtp: bool = False,
                       host: str = "0.0.0.0",
-                      port: int = LLAMA_SERVER_PORT) -> list:
+                      port: int = LLAMA_SERVER_PORT,
+                      parallel: int = LLAMA_SERVER_PARALLEL,
+                      ctx_per_slot: Optional[int] = None,
+                      threads: Optional[int] = None,
+                      gpu_layers: Optional[int] = None,
+                      extra_args: Optional[list] = None) -> list:
     """Build the llama-server command with optimal parameters for Qwen3.6.
 
     All parameters come from config.py — modify there, not here.
@@ -65,6 +70,13 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
         model_file: Path to the .gguf model file
         mmproj_file: Optional path to mmproj file for vision
         enable_mtp: Whether to enable MTP speculative decoding params
+        parallel: Number of inference slots (llama.cpp --parallel). Each slot gets
+            ctx_per_slot tokens of context (default CONTEXT_WINDOW_TOKENS), so the TOTAL
+            --ctx-size passed to llama.cpp is ctx_per_slot x parallel (llama.cpp divides
+            the total across slots - see server-context.cpp n_ctx_slot).
+        ctx_per_slot: Optional per-machine context override (node launcher).
+        threads / gpu_layers: Optional per-machine overrides (node launcher).
+        extra_args: Optional raw extra flags appended verbatim (node launcher).
 
     NOTE (2026-09-19): NO --model-draft is ever emitted. The unsloth Qwen3.8 GGUFs bake the
     full MTP layer + head INTO the main file; with only --spec-type draft-mtp, llama.cpp
@@ -73,7 +85,11 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
     Returns:
         The command list ready for subprocess.Popen.
     """
-    ctx_size = CONTEXT_WINDOW_TOKENS
+    slots = max(1, int(parallel or 1))
+    ctx_per_slot = int(ctx_per_slot) if ctx_per_slot else CONTEXT_WINDOW_TOKENS
+    ctx_total = ctx_per_slot * slots
+    n_threads = int(threads) if threads else LLAMA_SERVER_THREADS
+    n_gpu_layers = int(gpu_layers) if gpu_layers is not None else LLAMA_SERVER_GPU_LAYERS
     cmd = [
         llama_server_exe,
         # (2026-09-09 fresh-start fix) CRITICAL: the model path MUST be passed here.
@@ -86,17 +102,18 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
         # defaults keep the legacy single-instance behavior exactly.
         "--host", host or "0.0.0.0",
         "--port", str(port),
-        "--ctx-size", str(ctx_size),
+        # (2026-10 fleet) context is PER SLOT; llama.cpp splits --ctx-size across slots.
+        "--ctx-size", str(ctx_total),
         "-n", str(LLAMA_SERVER_MAX_NEW_TOKENS),
-        "--threads", str(LLAMA_SERVER_THREADS),
-        "--n-gpu-layers", str(LLAMA_SERVER_GPU_LAYERS),
+        "--threads", str(n_threads),
+        "--n-gpu-layers", str(n_gpu_layers),
         # ---- KV Cache Optimization ----
         "--cache-type-k", LLAMA_SERVER_CACHE_TYPE_K,
         "--cache-type-v", LLAMA_SERVER_CACHE_TYPE_V,
         "--cache-ram", str(LLAMA_SERVER_CACHE_RAM),
         # ---- Inference Flags ----
         "--flash-attn", LLAMA_SERVER_FLASH_ATTN,
-        "--parallel", str(LLAMA_SERVER_PARALLEL),
+        "--parallel", str(slots),
         # ---- Fit Mode ----
         "--fit", LLAMA_SERVER_FIT,
         # ---- Server-Level Generation Defaults ----
@@ -104,6 +121,11 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
         "--repeat-penalty", str(LLAMA_SERVER_REPEAT_PENALTY),
         # ---- File Loading Flags ----
     ]
+    if slots > 1:
+        logger.info(
+            "Launcher: %d inference slots, --ctx-size %d total (%d per slot)",
+            slots, ctx_total, ctx_per_slot,
+        )
 
     # Boolean flags (added only when True)
     # NOTE b10441+: --no-mmap is DEPRECATED in favor of --load-mode.
@@ -159,6 +181,9 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
         cmd.append("--mmproj-auto")
         logger.info("Using auto-detection for vision projector (--mmproj-auto)")
 
+    if extra_args:
+        cmd.extend(str(a) for a in extra_args)
+
     return cmd
 
 
@@ -166,7 +191,8 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
 
 def expected_flag_signatures(model_file: str, enable_mtp: bool,
                              host: str = "0.0.0.0",
-                             port: int = LLAMA_SERVER_PORT) -> list[str]:
+                             port: int = LLAMA_SERVER_PORT,
+                             parallel: int = LLAMA_SERVER_PARALLEL) -> list[str]:
     """Return the distinctive flag substrings OUR OWN launch command would contain.
 
     (2026-10-31 verified attach): start_server() uses this to verify that a FOREIGN
@@ -174,25 +200,28 @@ def expected_flag_signatures(model_file: str, enable_mtp: bool,
     reusing it. Instead of duplicating literals here, we build the real command via
     _build_server_cmd() and extract the parts that identify "a server started by us":
 
-      - --ctx-size <N>   : context window (our config value)
+      - --ctx-size <N>   : TOTAL context window (per-slot budget x slots)
+      - --parallel <N>   : number of inference slots (concurrency)
       - --cache-ram <N>  : KV-cache RAM limit (our config value)
       - --flash-attn <v> : flash attention setting (our config value)
       - --spec-type draft-mtp (+ its companions): only for MTP models
 
     A foreign command line that contains ALL of these is treated as equivalent to one
     we would have built; missing any -> start_server() restarts from zero so the model
-    gets exactly our flags (MTP included). The model path itself is deliberately NOT a
-    signature: a healthy server may legitimately run a different model than the one we
-    are about to launch - that case is handled by the normal auto-switch/reload flow.
+    gets exactly our flags (MTP + slots included). The model path itself is deliberately
+    NOT a signature: a healthy server may legitimately run a different model than the one
+    we are about to launch - routing owns that decision now.
 
     Args mirror _build_server_cmd() so the signatures always match what we would spawn.
     """
+    slots = max(1, int(parallel or 1))
     cmd = _build_server_cmd(
         "llama-server.exe",  # placeholder exe path - never part of any signature
-        model_file, None, enable_mtp=enable_mtp, host=host, port=port,
+        model_file, None, enable_mtp=enable_mtp, host=host, port=port, parallel=slots,
     )
     sigs: list[str] = [
-        f"--ctx-size {CONTEXT_WINDOW_TOKENS}",
+        f"--ctx-size {CONTEXT_WINDOW_TOKENS * slots}",
+        f"--parallel {slots}",
         f"--cache-ram {LLAMA_SERVER_CACHE_RAM}",
         f"--flash-attn {LLAMA_SERVER_FLASH_ATTN}",
     ]

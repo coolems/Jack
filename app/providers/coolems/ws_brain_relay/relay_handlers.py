@@ -52,37 +52,25 @@ async def _relay_send(ws, msg: dict, target_client: str = ""):
 
 
 async def _handle_relay_model_switch(ws, server_provider, model_filename, msg):
-    """Handle model_switch message from relay (S1 fix: per-client authorization).
+    """Handle a 'model_switch' frame as a ROUTING CHECK (2026-10 fleet, never reloads).
 
     *msg* carries '_relay_from' so the check runs against the RELAYED CLIENT's profile.
-    The brain socket's own user info is NEVER consulted here -- pre-fix it held the
-    BRAIN's admin profile, so any client behind the relay could switch to (and restart
-    into) ANY model on the box.
+    The brain socket's own user info is NEVER consulted here.
     """
     client_id = msg.get("_relay_from") or "unknown"
     user_info = await _resolve_relay_client_user_info(ws, msg, server_provider)
     if not user_info:
-        logger.warning(f"[SERVER] Relay model switch DENIED for unknown/unresolvable relayed client {client_id!r} (fail-closed)")
+        logger.warning(f"[SERVER] Relay model request DENIED for unknown/unresolvable relayed client {client_id!r} (fail-closed)")
         await _relay_send(ws, {
             "type": "model_switch_response",
             "success": False,
-            "message": f"Model switch denied for relayed client {client_id!r} (unresolvable profile).",
+            "message": f"Model request denied for relayed client {client_id!r} (unresolvable profile).",
         }, client_id)
         return
 
-    local = server_provider._get_local_provider()
-
-    # (2026-08-23 security fix + dedupe): EXACT folder-name matching via the shared
-    # auth_gateway resolver - no normalization, no bidirectional substring match.
-    all_models = await local.get_models_list()
-    known_folders = {
-        m["name"].lower(): m["folder"]
-        for m in all_models
-        if isinstance(m, dict) and m.get("name") and m.get("folder")
-    }
-    model_permitted = is_model_allowed(user_info, model_filename, known_folders)
-    if not model_permitted:
-        logger.warning(f"[SERVER] Model switch DENIED via relay: '{model_filename}' is not in client role={user_info.get('role')} allowed models (client={client_id})")
+    # Exact filename authorization (no folders, no substrings).
+    if not is_model_allowed(user_info, model_filename):
+        logger.warning(f"[SERVER] Model request DENIED via relay: '{model_filename}' is not in client role={user_info.get('role')} allowed models (client={client_id})")
         await _relay_send(ws, {
             "type": "model_switch_response",
             "success": False,
@@ -90,22 +78,18 @@ async def _handle_relay_model_switch(ws, server_provider, model_filename, msg):
         }, client_id)
         return
 
-    try:
-        # (2026-09 threadless refactor): direct await - switch_model() is async now and the
-        # whole reload wait loop runs on this event loop (no executor thread, no nested loop).
-        success, message = await local.switch_model(model_filename)
-        await _relay_send(ws, {
-            "type": "model_switch_response",
-            "success": success,
-            "message": message
-        }, client_id)
-    except Exception as e:
-        logger.error(f"[SERVER] Model switch error: {e}", exc_info=True)
-        await _relay_send(ws, {
-            "type": "model_switch_response",
-            "success": False,
-            "message": str(e)
-        }, client_id)
+    from ..direct_ws.model_switch_handler import describe_routing
+    from app.providers.llama.backend_registry import get_registry
+    from app.providers.coolems.model_catalog import available_models_hint
+    hint = await available_models_hint(server_provider, user_info)
+    success, message = describe_routing(get_registry(), model_filename, available_hint=hint)
+    logger.info("[SERVER] Relay model routing check for '%s' (client=%s): %s",
+                model_filename, client_id, message)
+    await _relay_send(ws, {
+        "type": "model_switch_response",
+        "success": success,
+        "message": message,
+    }, client_id)
 async def _resolve_relay_client_user_info(ws, msg: dict, server_provider):
     """Resolve the RELAYED CLIENT's user_info for a proxied frame.
 

@@ -69,168 +69,14 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Health")
 # _resolve_server_root imported from .path_utils (single source of truth)
 
 def _get_all_model_folders() -> list:
-
-
-        """Get all model folders to scan: default + allowed_models_folders from profiles.json.
-
-
-    
-
-
-        Returns ALL unique folders discovered across every role's allowed_models_folders lists.
-
-
-        Role-based filtering is handled by the agent router (agent.py), not here.
-
-
-        This function only scans disk for available models.
-
-
-        """
-
-
-        root_dir = _resolve_server_root()
-
-
-        default_dir = os.path.join(root_dir, "llama_server", "models")
-
-
-    
-
-
-        # Always include the default directory first (highest priority)
-
-
-        folders = [default_dir] if os.path.isdir(default_dir) else []
-
-
-        seen = {os.path.abspath(default_dir)} if os.path.isdir(default_dir) else set()
-
-
-    
-
-
-        # Load profiles.json - check BOTH config/ and root locations
-
-
-        profiles_path = None
-
-
-        for candidate in [
-
-
-            os.path.join(root_dir, "config", "profiles.json"),
-
-
-            os.path.join(root_dir, "profiles.json"),
-
-
-        ]:
-
-
-            if os.path.exists(candidate):
-
-
-                profiles_path = candidate
-
-
-                break
-
-
-    
-
-
-        if not profiles_path:
-
-
-            logger.debug("No profiles.json found for model folder discovery")
-
-
-            return folders
-
-
-    
-
-
-        try:
-
-
-            with open(profiles_path, 'r') as f:
-
-
-                profiles_data = json.load(f)
-
-
-    
-
-
-            # Collect ALL unique folders from every role's allowed_models_folders.
-
-
-            # Both list and null are handled - null means "all folders" for that role,
-
-
-            # but we still need to scan all folders on disk regardless of role.
-
-
-            # Role-based filtering happens in the agent router (agent.py get_models endpoint).
-
-
-            for role_name, profile in profiles_data.items():
-
-
-                allowed_folders = profile.get("allowed_models_folders", [])
-
-
-    
-
-
-                if isinstance(allowed_folders, list):
-
-
-                    # Add each folder from the role's list
-
-
-                    for folder in allowed_folders:
-
-
-                        abs_folder = os.path.abspath(folder)
-
-
-                        if abs_folder not in seen and os.path.isdir(abs_folder):
-
-
-                            folders.append(abs_folder)
-
-
-                            seen.add(abs_folder)
-
-
-                elif allowed_folders is None:
-
-
-                    # null means this role has access to ALL folders.
-
-
-                    # No additional folders to add - we already collected them from roles with lists.
-
-
-                    pass
-
-
-        except Exception as e:
-
-
-            raise RuntimeError(
-                f'[HEALTH] Failed to read profiles.json for model folder discovery at {profiles_path}: {e}\n'
-                f'Check that the file exists, is valid JSON, and has correct permissions.'
-            ) from e
-
-
-    
-
-
-        return folders
+    """(2026-10 fleet) Local model scan dirs.
+
+    Profiles no longer carry model folders (they authorize by filename), so the scan
+    path lives in path_utils: llama_server/models (flat + one subfolder deep),
+    config.LLAMA_MODEL_DIRS and the folder of the persisted .last_model_loaded.json.
+    """
+    from .path_utils import _get_model_scan_dirs
+    return _get_model_scan_dirs()
 
 
 class HealthChecker:
@@ -346,105 +192,38 @@ class HealthChecker:
 
 
     def _get_disk_models(self) -> List[Dict]:
+        """Scan local model directories for .gguf files (flat + one subfolder deep).
 
-
-        """Scan ALL model directories (default + profiles.json allowed folders) for .gguf files,
-        excluding mmproj/projector files. Deduplicates by filename (first occurrence wins).
-
-        Each entry carries a "folder" field: the basename of the folder it was found in.
-        The FOLDER is the model identity used by auth_gateway exact-match authorization
-        (2026-08-23): one folder = one model, even when the folder holds multiple files."""
-
-
+        2026-10 fleet: profiles no longer carry model folders; path_utils owns the scan
+        path. Entries are deduplicated by filename and mmproj/projector files are skipped.
+        The "folder" field is kept for display and backward compatibility.
+        """
         all_folders = _get_all_model_folders()
-
-
-
-
-
         seen_names = set()
-
-
         models = []
-
-
-
-
-
         for folder in all_folders:
-
-
             if not os.path.isdir(folder):
-
-
                 continue
-
-
-
-
-
-            gguf_files = glob.glob(os.path.join(folder, "*.gguf"))
-
-
-
-
-
-            for fpath in sorted(gguf_files):
-
-
-                fname = os.path.basename(fpath)
-
-
-
-
-
-                # Skip mmproj/projector files
-
-
-                if _is_mmproj_file(fname):
-
-
-                    logger.debug(f"Skipping mmproj file: {fname}")
-
-
-                    continue
-
-
-
-
-
-                # Deduplicate by filename (first folder wins - default has priority)
-
-
-                if fname in seen_names:
-
-
-                    logger.debug(f"Skipping duplicate model: {fname} (already found)")
-
-
-                    continue
-
-
-
-
-
-                seen_names.add(fname)
-                fsize = os.path.getsize(fpath)
-                models.append({
-                    "name": fname,
-                    # Folder identity for auth exact-match (folder basename).
-                    # One folder == one model: mmproj/tokenizer/multi-part files in the
-                    # same folder all belong to this single model.
-                    "folder": os.path.basename(os.path.abspath(folder)),
-                    "size": fsize,
-                    "on_disk": True,
-                })
-
-
-
-
-
-        logger.info(f"Found {len(models)} .gguf model(s) on disk across {len(all_folders)} folder(s)")
-
-
+            for pattern in ("*.gguf", os.path.join("*", "*.gguf")):
+                for fpath in sorted(glob.glob(os.path.join(folder, pattern))):
+                    fname = os.path.basename(fpath)
+                    if _is_mmproj_file(fname):
+                        logger.debug("Skipping mmproj file: %s", fname)
+                        continue
+                    if fname in seen_names:
+                        logger.debug("Skipping duplicate model: %s (already found)", fname)
+                        continue
+                    try:
+                        fsize = os.path.getsize(fpath)
+                    except OSError:
+                        fsize = 0
+                    seen_names.add(fname)
+                    models.append({
+                        "name": fname,
+                        "folder": os.path.basename(os.path.abspath(folder)),
+                        "size": fsize,
+                        "on_disk": True,
+                    })
+        logger.info("Found %d .gguf model(s) on disk across %d folder(s)",
+                    len(models), len(all_folders))
         return models

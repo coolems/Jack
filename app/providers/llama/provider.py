@@ -21,7 +21,6 @@ from .streaming import chat_stream as _chat_stream
 from .non_streaming import chat_non_streaming as _chat_non_streaming
 from .health import HealthChecker
 from .server import start_server as _start_server
-from .server import reload_with_model as _reload_with_model
 from .server import get_current_model as _get_current_model
 from .ocr import ocr_transcribe as _ocr_transcribe
 from .status import status_message as _status_message
@@ -80,6 +79,7 @@ class LlamaProvider(BaseProvider):
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
+        context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
         """
         Stream chat completions from llama.cpp.
@@ -112,6 +112,7 @@ class LlamaProvider(BaseProvider):
             conv_id=conv_id,
             tools=tools,
             stop_event=stop_event,
+            context_window=context_window,
         )
 
     # ---- chat_non_streaming ----
@@ -173,28 +174,9 @@ class LlamaProvider(BaseProvider):
         the shared httpx pool."""
         return await self._health.get_models_list()
 
-    # ---- switch_model ----
-    async def switch_model(self, model_filename: str) -> Tuple[bool, str]:
-        """Stop the current llama-server and restart with a different model.
-
-        Args:
-            model_filename: The .gguf filename to load.
-
-        Returns:
-            Tuple of (success, message).
-
-        (2026-09 threadless refactor): async - the reload wait loop polls /health on the shared
-        httpx pool with await asyncio.sleep() between attempts; only true OS leaves (process
-        terminate/wait) run via asyncio.to_thread.
-        """
-        # (2026-09-08 multi-chat) reload EVERY local instance with the new model; remotes are
-        # verified afterwards and marked unhealthy on mismatch. Falls back to the legacy
-        # single-instance reload when no registry exists yet (e.g. direct LlamaProvider use).
-        from . import backend_registry
-        reg = backend_registry.get_registry()
-        if reg is not None and len(reg.backends) > 0:
-            return await reg.switch_model(model_filename)
-        return await _reload_with_model(self._api_url, model_filename)
+    # ---- switch_model (REMOVED 2026-10 fleet) ----
+    # Nodes are started with a fixed model by their node launcher; the brain routes each
+    # request to the model group it names. There is no reload/switch path any more.
 
     # ---- get_current_model ----
     async def get_current_model(self, force: bool = False) -> Optional[str]:

@@ -15,7 +15,7 @@ Singletons: set_queue()/get_queue(), set_worker_pool()/get_worker_pool() — wir
 by CoolemsServerProvider; unit tests construct their own instances.
 """
 
-from .queue_manager import RequestQueue, get_queue, set_queue
+from .queue_manager import EnqueueResult, RequestQueue, get_queue, set_queue
 from .request import ChatRequest
 from .sink import DirectWsSink, FrameSink, RelayTargetSink
 from .worker_pool import WorkerPool, get_worker_pool, set_worker_pool
@@ -23,6 +23,7 @@ from .worker_pool import WorkerPool, get_worker_pool, set_worker_pool
 __all__ = [
     "ChatRequest",
     "DirectWsSink",
+    "EnqueueResult",
     "FrameSink",
     "RelayTargetSink",
     "RequestQueue",

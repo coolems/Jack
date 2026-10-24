@@ -115,3 +115,8 @@ llama_server/models/*/*
 # LICENSE (2026-10-15 licensing plan v12): SERVER-side license state only
 (choice/company/email/ip_history/last_check). The CLIENT keeps no license files.
 /config/license_state.json
+
+# Llama node launcher (2026-10 fleet): per-machine node config + runtime state.
+# config/llama_node.example.json is the tracked template.
+config/llama_node.json
+config/.llama_node_state.json

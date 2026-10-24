@@ -69,9 +69,12 @@ from .config import (
     HEALTH_CHECK_INTERVAL_SEC,
     PROVIDER_STARTUP_TIMEOUT,
 
-    # --- Chat Request Queue (2026-09-08 multi-chat) ---
+    # --- Chat Request Queue (2026-09-08 multi-chat; per-model groups 2026-10) ---
     QUEUE_MAX_PENDING,
     QUEUE_STATS_LOG_INTERVAL_SEC,
+    QUEUE_FULL_GRACE_SEC,
+    QUEUE_FULL_RETRY_AFTER_SEC,
+    QUEUE_MODEL_WAIT_SEC,
 
     # --- Llama Server Configuration ---
     LLAMA_SERVER_THREADS,
@@ -80,6 +83,7 @@ from .config import (
 
     # Llama server instance list (hand-editable config/llama_servers.json, 2026-09-08)
     LLAMA_SERVERS_FILE,
+    LLAMA_MODEL_DIRS,
     LlamaServerInstance,
     get_llama_server_instances,
     LLAMA_OCR_SERVER_PORT,
@@ -100,6 +104,7 @@ from .config import (
     LLAMA_SERVER_CACHE_TYPE_V,
     LLAMA_SERVER_FLASH_ATTN,
     LLAMA_SERVER_PARALLEL,
+    LLAMA_MAX_CONCURRENCY,
     LLAMA_SERVER_CACHE_RAM,
 
     # Llama Server MTP (Multi-Token Prediction) Support

@@ -1,57 +1,68 @@
-"""Model switch request handler for direct WS clients.
+"""Model ROUTING request handler for direct WS clients (2026-10 fleet).
 
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 557-602).
-Permission check uses the shared exact-match resolver -- no substring auth.
+There is NO model switching any more: every llama node is started with a fixed model and
+keeps it. The CLIENT's "load model" action therefore becomes a routing check - it reports
+whether the swarm currently serves the requested model, and where. The actual routing
+happens per chat request in the server queue (per-model FIFO).
+
+Permission check still uses the shared exact-filename resolver (no folders, no substrings).
 """
 
 import json
 
 from app.auth_gateway.model_resolver import is_model_allowed
+from app.providers.llama.model_identity import model_key as model_key_of
 from .log import logger
 
-async def _handle_model_switch_direct(ws, server_provider, user_info, model_filename, req_id=None):
-    """Handle model_switch message from direct WS client.
 
-    req_id: echoed back in the response for the CLIENT persistent control channel (2026-08-20).
+def describe_routing(reg, model_filename: str, available_hint: str = "") -> tuple[bool, str]:
+    """Shared by the direct and relay handlers: (ok, message) for a model request.
+
+    *available_hint* must be the CALLER-FILTERED model list (never leak models the
+    profile is not allowed to see); when empty the registry-wide list is used.
     """
-    # Permission check: verify user is allowed to switch to this model.
-    # (2026-08-23 security fix + dedupe): EXACT folder-name matching via the shared
-    # auth_gateway resolver - no normalization, no bidirectional substring match.
-    if user_info:
-        local_check = server_provider._get_local_provider()
-        all_models = await local_check.get_models_list()  # List of dicts already
-        known_folders = {
-            m["name"].lower(): m["folder"]
-            for m in all_models
-            if isinstance(m, dict) and m.get("name") and m.get("folder")
-        }
-        model_permitted = is_model_allowed(user_info, model_filename, known_folders)
-        if not model_permitted:
-            logger.warning("[SERVER] Model switch denied - no permission")
-            await ws.send(json.dumps({
-                "type": "model_switch_response",
-                "req_id": req_id,
-                "success": False,
-                "message": f"Model '{model_filename}' is not available for your role."
-            }))
-            return
+    if reg is None:
+        return False, "LLM backend registry is not initialized yet - please retry."
+    key = model_key_of(model_filename)
+    nodes = [b for b in reg.backends.values() if b.model_key == key]
+    healthy = [b for b in nodes if b.healthy]
+    if healthy:
+        where = ", ".join(f"{b.instance.name} ({b.capacity} slot(s))" for b in healthy)
+        return True, (f"Model '{model_filename}' is served by {where}. Requests are routed "
+                      f"automatically - no reload is needed.")
+    if nodes:
+        where = ", ".join(
+            f"{b.instance.name} ({b.instance.host}:{b.instance.port}, "
+            f"{'healthy' if b.healthy else 'offline'})"
+            for b in nodes
+        )
+        return False, (f"Model '{model_filename}' is configured but no node is serving it "
+                       f"right now: {where}. Fix or start a node with that model.")
+    return False, (f"No llama node is serving '{model_filename}'. Available: "
+                   f"{available_hint or reg.describe_models()}. Start a node with that model to use it.")
 
-    local = server_provider._get_local_provider()
-    try:
-        # (2026-09 threadless refactor): direct await - switch_model() is async now and the
-        # whole reload wait loop runs on this event loop (no executor thread, no nested loop).
-        success, message = await local.switch_model(model_filename)
-        await ws.send(json.dumps({
-            "type": "model_switch_response",
-            "req_id": req_id,
-            "success": success,
-            "message": message
-        }))
-    except Exception as e:
-        logger.error(f"[SERVER] Model switch error: {e}", exc_info=True)
+
+async def _handle_model_switch_direct(ws, server_provider, user_info, model_filename, req_id=None):
+    """Handle a 'model_switch' frame as a ROUTING CHECK (never reloads anything)."""
+    if user_info and not is_model_allowed(user_info, model_filename):
+        logger.warning("[SERVER] Model request denied for role=%s: %s",
+                       user_info.get("role"), model_filename)
         await ws.send(json.dumps({
             "type": "model_switch_response",
             "req_id": req_id,
             "success": False,
-            "message": str(e)
+            "message": f"Model '{model_filename}' is not available for your role.",
         }))
+        return
+
+    from app.providers.llama.backend_registry import get_registry
+    from ..model_catalog import available_models_hint
+    hint = await available_models_hint(server_provider, user_info)
+    success, message = describe_routing(get_registry(), model_filename, available_hint=hint)
+    logger.info("[SERVER] Model routing check for '%s': %s", model_filename, message)
+    await ws.send(json.dumps({
+        "type": "model_switch_response",
+        "req_id": req_id,
+        "success": success,
+        "message": message,
+    }))

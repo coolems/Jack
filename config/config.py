@@ -120,9 +120,15 @@ LLAMA_SERVER_GPU_LAYERS: int = 99                       # GPU layers to offload 
 # behaves exactly like before. Edit llama_servers.json to add more instances (other ports on
 # this machine or remote LAN machines); changes take effect on the next SERVER boot.
 
-# --- Chat Request Queue (2026-09-08 multi-chat) ---
-# Every chat request from every client lands in one FIFO queue; free worker slots pick them up.
-QUEUE_MAX_PENDING: int = 32                             # Max requests waiting in the queue before new ones are rejected with a clear error
+# --- Chat Request Queue (2026-09-08 multi-chat; per-model groups 2026-10) ---
+# Every chat request lands in the FIFO queue of its MODEL GROUP; free worker slots pick them up.
+QUEUE_MAX_PENDING: int = 32                             # Max requests waiting PER MODEL GROUP (Qwen 32 + Gemma 32 ...)
+# (2026-10 fleet) A full group does NOT reject instantly: we wait this long for one of its
+# slots to free, then answer with a RETRYABLE "server is full" error. No penalty, no ban,
+# no backoff lock - the client simply resends. This wait is also the natural retry spacing.
+QUEUE_FULL_GRACE_SEC: float = 5.0                       # Max wait for queue space before answering "server is full"
+QUEUE_FULL_RETRY_AFTER_SEC: int = 60                    # Hint sent to the client (seconds) on a full-queue rejection
+QUEUE_MODEL_WAIT_SEC: int = 120                         # Model configured but ALL its nodes down -> retryable error after this
 # (2026-09-10 log-noise fix) Seconds between queue-stats CHECKS. An INFO line is logged only when the
 # snapshot CHANGES vs the previous check (first tick = baseline); unchanged idle ticks go to DEBUG and stay
 # silent by default. 0 = disabled entirely.
@@ -137,7 +143,7 @@ LLAMA_OCR_CTX_SIZE: int = 32768                       # Context tokens for the O
 LLAMA_OCR_UNLOAD_AFTER_USE: bool = False              # Unload dedicated OCR llama-server after each successful tool use
 LLAMA_SERVER_STARTUP_WAIT_SEC: int = 2                  # Sleep (s) between llama health checks
 # (2026-09-09 switch-timeout fix) How long (s) to wait for the model to ACTUALLY LOAD after /health
-# comes up, in BOTH start_server() and reload_with_model(). Sized for a COLD load of a ~23 GB 27B-class
+# comes up, in BOTH start_server() and the (removed) reload path. Sized for a COLD load of a ~23 GB 27B-class
 # GGUF on consumer hardware: warm loads finish in ~20-90 s, but cold page cache + MTP draft-context init
 # can need several minutes. The old hardcoded 120 s (60 x 2s) killed the new server mid-load during a
 # model switch and left the instance with no model at all. NOTE: CLIENT MODEL_SWITCH_MAX_WAIT_SEC
@@ -163,7 +169,11 @@ LLAMA_AUTO_RESTART_ON_STALL: bool = True                 # Kill + restart llama-
 LLAMA_SERVER_CACHE_TYPE_K: str = "q8_0"                 # KV key cache quantization q8_0 f16
 LLAMA_SERVER_CACHE_TYPE_V: str = "q8_0"                 # KV value cache quantization
 LLAMA_SERVER_FLASH_ATTN: str = "on"                     # Flash attention (~30% VRAM savings + speed boost)
-LLAMA_SERVER_PARALLEL: int = 1                          # Single inference slot for stability
+LLAMA_SERVER_PARALLEL: int = 1                          # DEFAULT slots for a LOCAL instance without "concurrency"; also OCR
+# (2026-10 fleet) Concurrency is now per instance: config/llama_servers.json "concurrency": N
+# for LOCAL entries (we spawn them with --parallel N) and discovered from each REMOTE node's
+# /props.total_slots (its node launcher owns the number). This cap is a sanity guard only.
+LLAMA_MAX_CONCURRENCY: int = 8                          # Hard ceiling per llama instance (1..8)
 LLAMA_SERVER_CACHE_RAM: int = 4096                      # Max RAM (MB) for KV cache (prevents OOM on tool calls)
 
 # --- Llama Server MTP (Multi-Token Prediction) Support ---
@@ -244,6 +254,12 @@ TOOLS_BOOTSTRAP_TIMEOUT_SEC: int = 10800                # Max wait (s) for a sel
 # shipped; bootstrap.py seeds the real file from it at first boot. Gitignored: per-machine.
 LLAMA_SERVERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llama_servers.json")
 
+# (2026-10 fleet) Extra local directories scanned for .gguf models. Profiles no longer
+# carry model folders (they authorize by FILENAME), so the scanner owns the search path:
+# llama_server/models is always scanned (flat + one subfolder deep), plus the folder of
+# the model persisted in .last_model_loaded.json, plus these optional absolute paths.
+LLAMA_MODEL_DIRS: list = []
+
 # --- Derived Helpers ---
 
 
@@ -274,21 +290,75 @@ class LlamaServerInstance:
 
     Mirrors the shape of CLIENT's settings.json server_addresses pattern, but for
     SERVER-side LLM instances: a plain hand-editable JSON list in config/.
-      name - human label only (logs/startup table); optional, defaults to host:port.
-      host - "127.0.0.1"/"localhost" for same-machine instances, or a LAN IP of a
-             remote machine running its own llama-server.
-      port - integer TCP port of that instance's HTTP endpoint.
+      name        - human label only (logs/startup table); optional, defaults to host:port.
+      host        - "127.0.0.1"/"localhost" for same-machine instances, or a LAN IP of a
+                    remote machine running its own llama-server.
+      port        - integer TCP port of that instance's HTTP endpoint.
+      concurrency - requests this instance may run at once (llama.cpp --parallel N).
+                    LOCAL (loopback) entries: defaults to LLAMA_SERVER_PARALLEL and is used
+                    to SPAWN the process (and to scale --ctx-size by N).
+                    REMOTE entries: default None = DISCOVERED at boot from the node's
+                    /props.total_slots; the node launcher owns that number, so the brain
+                    does not duplicate it here. Set an int only to cap a remote node.
 
-    Every instance runs the SAME model + launch args from this config module
+    Every LOCAL instance runs the SAME model + launch args from this config module
     (LLAMA_SERVER_*) - one knob stays in one place.
     """
     name: str
     host: str
     port: int
+    concurrency: Optional[int] = None
 
     @property
     def api_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    @property
+    def is_local(self) -> bool:
+        """Loopback = the instance WE spawn. Everything else is attach-only."""
+        return self.host.strip().lower() in ("127.0.0.1", "localhost", "::1")
+
+
+def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Optional[int]:
+    """Validate one llama_servers.json 'concurrency' (alias 'parallel') value.
+
+    LOCAL: always returns an int (falls back to LLAMA_SERVER_PARALLEL on bad input)
+           because it is needed to build the launch command.
+    REMOTE: returns None on missing/bad input - None means "discover from /props".
+           An explicit int is treated as an UPPER BOUND for that node.
+    """
+    raw = entry.get("concurrency", entry.get("parallel"))
+    if raw is None:
+        return LLAMA_SERVER_PARALLEL if loopback else None
+
+    # bool is a subclass of int in Python - reject it explicitly.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        _logger.warning(
+            "[CONFIG] llama_servers.json entry #%d has an invalid 'concurrency' (%r) - %s",
+            index, raw, f"using {LLAMA_SERVER_PARALLEL}" if loopback else "will discover it from /props",
+        )
+        return LLAMA_SERVER_PARALLEL if loopback else None
+
+    if raw < 1:
+        _logger.warning(
+            "[CONFIG] llama_servers.json entry #%d has 'concurrency' < 1 (%r) - %s",
+            index, raw, f"using {LLAMA_SERVER_PARALLEL}" if loopback else "will discover it from /props",
+        )
+        return LLAMA_SERVER_PARALLEL if loopback else None
+
+    if raw > LLAMA_MAX_CONCURRENCY:
+        _logger.warning(
+            "[CONFIG] llama_servers.json entry #%d 'concurrency' %d exceeds LLAMA_MAX_CONCURRENCY=%d - clamped",
+            index, raw, LLAMA_MAX_CONCURRENCY,
+        )
+        return LLAMA_MAX_CONCURRENCY
+
+    return raw
+
+
+def _default_local_instance() -> "LlamaServerInstance":
+    """The always-present local instance (legacy single-server behaviour)."""
+    return LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT, LLAMA_SERVER_PARALLEL)
 
 
 def _write_default_local_file(path: str) -> None:
@@ -296,7 +366,11 @@ def _write_default_local_file(path: str) -> None:
     default local entry. Best-effort - a write failure only costs one boot cycle.
     """
     try:
-        payload = _json.dumps([{"name": "local", "host": "127.0.0.1", "port": LLAMA_SERVER_PORT}], indent=2) + "\n"
+        payload = _json.dumps(
+            [{"name": "local", "host": "127.0.0.1", "port": LLAMA_SERVER_PORT,
+              "concurrency": LLAMA_SERVER_PARALLEL}],
+            indent=2,
+        ) + "\n"
         with open(path, "w", encoding="utf-8") as f:
             f.write(payload)
     except OSError as e:
@@ -332,21 +406,21 @@ def get_llama_server_instances() -> list["LlamaServerInstance"]:
             path, LLAMA_SERVER_PORT,
         )
         _write_default_local_file(path)
-        return [LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT)]
+        return [_default_local_instance()]
     except (OSError, ValueError) as e:
         _logger.warning(
             "[CONFIG] %s unreadable/invalid JSON (%s) - keeping the default local instance 127.0.0.1:%d "
             "(the corrupt file is left in place for inspection; fix it to configure more instances)",
             path, e, LLAMA_SERVER_PORT,
         )
-        return [LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT)]
+        return [_default_local_instance()]
 
     if not isinstance(raw, list):
         _logger.warning(
-            "[CONFIG] %s must be a JSON LIST of {name, host, port} entries - using the default local instance 127.0.0.1:%d",
+            "[CONFIG] %s must be a JSON LIST of {name, host, port, concurrency} entries - using the default local instance 127.0.0.1:%d",
             path, LLAMA_SERVER_PORT,
         )
-        return [LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT)]
+        return [_default_local_instance()]
 
     instances: list[LlamaServerInstance] = []
     seen: set[tuple[str, int]] = set()
@@ -366,19 +440,23 @@ def get_llama_server_instances() -> list["LlamaServerInstance"]:
                 "[CONFIG] llama_servers.json entry #%d has an invalid 'port' (%r) - skipped", i, port_raw
             )
             continue
-        key = (host.lower(), port_raw)
+        key = ("127.0.0.1" if host.lower() == "localhost" else host.lower(), port_raw)
         if key in seen:
             _logger.warning("[CONFIG] llama_servers.json duplicate host:port %s:%d - deduped", host, port_raw)
             continue
         seen.add(key)
-        instances.append(LlamaServerInstance(name or f"{host}:{port_raw}", host, port_raw))
+        loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
+        concurrency = _parse_instance_concurrency(entry, loopback=loopback, index=i)
+        instances.append(
+            LlamaServerInstance(name or f"{host}:{port_raw}", host, port_raw, concurrency)
+        )
 
     if not instances:
         _logger.warning(
             "[CONFIG] llama_servers.json has no valid entries - using the default local instance 127.0.0.1:%d "
-            "(the file is kept; add a {name, host, port} entry to configure more instances)",
+            "(the file is kept; add a {name, host, port, concurrency} entry to configure more instances)",
             LLAMA_SERVER_PORT,
         )
-        return [LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT)]
+        return [_default_local_instance()]
 
     return instances

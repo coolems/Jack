@@ -1,9 +1,8 @@
 {
   "admin": {
     "description": "Full system access - all models, all tools",
-    "allowed_models_folders": [
-      "C:\\PATH\\TO\\YOUR\\MODEL\\FOLDER"
-    ],
+    "allowed_models": null,
+    "max_parallel_slots": 4,
     "ocr_model": "C:\\PATH\\TO\\OCR\\MODEL\\FOLDER",
     "allowed_tools": null,
     "python_exec_blocked_libs": "blocked_libs_admin.json",
@@ -12,9 +11,10 @@
   },
   "user": {
     "description": "Standard user - basic interaction only",
-    "allowed_models_folders": [
-      "C:\\PATH\\TO\\YOUR\\MODEL\\FOLDER"
+    "allowed_models": [
+      "YOUR-MODEL-FILE.gguf"
     ],
+    "max_parallel_slots": 1,
     "ocr_model": null,
     "allowed_tools": [
       "get_current_time",

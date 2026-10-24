@@ -79,30 +79,43 @@ async function loadModels() {
         const cur = sel.value;
         
         // Determine which model to select:
-        // 1. Prefer currently loaded model (m.loaded === true)
-        // 2. Fall back to preserving current selection
-        // 3. Fall back to first model in list
+        // 1. PRESERVE the user's current selection when it is still served (2026-10 fleet:
+        //    the list is rebuilt after routing; without this the picker would snap back to
+        //    the local model and the next chat would silently go to the wrong model)
+        // 2. Otherwise prefer a served model that is loaded locally (m.loaded)
+        // 3. Otherwise the first served model
         let defaultModel = null;
-        const loadedModel = models.find(m => m.loaded);
-        if (loadedModel) {
-            defaultModel = loadedModel.name;
-        } else if (cur && models.some(m => m.name === cur)) {
+        if (cur && models.some(m => m.name === cur && m.served !== false)) {
             defaultModel = cur;
-        } else if (models.length > 0) {
-            defaultModel = models[0].name;
+        } else {
+            const loadedModel = models.find(m => m.loaded && m.served !== false)
+                || models.find(m => m.served !== false);
+            if (loadedModel) {
+                defaultModel = loadedModel.name;
+            } else if (cur && models.some(m => m.name === cur)) {
+                defaultModel = cur;
+            } else if (models.length > 0) {
+                defaultModel = models[0].name;
+            }
         }
         
-        // Build options with size and loaded indicator
+        // Build options with size, fleet state (2026-10: models served by any node)
+        // and loaded indicator. Unserved models are disabled - picking one would only
+        // produce a "no llama node is serving this" error.
         sel.innerHTML = models.map(m => {
             const name = m.name;
             const sizeStr = m.size ? ` (${formatFileSize(m.size)})` : '';
             const loadedStr = m.loaded ? ' ⬤' : '';
             const selected = (name === defaultModel) ? ' selected' : '';
             const mtpStr = /mtp/i.test(name) ? ' [MTP]' : '';
-            return '<option value="' + name + '"' + selected + '>' + name + sizeStr + loadedStr + mtpStr + '</option>';
+            const offline = (m.served === false);
+            const slotsStr = (m.online_slots > 0) ? ` · ${m.online_slots} slot(s)` : '';
+            const stateStr = offline ? ' — no node' : slotsStr;
+            return '<option value="' + name + '"' + selected + (offline ? ' disabled' : '')
+                + '>' + name + sizeStr + stateStr + loadedStr + mtpStr + '</option>';
         }).join('');
         
-        log('Loaded ' + models.length + ' models from disk');
+        log('Loaded ' + models.length + ' models (fleet catalog)');
         
     } catch (e) { 
         logError('Failed to load models:', e); 
@@ -110,13 +123,13 @@ async function loadModels() {
 }
 
 /**
- * Switch to a different model - SERVER restarts llama.cpp with the new model.
+ * Request a model - 2026-10 fleet: the SERVER ROUTES to a node serving it (no reload).
  *
  * (2026-08-23 fix) The UI no longer polls /api/models or shows its own success
  * message: the AUTHORITATIVE result comes from the 'model_switch_status'
- * broadcast pushed by agent.py when the SERVER confirms the reload
+ * broadcast pushed by agent.py when the SERVER confirms the routing
  * (websocket.js handleModelSwitchStatus -> "success" notification + dropdown
- * refresh). This function only starts the switch and reports hard failures.
+ * refresh). This function only starts the request and reports hard failures.
  */
 async function switchModel(modelName) {
     if (!modelName) { logError('[MODEL SWITCH] No model name provided'); return; }
@@ -148,7 +161,7 @@ async function switchModel(modelName) {
     const sendBtn = document.getElementById('sendBtn');
     if (sendBtn) sendBtn.disabled = true;
     
-    showNotification('\u23F3 Switching model... Server will restart. This may take a moment.', 'info');
+    showNotification('\u23F3 Requesting model ' + modelName + '... routing to a serving node.', 'info');
     
     try {
         log('[MODEL SWITCH] Sending POST to /api/llama/load-model...');

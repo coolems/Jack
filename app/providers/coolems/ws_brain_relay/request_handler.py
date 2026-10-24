@@ -58,16 +58,11 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
                         f"Slow down or upgrade your profile."),
         }, msg.get("_relay_from") or "")
         return
-    # --- Per-client model authorization (S1 fix) ---
+    # --- Per-client model authorization (S1 fix; fleet 2026-10) ---
+    # profiles.json lists the model FILENAMES this role may use; exact, case-insensitive
+    # basename matching (no folders, no substrings).
     _req_model = msg.get("model", "")
-    local_pre = server_provider._get_local_provider()
-    all_models_pre = await local_pre.get_models_list()
-    known_folders_pre = {
-        m["name"].lower(): m["folder"]
-        for m in all_models_pre
-        if isinstance(m, dict) and m.get("name") and m.get("folder")
-    }
-    if not is_model_allowed(_client_user_info, _req_model, known_folders_pre):
+    if _req_model and not is_model_allowed(_client_user_info, _req_model):
         logger.warning(
             f"[SERVER] Chat request DENIED via relay: model '{_req_model}' "
             f"not allowed for client role={_client_user_info.get('role')} (client={msg.get('_relay_from', '?')})"
@@ -90,6 +85,8 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
     # receive loop returns immediately; frames come back over this shared
     # brain socket tagged with target_client via the request's sink.
     from app.server_queue import ChatRequest, RelayTargetSink, get_queue
+    from app.providers.llama.backend_registry import get_registry
+
     _queue = get_queue()
     if _queue is None:
         logger.error("[SERVER] Request queue not initialized - cannot accept relayed chat requests")
@@ -101,6 +98,8 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
     from ..chat_relay import _filter_tools_by_profile
     _req = ChatRequest(
         owner_key=f"relay:{_relay_client_id}|{_conv_id}",
+        user_key=_client_user_info.get("email") or f"relay:{_relay_client_id}",
+        max_parallel=int(_client_user_info.get("max_parallel_slots") or 0),
         sink=RelayTargetSink(ws, _relay_client_id),
         model=msg.get("model", ""),
         messages=msg.get("messages", []),
@@ -111,19 +110,47 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
                                        msg.get("tools") if msg.get("tools") else None),
         stop_event=_stop_ev,
     )
-    _accepted, _info = await _queue.enqueue(_req)
-    if not _accepted:
-        logger.warning(f"[SERVER] Relayed chat request rejected (client={_relay_client_id}): {_info}")
+
+    _reg = get_registry()
+    if _reg is not None and not _reg.model_configured(_req.model_key):
+        logger.warning(
+            "[SERVER] Relayed request for model=%s (key=%s) has no configured node. Fleet: %s",
+            _req.model, _req.model_key or "?", _reg.describe_models(),
+        )
+        # Server-side unavailability, not the user's fault: refund the token.
+        await rate_limiter.refund(_rl_key, _client_max_rate)
+        from ..model_catalog import available_models_hint
+        hint = await available_models_hint(server_provider, _client_user_info)
         await _relay_send(ws, {
             "type": "error",
-            "message": f"Server is busy: {_info}. Please try again shortly.",
+            "message": (f"No llama node is serving '{_req.model}' right now. "
+                        f"Available: {hint}."),
+            "retryable": False,
+            "model": _req.model_key,
         }, msg.get("_relay_from") or "")
         return
-    # Let the chat know it is waiting behind other requests (position > 1).
-    _pos = int(_info.split()[1]) if _info.startswith("position") else 1
-    if _pos > 1:
+
+    _res = await _queue.enqueue(_req)
+    if not _res.accepted:
+        logger.warning("[SERVER] Relayed chat request rejected (client=%s): %s",
+                       _relay_client_id, _res.reason)
+        if _res.retryable:
+            # Server-side rejection: refund the rate-limit token (no penalty).
+            await rate_limiter.refund(_rl_key, _client_max_rate)
+        await _relay_send(ws, {
+            "type": "error",
+            "message": _res.reason,
+            "retryable": bool(_res.retryable),
+            "retry_after_sec": _res.retry_after_sec,
+            "model": _res.model_key,
+        }, msg.get("_relay_from") or "")
+        return
+
+    # Let the chat know it is waiting behind other requests (per model group).
+    if _res.position > 1:
         await _relay_send(ws, {
             "type": "queue_status",
             "conv_id": _conv_id,
-            "position": _pos,
+            "position": _res.position,
+            "model": _res.model_key,
         }, msg.get("_relay_from") or "")

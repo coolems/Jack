@@ -1,0 +1,11 @@
+{
+  "name": "h200-a",
+  "model": "C:\\PATH\\TO\\YOUR\\MODEL.gguf",
+  "bind": "0.0.0.0",
+  "port": 5000,
+  "concurrency": 2,
+  "ctx_per_slot": 181072,
+  "threads": 8,
+  "gpu_layers": 99,
+  "extra_args": []
+}

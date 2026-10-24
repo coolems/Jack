@@ -6,7 +6,7 @@ WHY THIS EXISTS (2026-08-18 optimization):
     latency per message + it froze all other WebSocket traffic while waiting).
 
     server.py already knows exactly which model file it launched itself after
-    every successful start_server()/reload_with_model(). This module is that
+    every successful start_server(). This module is that
     knowledge, exposed as a small thread-safe cache:
 
       - mark_loaded(name[, key])   : called by server.py right after a verified launch

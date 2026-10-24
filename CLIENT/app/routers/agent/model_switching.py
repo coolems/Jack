@@ -1,11 +1,12 @@
-"""Model endpoints: /api/models, POST /api/llama/load-model (the model switch with
-GUARD 1 + GUARD 2 and the async _do_switch task), provider health/status endpoints,
-agent DNA/learning and the role display endpoint.
+"""Model endpoints: /api/models, POST /api/llama/load-model (2026-10 fleet: a ROUTING
+request, not a reload), provider health/status endpoints, agent DNA/learning and the
+role display endpoint.
 
-MODEL SWITCH ERROR HANDLING (2026-08-20): while a switch is in progress,
-'SERVER not answering' is an EXPECTED state - logged INFO/WARNING, never ERROR.
-The background switch task waits for the SERVER reload within config.MODEL_SWITCH_*
-budgets. No fallbacks: confirm the new model loaded or report one clear failure."""
+2026-10 fleet: nodes keep the model they were started with. Selecting a model asks the
+SERVER whether the swarm serves it; if yes the chat requests are routed to a matching
+node, if not the SERVER returns a clear "no node is serving X" message. There is no
+reload/restart path any more, so the old long MODEL_SWITCH_* wait budget is effectively
+instant (it is kept for compatibility with older SERVERs)."""
 
 from typing import Dict
 
@@ -122,7 +123,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         _set_model_switching(True)
 
         # Broadcast "started" status to all connected UI clients (on main event loop ✓)
-        await broadcast_model_switch_status("started", f"Switching model...", model_filename)
+        await broadcast_model_switch_status("started", "Routing model...", model_filename)
 
         # (2026-09 threadless refactor): _do_switch() is an ASYNC task on THIS loop -
         # there is no background thread anymore; it awaits provider.switch_model() directly.
@@ -140,8 +141,8 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                 logger.info(f"[MODEL SWITCH] Starting background switch to {model_filename} "
                             f"(will wait up to {MODEL_SWITCH_MAX_WAIT_SEC}s for the SERVER reload)")
 
-                # Broadcast "reloading" status before doing the actual switch (on main event loop ✓)
-                await broadcast_model_switch_status("reloading", f"Server reloading with {model_filename}", model_filename)
+                # Broadcast "reloading" status before doing the actual request (on main event loop ✓)
+                await broadcast_model_switch_status("reloading", f"Checking the swarm for {model_filename}", model_filename)
 
                 # Progress broadcaster: runs on THIS (main) event loop as its own task and
                 # sends UI updates + one clean progress log line while we await the switch below.
@@ -153,7 +154,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                         await asyncio.sleep(1)
                         elapsed = int(asyncio.get_event_loop().time() - start_time)
                         if elapsed >= next_log_at:
-                            logger.info(f"[MODEL SWITCH] Waiting for SERVER to reload {model_filename}... ({elapsed}s)")
+                            logger.info(f"[MODEL ROUTING] Waiting for SERVER to confirm routing {model_filename}... ({elapsed}s)")
                             try:
                                 await broadcast_model_switch_status("waiting", f"Waiting... {elapsed}s", model_filename)
                             except Exception as bcast_err:
@@ -180,12 +181,14 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                 elapsed = int(asyncio.get_event_loop().time() - start_time)
 
                 if success:
-                    # Single authoritative success line (the provider already confirmed the model).
-                    logger.info(f"[MODEL SWITCH] ===== SUCCESS: {model_filename} loaded in {elapsed}s =====")
-                    await broadcast_model_switch_status("success", f"Model loaded ({elapsed}s)", model_filename)
+                    # (2026-10 fleet) success = the swarm serves this model; no reload.
+                    logger.info(f"[MODEL ROUTING] ===== SERVED: {model_filename} ({elapsed}s) - {message} =====")
+                    await broadcast_model_switch_status(
+                        "success", message or f"Routed to {model_filename}", model_filename
+                    )
                 else:
-                    # Provider returned a real failure reason (auth, file not found, SERVER timeout...).
-                    logger.error(f"[MODEL SWITCH] FAILED after {elapsed}s: {message}")
+                    # Provider returned a real failure reason (not served / auth / mesh down).
+                    logger.error(f"[MODEL ROUTING] FAILED after {elapsed}s: {message}")
                     await broadcast_model_switch_status("failed", message, model_filename)
 
             except Exception as e:
@@ -208,7 +211,8 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
 
         return {
             "status": "ok",
-            "message": f"Model switch to {model_filename} started. Server will restart automatically.",
+            "message": (f"Routing request for {model_filename} started. No reload - the swarm "
+                        f"serves it if a matching node is online."),
             "model": model_filename
         }
 

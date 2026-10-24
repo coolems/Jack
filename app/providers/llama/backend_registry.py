@@ -1,26 +1,35 @@
-"""Multi-instance LLM backend registry (2026-09-08 multi-chat).
+"""Multi-instance LLM backend registry (2026-09-08 multi-chat; fleet model 2026-10).
 
 The hand-editable ``config/llama_servers.json`` is the single source of truth for WHICH
-llama servers we create. This module turns that list into live, tracked backends:
+llama servers we talk to. This module turns that list into live, tracked backends:
 
   * :class:`LlmBackend` — one llama-server instance (host:port): its provider handle,
-    health state and busy counter. Local instances are spawned by us; remote instances
-    (LAN machines) are ATTACH-ONLY — we only probe them and use them while healthy.
+    health state, busy counter, DISCOVERED capacity (``/props.total_slots``), per-slot
+    context, loaded model and llama.cpp build. Local instances are spawned by us; remote
+    instances (LAN machines) are ATTACH-ONLY — we only probe them and use them while
+    healthy. Remote concurrency is owned by the node launcher and discovered here.
   * :class:`LlmBackendRegistry` — the set of all backends with start_all/stop_all, a
-    periodic health poller, least-busy acquisition for the worker pool, and
-    switch_model() which reloads every local instance (all run the same model) and
-    verifies remotes afterwards.
+    periodic health+props poller, a capacity-aware acquisition helper and a fleet
+    snapshot for logs and the fleet table.
 
 Single-instance default: when llama_servers.json holds only the legacy local entry, this
-module behaves exactly like the old single-server code path (same process, same port).
+module behaves exactly like the old single-server code path (same process, same port,
+one slot).
 """
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
-from config import LlamaServerInstance, get_llama_server_instances
+from config import (
+    LlamaServerInstance,
+    get_llama_server_instances,
+    LLAMA_MAX_CONCURRENCY,
+    CONTEXT_WINDOW_TOKENS,
+)
 from .model_state import key_for_api_url
+from .model_identity import model_basename, model_key as model_key_of
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Registry")
 
@@ -42,9 +51,62 @@ class LlmBackend:
         self.busy: int = 0                       # requests currently running on this backend
         self._provider = None                    # lazy LlamaProvider handle
 
+        # --- discovered via /props (2026-10 fleet) --------------------------------
+        self.total_slots: Optional[int] = None   # what llama.cpp reports (--parallel N)
+        self.ctx_per_slot: Optional[int] = None  # n_ctx of ONE slot
+        self.model_key: str = ""                 # canonical routing key (see model_identity)
+        self.model_label: str = ""               # display basename
+        self.build: str = ""                     # llama.cpp build_info
+        self.props_at: float = 0.0
+        self.props_error: str = ""
+        # One-shot operator warnings (a 30 s poll must not repeat them forever).
+        self._warned_slots = False
+        self._warned_ctx = False
+        self._warned_cap = False
+        self._warned_props = False
+
+        # --- error provenance (shown in the fleet table / error frames) ------------
+        self.last_error: str = ""
+        self.error_count: int = 0
+
+        # Set/cleared by probe_health; workers wait on this instead of polling.
+        # NOTE: asyncio.Event binds to the loop that first WAITS on it, not at creation,
+        # so creating it on the boot loop and waiting on the serving loop is safe.
+        self._healthy_event = asyncio.Event()
+        # Serializes "restart this LOCAL node" between the slots' pre-flight/stall paths.
+        # Without it, two workers could kill/spawn the same process at the same time.
+        self.restart_lock = asyncio.Lock()
+
     @property
     def label(self) -> str:
         return f"{self.instance.name} ({self.instance.host}:{self.instance.port})"
+
+    # --- capacity ---------------------------------------------------------------
+
+    @property
+    def configured_capacity(self) -> Optional[int]:
+        """Explicit limit from config. LOCAL: always an int. REMOTE: None = discovered."""
+        return self.instance.concurrency
+
+    @property
+    def capacity(self) -> int:
+        """Effective concurrent-request capacity for routing.
+
+        * local: exactly what we launched with (warned at boot if /props disagrees);
+        * remote without an explicit cap: whatever the node reports;
+        * remote with an explicit cap: min(cap, reported) so we never over-admit.
+
+        Never exceeds LLAMA_MAX_CONCURRENCY.
+        """
+        configured = self.configured_capacity
+        reported = self.total_slots if self.total_slots and self.total_slots > 0 else None
+        if configured is None:
+            cap = reported or 1
+        elif reported is None:
+            cap = configured
+        else:
+            cap = min(configured, reported)
+        return max(1, min(int(cap), LLAMA_MAX_CONCURRENCY))
 
     def provider(self):
         """Lazy per-instance LlamaProvider (thin URL-bound wrapper — cheap to create)."""
@@ -54,10 +116,93 @@ class LlmBackend:
             self._provider = LlamaProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT)
         return self._provider
 
+    # --- discovery (/props) -------------------------------------------------------
+
+    async def refresh_props(self) -> bool:
+        """Read /props: slots, per-slot context, loaded model and llama.cpp build.
+
+        This is how the brain learns what a node actually runs. Failures are recorded
+        (props_error) but never mark the backend unhealthy by themselves - /health owns
+        that decision; a node may briefly not expose /props while loading.
+        """
+        from .http_client import get_async_client
+        try:
+            client = await get_async_client()
+            resp = await client.get(f"{self.api_url}/props", timeout=5.0)
+            if resp.status_code != 200:
+                self.props_error = f"/props HTTP {resp.status_code}"
+                return False
+            data = resp.json()
+        except Exception as e:
+            self.props_error = str(e)
+            return False
+
+        try:
+            slots = data.get("total_slots")
+            if isinstance(slots, int) and not isinstance(slots, bool) and slots > 0:
+                self.total_slots = slots
+
+            dgs = data.get("default_generation_settings") or {}
+            ctx = dgs.get("n_ctx") if isinstance(dgs, dict) else None
+            if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0:
+                self.ctx_per_slot = ctx
+
+            raw_model = data.get("model_path") or data.get("model_alias") or ""
+            if raw_model:
+                self.model_label = model_basename(str(raw_model))
+                self.model_key = model_key_of(str(raw_model))
+            else:
+                # /props without a model means the node is loading or running in router
+                # mode. Never keep a previous model key: routing an old-model request
+                # here would answer with the wrong model. Treat it as not routable.
+                self.props_error = "/props has no model_path"
+                return False
+
+            self.build = str(data.get("build_info") or "")
+        except Exception as e:  # malformed /props payload - keep whatever we already had
+            self.props_error = f"unparseable /props: {e}"
+            return False
+
+        self.props_at = time.time()
+        self.props_error = ""
+
+        # One-shot sanity warnings: warn when the node runs fewer slots or a smaller
+        # context than its config implies. This is the "what do I fix" information for
+        # operators, logged once per backend (a 30 s poll must not flood the log).
+        if (self.local and self.total_slots is not None and self.configured_capacity is not None
+                and self.total_slots < self.configured_capacity and not self._warned_slots):
+            self._warned_slots = True
+            logger.warning(
+                "[REGISTRY] %s reports %d slot(s) but config asks for %d - routing will "
+                "use %d (restart the instance to get the configured slots)",
+                self.label, self.total_slots, self.configured_capacity, self.capacity,
+            )
+        if (self.total_slots is not None and self.total_slots > LLAMA_MAX_CONCURRENCY
+                and not self._warned_cap):
+            self._warned_cap = True
+            logger.warning(
+                "[REGISTRY] %s reports %d slots - capped at LLAMA_MAX_CONCURRENCY=%d",
+                self.label, self.total_slots, LLAMA_MAX_CONCURRENCY,
+            )
+        if (self.ctx_per_slot is not None and self.ctx_per_slot < CONTEXT_WINDOW_TOKENS
+                and not self._warned_ctx):
+            self._warned_ctx = True
+            logger.warning(
+                "[REGISTRY] %s has %d ctx/slot, below CONTEXT_WINDOW_TOKENS=%d - the context "
+                "guard will use the node's real value for requests routed here",
+                self.label, self.ctx_per_slot, CONTEXT_WINDOW_TOKENS,
+            )
+        return True
+
     # --- health ---------------------------------------------------------------
 
     async def probe_health(self) -> bool:
-        """One /health round-trip. Marks healthy/unhealthy and logs transitions."""
+        """One /health round-trip (+ /props on success). Marks healthy/unhealthy.
+
+        /props is refreshed BEFORE the healthy flag/event is published: workers wake on
+        the event and immediately take the next request for ``model_key``, so the model
+        key and capacity must already be up to date or they would wait on a stale group.
+        """
         from .http_client import get_async_client
         try:
             client = await get_async_client()
@@ -67,12 +212,74 @@ class LlmBackend:
             logger.debug("[REGISTRY] %s health probe failed: %s", self.label, e)
             ok = False
 
-        if ok != (self.healthy or False):
-            state = "HEALTHY" if ok else "UNHEALTHY"
+        previous = bool(self.healthy)
+        if ok:
+            # Capacity/model are owned by the node: refresh so slots and model changes
+            # are picked up automatically (30 s by default). If /props fails we do NOT
+            # route here: a stale model_key could send the wrong model to this node.
+            props_ok = await self.refresh_props()
+            self.healthy = bool(props_ok)
+            if not props_ok and not getattr(self, "_warned_props", False):
+                self._warned_props = True
+                logger.warning(
+                    "[REGISTRY] %s answers /health but /props failed (%s) - not routing to it "
+                    "until /props works (a stale model key would misroute requests)",
+                    self.label, self.props_error or "unknown error",
+                )
+        else:
+            self.healthy = False
+
+        if self.healthy:
+            self._healthy_event.set()
+        else:
+            self._healthy_event.clear()
+
+        if self.healthy != previous:
+            state = "HEALTHY" if self.healthy else "UNHEALTHY"
             logger.info("[REGISTRY] Backend %s is now %s%s", self.label, state,
                         "" if self.local else " (remote — attach-only)")
-        self.healthy = ok
-        return ok
+        return bool(self.healthy)
+
+    async def wait_healthy(self, timeout: Optional[float] = None) -> bool:
+        """Block until this backend is healthy. Workers call this BEFORE taking work so a
+        dead node never consumes a queued request just to fail it."""
+        if self.healthy:
+            return True
+        try:
+            await asyncio.wait_for(self._healthy_event.wait(), timeout)
+            return bool(self.healthy)
+        except asyncio.TimeoutError:
+            return False
+
+    def bump_error(self, message: str) -> None:
+        """Record a failure against this node (for the fleet table and error frames)."""
+        self.last_error = str(message or "")[:500]
+        self.error_count += 1
+
+    def mark_unhealthy(self, reason: str = "") -> None:
+        """Immediately take this node out of routing (a failed request beats a 30 s poll).
+
+        The health poller re-probes and will bring it back automatically when it recovers.
+        """
+        if reason:
+            self.bump_error(reason)
+        if self.healthy:
+            logger.warning("[REGISTRY] %s marked UNHEALTHY now: %s", self.label, reason or "request failed")
+        self.healthy = False
+        self._healthy_event.clear()
+
+    def info(self) -> dict:
+        """Compact node identity attached to error/done frames and logs."""
+        return {
+            "name": self.instance.name,
+            "host": self.instance.host,
+            "port": self.instance.port,
+            "model": self.model_label or self.model_key,
+            "model_key": self.model_key,
+            "slots": self.capacity,
+            "ctx_per_slot": self.ctx_per_slot,
+            "build": self.build,
+        }
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -81,15 +288,26 @@ class LlmBackend:
         from .server import start_server
         if not self.local:
             return await self.probe_health()
-        ok = await start_server(self.api_url, host=self.instance.host, port=self.instance.port)
+        ok = await start_server(
+            self.api_url,
+            host=self.instance.host,
+            port=self.instance.port,
+            concurrency=self.configured_capacity or 1,
+        )
         if ok:
-            self.healthy = True
+            # Same ordering rule as probe_health: discovery BEFORE workers can wake.
+            props_ok = await self.refresh_props()
+            self.healthy = bool(props_ok)
         else:
             self.healthy = False
-        return ok
+        if self.healthy:
+            self._healthy_event.set()
+        else:
+            self._healthy_event.clear()
+        return bool(self.healthy)
 
     def acquire(self) -> None:
-        """Mark one request as running on this backend (least-busy selection)."""
+        """Mark one request as running on this backend (capacity accounting)."""
         self.busy += 1
 
     def release(self) -> None:
@@ -104,8 +322,6 @@ class LlmBackendRegistry:
         # de-dup by key (loader already dedupes; defensive for direct construction)
         seen = set()
         self.backends: dict[tuple[str, int], LlmBackend] = {}
-        # Model-switch drain policy: while True, workers reject NEW requests with a clear frame.
-        self.switch_in_progress: bool = False
         for inst in instances:
             b = LlmBackend(inst)
             if b.key not in seen:
@@ -120,7 +336,7 @@ class LlmBackendRegistry:
     # --- accessors ------------------------------------------------------------
 
     def primary(self) -> LlmBackend:
-        """First configured backend (the one legacy single-instance code paths point at)."""
+        """First configured backend (legacy single-instance code paths point at it)."""
         return next(iter(self.backends.values()))
 
     def get_by_key(self, key: tuple[str, int]) -> Optional[LlmBackend]:
@@ -133,19 +349,137 @@ class LlmBackendRegistry:
     def healthy_backends(self) -> list[LlmBackend]:
         return [b for b in self.backends.values() if b.healthy]
 
+    def backends_for_model(self, model: str) -> list[LlmBackend]:
+        """Backends whose discovered model matches *model* (healthy or not)."""
+        want = model_key_of(model)
+        if not want:
+            return []
+        return [b for b in self.backends.values() if b.model_key == want]
+
+    def model_configured(self, model: str) -> bool:
+        """True when at least one node is CONFIGURED for this model (healthy or not)."""
+        return bool(self.backends_for_model(model))
+
+    def model_healthy(self, model: str) -> bool:
+        """True when at least one HEALTHY node serves this model."""
+        return any(b.healthy for b in self.backends_for_model(model))
+
+    def describe_models(self) -> str:
+        """Human-readable model groups for 'no node serves X' errors and logs."""
+        groups: dict[str, dict] = {}
+        for b in self.backends.values():
+            key = b.model_key or "?"
+            g = groups.setdefault(key, {"nodes": 0, "healthy": 0, "slots": 0})
+            g["nodes"] += 1
+            g["slots"] += b.capacity
+            if b.healthy:
+                g["healthy"] += 1
+        if not groups:
+            return "none"
+        return ", ".join(
+            f"{key} ({g['healthy']}/{g['nodes']} node(s) up, {g['slots']} slot(s))"
+            for key, g in sorted(groups.items())
+        )
+
     def acquire_backend(self, model: str = "") -> Optional[LlmBackend]:
-        """Least-busy HEALTHY backend (FIFO tie-break by config order). None when all busy/unhealthy."""
-        candidates = [b for b in self.backends.values() if b.healthy and b.busy == 0]
+        """Least-busy HEALTHY backend WITH A FREE SLOT (FIFO tie-break by config order).
+
+        Kept as the capacity-aware acquisition helper; the worker pool uses one worker
+        per slot, so this is mainly used by diagnostics/future routing code.
+        """
+        want = model_key_of(model) if model else ""
+        candidates = [
+            b for b in self.backends.values()
+            if b.healthy and b.busy < b.capacity and (not want or b.model_key == want)
+        ]
         if not candidates:
             return None
-        pick = min(candidates, key=lambda b: list(self.backends.values()).index(b))
+        order = list(self.backends.values())
+        pick = min(candidates, key=lambda b: (b.busy / max(1, b.capacity), order.index(b)))
         pick.acquire()
         return pick
 
+    def total_slots(self) -> int:
+        return sum(b.capacity for b in self.backends.values() if b.healthy)
+
+    def effective_context_window(self) -> int:
+        """Smallest healthy per-slot context (the client trims prompts against this).
+
+        With mixed machines, using the minimum is the only safe global number: a prompt
+        sized for 181k could overflow a node that only has 64k per slot.
+        """
+        vals = [b.ctx_per_slot for b in self.backends.values()
+                if b.healthy and b.ctx_per_slot and b.ctx_per_slot > 0]
+        return min(vals) if vals else CONTEXT_WINDOW_TOKENS
+
+    def snapshot(self) -> list[dict]:
+        """Per-backend state for the fleet table / logs / error frames."""
+        return [
+            {
+                "name": b.instance.name,
+                "host": b.instance.host,
+                "port": b.instance.port,
+                "local": b.local,
+                "healthy": bool(b.healthy),
+                "configured": b.configured_capacity,
+                "slots": b.capacity,
+                "reported_slots": b.total_slots,
+                "ctx_per_slot": b.ctx_per_slot,
+                "model": b.model_label,
+                "model_key": b.model_key,
+                "build": b.build,
+                "busy": b.busy,
+                "error": b.props_error or b.last_error,
+                "error_count": b.error_count,
+            }
+            for b in self.backends.values()
+        ]
+
     # --- lifecycle ------------------------------------------------------------
 
+    async def _probe_one(self, backend: LlmBackend) -> bool:
+        try:
+            return await backend.probe_health()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("[REGISTRY] probe error for %s: %s", backend.label, e)
+            return False
+
+    async def probe_all(self) -> list[tuple[LlmBackend, bool]]:
+        """Probe /health + /props for every backend, IN PARALLEL.
+
+        A fleet of down nodes would otherwise cost 5 s each (connect timeout) before the
+        server can accept its first client.
+        """
+        backends = list(self.backends.values())
+        results = await asyncio.gather(*(self._probe_one(b) for b in backends))
+        return list(zip(backends, results))
+
+    def log_fleet_table(self, title: str = "LLAMA FLEET") -> None:
+        """Log the startup/refresh table (model, slots, ctx/slot, build)."""
+        rows = self.snapshot()
+        logger.info("=" * 78)
+        logger.info("%s (%d node(s), %d healthy slot(s) total):",
+                    title, len(rows), self.total_slots())
+        for r in rows:
+            if r["healthy"]:
+                state = "READY "
+            elif r["healthy"] is False:
+                state = "DOWN  "
+            else:
+                state = "?     "
+            ctx = f"{r['ctx_per_slot']}" if r["ctx_per_slot"] else "?"
+            slots = f"{r['slots']}/{r['reported_slots'] or r['configured'] or '?'}"
+            logger.info(
+                "  %-12s %-21s %s slots %-7s ctx/slot %-7s %-28s %s%s",
+                r["name"], f"{r['host']}:{r['port']}", state, slots, ctx,
+                (r["model"] or "(unknown model)"), (r["build"] or ""),
+                f"  busy={r['busy']}" if r["healthy"] else
+                (f"  err={r['error'][:60]}" if r["error"] else ""),
+            )
+        logger.info("=" * 78)
+
     async def start_all(self) -> bool:
-        """Start/attach every configured instance and log the startup table.
+        """Start/attach every configured instance and log the startup fleet table.
 
         Returns True when at least one backend is healthy (the SERVER can serve)."""
         results = []
@@ -153,16 +487,12 @@ class LlmBackendRegistry:
             ok = await b.ensure_started()
             results.append((b, ok))
 
-        logger.info("=" * 62)
-        logger.info("LLAMA BACKEND REGISTRY (%d instance(s) from config/llama_servers.json):", len(results))
-        for b, ok in results:
-            state = "READY" if ok else ("UNAVAILABLE (remote)" if not b.local else "FAILED TO START")
-            logger.info("  %-28s %s:%-6d %s", b.instance.name, b.instance.host, b.instance.port, state)
-        logger.info("=" * 62)
+        self.log_fleet_table("LLAMA BACKEND REGISTRY (from config/llama_servers.json)")
 
         any_ok = any(ok for _, ok in results)
         if not any_ok:
-            logger.error("[REGISTRY] No llama backend is available - chat requests will fail until one becomes healthy")
+            logger.error("[REGISTRY] No llama backend is available - chat requests will fail "
+                         "until one becomes healthy")
         return any_ok
 
     async def stop_all(self) -> None:
@@ -179,77 +509,46 @@ class LlmBackendRegistry:
     # --- health poller ----------------------------------------------------------
 
     def start_health_poller(self, interval_sec: int = 30) -> Optional[asyncio.Task]:
-        """Background task re-probing every backend; unhealthy ones are simply not picked."""
+        """Background task re-probing every backend (and refreshing its /props).
+
+        (2026-10 fleet fix) Safe to call again on a DIFFERENT event loop: the SERVER boots
+        on one temporary asyncio.run() loop and then serves on another, which used to leave
+        this poller dead after boot (health + capacity frozen forever). A task owned by a
+        different/closed loop is replaced here.
+        """
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - no loop, nothing we can schedule
+            logger.warning("[REGISTRY] start_health_poller called without a running loop")
+            return None
+
+        task = getattr(self, "_poller_task", None)
+        if task is not None and not task.done() and task.get_loop() is running:
+            return task  # already polling on this loop
+        if task is not None and not task.done():
+            logger.info("[REGISTRY] Replacing health poller bound to a different event loop")
+            task.cancel()
+
         async def _poll_loop():
             while True:
                 await asyncio.sleep(interval_sec)
-                for b in list(self.backends.values()):
-                    try:
-                        await b.probe_health()
-                    except Exception as e:  # pragma: no cover - defensive
-                        logger.debug("[REGISTRY] poll error for %s: %s", b.label, e)
+                # Parallel probes: one dead/slow node must not delay the others.
+                await asyncio.gather(
+                    *(self._probe_one(b) for b in list(self.backends.values()))
+                )
 
-        task = asyncio.create_task(_poll_loop(), name="llama-registry-health-poller")
-        self._poller_task = task
-        return task
+        self._poller_task = asyncio.create_task(_poll_loop(), name="llama-registry-health-poller")
+        logger.info("[REGISTRY] Health poller started (every %ds)", interval_sec)
+        return self._poller_task
 
     def stop_health_poller(self) -> None:
         task = getattr(self, "_poller_task", None)
         if task is not None and not task.done():
             task.cancel()
 
-    # --- model switching --------------------------------------------------------
-
-    async def switch_model(self, model_filename: str):
-        """Public entry point with the drain-policy flag (see *switch_in_progress*).
-
-        While this runs, queued NEW requests are rejected by the worker pool with a clear
-        'model switch in progress' frame; already-running ones finish on their backend.
-        The flag is cleared in `finally` so an exception can never wedge it."""
-        self.switch_in_progress = True
-        try:
-            return await self._switch_model_impl(model_filename)
-        finally:
-            self.switch_in_progress = False
-
-    async def _switch_model_impl(self, model_filename: str):
-        """Switch ALL local instances to *model_filename* (they all run the same model),
-        then verify remotes. Returns (success, message).
-
-        Sequential reloads on purpose: each instance owns its VRAM; parallel cold loads of a
-        large model would OOM. Remotes are verified afterwards and marked unhealthy on
-        mismatch (the operator must switch them by hand — we cannot spawn there)."""
-        from .server import reload_with_model, get_current_model
-
-        local = [b for b in self.backends.values() if b.local]
-        remote = [b for b in self.backends.values() if not b.local]
-
-        # Re-entrancy: the legacy single-instance guard lives inside server.reload_with_model;
-        # with several locals we serialize them here and rely on that guard per instance.
-        errors = []
-        for b in local:
-            ok, msg = await reload_with_model(b.api_url, model_filename, host=b.instance.host, port=b.instance.port)
-            if not ok:
-                errors.append(f"{b.label}: {msg}")
-
-        remote_mismatch = []
-        for b in remote:
-            current = await get_current_model(b.api_url, force=True) or ""
-            cur_base = current.rsplit("/", 1)[-1].lower()
-            want_base = model_filename.lower()
-            if cur_base != want_base and not (cur_base.endswith(".gguf") and cur_base[:-5] == want_base):
-                remote_mismatch.append(b.label)
-
-        if errors:
-            return False, "Model switch failed on local instance(s): " + "; ".join(errors)
-        if remote_mismatch:
-            logger.warning("[REGISTRY] Remote instance(s) still run a different model after switch (marked unhealthy): %s",
-                           ", ".join(remote_mismatch))
-            for label in remote_mismatch:
-                for b in self.backends.values():
-                    if b.label == label:
-                        b.healthy = False
-        return True, f"Model switched to {model_filename} on {len(local)} local instance(s)"
+    # (2026-10 fleet) Model switching was REMOVED: each node is started with a fixed
+    # model, and requests are routed to the model group they name. Nothing reloads llama
+    # during serving.
 
 
 # ---------------------------------------------------------------------------

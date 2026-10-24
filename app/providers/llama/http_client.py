@@ -18,8 +18,11 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.HTTPPool")
 # ---------------------------------------------------------------------------
 # Pool configuration — defaults used regardless of config.py constants
 # ---------------------------------------------------------------------------
-HTTP_POOL_MAX_CONNECTIONS: int = 20
-HTTP_POOL_KEEPALIVE_CONNECTIONS: int = 10
+# (2026-10 fleet) Every streaming request holds one connection for its whole duration.
+# A fleet can legitimately expose more than 20 slots (e.g. 3 nodes x 8), so a 20-cap
+# would silently throttle the queue below the fleet's real capacity.
+HTTP_POOL_MAX_CONNECTIONS: int = 64
+HTTP_POOL_KEEPALIVE_CONNECTIONS: int = 32
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ class BaseProvider(ABC):
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
+        context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
         """
         Stream chat completions from the provider.
@@ -60,6 +61,8 @@ class BaseProvider(ABC):
             tools: Optional list of tool definitions for native tool calling.
             stop_event: asyncio.Event that is set when user clicks stop button.
                        The streaming loop checks this on every chunk to abort early.
+            context_window: Per-node per-slot context (2026-10 fleet; None = config
+                       default). Used by the context guard and TokenStats.
 
         Returns:
             Tuple of (response_string, TokenStats).

@@ -666,11 +666,11 @@ function handleModelSwitchStatus(data) {
     switch(status) {
         case 'started':
             uiStatus = 'connecting';
-            uiMessage = `Switching model...`;
+            uiMessage = `Routing model...`;
             break;
         case 'reloading':
             uiStatus = 'connecting';
-            uiMessage = `Server reloading (${modelName})`;
+            uiMessage = `Checking the swarm (${modelName})`;
             break;
         case 'waiting':
             uiStatus = 'connecting';
@@ -688,7 +688,10 @@ function handleModelSwitchStatus(data) {
             // dropdown so the UI immediately shows the NEW model (+ loaded marker).
             if (_modelSwitchSuccessShownFor !== modelName) {
                 _modelSwitchSuccessShownFor = modelName;
-                showNotification('\u2713 Model switched to ' + (modelName || message), 'success');
+                // (2026-10 fleet) NO reload: the SERVER confirms the swarm serves this
+                // model, and each chat request is routed to a matching node.
+                if (message) log('[MODEL ROUTING] ' + message);
+                showNotification('\u2713 ' + (modelName ? modelName + ' — routed' : 'Model routed'), 'success');
                 if (typeof loadModels === 'function') {
                     loadModels().catch(() => {});
                 }

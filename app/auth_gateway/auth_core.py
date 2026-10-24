@@ -98,21 +98,50 @@ class AuthGateway:
                 path = os.path.join(self._config_dir, filename)
                 self._file_stats[filename] = self._get_file_stat(path)
             self._last_reload_time = time.time()
+            self._validate_profiles()
         except Exception as e:
             # Preserve old cache data so auth continues working with stale data
             logger.warning("[AUTH] Failed to reload databases: %s - continuing with cached data", e)
             # Force immediate reload on next call (will retry until success)
             self._last_reload_time = 0.0
 
+    def _validate_profiles(self) -> None:
+        """Log one line per role: slot cap + allowed models (boot + every reload).
+
+        Missing max_parallel_slots is a CONFIG ERROR: the role cannot authenticate
+        (no fallback). The server still starts so the operator can fix profiles.json
+        and the hot reload picks it up without a restart.
+        """
+        for role, profile in self._profiles_db.items():
+            if not isinstance(profile, dict):
+                logger.error("[AUTH] Profile '%s' is not an object - role unusable", role)
+                continue
+            slots = profile.get("max_parallel_slots")
+            models = profile.get("allowed_models")
+            if isinstance(slots, int) and not isinstance(slots, bool) and slots >= 1:
+                shown = "all" if models is None else (
+                    f"{len(models)} model(s)" if isinstance(models, list) else "INVALID"
+                )
+                logger.info("[AUTH] role=%-12s max_parallel_slots=%d allowed_models=%s",
+                            role, slots, shown)
+            else:
+                logger.error(
+                    "[AUTH] role=%-12s has NO valid max_parallel_slots (got %r) -> "
+                    "authentication for this role will be DENIED until profiles.json is fixed",
+                    role, slots,
+                )
+
     def authenticate(self, api_key: str) -> Optional[Dict]:
         """Authenticate an API key and return user info with role + permissions.
 
         Returns dict with keys: email, role, allowed_tools (list or None=all),
-                                allowed_models (list or None=all), max_connections, etc.
-        Returns None if auth fails.
+                                allowed_models (list of filenames or None=all),
+                                max_parallel_slots (REQUIRED int >= 1), max_connections, etc.
+        Returns None if auth fails (including a profile with no max_parallel_slots).
 
         MODEL RESOLUTION:
-          - Uses profile.allowed_models_folders (disk paths) resolved to .gguf filenames
+          - Model identity is the GGUF FILENAME; profiles.json lists allowed filenames
+            explicitly (2026-10 fleet - folders are no longer used).
         """
         if self._should_reload():
             self._reload_databases()
@@ -148,20 +177,42 @@ class AuthGateway:
 
         # Look up profile for this role
         profile = self._profiles_db.get(role)
-        if not profile:
+        if not profile or not isinstance(profile, dict):
             logger.warning(f"[AUTH] No valid profile found for role '{role}' - rejecting")
             return None  # STRICT: no profile = no access
 
-        # Resolve allowed_models_folders to actual .gguf filenames (llama.cpp)
-        folders = profile.get("allowed_models_folders")
-        resolved_models = resolve_folders_to_models(folders) if folders is not None else None
+        # (2026-10 fleet) Model authorization is by FILENAME only; there are no folders.
+        # None = all models (admin), otherwise an explicit list of GGUF filenames.
+        allowed_models = profile.get("allowed_models")
+        if allowed_models is not None:
+            if (not isinstance(allowed_models, list)
+                    or not all(isinstance(m, str) and m.strip() for m in allowed_models)):
+                logger.error(
+                    "[AUTH] Profile '%s' has an invalid 'allowed_models' (expected a list "
+                    "of GGUF filenames, or null for all) - rejecting authentication", role,
+                )
+                return None
+            allowed_models = [m.strip() for m in allowed_models]
+
+        # (2026-10 fleet) max_parallel_slots is REQUIRED. No fallback of any kind:
+        # a profile without a valid value cannot authenticate (the operator must fix
+        # profiles.json; hot reload picks it up without a restart).
+        slots = profile.get("max_parallel_slots")
+        if isinstance(slots, bool) or not isinstance(slots, int) or slots < 1:
+            logger.error(
+                "[AUTH] Profile '%s' has no valid 'max_parallel_slots' (int >= 1, got %r) - "
+                "DENYING authentication for role '%s'. Add \"max_parallel_slots\": N to "
+                "config/profiles.json.", role, slots, role,
+            )
+            return None
 
         # Build user info with merged permissions
         user_info = {
             "email": user_entry.get("email", "unknown"),
             "role": role,
             "allowed_tools": profile.get("allowed_tools"),  # None = all tools allowed
-            "allowed_models": resolved_models,  # None = all models allowed
+            "allowed_models": allowed_models,  # None = all models allowed (filenames)
+            "max_parallel_slots": slots,       # REQUIRED: parallel generations for this user
             "max_connections": profile.get("max_connections", 1),
             "max_rate_limit": profile.get("max_rate_limit", PROFILE_DEFAULT_RATE_LIMIT),
             # python_exec blocked-libs SET FILE for this profile (e.g. "blocked_libs_set01.json").
@@ -172,8 +223,8 @@ class AuthGateway:
         }
 
         logger.info(
-            f"[AUTH] User authenticated: role={role}, "
-            f"models={'all' if resolved_models is None else len(resolved_models)}"
+            f"[AUTH] User authenticated: role={role}, slots={slots}, "
+            f"models={'all' if allowed_models is None else len(allowed_models)}"
         )
         return user_info
 
@@ -200,4 +251,3 @@ from .profile_loader import (
     load_blocked_libs_file,
     load_profiles_db,
 )
-from .model_resolver import resolve_folders_to_models

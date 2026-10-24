@@ -84,8 +84,20 @@ async def _iter_sse_with_stall(aiter, timeout_sec: int, conv_id: str, api_url: s
             )
             restarted = False
             if LLAMA_AUTO_RESTART_ON_STALL:
-                logger.error("[STREAM-STALL] Auto-restart enabled - killing llama-server and restarting...")
-                try:
+                from .backend_registry import get_registry
+
+                _reg = get_registry()
+                _backend = _reg.get_for_api_url(api_url) if _reg is not None else None
+                if _backend is not None and not _backend.local:
+                    # NEVER kill/spawn a remote node from the brain (the old code used
+                    # LLAMA_SERVER_PORT here, i.e. it killed the brain's own llama and
+                    # spawned a rogue local one on a remote stall).
+                    _backend.mark_unhealthy("stream stalled; remote node is not auto-restarted")
+                    logger.error(
+                        "[STREAM-STALL] %s is REMOTE - not killing/restarting it from the brain. "
+                        "Check that node's machine (llama-node log).", _backend.label,
+                    )
+                else:
                     from .server import (
                         _kill_orphaned_process,
                         _kill_llama_server_by_port,
@@ -94,18 +106,31 @@ async def _iter_sse_with_stall(aiter, timeout_sec: int, conv_id: str, api_url: s
                     )
                     from config import LLAMA_SERVER_PORT
 
-                    # (2026-09 threadless fix): the old run_in_executor(_do_restart) wrapper is GONE.
-                    # The server functions are async now - awaiting them on THIS loop keeps heartbeats
-                    # and other clients responsive during the restart; only the two true OS leaves
-                    # (terminate/wait, netstat/taskkill port cleanup) go through asyncio.to_thread,
-                    # exactly like reload_with_model() does it. The old code also imported a removed
-                    # name (wait_for_port_free), so this path raised ImportError on first stall.
-                    await asyncio.to_thread(_kill_orphaned_process)
-                    await asyncio.to_thread(_kill_llama_server_by_port, LLAMA_SERVER_PORT)
-                    if await wait_for_port_free_async(LLAMA_SERVER_PORT):
-                        restarted = await _restart(api_url)
-                except Exception as restart_err:
-                    logger.error(f"[STREAM-STALL] Auto-restart failed: {restart_err}")
+                    _port = _backend.instance.port if _backend is not None else LLAMA_SERVER_PORT
+                    _host = _backend.instance.host if _backend is not None else None
+                    _conc = ((_backend.configured_capacity or _backend.capacity)
+                             if _backend is not None else 1)
+                    _key = _backend.key if _backend is not None else None
+                    logger.error("[STREAM-STALL] Auto-restart enabled - restarting local node on "
+                                 "port %d...", _port)
+                    try:
+                        # (2026-09 threadless fix) await on THIS loop; only OS leaves
+                        # (terminate/wait, netstat/taskkill) run via asyncio.to_thread.
+                        _lock = _backend.restart_lock if _backend is not None else None
+                        if _lock is not None:
+                            await _lock.acquire()
+                        try:
+                            await asyncio.to_thread(_kill_orphaned_process, _key)
+                            await asyncio.to_thread(_kill_llama_server_by_port, _port)
+                            if await wait_for_port_free_async(_port):
+                                restarted = await _restart(
+                                    api_url, host=_host, port=_port, concurrency=_conc,
+                                )
+                        finally:
+                            if _lock is not None:
+                                _lock.release()
+                    except Exception as restart_err:
+                        logger.error(f"[STREAM-STALL] Auto-restart failed: {restart_err}")
             raise RuntimeError(
                 f"llama.cpp stream stalled: no SSE chunk for {timeout_sec}s after {chunks} chunk(s). "
                 f"Server auto-restarted={restarted}"
@@ -136,6 +161,7 @@ async def chat_stream(
     conv_id: Optional[str] = None,
     tools: Optional[list] = None,
     stop_event: Optional[asyncio.Event] = None,
+    context_window: Optional[int] = None,
 ) -> Tuple[str, TokenStats]:
     """
     Stream chat completions from llama.cpp via SSE.
@@ -159,6 +185,10 @@ async def chat_stream(
         stop_event: asyncio.Event set by the stop endpoint when user clicks
                    the red stop button. Checked on every SSE chunk to abort
                    generation immediately.
+        context_window: Per-slot context of THIS backend (2026-10 fleet). Nodes with
+                   different VRAM may run different per-slot contexts; the guard and
+                   TokenStats use the real value for the node that serves the request.
+                   None/0 = config CONTEXT_WINDOW_TOKENS.
 
     Returns:
         Tuple of (response_string, TokenStats).
@@ -172,6 +202,8 @@ async def chat_stream(
         FileNotFoundError: If the model is not found.
         RuntimeError: If llama.cpp returns an error.
     """
+
+    window = int(context_window or CONTEXT_WINDOW_TOKENS)
 
     # Convert messages to OpenAI-compatible multimodal format
     messages = convert_messages_for_vision(messages)
@@ -288,12 +320,12 @@ async def chat_stream(
         LLAMA_SERVER_MAX_NEW_TOKENS,
         # Floor is now configurable (was hardcoded 1024 - too small for a full
         # multi-image answer + the TASK DONE marker; see plan_20260910_1835.md).
-        max(LLAMA_MIN_SAFE_MAX_TOKENS, CONTEXT_WINDOW_TOKENS - est_prompt_tokens - 512),
+        max(LLAMA_MIN_SAFE_MAX_TOKENS, window - est_prompt_tokens - 512),
     )
     if safe_max_tokens < LLAMA_SERVER_MAX_NEW_TOKENS:
         logger.warning(
             f"[CONTEXT-GUARD] Prompt ~{est_prompt_tokens} tokens leaves only "
-            f"{max(0, CONTEXT_WINDOW_TOKENS - est_prompt_tokens)} free of {CONTEXT_WINDOW_TOKENS}. "
+            f"{max(0, window - est_prompt_tokens)} free of {window}. "
             f"Clamping max_tokens to {safe_max_tokens} (default {LLAMA_SERVER_MAX_NEW_TOKENS})."
         )
     if safe_max_tokens <= LLAMA_MIN_SAFE_MAX_TOKENS:
@@ -301,7 +333,7 @@ async def chat_stream(
         # loudly: this is exactly the condition that caused the 2026-09-10 truncation loop.
         logger.warning(
             f"[CONTEXT-GUARD] *** OUTPUT ROOM AT FLOOR ({safe_max_tokens} tokens) *** "
-            f"prompt ~{est_prompt_tokens}/{CONTEXT_WINDOW_TOKENS}. Long answers or multi-part "
+            f"prompt ~{est_prompt_tokens}/{window}. Long answers or multi-part "
             f"responses will be truncated - consider trimming history / downscaling images."
         )
 
@@ -330,103 +362,72 @@ async def chat_stream(
         if health_resp.status_code != 200:
             raise ConnectionError("Health check failed")
     except Exception:
-        logger.warning(f"[LLAMA] Server not responding - attempting auto-restart before request...")
+        logger.warning(f"[LLAMA] Server not responding - checking whether it can be restarted...")
         try:
             from .server import start_server as _start_server
+            from .backend_registry import get_registry
 
-            # (2026-09 threadless fix): start_server is async now - the old run_in_executor wrapper
-            # passed a coroutine object to a worker thread that never awaited it, so the "restart"
-            # silently did nothing while logging success. Awaiting directly keeps everything on this
-            # loop; its internal blocking OS leaves already use asyncio.to_thread internally.
-            restarted = await _start_server(api_url)
-            if restarted:
-                logger.info(f"[LLAMA] Auto-restart successful, proceeding with request")
-            else:
-                logger.error(f"[LLAMA] Auto-restart failed, will attempt request anyway (may fail)")
+            # (2026-10 fleet) Only a LOCAL node may be spawned by the brain. A remote
+            # node is owned by its launcher: spawning "api_url" here would silently start
+            # a rogue local llama on port 5000. Resolve the backend and pass its real
+            # host/port/concurrency instead of the legacy defaults.
+            _reg = get_registry()
+            _backend = _reg.get_for_api_url(api_url) if _reg is not None else None
+            if _backend is not None and not _backend.local:
+                _backend.mark_unhealthy("remote backend not responding (brain does not spawn remotes)")
+                logger.error(
+                    "[LLAMA] Backend %s is REMOTE - the brain never spawns it. "
+                    "Check the node machine (llama-node log); leaving it to the health poller.",
+                    _backend.label,
+                )
+            elif _backend is not None:
+                # Serialize restarts between slots of the same local node.
+                async with _backend.restart_lock:
+                    restarted = await _start_server(
+                        api_url,
+                        host=_backend.instance.host,
+                        port=_backend.instance.port,
+                        concurrency=_backend.configured_capacity or _backend.capacity,
+                    )
+                if restarted:
+                    logger.info(f"[LLAMA] Auto-restart successful, proceeding with request")
+                else:
+                    _backend.mark_unhealthy("local backend restart failed")
+                    logger.error(f"[LLAMA] Auto-restart failed, will attempt request anyway (may fail)")
+            else:  # legacy single-instance path (no registry yet)
+                restarted = await _start_server(api_url)
+                if restarted:
+                    logger.info(f"[LLAMA] Auto-restart successful, proceeding with request")
+                else:
+                    logger.error(f"[LLAMA] Auto-restart failed, will attempt request anyway (may fail)")
         except Exception as restart_err:
             logger.error(f"[LLAMA] Auto-restart error: {restart_err}")
 
     # ============================================================
-    # AUTO-MODEL-SWITCH (2026-08-18 OPTIMIZED)
-    # If the requested model differs from the loaded one, restart llama-server.
+    # MODEL GUARD (2026-10 fleet): NO auto-switch.
     #
-    # Old code did a BLOCKING sync HTTP GET /v1/models on the event loop before
-    # EVERY request (~1-2s latency + froze all WebSocket traffic). Now:
-    #   1) Fresh in-memory state (set by server.py after every verified launch,
-    #      TTL = LLAMA_MODEL_STATE_TTL_SEC) -> ZERO HTTP, microsecond compare.
-    #   2) Stale/empty cache -> ONE async pooled /v1/models fetch (non-blocking).
-    #   3) API unreachable -> trust the tracked state we launched ourselves.
-    # Mismatch still triggers the same reload_with_model() as before.
+    # Every llama node is started with a FIXED model by its node launcher, and the
+    # server queue routes each request to the model group it names. A mismatch here
+    # therefore means the node was restarted with a different model than the registry
+    # (and the client) believe. We must NEVER silently answer with the wrong model -
+    # refuse with a clear, retryable error instead of reloading anything.
     # ============================================================
-    if _is_mmproj_file(model):
-        logger.debug(f"[AUTO-SWITCH] Skipping switch - '{model}' is an mmproj file")
-    else:
+    if not _is_mmproj_file(model):
         try:
             req_norm = normalize_model_name(model)
-
-            _ms_key = model_state.key_for_api_url(api_url)  # (2026-09-08 multi-chat) per-instance state
-            cached_loaded, cache_fresh = model_state.get_cached_model(LLAMA_MODEL_STATE_TTL_SEC, key=_ms_key)
-
-            if cache_fresh and normalize_model_name(cached_loaded) == req_norm:
-                # Fast path: nothing changed since the last verified launch.
-                logger.debug(f"[AUTO-SWITCH] Cache hit (fresh, {os.path.basename(cached_loaded)}) - no HTTP check needed")
-            else:
-                current_loaded = None
-                if cache_fresh:
-                    current_loaded = cached_loaded  # fresh but different -> switch directly
-                else:
-                    logger.info(f"[AUTO-SWITCH] Model state stale/empty - verifying via /v1/models once...")
-                    try:
-                        _http_client = await get_async_client()
-                        _models_resp = await _http_client.get(f"{api_url}/v1/models", timeout=5.0)
-                        if _models_resp.status_code == 200:
-                            _data_list = (_models_resp.json().get("data") or [])
-                            if _data_list:
-                                current_loaded = _data_list[0].get("id", "") or None
-                                model_state.mark_loaded(current_loaded, key=_ms_key)  # keep cache warm for next request
-                    except Exception as fetch_err:
-                        logger.debug(f"[AUTO-SWITCH] /v1/models verification failed ({fetch_err}) - falling back to tracked state")
-
-                if not current_loaded and cached_loaded is not None:
-                    # API unreachable (or empty): trust the model we launched ourselves.
-                    current_loaded = cached_loaded
-                    logger.info(f"[AUTO-SWITCH] Using tracked state fallback: '{current_loaded}'")
-
-                if current_loaded:
-                    loaded_norm = normalize_model_name(current_loaded)
-                    if req_norm != loaded_norm:
-                        logger.warning(
-                            f"[AUTO-SWITCH] *** MODEL MISMATCH DETECTED *** "
-                            f"Requesting switch from '{current_loaded}' to '{model}'"
-                        )
-                        # Notify user via WebSocket before switching
-                        try:
-                            await websocket.send_text(json.dumps({
-                                "type": "system",
-                                "content": f"Switching model to {model}... This may take a moment."
-                            }))
-                        except Exception:
-                            logger.debug("WebSocket send failed during model switch notification")
-
-                        # Run blocking reload_with_model in executor to avoid freezing event loop.
-                        # Model reload kills/restarts llama-server which takes seconds-minutes.
-                        # (2026-09 threadless fix): reload_with_model is async now - the old
-                        # run_in_executor wrapper handed a never-awaited coroutine to a worker
-                        # thread and reported "success" for a switch that never happened. Awaiting
-                        # directly keeps heartbeats/UI responsive during the (up to ~120 s) reload;
-                        # blocking OS leaves inside it already use asyncio.to_thread internally.
-                        from .server import reload_with_model
-                        success, switch_msg = await reload_with_model(api_url, model)
-                        if success:
-                            logger.info(f"[AUTO-SWITCH] ===== Successfully switched to {model} =====")
-                        else:
-                            logger.error(f"[AUTO-SWITCH] ===== FAILED to switch: {switch_msg} =====")
-                    else:
-                        logger.debug(f"[AUTO-SWITCH] Model already matches ('{current_loaded}') - no switch needed")
-                else:
-                    logger.warning("[AUTO-SWITCH] Could not determine currently loaded model (no cache, API down) - proceeding as-is")
-        except Exception as auto_switch_err:
-            logger.error(f"[AUTO-SWITCH] ===== ERROR in auto-switch check: {auto_switch_err} =====", exc_info=True)
+            _ms_key = model_state.key_for_api_url(api_url)
+            cached_loaded, cache_fresh = model_state.get_cached_model(
+                LLAMA_MODEL_STATE_TTL_SEC, key=_ms_key
+            )
+            if cache_fresh and cached_loaded and normalize_model_name(cached_loaded) != req_norm:
+                msg = (f"Backend {api_url} is serving '{cached_loaded}', not '{model}'. "
+                       f"Model routing mismatch - start/restart that node with '{model}'.")
+                logger.error("[MODEL-GUARD] %s", msg)
+                raise RuntimeError(msg)
+        except RuntimeError:
+            raise
+        except Exception as guard_err:
+            logger.debug("[MODEL-GUARD] check skipped: %s", guard_err)
     # ============================================================
 
     try:
@@ -440,7 +441,11 @@ async def chat_stream(
             "POST",
             f"{api_url}/v1/chat/completions",
             json=llama_payload,
-            timeout=timeout,
+            # 2026-10 fleet: `timeout` is the long GENERATION budget (9300 s). Using it as
+            # the connect timeout too means a blackholed remote node holds a slot for
+            # hours. Keep generation unbounded-ish but fail an unreachable node in 10 s.
+            timeout=httpx.Timeout(timeout, connect=10.0, read=timeout,
+                                  write=timeout, pool=10.0),
         ) as response:
             if response.status_code == 404:
                 raise FileNotFoundError(f"Model '{model}' not found in llama.cpp")
@@ -466,7 +471,7 @@ async def chat_stream(
                     # now includes tool_calls args, so [CONTEXT-GUARD] logs are trustworthy.
                     logger.error(
                         f"[TOOL-JSON-PARSE] llama.cpp could not parse its own (truncated) tool-call JSON. "
-                        f"Prompt ~{est_prompt_tokens} est tokens of the {CONTEXT_WINDOW_TOKENS}-token window; "
+                        f"Prompt ~{est_prompt_tokens} est tokens of the {window}-token window; "
                         f"check [CONTEXT-GUARD]/[SAFE_TRIM] logs on the client side."
                     )
                     logger.error(f"[TOOL-JSON-PARSE] Raw llama.cpp error body: {err_text[:2000]}")
@@ -474,7 +479,7 @@ async def chat_stream(
                     # truncated JSON; sending it to the client would poison logs and history.
                     raise RuntimeError(
                         "llama.cpp truncated its own tool-call JSON (context exhausted mid-output). "
-                        f"Prompt ~{est_prompt_tokens} tokens left only {max(0, CONTEXT_WINDOW_TOKENS - est_prompt_tokens)} of {CONTEXT_WINDOW_TOKENS}. "
+                        f"Prompt ~{est_prompt_tokens} tokens left only {max(0, window - est_prompt_tokens)} of {window}. "
                         "Re-issue with smaller payloads (split large code into multiple calls)."
                     )
                 logger.error(f"llama.cpp HTTP 500 body: {err_text[:2000]}")
@@ -662,7 +667,7 @@ async def chat_stream(
                 total_duration=round(total_duration, 2),
                 provider_name="llama",
                 model=model,
-                context_window=CONTEXT_WINDOW_TOKENS,
+                context_window=window,
             )
 
             logger.info(

@@ -70,72 +70,80 @@ def _canonical(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _collect_all_gguf(allowed_folders, default_dir):
-    """Return list of full paths to .gguf files across allowed + default dirs.
+    """Return list of full paths to .gguf files across all scan dirs + default dir.
 
-    Filters out mmproj (vision projector) files.
-    Order is deterministic: folders in insertion order, filenames sorted.
+    (2026-10 fleet) Scans each root BOTH flat and one subfolder deep, because the init
+    script downloads a model into ``llama_server/models/<model-name>/``. mmproj
+    (vision projector) files are excluded. Order is deterministic: roots in insertion
+    order, filenames sorted.
     """
     from .model_utils import _is_mmproj_file
 
+    roots = list(allowed_folders or [])
+    if default_dir and default_dir not in roots:
+        roots.append(default_dir)
+
     seen = set()
     result = []
-
-    for folder in allowed_folders:
+    for folder in roots:
         if not os.path.isdir(folder):
             continue
-        for fpath in sorted(glob.glob(os.path.join(folder, "*.gguf"))):
-            if _is_mmproj_file(os.path.basename(fpath)):
-                continue
-            real = os.path.realpath(fpath)
-            if real not in seen:
-                seen.add(real)
-                result.append(fpath)
-
-    # Default dir last (only if not already covered)
-    if os.path.isdir(default_dir):
-        for fpath in sorted(glob.glob(os.path.join(default_dir, "*.gguf"))):
-            if _is_mmproj_file(os.path.basename(fpath)):
-                continue
-            real = os.path.realpath(fpath)
-            if real not in seen:
-                seen.add(real)
-                result.append(fpath)
-
+        for pattern in ("*.gguf", os.path.join("*", "*.gguf")):
+            for fpath in sorted(glob.glob(os.path.join(folder, pattern))):
+                if _is_mmproj_file(os.path.basename(fpath)):
+                    continue
+                real = os.path.realpath(fpath)
+                if real not in seen:
+                    seen.add(real)
+                    result.append(fpath)
     return result
 
 
-def _get_allowed_folders():
-    """Return ordered list of allowed_models_folders from all role profiles."""
-    try:
-        # Try app.keys first (NETWORK_BETA style), fall back to auth_gateway (ALFA style)
+def _get_model_scan_dirs():
+    """Directories scanned for local .gguf models (2026-10 fleet).
+
+    Profiles no longer carry ``allowed_models_folders`` (they authorize by filename), so
+    the scanner owns the search path. Sources, in priority order:
+
+      1. ``llama_server/models`` (always; one subfolder level is scanned)
+      2. ``config.LLAMA_MODEL_DIRS`` (optional absolute paths, per machine)
+      3. the folder of the model recorded in ``config/.last_model_loaded.json``
+         (so a model kept outside the repo still boots and is listed)
+    """
+    dirs: list[str] = []
+
+    def add(path) -> None:
         try:
-            from app.keys import get_all_roles, get_role_profile
-        except ImportError:
-            from app.auth_gateway import AuthGateway as _AG
-            _ag = _AG()
+            if path and os.path.isdir(path):
+                ap = os.path.abspath(path)
+                if ap not in dirs:
+                    dirs.append(ap)
+        except OSError:
+            pass
 
-            def get_all_roles():
-                return list(_ag._profiles_db.keys())
+    add(_get_default_models_dir())
 
-            def get_role_profile(r):
-                return _ag._profiles_db.get(r)
+    try:
+        from config import LLAMA_MODEL_DIRS
+        for d in (LLAMA_MODEL_DIRS or []):
+            if isinstance(d, str):
+                add(d)
+    except Exception as e:  # pragma: no cover - config import issues are logged elsewhere
+        logger.debug("Could not read LLAMA_MODEL_DIRS: %s", e)
 
-        folders_ordered = []
-        seen = set()
-        for role_name in get_all_roles():
-            profile = get_role_profile(role_name)
-            if profile:
-                folders = profile.get("allowed_models_folders", [])
-                if isinstance(folders, list):
-                    for folder in folders:
-                        if folder not in seen and os.path.isdir(folder):
-                            seen.add(folder)
-                            folders_ordered.append(folder)
-        return folders_ordered
+    try:
+        from .model_persistence import read_last_model
+        _name, path = read_last_model()
+        if path:
+            add(os.path.dirname(path))
+    except Exception as e:  # pragma: no cover - persistence is best-effort
+        logger.debug("Could not read persisted model path: %s", e)
 
-    except Exception as e:
-        logger.warning("Could not read allowed folders (falling back to default only): %s", e)
-        return []
+    return dirs
+
+
+# Backward-compatible alias (older call sites / tooling).
+_get_allowed_folders = _get_model_scan_dirs
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +182,7 @@ def _resolve_model_path(model_filename: str) -> Optional[str]:
     has_quant = bool(_re.search(r"q\d+", canon_requested, _re.IGNORECASE))
 
     # ---- Gather all candidate files ----
-    allowed_folders = _get_allowed_folders()
+    allowed_folders = _get_model_scan_dirs()
     default_dir = _get_default_models_dir()
     candidates = _collect_all_gguf(allowed_folders, default_dir)
 

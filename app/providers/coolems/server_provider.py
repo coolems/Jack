@@ -31,6 +31,7 @@ from config import (
     PROVIDER_DEFAULT_TIMEOUT,
     COOLEMS_SERVER_HOST,
     USE_WEB_SERVER,
+    HEALTH_CHECK_INTERVAL_SEC,
 )
 from ..base import BaseProvider
 from ..token_stats import TokenStats
@@ -199,8 +200,9 @@ class CoolemsServerProvider(BaseProvider):
     async def _ensure_chat_queue(self) -> None:
         """Create the request queue and one worker per llama backend (idempotent).
 
-        Must run on the boot event loop: asyncio.Queue binds to the running loop. The
-        registry was already built by LlamaProvider.start_server() during _ensure_llm_healthy().
+        Must run on the SERVING event loop: the queue's Condition, the HTTP pool, the
+        health poller and the workers all bind to it. The registry was built during
+        boot (a temporary asyncio.run() loop), so health/capacity are re-probed here.
         """
         if self._chat_queue is not None:
             return
@@ -208,30 +210,48 @@ class CoolemsServerProvider(BaseProvider):
         from app.server_queue import RequestQueue, WorkerPool, set_queue, set_worker_pool
         from ..llama.backend_registry import get_registry
 
+        reg = get_registry()
+        if reg is None:
+            # No registry means no backend could have been started. Do NOT publish a
+            # queue: requests would enqueue and never run. Clients get the clear
+            # "request queue unavailable" error instead of hanging.
+            logger.error(
+                "[SERVER] LLM backend registry missing at queue init - refusing to create "
+                "a chat queue (every request would hang). Check the LLM startup logs."
+            )
+            set_queue(None)
+            set_worker_pool(None)
+            return
+
         queue = RequestQueue()
         set_queue(queue)
         self._chat_queue = queue
 
-        reg = get_registry()
-        if reg is not None:
-            pool = WorkerPool(reg, queue)
-            pool.start()
-            set_worker_pool(pool)
-            self._worker_pool = pool
-        else:  # pragma: no cover - boot always builds the registry first
-            logger.warning("[SERVER] LLM backend registry missing at queue init - chat requests will fail")
+        # (2026-10 fleet) Boot ran on a temporary asyncio.run() loop, so the registry's
+        # health poller died with it and capacities were frozen at boot values. Refresh
+        # /health + /props HERE on the serving loop and move the poller onto this loop
+        # BEFORE sizing the worker pool (workers are one per discovered slot).
+        await reg.probe_all()
+        reg.log_fleet_table("LLAMA FLEET (serving loop)")
+        reg.start_health_poller(interval_sec=HEALTH_CHECK_INTERVAL_SEC)
+
+        pool = WorkerPool(reg, queue)
+        pool.start()
+        set_worker_pool(pool)
+        self._worker_pool = pool
 
         queue.start_stats_logger()
         logger.info("[SERVER] Chat request queue + worker pool ready (multi-chat sessions)")
 
     async def _stop_chat_queue(self) -> None:
         """Stop workers, drain the backlog and clear singletons (shutdown path)."""
+        aborted = 0
         if self._worker_pool is not None:
             await self._worker_pool.stop()
             self._worker_pool = None
         if self._chat_queue is not None:
             # abort anything still queued so no worker wakes up mid-shutdown
-            aborted = self._chat_queue.drain_and_cancel_all()
+            aborted = await self._chat_queue.drain_and_cancel_all()
             self._chat_queue.stop_stats_logger()
             self._chat_queue = None
         from app.server_queue import set_queue, set_worker_pool
@@ -378,13 +398,15 @@ class CoolemsServerProvider(BaseProvider):
         self, model: str, messages: List[Dict], websocket: Any,
         temperature: float = 0.7, enable_thinking: bool = False,
         conv_id: str = None, tools: list = None,
-        stop_event: Optional[asyncio.Event] = None
+        stop_event: Optional[asyncio.Event] = None,
+        context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
         """Local UI calls this directly (same PC) -> delegates to LlamaProvider."""
         return await self._get_local_provider().chat_stream(
             model=model, messages=messages, websocket=websocket,
             temperature=temperature, enable_thinking=enable_thinking,
-            conv_id=conv_id, tools=tools, stop_event=stop_event
+            conv_id=conv_id, tools=tools, stop_event=stop_event,
+            context_window=context_window,
         )
 
     async def chat_non_streaming(self, model: str, messages: List[Dict],
@@ -410,15 +432,7 @@ class CoolemsServerProvider(BaseProvider):
         2026-08-18 FIX: used the lazy _get_local_provider() like every other method — before,
         a call before first chat returned None because it read self._local_provider directly
         (None until lazily initialized)."""
-        # (2026-08-23 fix) pass force through so a post-switch verification can
-        # bypass the fresh model-state cache and confirm the new model immediately.
         return await self._get_local_provider().get_current_model(force=force)
-
-    async def switch_model(self, model_filename: str) -> Tuple[bool, str]:
-        """Switch to a different model on the local LlamaProvider (async)."""
-        if not self._local_provider:
-            return False, "Local provider not initialized"
-        return await self._get_local_provider().switch_model(model_filename)
 
     async def get_models_list(self) -> List[Dict]:
         return await self._get_local_provider().get_models_list()

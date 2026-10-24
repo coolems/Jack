@@ -15,7 +15,6 @@ from app.auth_gateway.model_resolver import is_model_allowed
 from ..connection_enforcement import rate_limiter
 from .active_conversations import _active_convs
 from .log import logger
-from .model_filters import _filter_models_by_user
 from .model_switch_handler import _handle_model_switch_direct
 from .ocr_handler import _handle_ocr_request
 from .tool_code_handler import _handle_tool_code_request
@@ -59,21 +58,13 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                     }))
                     continue  # Skip processing this request
 
-                # --- Per-request model authorization (H1 fix, 2026-09-08) ---
-                # Mirrors the relay path (ws_brain_relay.py) and the explicit model_switch handler:
-                # every chat request names a model, and without this check a restricted profile
-                # could ride the streaming auto-switch to load any .gguf on disk. Exact-folder
-                # resolver only — no duplicated permission logic.
+                # --- Per-request model authorization (H1 fix, 2026-09-08; fleet 2026-10) ---
+                # Mirrors the relay path. profiles.json lists the model FILENAMES this
+                # role may use ("allowed_models"); the resolver is exact, case-insensitive
+                # basename matching - no folders, no substrings, no fuzzy logic.
                 _req_model = msg.get("model", "") or ""
-                if _req_model:  # empty model = provider default, nothing to authorize
-                    local_pre = server_provider._get_local_provider()
-                    all_models_pre = await local_pre.get_models_list()
-                    known_folders_pre = {
-                        m["name"].lower(): m["folder"]
-                        for m in all_models_pre
-                        if isinstance(m, dict) and m.get("name") and m.get("folder")
-                    }
-                    if not is_model_allowed(user_info, _req_model, known_folders_pre):
+                if _req_model:  # empty model is rejected by the queue (no model specified)
+                    if not is_model_allowed(user_info, _req_model):
                         logger.warning(
                             f"[SERVER] Chat request DENIED via direct WS: model '{_req_model}' "
                             f"not allowed for role={user_info.get('role')} from {peer}"
@@ -102,6 +93,7 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                 # health checks, or another chat's request) while generation runs in the
                 # worker pool. Frames come back over THIS socket via the request's sink.
                 from app.server_queue import ChatRequest, DirectWsSink, get_queue
+                from app.providers.llama.backend_registry import get_registry
 
                 queue = get_queue()
                 if queue is None:
@@ -115,6 +107,8 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                 from ..chat_relay import _filter_tools_by_profile
                 req = ChatRequest(
                     owner_key=f"{conn_id}|{conv_id}",
+                    user_key=user_info.get("email") or str(conn_id),
+                    max_parallel=int(user_info.get("max_parallel_slots") or 0),
                     sink=DirectWsSink(ws),
                     model=msg.get("model", ""),
                     messages=msg.get("messages", []),
@@ -125,22 +119,57 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                                                    msg.get("tools") if msg.get("tools") else None),
                     stop_event=server_stop_event,
                 )
-                accepted, info = await queue.enqueue(req)
-                if not accepted:
-                    logger.warning(f"[SERVER] Chat request rejected for conv={conv_id}: {info}")
+
+                # (2026-10 fleet) "bad luck, dude" path: no node serves this model at all.
+                # Configured-but-down models are queued and handled by the worker watchdog.
+                reg = get_registry()
+                if reg is not None and not reg.model_configured(req.model_key):
+                    logger.warning(
+                        "[SERVER] Chat request for model=%s (key=%s) has no configured node. "
+                        "Fleet: %s", req.model, req.model_key or "?", reg.describe_models(),
+                    )
+                    # Server-side unavailability, not the user's fault: refund the token.
+                    await rate_limiter.refund(
+                        authenticated_api_key,
+                        user_info.get("max_rate_limit", PROFILE_DEFAULT_RATE_LIMIT),
+                    )
+                    from ..model_catalog import available_models_hint
+                    hint = await available_models_hint(server_provider, user_info)
                     await ws.send(json.dumps({
                         "type": "error",
-                        "message": f"Server is busy: {info}. Please try again shortly.",
+                        "message": (f"No llama node is serving '{req.model}' right now. "
+                                    f"Available: {hint}."),
+                        "retryable": False,
+                        "model": req.model_key,
                     }))
                     continue
 
-                # Let the chat know it is waiting behind other requests (position > 1).
-                position = int(info.split()[1]) if info.startswith("position") else 1
-                if position > 1:
+                res = await queue.enqueue(req)
+                if not res.accepted:
+                    logger.warning("[SERVER] Chat request rejected for conv=%s: %s",
+                                   conv_id, res.reason)
+                    if res.retryable:
+                        # Server-side rejection: do not charge the rate limiter for it.
+                        await rate_limiter.refund(
+                            authenticated_api_key,
+                            user_info.get("max_rate_limit", PROFILE_DEFAULT_RATE_LIMIT),
+                        )
+                    await ws.send(json.dumps({
+                        "type": "error",
+                        "message": res.reason,
+                        "retryable": bool(res.retryable),
+                        "retry_after_sec": res.retry_after_sec,
+                        "model": res.model_key,
+                    }))
+                    continue
+
+                # Let the chat know it is waiting behind other requests (per model group).
+                if res.position > 1:
                     await ws.send(json.dumps({
                         "type": "queue_status",
                         "conv_id": conv_id,
-                        "position": position,
+                        "position": res.position,
+                        "model": res.model_key,
                     }))
 
             elif t == "stop":
@@ -158,30 +187,35 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                 logger.info(f"[SERVER<-CLIENT] Health check via Direct WS from {peer}")
                 local = server_provider._get_local_provider()
                 ok, err = (await local.health_check(force=False))[:2]
-                # (2026-08-23) get_models_list() entries carry the "folder" identity
-                # required by exact-match auth filtering; API id strings do not.
-                all_models = await local.get_models_list()
-                filtered = _filter_models_by_user(all_models, user_info, server_provider)
+                # (2026-10 fleet) The SERVER is healthy when ANY node serves traffic -
+                # the brain's local node being down must not report the whole fleet down.
+                from app.providers.llama.backend_registry import get_registry
+                _reg = get_registry()
+                if _reg is not None and _reg.total_slots() > 0:
+                    ok, err = True, ""
+                # catalog = local disk models + every model the fleet serves, filtered
+                # by the caller's profile (filenames).
+                from ..model_catalog import build_model_catalog
+                models = await build_model_catalog(server_provider, user_info if user_info else None)
                 await ws.send(json.dumps({
                     "type": "health_ok" if ok else "error",
 
                     # req_id echoed for the CLIENT persistent control channel (2026-08-20)
 
                     "req_id": msg.get("req_id"),
-                    "models": filtered,
+                    "models": models,
                     "message": err
                 }))
 
             elif t == "models_request":
                 logger.info(f"[SERVER<-CLIENT] Models request via Direct WS from {peer}")
-                local = server_provider._get_local_provider()
-                all_models = await local.get_models_list()
-                filtered = _filter_models_by_user(all_models, user_info, server_provider) if user_info else all_models
+                from ..model_catalog import build_model_catalog
+                models = await build_model_catalog(server_provider, user_info if user_info else None)
                 await ws.send(json.dumps({
                     "type": "models_response",
 
                     "req_id": msg.get("req_id"),
-                    "models": filtered
+                    "models": models
                 }))
 
             elif t == "current_model":

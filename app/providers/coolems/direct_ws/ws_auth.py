@@ -133,19 +133,21 @@ async def _authenticate_direct_client(ws, server_provider, peer):
         ws._user_info = user_info
 
         # Send auth success with role + capabilities to client
-        local = server_provider._get_local_provider()
-        # (2026-08-23) get_models_list() entries carry the "folder" identity used by
-        # exact-match authorization. API id strings have no folder field and would be
-        # denied fail-closed for non-admins, so they must not feed this filter.
-        all_model_entries = await local.get_models_list()
-
-        allowed_models = server_provider._auth_gateway.get_allowed_models(
-            user_info, all_model_entries
-        )
+        # (2026-10 fleet) catalog = local disk models + fleet-served models, filtered by
+        # this profile's allowed FILENAMES.
+        from ..model_catalog import build_model_catalog
+        all_catalog = await build_model_catalog(server_provider, None)
+        allowed_models = server_provider._auth_gateway.get_allowed_models(user_info, all_catalog)
         allowed_tools = user_info.get("allowed_tools")  # None=all or list
 
-        # Get actual context window from server config
-        from config import CONTEXT_WINDOW_TOKENS as SERVER_CONTEXT_WINDOW
+        # (2026-10 fleet) Client trim math must fit the SMALLEST healthy per-slot context:
+        # a prompt sized for the biggest node could overflow a smaller one.
+        from app.providers.llama.backend_registry import get_registry
+        from config import CONTEXT_WINDOW_TOKENS as _CFG_CONTEXT_WINDOW
+        _reg = get_registry()
+        SERVER_CONTEXT_WINDOW = (
+            _reg.effective_context_window() if _reg is not None else _CFG_CONTEXT_WINDOW
+        )
 
         # (2026-10-15 licensing plan v12) slim license payload for the CLIENT badge:
         # only {use, company} — nothing else about licensing ever leaves this machine.
@@ -156,9 +158,10 @@ async def _authenticate_direct_client(ws, server_provider, peer):
             "protocol_version": PROTOCOL_VERSION,   # Echoed so the CLIENT can verify both ends agree
             "role": user_info["role"],
             "email": user_info["email"],
-            "allowed_models": [m if isinstance(m, str) else m.get("name", "") for m in allowed_models],
+            "allowed_models": [m.get("name", "") for m in allowed_models if isinstance(m, dict)],
             "allowed_tools": allowed_tools,  # None = all tools, list = restricted
-            "context_window": SERVER_CONTEXT_WINDOW,  # Actual model context window from server config
+            "max_parallel_slots": user_info.get("max_parallel_slots"),
+            "context_window": SERVER_CONTEXT_WINDOW,  # smallest healthy per-slot context
             "license": license_server.current_status()  # {use, company[, email, private_licensed]} — slim payload for the client badge
         }))
         ws._conn_id = conn_id  # Store for cleanup on disconnect (Fix #2)

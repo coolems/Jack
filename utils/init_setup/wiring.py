@@ -156,17 +156,46 @@ def wire_configs(ctx: dict) -> None:
 
     if isinstance(profiles, dict):
         changed_roles = []
+        missing_slots = []
         for role, profile in profiles.items():
             if not isinstance(profile, dict):
                 continue
-            before = (profile.get("allowed_models_folders"), profile.get("ocr_model"))
-            profile["allowed_models_folders"] = [ctx["model_folder"]]
+            _raw_models = profile.get("allowed_models")
+            before = (
+                list(_raw_models) if isinstance(_raw_models, list) else _raw_models,
+                profile.get("allowed_models_folders"),
+                profile.get("ocr_model"),
+                profile.get("max_parallel_slots"),
+            )
+            # (2026-10 fleet) Model authorization is by FILENAME; folders are gone.
+            profile.pop("allowed_models_folders", None)
+            existing_models = profile.get("allowed_models")
+            if existing_models is None:
+                # Admin ("all models") stays all - do not turn it into a one-model list.
+                pass
+            elif isinstance(existing_models, list):
+                if ctx["final_model_name"] not in existing_models:
+                    existing_models.append(ctx["final_model_name"])
+                profile["allowed_models"] = existing_models
+            else:
+                profile["allowed_models"] = [ctx["final_model_name"]]
+
             if ctx.get("ocr_folder"):
                 profile["ocr_model"] = ctx["ocr_folder"]
             else:
                 # OCR declined - clear stale paths from other machines (consumers skip empty).
                 profile["ocr_model"] = ""
-            after = (profile["allowed_models_folders"], profile.get("ocr_model"))
+
+            slots = profile.get("max_parallel_slots")
+            if isinstance(slots, bool) or not isinstance(slots, int) or slots < 1:
+                missing_slots.append(role)
+
+            after = (
+                profile.get("allowed_models"),
+                profile.get("allowed_models_folders"),
+                profile.get("ocr_model"),
+                profile.get("max_parallel_slots"),
+            )
             if before != after:
                 changed_roles.append(role)
         if changed_roles:
@@ -174,7 +203,14 @@ def wire_configs(ctx: dict) -> None:
             ok(f"profiles.json: model/OCR paths rewired for {len(changed_roles)} profile(s): "
                + ", ".join(sorted(changed_roles)))
         else:
-            ok("profiles.json: already pointing at the right folders - untouched")
+            ok("profiles.json: already pointing at the right model - untouched")
+        if missing_slots:
+            warn(
+                "profiles.json: role(s) without a valid max_parallel_slots: "
+                + ", ".join(sorted(missing_slots))
+                + " - authentication for them will be DENIED until you add it "
+                  "(e.g. \"max_parallel_slots\": 1)."
+            )
 
     # ---- 6d. pre-seed last-loaded model so SERVER boots straight into it ----
     last_path = os.path.join(root, "config", ".last_model_loaded.json")
@@ -241,7 +277,7 @@ def wire_configs(ctx: dict) -> None:
     if changed_client:
         write_json(settings_path, data)
         ok(f"CLIENT settings.json: server_addresses seeded -> {', '.join(addrs)}")
-        ok("   (the CLIENT\ folder is now portable - copy it to any other LAN PC and run "
+        ok("   (the CLIENT\\ folder is now portable - copy it to any other LAN PC and run "
            "ZZZ_CLIENT.bat there; it finds this SERVER automatically)")
     else:
         ok(f"CLIENT settings.json: already in sync ({', '.join(addrs)}) - untouched")

@@ -20,7 +20,7 @@ import logging
 
 from ..connection_enforcement import conn_tracker, rate_limiter
 # (2026-08-20) relay-mode stop propagation: same owner-scoped tracker the direct path uses.
-from ..ws_client_handler import _ActiveConversations, _filter_models_by_user
+from ..ws_client_handler import _ActiveConversations
 # (2026-08-23 dedupe) Single source of truth for model authorization:
 # exact folder-name matching only - no normalization, no substring.
 from app.auth_gateway.model_resolver import is_model_allowed
@@ -416,13 +416,18 @@ async def connect_to_web_relay(server_provider):
                         elif msg_type == "health_check":
                             logger.info(f"[SERVER<-RELAY] Health check via relay (client={msg.get('_relay_from', '?')})")
                             local = server_provider._get_local_provider()
-                            ok, err, models = await local.health_check(force=False)
-                            # (2026-09-01 S1 fix) filter the model list by the RELAYED CLIENT's
-                            # profile before it leaves the brain; unknown client -> empty list.
+                            ok, err, _models = await local.health_check(force=False)
+                            # (2026-10 fleet) fleet health = ANY node serving traffic.
+                            from app.providers.llama.backend_registry import get_registry
+                            _hc_reg = get_registry()
+                            if _hc_reg is not None and _hc_reg.total_slots() > 0:
+                                ok, err = True, ""
+                            # catalog = disk + fleet, filtered by the RELAYED CLIENT's
+                            # profile; unknown client -> empty list.
                             _hc_user_info = await _resolve_relay_client_user_info(ws, msg, server_provider)
                             if _hc_user_info:
-                                filtered_hc = _filter_models_by_user([{"name": m} for m in models], _hc_user_info, server_provider)
-                                out_models = [{"name": m["name"]} for m in filtered_hc]
+                                from ..model_catalog import build_model_catalog
+                                out_models = await build_model_catalog(server_provider, _hc_user_info)
                             else:
                                 out_models = []
                             await _relay_send(ws, {
@@ -435,13 +440,12 @@ async def connect_to_web_relay(server_provider):
 
                         elif msg_type == "models_request":
                             logger.info(f"[SERVER<-RELAY] Models request via relay (client={msg.get('_relay_from', '?')})")
-                            local = server_provider._get_local_provider()
-                            models_list = await local.get_models_list()
-                            # (2026-09-01 S1 fix) filter by the RELAYED CLIENT's profile before
-                            # the list leaves the brain; unknown client -> empty list.
+                            # (2026-10 fleet) catalog = disk + fleet, filtered by the
+                            # RELAYED CLIENT's profile; unknown client -> empty list.
                             _mr_user_info = await _resolve_relay_client_user_info(ws, msg, server_provider)
                             if _mr_user_info:
-                                models_list = _filter_models_by_user(models_list, _mr_user_info, server_provider)
+                                from ..model_catalog import build_model_catalog
+                                models_list = await build_model_catalog(server_provider, _mr_user_info)
                             else:
                                 models_list = []
                             await _relay_send(ws, {

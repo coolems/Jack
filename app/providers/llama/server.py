@@ -47,9 +47,6 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Server")
 
 _last_loaded_model: Optional[str] = None  # Track last successfully loaded model filename
 _last_loaded_model_full_path: Optional[str] = None  # Track full path of last loaded model
-_reload_in_progress = False  # single-loop re-entrancy guard (2026-09 threadless refactor):
-# the old threading.Lock is gone - only the event loop thread ever calls reload_with_model(),
-# so a plain flag set without an await between check-and-set is race-free.
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +109,7 @@ from config import (
     PROVIDER_STARTUP_TIMEOUT,
     LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC,
     LLAMA_SERVER_PORT,
+    LLAMA_SERVER_PARALLEL,
 )
 
 
@@ -126,7 +124,6 @@ from . import model_persistence
 __all__ = [
     # Public API
     "start_server",
-    "reload_with_model",
     "get_current_model",
     "expected_flag_signatures",
     # Internal helpers (kept for backward compat with tests)
@@ -153,16 +150,15 @@ def _resolve_startup_model() -> Optional[str]:
 
     Resolution chain — .last_model_loaded.json is the SOURCE OF TRUTH:
       1. Persisted model name from config/.last_model_loaded.json, resolved
-         through the profile allowed folders (strict matching in path_utils).
-      2. If nothing persisted / not resolvable -> FIRST model available in the
-         profile's allowed folders (deterministic scan order), so a fresh machine
-         or a profile that lacks the persisted model still boots with something
-         valid for that role.
+         through the local model scan dirs (strict matching in path_utils).
+      2. If nothing persisted / not resolvable -> FIRST model available on disk
+         (deterministic scan order), so a fresh machine still boots with something
+         valid.
 
     Returns:
         Full path to the .gguf file, or None when no model exists at all.
     """
-    from .path_utils import _collect_all_gguf, _get_allowed_folders, _get_default_models_dir
+    from .path_utils import _collect_all_gguf, _get_model_scan_dirs, _get_default_models_dir
 
     persisted_name, persisted_path = model_persistence.read_last_model()
 
@@ -182,7 +178,7 @@ def _resolve_startup_model() -> Optional[str]:
         )
 
     # Fallback: first model available across the profile's allowed folders.
-    candidates = _collect_all_gguf(_get_allowed_folders(), _get_default_models_dir())
+    candidates = _collect_all_gguf(_get_model_scan_dirs(), _get_default_models_dir())
     if not candidates:
         logger.error("No .gguf models found in any allowed folder or default dir")
         return None
@@ -198,15 +194,14 @@ async def _spawn_and_verify(api_url: str, cmd: list, model_file: str,
                             inst_key: Optional[Tuple[str, int]]) -> bool:
     """Spawn llama-server with *cmd*, wait for health + verified model load.
 
-    (2026-10-31) Shared by start_server() and reload_with_model(): Popen with pipe
+    (2026-10-31) Shared by start_server(): Popen with pipe
     drainers, /health within PROVIDER_STARTUP_TIMEOUT, then the budget-derived
     model-load verification loop. On success: process registered, model-state cache
     updated, .last_model_loaded.json persisted. On failure: process terminated,
     state invalidated, False returned.
 
-    NOTE (reload differences kept in reload_with_model): it additionally polls for an
-    early process death inside the loop and syncs the API-reported model id after a
-    verified switch - both are switch-specific concerns, not spawn concerns."""
+    NOTE (2026-10 fleet): the old model-switch/reload path was removed; nodes keep the
+    model they were launched with and routing picks the matching model group."""
     global _last_loaded_model, _last_loaded_model_full_path
 
     try:
@@ -226,7 +221,7 @@ async def _spawn_and_verify(api_url: str, cmd: list, model_file: str,
         # (2026-09-09 fresh-start fix) /health alone is NOT proof the model loaded:
         # this build of llama-server can answer 200 while running in router mode with
         # ZERO models loaded. Poll until the expected model actually shows up in
-        # /v1/models (same check reload_with_model uses) before declaring success -
+        # /v1/models (the same check the old reload loop used) before declaring success -
         # a cold load of a ~22 GB model legitimately takes minutes after /health comes up.
         _startup_ok = False
         # (2026-09-09 switch-timeout fix) budget-derived attempt count: a COLD load of a
@@ -268,7 +263,8 @@ async def _spawn_and_verify(api_url: str, cmd: list, model_file: str,
 
 async def _attach_foreign_if_verified(api_url: str, model_file: str,
                                       host: str, port: int,
-                                      inst_key: Optional[Tuple[str, int]]) -> bool:
+                                      inst_key: Optional[Tuple[str, int]],
+                                      parallel: int = 1) -> bool:
     """(2026-10-31 verified attach) Decide whether a FOREIGN server on our port is good enough.
 
     Called only when /health answers 200 but we do NOT own the process (no tracked Popen).
@@ -288,6 +284,7 @@ async def _attach_foreign_if_verified(api_url: str, model_file: str,
         model_file, enable_mtp=is_mtp,
         host=_bind_host if _bind_host != "localhost" else "0.0.0.0",
         port=_eff_port,
+        parallel=parallel,
     )
 
     # 2) Who owns the port? (blocking netstat leaf -> to_thread)
@@ -334,7 +331,8 @@ async def _attach_foreign_if_verified(api_url: str, model_file: str,
     return False
 
 
-async def start_server(api_url: str, host: str = None, port: int = None) -> bool:
+async def start_server(api_url: str, host: str = None, port: int = None,
+                       concurrency: int = 1) -> bool:
     """Start llama.cpp server if not already running.
 
     (2026-09 threadless refactor): async. The /health probe and the startup wait loop
@@ -350,18 +348,23 @@ async def start_server(api_url: str, host: str = None, port: int = None) -> bool
     A foreign server on our port must carry all of OUR expected flags (see
     _attach_foreign_if_verified) or it is killed and relaunched from zero - this guarantees
     an MTP model always boots with speculative decoding, even when a manually-started
-    llama-server owned the port first."""
+    llama-server owned the port first.
+
+    (2026-10 fleet) *concurrency* is this LOCAL instance's slot count: we pass
+    --parallel N and scale --ctx-size to N x CONTEXT_WINDOW_TOKENS so every slot keeps
+    the full context. Remote instances ignore it (attach-only; slots come from /props)."""
     global _last_loaded_model, _last_loaded_model_full_path
 
     # (2026-09-08 multi-chat) per-instance key for the model-state cache + process registry.
     from .model_state import key_for_api_url as _key_fn
     _inst_key = _key_fn(api_url) or ((host or "127.0.0.1").lower(), port or LLAMA_SERVER_PORT)
+    slots = max(1, int(concurrency or 1))
 
     # Remote instances are attach-only: never spawn processes on other machines. A healthy
     # remote is simply used (we cannot - and must not - inspect/kill its process); an
     # unhealthy one reports False and the registry marks it unavailable.
     _bind_host = host or "127.0.0.1"
-    if _bind_host.lower() not in ("127.0.0.1", "localhost"):
+    if _bind_host.lower() not in ("127.0.0.1", "localhost", "::1"):
         try:
             client = await get_async_client()
             resp = await client.get(f"{api_url}/health")
@@ -409,7 +412,9 @@ async def start_server(api_url: str, host: str = None, port: int = None) -> bool
             return True
 
         # ---- Verified attach: a FOREIGN process answers /health on our port. ----
-        if await _attach_foreign_if_verified(api_url, model_file, _bind_host, port or LLAMA_SERVER_PORT, _inst_key):
+        if await _attach_foreign_if_verified(
+            api_url, model_file, _bind_host, port or LLAMA_SERVER_PORT, _inst_key, parallel=slots,
+        ):
             logger.info("llama.cpp is already running (verified foreign server - all expected flags present).")
             return True
 
@@ -460,246 +465,8 @@ async def start_server(api_url: str, host: str = None, port: int = None) -> bool
         llama_server_exe, model_file, mmproj_file, enable_mtp=is_mtp,
         host=_bind_host if _bind_host.lower() != "localhost" else "0.0.0.0",
         port=port or LLAMA_SERVER_PORT,
+        parallel=slots,
     )
 
     return await _spawn_and_verify(api_url, cmd, model_file, _inst_key)
 
-
-async def _sync_api_reported_model(api_url: str, key=None) -> None:
-    """Refresh model_state with the exact model id llama.cpp reports (one /v1/models call).
-
-    Called right after a verified reload. The launched filename is already marked,
-    but the API may report a normalized id; overwriting keeps get_current_model()
-    authoritative for WS/UI consumers immediately after a switch (no TTL window
-    where a stale name could be reported)."""
-    try:
-        client = await get_async_client()
-        resp = await client.get(f"{api_url}/v1/models")
-        models_data = resp.json().get("data", [])
-        if models_data:
-            reported = models_data[0].get("id", "")
-            if reported:
-                _model_state.mark_loaded(reported, key=key)
-    except Exception as e:
-        logger.debug(f"[RELOAD] Could not sync API-reported model id (keeping launched name): {e}")
-
-
-async def reload_with_model(api_url: str, model_filename: str, host: str = None, port: int = None) -> Tuple[bool, str]:
-    """Stop the current llama-server and restart it with a different model.
-
-    Supports models from external folders (not just llama_server/models).
-    Searches allowed folder paths when resolving the model file.
-    Uses a single-loop re-entrancy guard to prevent concurrent reloads
-    (user clicking fast = orphaned processes).
-
-    (2026-09 threadless refactor): async. Every blocking OS leaf (process terminate/
-    wait, netstat/taskkill port cleanup) runs via asyncio.to_thread; every HTTP probe
-    uses the shared httpx pool; all waits are await asyncio.sleep() polling."""
-    global _last_loaded_model, _last_loaded_model_full_path, _reload_in_progress
-
-    # (2026-09-08 multi-chat) per-instance key + effective port for THIS instance.
-    from .model_state import key_for_api_url as _key_fn
-    _inst_key = _key_fn(api_url) or ((host or "127.0.0.1").lower(), port or LLAMA_SERVER_PORT)
-    _eff_port = _inst_key[1]
-
-    # Re-entrancy guard - no await between check and set: race-free on a single loop.
-    if _reload_in_progress:
-        logger.warning(f"[RELOAD] Reload already in progress - ignoring request for {model_filename}")
-        return False, "Model switch already in progress. Please wait."
-    _reload_in_progress = True
-
-    # 2026-08-18: loaded model is about to change — clear the shared cache so no
-    # concurrent chat request trusts a stale entry while we are mid-switch.
-    _model_state.invalidate(key=_inst_key)
-
-    root_dir = _resolve_server_root()
-    llama_server_exe = os.path.join(root_dir, "llama_server", "llama-server.exe")
-
-    # Resolve model file - supports external folders now
-    model_path = _resolve_model_path(model_filename)
-
-    if not model_path:
-        logger.error(f"[RELOAD] Model file not found anywhere: {model_filename}")
-        _reload_in_progress = False
-        return False, f"Model file not found: {model_filename}"
-
-    logger.info(f"[RELOAD] ===== Starting model switch to: {model_filename} =====")
-
-    # ---- Step 1: Stop current server (blocking OS leaves -> to_thread) ----
-    logger.info("[RELOAD] Step 1: Stopping current llama-server..")
-
-    # 1a. Kill the tracked process (graceful terminate + wait)
-    await asyncio.to_thread(_kill_orphaned_process, _inst_key)
-
-    # 1b. Aggressively kill ANY process on the port (covers foreign servers too)
-    await asyncio.to_thread(_kill_llama_server_by_port, _eff_port)
-
-    # 1c. Wait for port to become free (asyncio.sleep polling - no thread)
-    if not await wait_for_port_free_async(_eff_port):
-        logger.error(f"[RELOAD] Port {_eff_port} is still occupied - cannot start new server")
-        _reload_in_progress = False
-        return False, f"Port {_eff_port} still in use. Previous server did not shut down."
-
-    # ---- Step 2: Find mmproj for the new model ----
-    logger.info("[RELOAD] Step 2: Finding mmproj file for new model...")
-    mmproj_file = _find_mmproj_file(model_path)
-
-    # ---- Step 3: Start new server (fresh spawn from zero - MTP detection included) ----
-    logger.info(f"[RELOAD] Step 3: Starting llama-server with: {os.path.basename(model_path)}")
-
-    is_mtp = _is_mtp_model(model_path)
-    if is_mtp:
-        logger.info(
-            "[RELOAD] MTP detection for %s: ENABLED (baked-in head detected in GGUF header) - "
-            "speculative decoding flags will be passed to llama-server.",
-            os.path.basename(model_path),
-        )
-    else:
-        logger.info(
-            "[RELOAD] MTP detection for %s: DISABLED (no baked-in MTP head) - standard inference mode.",
-            os.path.basename(model_path),
-        )
-
-    cmd = _build_server_cmd(
-        llama_server_exe, model_path, mmproj_file, enable_mtp=is_mtp,
-        host=_inst_key[0] if _inst_key[0] != "localhost" else "0.0.0.0",
-        port=_eff_port,
-    )
-    logger.info(f"[RELOAD] Command: {' '.join(cmd)}")
-
-    _reload_success = False
-    _reload_error_msg = "Unknown error"
-
-    try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            cwd=os.path.dirname(llama_server_exe),
-        )
-        logger.info(f"[RELOAD] llama-server process started (PID: {process.pid})")
-
-        # CRITICAL: drain stdout/stderr forever (same reason as start_server).
-        _start_pipe_drainers(process)
-
-        # Wait for server to become healthy AND verify correct model is loaded.
-        # Async polling on the shared httpx pool - the event loop stays responsive
-        # for heartbeats / other clients while the load (up to LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC)
-        # proceeds.
-        # (2026-09-09 switch-timeout fix) budget-derived attempt count: a COLD load of a
-        # ~23 GB model can legitimately need several minutes after /health comes up. The old
-        # hardcoded 120 s killed the new server mid-load, left the instance with NO model and
-        # orphaned .last_model_loaded.json pointing at the never-verified target.
-        max_attempts = max(1, LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC // 2)
-        sleep_sec = 2  # e.g. 240 s budget -> 120 attempts * 2s
-        client = await get_async_client()
-
-        for i in range(max_attempts):
-            # (2026-09-09 switch-timeout fix) if the process already DIED, no amount of polling
-            # helps - fail fast with its exit code instead of burning the whole budget. The pipe
-            # drainers have been logging its last output live under [LLAMA STDOUT]/[LLAMA STDERR].
-            _proc_rc = process.poll()
-            if _proc_rc is not None:
-                logger.error(
-                    f"[RELOAD] FAILED early: llama-server process {process.pid} exited with code "
-                    f"{_proc_rc} during model load (attempt {i+1}/{max_attempts}) - see [LLAMA STDOUT]/"
-                    f"[LLAMA STDERR] lines above for the cause (VRAM? OOM? bad flag?)"
-                )
-                break
-
-            try:
-                resp = await client.get(f"{api_url}/health")
-                if resp.status_code == 200:
-                    logger.info(f"[RELOAD] Server health check passed (attempt {i+1}/{max_attempts})")
-                    if await _verify_model_loaded(api_url, model_path):
-                        _set_server_process(process, key=_inst_key)
-                        _last_loaded_model = os.path.basename(model_path)
-                        _last_loaded_model_full_path = model_path
-                        # 2026-08-18: publish verified launch to the shared cache.
-                        _model_state.mark_loaded(os.path.basename(model_path), key=_inst_key)
-                        # (2026-08-23 fix) overwrite with the exact id llama.cpp reports so
-                        # get_current_model() is authoritative for WS/UI consumers immediately.
-                        await _sync_api_reported_model(api_url, key=_inst_key)
-                        # 2026-08-23: model switch complete -> persist as source of truth.
-                        model_persistence.write_last_model(os.path.basename(model_path), model_path)
-                        logger.info(f"[RELOAD] ===== Model switch SUCCESS: {model_filename} =====")
-                        _reload_success = True
-                        break
-                    else:
-                        logger.warning(f"[RELOAD] Server up but model not loaded, checking stderr...")
-                        await asyncio.to_thread(_check_stderr_early, process)
-                        logger.info(f"[RELOAD] Server up but wrong model, retrying... ({i+1}/{max_attempts})")
-            except Exception:
-                logger.debug("Llama reload: health check failed during model load attempt %d, polling stderr", i + 1)
-                await asyncio.to_thread(_poll_stderr, process, i + 1)
-
-            if (i + 1) % 10 == 0:
-                logger.info(f"[RELOAD] Waiting for model to load... ({i+1}/{max_attempts})")
-                await asyncio.to_thread(_poll_stderr, process, i + 1)
-
-            await asyncio.sleep(sleep_sec)
-
-        if not _reload_success:
-            logger.error(f"[RELOAD] FAILED: Server did not load correct model after {max_attempts} attempts")
-            await asyncio.to_thread(_log_process_error, process)
-            await asyncio.to_thread(_terminate_process, process)
-            # (2026-09-09 switch-timeout fix) ROLL BACK to the previous model so a failed switch
-            # never leaves the instance with NO model at all. The old behavior killed the new
-            # server and just gave up: the next chat request then hit "llama.cpp service is not
-            # running" even though the user had only asked for a different model.
-            # .last_model_loaded.json still holds the PREVIOUS verified model (we persist it
-            # only after verification), so start_server() boots exactly what was loaded before
-            # this switch attempt. The in-memory state was invalidated at reload start, so the
-            # persisted file is the last known good model.
-            from . import model_persistence as _mp
-            _prev = _mp.get_loaded_model_name() or _last_loaded_model
-            if _prev:
-                logger.warning(
-                    f"[RELOAD] Rolling back to previous model after failed switch: {_prev} "
-                    f"(switch target was {model_filename})"
-                )
-                try:
-                    # start_server() reads .last_model_loaded.json (source of truth) - the same
-                    # file we persisted when _prev was last verified. It re-arms the full startup
-                    # budget for this cold load, so a slow machine still gets its model back.
-                    rolled_back = await start_server(api_url, host=_inst_key[0], port=_eff_port)
-                except Exception as rb_err:  # pragma: no cover - defensive
-                    logger.error(f"[RELOAD] Rollback to previous model failed: {rb_err}")
-                    rolled_back = False
-                if not rolled_back:
-                    logger.error(
-                        "[RELOAD] ROLLBACK FAILED too - the instance is DOWN until the next "
-                        "successful auto-restart (next chat request triggers start_server())."
-                    )
-            else:
-                logger.warning("[RELOAD] No previous model known - nothing to roll back to.")
-            _reload_error_msg = (
-                f"Model switch to {model_filename} failed within the load budget "
-                f"({LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC}s). Rolled back to {_prev or 'no previous model'}."
-            )
-
-    except Exception as e:
-        logger.error(f"[RELOAD] Failed to restart server: {e}", exc_info=True)
-        try:
-            if "process" in dir():
-                await asyncio.to_thread(_terminate_process, process)
-        except Exception:
-            logger.debug("Llama server: failed to terminate process during cleanup")
-        _reload_error_msg = f"Failed to restart server: {str(e)}"
-    finally:
-        # ALWAYS release the re-entrancy guard
-        _reload_in_progress = False
-
-        # On failure, aggressively kill any leftover llama-server processes
-        if not _reload_success:
-            logger.info("[RELOAD] Cleanup: killing any remaining orphaned llama-server processes...")
-            try:
-                await asyncio.to_thread(_kill_llama_server_by_port, _eff_port)
-            except Exception as cleanup_e:
-                logger.warning(f"[RELOAD] Cleanup warning: {cleanup_e}")
-
-    if _reload_success:
-        return True, f"Model switched to {model_filename}"
-    else:
-        return False, str(_reload_error_msg)
