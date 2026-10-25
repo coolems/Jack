@@ -7,5 +7,6 @@
   "ctx_per_slot": 181072,
   "threads": 8,
   "gpu_layers": 99,
-  "extra_args": []
+  "extra_args": [],
+  "auto_start": true
 }

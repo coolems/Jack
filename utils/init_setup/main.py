@@ -153,6 +153,9 @@ def main() -> int:
             info("         (image input stays disabled until it is in place - everything else already works).")
             step += 1
         info(f"  {step}. Run ZZZ_SERVER.bat   (first run creates the venv + installs deps - takes a few minutes)")
+        info("         The local llama node starts automatically with the settings init wrote to")
+        info("         config/llama_node.json. Admins who want custom nodes:")
+        info("         utils/start_llama_node/ZZZ_LLAMA_NODE.bat (configure + start any node).")
         step += 1
         info(f"  {step}. Run CLIENT\\ZZZ_CLIENT.bat   (first run creates the venv)")
         step += 1

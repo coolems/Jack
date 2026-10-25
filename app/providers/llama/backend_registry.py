@@ -5,9 +5,15 @@ llama servers we talk to. This module turns that list into live, tracked backend
 
   * :class:`LlmBackend` — one llama-server instance (host:port): its provider handle,
     health state, busy counter, DISCOVERED capacity (``/props.total_slots``), per-slot
-    context, loaded model and llama.cpp build. Local instances are spawned by us; remote
-    instances (LAN machines) are ATTACH-ONLY — we only probe them and use them while
-    healthy. Remote concurrency is owned by the node launcher and discovered here.
+    context, loaded model and llama.cpp build. LOCAL instances are reconciled at boot by
+    the node launcher (attach to a healthy matching node, else spawn one with the settings
+    from ``config/llama_node.json`` — init writes defaults there); remote instances (LAN
+    machines) are ATTACH-ONLY. Remote concurrency is owned by the node launcher and
+    discovered here.
+
+  * Shutdown semantics (2026-10-25): ``stop_all()`` terminates ONLY backends WE spawned
+    (``spawned_by_us=True``, tracked Popen). A node started outside us (admin launcher,
+    manual) is attached but NEVER killed on SERVER exit.
   * :class:`LlmBackendRegistry` — the set of all backends with start_all/stop_all, a
     periodic health+props poller, a capacity-aware acquisition helper and a fleet
     snapshot for logs and the fleet table.
@@ -48,6 +54,10 @@ class LlmBackend:
         self.key: tuple[str, int] = (instance.host.lower(), instance.port)
         self.api_url: str = instance.api_url
         self.local: bool = _is_local(instance.host)
+        # (2026-10-25) True only when WE launched this instance's llama-server at boot
+        # (tracked Popen in process_mgmt). Attached foreign nodes keep False so stop_all()
+        # and the discovery relaunch never kill a node an admin started.
+        self.spawned_by_us: bool = False
         self.healthy: Optional[bool] = None      # None = not probed yet
         self.busy: int = 0                       # requests currently running on this backend
         self._provider = None                    # lazy LlamaProvider handle
@@ -291,7 +301,7 @@ class LlmBackend:
     # --- lifecycle ------------------------------------------------------------
 
     async def ensure_started(self) -> bool:
-        """Make sure this instance is up. Local: spawn + wait for health; remote: probe only.
+        """Make sure this instance is up. Local: reconcile (attach or spawn); remote: probe only.
 
         (2026-10 discovery model) The SPAWN slot count is the explicit config value when
         present, else LLAMA_SERVER_PARALLEL as a launch fallback - after /props lands the
@@ -306,11 +316,51 @@ class LlmBackend:
         inside the mismatch branch (audit fix 2026-10 - the old structure terminated our own
         tracked process unconditionally and then skipped the respawn, killing llama at boot
         while still reporting HEALTHY).
+
+        (2026-10-25 node auto-start) LOCAL instances whose port matches config/llama_node.json
+        are reconciled by the NODE LAUNCHER instead of start_server(): a healthy matching
+        node is ATTACHED (spawned_by_us stays False - it survives SERVER shutdown), otherwise
+        we SPAWN detached with the init/admin settings from that file. No matching node
+        config -> legacy start_server() path exactly as before.
         """
-        from .server import start_server
         if not self.local:
             return await self.probe_health()
 
+        # (2026-10-25) Node-launcher reconcile when a VALID node config describes THIS port.
+        # When it does, its verdict is FINAL: auto_start=false must never be overridden by a
+        # legacy spawn, and a failed reconcile (foreign process on the port, model missing...)
+        # must not be papered over by spawning with generic defaults - the health poller
+        # keeps probing so a manually-fixed node comes back without a SERVER restart.
+        from . import node_launcher
+        cfg = None
+        try:
+            if node_launcher.load_raw_config() is not None:
+                cfg = node_launcher.load_config()
+        except RuntimeError as e:
+            logger.warning("[REGISTRY] %s unreadable/invalid (%s) - using the legacy spawn path",
+                           self.label, e)
+
+        use_node_cfg = (cfg is not None and int(cfg["port"]) == self.instance.port)
+        if use_node_cfg:
+            try:
+                spawned, ok = await node_launcher.ensure_local_node(self.instance)
+            except Exception as e:  # pragma: no cover - defensive (ensure never raises)
+                logger.error("[REGISTRY] %s node-launcher reconcile failed: %s", self.label, e)
+                spawned, ok = False, False
+            self.spawned_by_us = bool(spawned and ok)
+            if not ok:
+                self.healthy = False
+                return False
+            # Same ordering rule as probe_health: discovery BEFORE workers can wake.
+            props_ok = await self.refresh_props()
+            self.healthy = bool(props_ok)
+            if self.healthy:
+                self._healthy_event.set()
+            else:
+                self._healthy_event.clear()
+            return bool(self.healthy)
+
+        from .server import start_server
         launch_slots = self.configured_capacity or LLAMA_SERVER_PARALLEL
         ok = await start_server(
             self.api_url,
@@ -321,6 +371,9 @@ class LlmBackend:
         if not ok:
             self.healthy = False
             return False
+
+        # Legacy path spawned it ourselves (start_server tracks the Popen).
+        self.spawned_by_us = True
 
         # Same ordering rule as probe_health: discovery BEFORE workers can wake.
         props_ok = await self.refresh_props()
@@ -340,34 +393,43 @@ class LlmBackend:
                 # must terminate our OWN process first to force a real respawn with the new
                 # --parallel. Under restart_lock so a worker-side pre-flight/stall restart of
                 # this node can never interleave with this relaunch (see streaming.py).
-                from .process_mgmt import (_server_processes, _terminate_process,
-                                           wait_for_port_free_async)
+                from .process_mgmt import (_server_processes, _get_server_process,
+                                           _terminate_process, wait_for_port_free_async)
                 async with self.restart_lock:
-                    logger.info(
-                        "[REGISTRY] %s reports %d slot(s) but was launched with --parallel %d "
-                        "(no explicit 'concurrency' in config) - relaunching with the discovered count",
-                        self.label, reported, launch_slots,
-                    )
-                    _proc = _server_processes.get(self.key)
-                    if _proc is not None and _proc.poll() is None:
-                        logger.info("[REGISTRY] %s terminating our tracked llama-server (PID %d) "
-                                    "for a discovery relaunch", self.label, _proc.pid)
-                        await asyncio.to_thread(_terminate_process, _proc)
-                    # Wait for the port to actually free: start_server()'s fast path would
-                    # otherwise attach to whatever still answers /health instead of respawning.
-                    if not await wait_for_port_free_async(self.instance.port):
-                        logger.warning("[REGISTRY] %s port %d still busy after terminate - "
-                                       "marking node DOWN; health poller will retry",
-                                       self.label, self.instance.port)
-                        ok = False   # we killed our own server and the port is still taken
-                    else:
-                        self._discovery_relaunches += 1
-                        ok = await start_server(
-                            self.api_url,
-                            host=self.instance.host,
-                            port=self.instance.port,
-                            concurrency=reported,
+                    if not (self.spawned_by_us or _get_server_process(self.key) is not None):
+                        # (2026-10-25) ATTACHED node we did not spawn - NEVER kill it.
+                        logger.warning(
+                            "[REGISTRY] %s reports %d slot(s) but was launched with --parallel %d "
+                            "- it is an ATTACHED node we did not spawn, so it is NOT killed; "
+                            "routing capacity follows /props",
+                            self.label, reported, launch_slots,
                         )
+                    else:
+                        logger.info(
+                            "[REGISTRY] %s reports %d slot(s) but was launched with --parallel %d "
+                            "(no explicit 'concurrency' in config) - relaunching with the discovered count",
+                            self.label, reported, launch_slots,
+                        )
+                        _proc = _server_processes.get(self.key)
+                        if _proc is not None and _proc.poll() is None:
+                            logger.info("[REGISTRY] %s terminating our tracked llama-server (PID %d) "
+                                        "for a discovery relaunch", self.label, _proc.pid)
+                            await asyncio.to_thread(_terminate_process, _proc)
+                        # Wait for the port to actually free: start_server()'s fast path would
+                        # otherwise attach to whatever still answers /health instead of respawning.
+                        if not await wait_for_port_free_async(self.instance.port):
+                            logger.warning("[REGISTRY] %s port %d still busy after terminate - "
+                                           "marking node DOWN; health poller will retry",
+                                           self.label, self.instance.port)
+                            ok = False   # we killed our own server and the port is still taken
+                        else:
+                            self._discovery_relaunches += 1
+                            ok = await start_server(
+                                self.api_url,
+                                host=self.instance.host,
+                                port=self.instance.port,
+                                concurrency=reported,
+                            )
                 if not ok:
                     logger.warning("[REGISTRY] %s relaunch with discovered slots failed - "
                                    "node is DOWN now; health poller will retry", self.label)
@@ -575,15 +637,25 @@ class LlmBackendRegistry:
         return any_ok
 
     async def stop_all(self) -> None:
-        """Stop all locally-spawned instances (tracked processes). Remotes are left alone."""
+        """Stop the instances WE spawned. Remotes and ATTACHED nodes are left running.
+
+        (2026-10-25 shutdown semantics) A node started outside us (admin launcher via
+        utils/start_llama_node, or a manual llama-server we merely attached to) is NOT
+        terminated on SERVER exit - it survives for other users of the machine. Only
+        backends with spawned_by_us=True and a live tracked Popen are stopped."""
         from .process_mgmt import _server_processes, _terminate_process
         for b in self.backends.values():
             if not b.local:
                 continue
             proc = _server_processes.get(b.key)
-            if proc is not None and proc.poll() is None:
-                logger.info("[REGISTRY] Stopping local backend %s (PID %d)", b.label, proc.pid)
-                await asyncio.to_thread(_terminate_process, proc)
+            if proc is None or proc.poll() is not None:
+                continue
+            if not b.spawned_by_us:
+                logger.info("[REGISTRY] Leaving attached local node %s (PID %d) RUNNING - "
+                            "the SERVER did not spawn it", b.label, proc.pid)
+                continue
+            logger.info("[REGISTRY] Stopping local backend %s we spawned (PID %d)", b.label, proc.pid)
+            await asyncio.to_thread(_terminate_process, proc)
 
     # --- health poller ----------------------------------------------------------
 

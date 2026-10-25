@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from .certs import ensure_ui_certs
-from .ui import line, ok, warn, write_json
+from .ui import info, line, ok, warn, write_json
 
 
 def _is_placeholder_key(entry: dict) -> bool:
@@ -284,3 +284,69 @@ def wire_configs(ctx: dict) -> None:
 
     # ---- 6g. CLIENT UI TLS certificates (browser trust for the local UI URL, port from config.CLIENT_UI_PORT) ----
     ctx["ui_certs_ok"] = ensure_ui_certs(root)
+
+    # ---- 6h. default LOCAL llama node config so ZZZ_SERVER.bat can auto-start it ----
+    write_local_node_config(ctx)
+
+
+def _read_int_from_config_py(cfg_py: str, name: str, fallback: int) -> int:
+    """Read an integer constant from config/config.py (init is stdlib-only - no import)."""
+    try:
+        with open(cfg_py, "r", encoding="utf-8") as f:
+            src = f.read()
+        m = re.search(rf"^{re.escape(name)}\s*[:=]\s*(?:int\s*=\s*)?(\d+)", src, re.M)
+        if m:
+            return int(m.group(1))
+    except OSError:
+        pass
+    return fallback
+
+
+def write_local_node_config(ctx: dict) -> None:
+    """Write DEFAULT settings for the local llama node (2026-10-25 auto-start).
+
+    config/llama_node.json is the single file both paths use: init writes sane defaults
+    here, and the admin wizard (utils/start_llama_node) overwrites it when an admin wants
+    a custom node. At boot the SERVER reconciles each LOCAL instance against this file:
+    healthy matching node -> attach; nothing running -> spawn detached with these settings
+    ("auto_start": true). NEVER overwrites an existing file - an admin's configuration wins.
+    """
+    import socket
+
+    root = ctx["root"]
+    path = os.path.join(root, "config", "llama_node.json")
+    if os.path.exists(path):
+        ok("config/llama_node.json: already present (admin/custom) - kept as-is")
+        return
+
+    cfg_py = os.path.join(root, "config", "config.py")
+    port = _read_int_from_config_py(cfg_py, "LLAMA_SERVER_PORT", 5000)
+    threads = _read_int_from_config_py(cfg_py, "LLAMA_SERVER_THREADS", 8)
+    gpu_layers = _read_int_from_config_py(cfg_py, "LLAMA_SERVER_GPU_LAYERS", 99)
+
+    # Concurrency by GPU tier: only a >=28 GB card (tier A) comfortably runs 2 slots with
+    # full per-slot context; everything else stays at the stable single slot.
+    concurrency = 2 if ctx["tier"]["id"] == "A" else 1
+
+    cfg = {
+        "name": socket.gethostname(),
+        "model": ctx["model_path"],
+        "bind": "127.0.0.1",
+        "port": port,
+        "concurrency": concurrency,
+        "ctx_per_slot": int(ctx["tier"]["ctx"]),
+        "threads": threads,
+        "gpu_layers": gpu_layers,
+        "extra_args": [],
+        # true = ZZZ_SERVER.bat boot spawns this node when nothing is on its port;
+        # set false to make the SERVER probe/attach only (admin starts it by hand).
+        "auto_start": True,
+    }
+    try:
+        write_json(path, cfg)
+        ok(f"config/llama_node.json: default local node written "
+           f"(port {port}, {concurrency} slot(s), ctx/slot {cfg['ctx_per_slot']}, auto_start)")
+        info("   ZZZ_SERVER.bat will now start this node automatically when nothing is on its port.")
+    except OSError as e:
+        warn(f"Could not write config/llama_node.json ({e}) - the SERVER falls back to "
+             f"default spawn settings at boot")

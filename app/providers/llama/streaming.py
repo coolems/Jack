@@ -97,6 +97,15 @@ async def _iter_sse_with_stall(aiter, timeout_sec: int, conv_id: str, api_url: s
                         "[STREAM-STALL] %s is REMOTE - not killing/restarting it from the brain. "
                         "Check that node's machine (llama-node log).", _backend.label,
                     )
+                elif _backend is not None and not _backend.spawned_by_us:
+                    # (2026-10-25) ATTACHED local node we did NOT spawn (admin launcher /
+                    # manual): same rule as remote - the brain never kills it. Mark unhealthy;
+                    # an admin restarts it via utils/start_llama_node/ZZZ_LLAMA_NODE.bat.
+                    _backend.mark_unhealthy("stream stalled; attached node is not auto-restarted")
+                    logger.error(
+                        "[STREAM-STALL] %s is an ATTACHED local node (not spawned by the SERVER) "
+                        "- not killing/restarting it from the brain.", _backend.label,
+                    )
                 else:
                     from .server import (
                         _kill_orphaned_process,

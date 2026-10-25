@@ -5,11 +5,21 @@ settings the brain would use, verifies it, prints a summary + the brain entry, a
 leaving llama-server running detached. The brain then attaches to it (attach-only) and
 discovers its slots/model via /props.
 
-Why a dedicated launcher instead of starting the whole SERVER here: a graceful SERVER
-shutdown TERMINATES every loopback llama-server (that is correct on the brain, fatal on a
-node), and a node does not need auth/queue/relay. This launcher only spawns + verifies.
+Why a dedicated launcher instead of starting the whole SERVER here: a node does not need
+auth/queue/relay, and this launcher only spawns + verifies. (2026-10-25: the brain's own
+SERVER no longer kills arbitrary loopback llamas on exit - it terminates ONLY backends it
+spawned itself; attached nodes survive SERVER shutdown.)
 
-Commands (see llama_node.py / ZZZ_LLAMA_NODE.bat):
+TWO WAYS TO USE THIS MODULE:
+  * ADMIN path   : utils/start_llama_node/llama_node.py + ZZZ_LLAMA_NODE.bat (interactive
+                   wizard, start/stop/status/restart/cmd - configure ANY node you like).
+  * REGULAR path : the SERVER boot calls ensure_local_node() for each LOCAL instance in
+                   config/llama_servers.json. It reconciles against config/llama_node.json
+                   (init writes sane defaults there): healthy matching node -> attach;
+                   nothing running -> spawn detached with those settings. Set
+                   "auto_start": false in llama_node.json to make the SERVER probe-only.
+
+Commands (see utils/start_llama_node/llama_node.py / ZZZ_LLAMA_NODE.bat):
     configure   interactive wizard -> config/llama_node.json
     start       idempotent: no-op if the right llama is already running, else (re)start
     stop        stop THIS node's llama-server (and record desired=stopped)
@@ -54,6 +64,12 @@ CONFIG_REL = os.path.join("config", "llama_node.json")
 EXAMPLE_REL = os.path.join("config", "llama_node.example.json")
 STATE_REL = os.path.join("config", ".llama_node_state.json")
 LOG_DIR_REL = "logs"
+
+# (2026-10-25 auto-start) What the LAST start() call did: "attached" (a healthy matching
+# llama was already there), "loading" (llama on the port is still loading - not ready yet),
+# "spawned" (we launched it and verified it), or "" when nothing happened. ensure_local_node()
+# reads this to report spawned_by_us without changing start()'s public signature.
+_LAST_START_ACTION: str = ""
 
 # Presets offered by the wizard. "ctx_per_slot": None means CONTEXT_WINDOW_TOKENS.
 PRESETS = {
@@ -232,6 +248,11 @@ def configure() -> int:
                  " ".join(existing.get("extra_args") or []), str)
     extra_args = extra.split() if extra else []
 
+    auto_start_default = existing.get("auto_start", True) if isinstance(existing.get("auto_start"), bool) else True
+    auto_start = _ask_yes_no(
+        "Should the SERVER auto-start this node when it boots and finds nothing on its port?",
+        default=auto_start_default)
+
     cfg = {
         "name": name,
         "model": model,
@@ -242,6 +263,9 @@ def configure() -> int:
         "threads": threads,
         "gpu_layers": gpu_layers,
         "extra_args": extra_args,
+        # (2026-10-25) SERVER auto-start flag: true = ZZZ_SERVER.bat boot spawns this node
+        # when nothing is on its port; false = the SERVER only probes/attaches.
+        "auto_start": bool(auto_start),
     }
     _save_json(_path(CONFIG_REL), cfg)
     print(f"\n[NODE] configuration written to {_path(CONFIG_REL)}")
@@ -265,8 +289,8 @@ def load_config() -> dict:
     raw = load_raw_config()
     if raw is None:
         raise RuntimeError(
-            f"{_path(CONFIG_REL)} not found. Run 'llama_node.py configure' "
-            f"(or ZZZ_LLAMA_NODE.bat -> Configure) on this machine first."
+            f"{_path(CONFIG_REL)} not found. Run utils\\start_llama_node\\llama_node.py configure "
+            f"(or double-click utils\\start_llama_node\\ZZZ_LLAMA_NODE.bat -> Configure) on this machine first."
         )
 
     extra = raw.get("extra_args") or []
@@ -283,6 +307,8 @@ def load_config() -> dict:
         "threads": int(raw["threads"]) if raw.get("threads") else None,
         "gpu_layers": int(raw["gpu_layers"]) if raw.get("gpu_layers") is not None else None,
         "extra_args": [str(a) for a in extra],
+        # Missing/invalid value on old files means True (auto-start is the regular-user default).
+        "auto_start": bool(raw["auto_start"]) if isinstance(raw.get("auto_start"), bool) else True,
     }
 
     if not (0 < cfg["port"] < 65536):
@@ -458,10 +484,13 @@ async def _wait_ready(cfg: dict, model_path: str, proc: subprocess.Popen) -> tup
 
 
 async def start(force: bool = False) -> int:
+    global _LAST_START_ACTION
+    _LAST_START_ACTION = ""
     cfg = load_config()
     state = _read_state()
     if state.get("desired") == "stopped" and not force:
         print(f"[NODE] '{cfg['name']}' was intentionally stopped. Use 'start --force' to run it.")
+        _LAST_START_ACTION = ""   # nothing running - caller must report down (no auto-spawn)
         return 0
 
     # Reconcile: is the desired llama already there?
@@ -480,6 +509,7 @@ async def start(force: bool = False) -> int:
             print(f"[NODE] '{cfg['name']}' already running on port {cfg['port']} "
                   f"(slots {reported}, ctx/slot {_reported_ctx(props)}, "
                   f"model {props.get('model_alias') or props.get('model_path')}) - nothing to do")
+            _LAST_START_ACTION = "attached"
             return 0
 
         # Already launched by us with THIS configured slot/context count, but llama reports
@@ -497,6 +527,7 @@ async def start(force: bool = False) -> int:
                   f"ctx/slot={cfg.get('ctx_per_slot') or CONTEXT_WINDOW_TOKENS}, llama reports "
                   f"slots={reported} ctx/slot={_reported_ctx(props)}. Keeping it running; "
                   f"the brain routes by the reported values.")
+            _LAST_START_ACTION = "attached"
             return 0
 
     # A port with a listener but no /props is either a llama still LOADING or a foreign
@@ -511,6 +542,7 @@ async def start(force: bool = False) -> int:
             if cmdline and "llama" in cmdline.lower():
                 print(f"[NODE] llama-server (PID {pid}) is already starting/loading on port "
                       f"{cfg['port']} - not spawning another one. Check 'status' or wait.")
+                _LAST_START_ACTION = "loading"
                 return 0
             if await _healthy(cfg["port"]):
                 raise RuntimeError(
@@ -545,6 +577,7 @@ async def start(force: bool = False) -> int:
     ok, message, ready_props = await _wait_ready(cfg, model_path, proc)
     if not ok:
         _write_state(desired="unknown", pid=None, last_error=message)
+        _LAST_START_ACTION = ""
         print(f"[NODE] ERROR: {message}")
         tail = _tail(log_path)
         if tail:
@@ -558,6 +591,7 @@ async def start(force: bool = False) -> int:
               f"{cfg['concurrency']} - the brain will clamp routing to {reported}.")
 
     _print_summary(cfg, model_path, log_path)
+    _LAST_START_ACTION = "spawned"
     return 0
 
 
@@ -669,6 +703,191 @@ async def restart(force: bool = True) -> int:
     except RuntimeError as e:
         print(f"[NODE] stop skipped: {e}")
     return await start(force=True)
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive entry point for the SERVER boot (2026-10-25 auto-start)
+# ---------------------------------------------------------------------------
+
+
+
+def get_last_start_action() -> str:
+    """What the last start() call did: "attached" | "loading" | "spawned" | "".
+
+    ensure_local_node() uses this to report spawned_by_us WITHOUT changing start()'s
+    public signature (the admin CLI keeps working exactly as before)."""
+    return _LAST_START_ACTION
+
+
+async def ensure_local_node(instance) -> tuple[bool, bool]:
+    """SERVER-boot reconcile for ONE LOCAL instance: attach if healthy+matching, else spawn.
+
+    *instance* is a config.LlamaServerInstance (loopback host only - remotes never come here).
+
+    Returns ``(spawned_by_us, ok)``:
+      spawned_by_us=True  -> WE launched llama-server; the SERVER owns it and may terminate
+                             it on shutdown / restart.
+      spawned_by_us=False -> we attached to a node started OUTSIDE us (admin launcher or
+                             manual); the SERVER must NEVER kill it - it survives shutdown.
+
+    Behavior:
+      * config/llama_node.json exists AND its port matches this instance's port:
+          auto_start=true  -> full idempotent reconcile via start(): healthy matching llama
+                              on the port is attached; otherwise (nothing there, or a
+                              misconfigured one) we spawn detached with those settings.
+          auto_start=false -> probe only: attach when healthy+matching, else report down and
+                              NEVER spawn (the admin owns this node's lifecycle).
+      * no config file / different port / unreadable: fall back to the legacy start_server()
+        path (spawn with generic defaults) - exactly the pre-2026-10 behavior.
+
+    Never raises: any failure is logged and reported as ok=False so boot can continue.
+    """
+    from .server import start_server
+    from .model_state import key_for_api_url
+
+    inst_key = key_for_api_url(instance.api_url) or (instance.host.lower(), instance.port)
+
+    raw = load_raw_config()
+    cfg = None
+    if raw is not None:
+        try:
+            cfg = load_config()
+        except RuntimeError as e:
+            logger.warning("[NODE] %s unreadable/invalid (%s) - falling back to default spawn",
+                           _path(CONFIG_REL), e)
+
+    use_node_cfg = (cfg is not None and int(cfg["port"]) == int(instance.port))
+    if cfg is not None and not use_node_cfg:
+        logger.info("[NODE] %s describes port %d but this instance uses port %d - "
+                    "ignoring it for auto-start", _path(CONFIG_REL), cfg["port"], instance.port)
+
+    if not use_node_cfg:
+        # Legacy path (no node config): the old start_server() spawn with generic defaults.
+        # spawned_by_us=True: WE launched it -> the SERVER owns it and stops it on exit.
+        ok = await start_server(instance.api_url, host=instance.host, port=instance.port,
+                                concurrency=(instance.concurrency or LLAMA_SERVER_PARALLEL))
+        return (bool(ok), bool(ok))
+
+    if not cfg.get("auto_start", True):
+        # Probe-only: attach when healthy AND matching, never spawn.
+        props = await _fetch_props(instance.port)
+        if props and _props_match(cfg, props):
+            logger.info("[NODE] %s:%d auto_start=false - attaching to the existing node "
+                        "(model=%s, slots=%s)", instance.host, instance.port,
+                        cfg["name"], props.get("total_slots"))
+            return (False, True)
+        logger.warning(
+            "[NODE] %s:%d auto_start=false and no matching healthy node on port %d - "
+            "NOT spawning. Start it with utils\\start_llama_node\\ZZZ_LLAMA_NODE.bat or set "
+            'auto_start\": true in %s.', instance.host, instance.port, instance.port, _path(CONFIG_REL))
+        return (False, False)
+
+    # Full idempotent reconcile: attach if the right llama is already there, else spawn.
+    try:
+        rc = await start()
+    except RuntimeError as e:
+        logger.error("[NODE] auto-start failed for %s:%d: %s", instance.host, instance.port, e)
+        return (False, False)
+
+    action = get_last_start_action()
+    if rc != 0 or action == "":
+        logger.error("[NODE] auto-start did not bring up %s:%d (see [NODE] lines above)",
+                     instance.host, instance.port)
+        return (False, False)
+    if action == "loading":
+        # A llama is loading on the port but not ready yet - the health poller will pick it
+        # up; we did NOT spawn it ourselves.
+        logger.info("[NODE] %s:%d has a llama still LOADING - attaching once /props lands",
+                    instance.host, instance.port)
+        return (False, False)
+
+    if action == "spawned":
+        # Register the detached Popen so stop_all() can terminate it on SERVER exit.
+        from .process_mgmt import _set_server_process
+        state = _read_state()
+        pid = state.get("pid")
+        proc = None
+        try:
+            if pid:
+                proc = _reacquire_by_pid(int(pid))
+        except Exception as e:
+            logger.debug("[NODE] could not re-acquire handle for PID %s: %s", pid, e)
+        if proc is not None:
+            _set_server_process(proc, key=inst_key)
+            # Authoritative model-state + persistence for the instance we just launched.
+            try:
+                from . import model_state as _model_state
+                from . import model_persistence
+                _mp = state.get("model_path") or cfg["model"]
+                _model_state.mark_loaded(os.path.basename(str(_mp)), key=inst_key)
+                model_persistence.write_last_model(os.path.basename(str(_mp)), str(_mp))
+            except Exception as e:
+                logger.debug("[NODE] model-state update after auto-spawn failed (non-fatal): %s", e)
+        else:
+            # No handle to terminate later - treat it like an attached node.
+            logger.warning("[NODE] spawned llama-server but could not re-acquire its process "
+                           "handle - SERVER shutdown will NOT stop it.")
+            return (False, True)
+        logger.info("[NODE] %s:%d auto-SPAWNED with init settings (slots=%d, ctx/slot=%s) - "
+                    "SERVER owns this node and stops it on exit.", instance.host, instance.port,
+                    cfg["concurrency"], cfg.get("ctx_per_slot") or CONTEXT_WINDOW_TOKENS)
+        return (True, True)
+
+    # attached: healthy matching llama was already running outside us.
+    logger.info("[NODE] %s:%d auto-ATTACHED to the existing node '%s' - it survives SERVER "
+                "shutdown (start/stop it with utils\\start_llama_node\\ZZZ_LLAMA_NODE.bat).",
+                instance.host, instance.port, cfg["name"])
+    return (False, True)
+
+
+def _reacquire_by_pid(pid: int):
+    """Re-open a handle to an already-running detached llama-server so the SERVER can
+    terminate it on exit. Returns a Popen-like shim (poll/terminate/wait) or None.
+
+    We cannot re-attach a real HANDLE to a foreign process, so termination goes through
+    taskkill /PID - which is exactly what _terminate_process() needs: poll() tells it the
+    process is gone, terminate()/wait() do the kill and confirm exit."""
+    import subprocess as _sp
+
+    def _alive(pid_: int) -> bool:
+        try:
+            r = _sp.run(["tasklist", "/FI", f"PID eq {pid_}"],
+                        capture_output=True, text=True, timeout=5)
+            return str(pid_) in (r.stdout or "")
+        except Exception:
+            # tasklist unavailable - assume alive so the caller tries terminate() anyway.
+            return True
+
+    if not _alive(int(pid)):
+        return None
+
+    class _PidShim:
+        def __init__(self, pid_: int):
+            self.pid = pid_
+
+        def poll(self) -> Optional[int]:
+            # Popen semantics: None while alive, exit code (here 0) once gone.
+            return None if _alive(self.pid) else 0
+
+        def terminate(self) -> None:
+            try:
+                _sp.run(["taskkill", "/PID", str(self.pid), "/F"], capture_output=True, timeout=10)
+            except Exception as e:
+                logger.warning("[NODE] taskkill for PID %s failed: %s", self.pid, e)
+
+        def kill(self) -> None:
+            self.terminate()
+
+        def wait(self, timeout=None) -> int:
+            import time as _t
+            deadline = _t.time() + (timeout or 10)
+            while _t.time() < deadline:
+                if self.poll() is not None:
+                    return 0
+                _t.sleep(0.3)
+            raise _sp.TimeoutExpired(cmd=f"pid {self.pid}", timeout=timeout or 10)
+
+    return _PidShim(int(pid))
 
 
 # ---------------------------------------------------------------------------
