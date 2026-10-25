@@ -89,6 +89,7 @@ function stopGeneration() {
     // the backend call below fails or times out - clicking Stop can never leave a ghost state.
     COOLEMS.isStreaming = false;
     setButtonState(false);
+    // (2026-11-24) the alias proxies into ChatStreamState for THIS conversation.
     COOLEMS.streamingBuffer = '';
 
     // Abort any pending stop request to prevent multiple concurrent stops
@@ -381,30 +382,77 @@ function appendRecoveryWarning(message, status) {
     if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) { scrollToBottom(); }
 }
 
-// ===== REPLAY GUARD (2026-09-08 multi-chat UI fix) ============================
-// When switching back to a chat, the server replays that chat's buffered frame tail
-// (frames captured while nobody was looking). Those frames must NOT be rendered
-// blindly: content/thinking chunks whose answer is ALREADY in the DB history would
-// duplicate the last assistant bubble. The guard renders replayed assistant-streaming
-// frames ONLY when this chat really is generating/queued AND no fresh assistant
-// bubble exists yet beyond the baseline (assistant messages loaded from the DB).
-// A `replay_end` frame marks where the buffered tail ends; live frames follow it.
-COOLEMS._inReplay = false;
-COOLEMS._baselineAssistant = 0;
+// ===== PER-CONVERSATION STREAM STATE (2026-11-24 multi-chat mix fix) ====================
+// THE FIX for the cross-workspace content mix: streamingBuffer / _inReplay /
+// _baselineAssistant used to be ONE global set of variables shared by every workspace.
+// With two concurrent long jobs, a frame from background workspace A arriving during an
+// await window (or right after switching) would overwrite the freshly reset globals that
+// belonged to the view on screen - text from one chat rendered into another.
+// Every piece of per-turn render state now lives in ChatStreamState, keyed by the conv id
+// that OWNS the frame (threaded through handleWebSocketMessage(data, ownerConvId)), never
+// by whichever workspace happens to be current at delivery time.
+const ChatStreamState = {
+    states: {},   // convId -> { streamingBuffer, inReplay, baselineAssistant, pendingTurnStatsLine }
+
+    /** Get (or lazily create) the render state of one conversation. */
+    get(convId) {
+        if (!convId) return null;
+        let s = this.states[convId];
+        if (!s) {
+            s = { streamingBuffer: '', inReplay: false, baselineAssistant: 0, pendingTurnStatsLine: '' };
+            this.states[convId] = s;
+        }
+        return s;
+    },
+
+    /** Drop one conversation's render state (workspace deleted / view dropped). */
+    drop(convId) { if (convId && this.states[convId]) delete this.states[convId]; },
+
+    clearAll() { this.states = {}; },
+};
+
+// Legacy aliases: COOLEMS.streamingBuffer / _inReplay / _baselineAssistant /
+// _pendingTurnStatsLine still work for the CURRENT conversation (message.js send path,
+// switch paths) - they proxy into ChatStreamState instead of holding their own copy.
+(function defineLegacyStreamingAliases() {
+    function alias(prop, key) {
+        Object.defineProperty(COOLEMS, prop, {
+            get: () => {
+                const s = COOLEMS.currentConversation ? ChatStreamState.get(COOLEMS.currentConversation) : null;
+                return s ? s[key] : (key === 'streamingBuffer' || key === 'pendingTurnStatsLine' ? '' : 0);
+            },
+            set: v => {
+                if (!COOLEMS.currentConversation) return;   // no view - nothing to bind to
+                ChatStreamState.get(COOLEMS.currentConversation)[key] = v;
+            }
+        });
+    }
+    alias('streamingBuffer', 'streamingBuffer');
+    alias('_inReplay', 'inReplay');
+    alias('_baselineAssistant', 'baselineAssistant');
+    alias('_pendingTurnStatsLine', 'pendingTurnStatsLine');
+})();
 
 function _countRenderedAssistantBubbles() {
     const c = document.getElementById('chatContainer');
     return c ? c.querySelectorAll('.message.assistant').length : 0;
 }
 
-/** True while replaying the buffered tail AND this chat has a live session. */
-function _replayShouldRenderAssistantFrame() {
-    if (!COOLEMS._inReplay) return true;                       // live frame - always render
-    const st = (typeof ChatSocketPool !== 'undefined' && COOLEMS.currentConversation)
-        ? (ChatSocketPool.statuses[COOLEMS.currentConversation] || 'idle') : 'idle';
-    if (st === 'idle') return false;                            // turn finished while away - answer is in the DB
-    const fresh = _countRenderedAssistantBubbles() > COOLEMS._baselineAssistant;
-    return !fresh;                                              // already rendered this turn's bubble once
+/**
+ * True while replaying the buffered tail AND this chat has a live session.
+ * (2026-11-24) ownerConvId is the conversation that OWNS the frame - its status and
+ * baseline are consulted, not currentConversation's (the old code evaluated the wrong
+ * chat during switch windows).
+ */
+function _replayShouldRenderAssistantFrame(ownerConvId) {
+    const convId = ownerConvId || COOLEMS.currentConversation;
+    const st0 = convId ? ChatStreamState.get(convId) : null;
+    if (!st0 || !st0.inReplay) return true;                   // live frame - always render
+    const st = (typeof ChatSocketPool !== 'undefined' && convId)
+        ? (ChatSocketPool.statuses[convId] || 'idle') : 'idle';
+    if (st === 'idle') return false;                           // turn finished while away - answer is in the DB
+    const fresh = _countRenderedAssistantBubbles() > st0.baselineAssistant;
+    return !fresh;                                             // already rendered this turn's bubble once
 }
 
 // (2026-10-10) FINAL TURN STATS: splice the last loop-stats line directly above
@@ -413,10 +461,12 @@ function _replayShouldRenderAssistantFrame() {
 // Idempotent + replay-safe: if the line is already present (DB-loaded bubble or a
 // replayed frame) nothing happens; if the bubble is not rendered yet the line is parked
 // in COOLEMS._pendingTurnStatsLine and applied on the 'done' frame.
-function applyTurnStatsLine(line) {
+function applyTurnStatsLine(line, ownerConvId) {
     if (!line || typeof line !== 'string') return;
+    const convId = ownerConvId || COOLEMS.currentConversation;
+    const st0 = convId ? ChatStreamState.get(convId) : null;   // per-conv parking spot (2026-11-24 mix fix)
     const container = document.getElementById('chatContainer');
-    if (!container) { COOLEMS._pendingTurnStatsLine = line; return; }
+    if (!container) { if (st0) st0.pendingTurnStatsLine = line; return; }
 
     // Last assistant bubble whose raw content carries the TASK DONE marker.
     let target = null;
@@ -426,7 +476,7 @@ function applyTurnStatsLine(line) {
         if (raw.indexOf('Agentic AI: TASK DONE') !== -1) { target = bubbles[i]; break; }
     }
     if (!target) {
-        COOLEMS._pendingTurnStatsLine = line;   // bubble not rendered yet - apply on 'done'
+        if (st0) st0.pendingTurnStatsLine = line;   // bubble not rendered yet - apply on 'done'
         return;
     }
 
@@ -455,13 +505,30 @@ function applyTurnStatsLine(line) {
         contentDiv.innerHTML = parseMarkdown(newRaw, false);
     }
 }
-function handleWebSocketMessage(data) {
+function handleWebSocketMessage(data, ownerConvId) {
+    // (2026-11-24 mix fix) every frame is handled against the state of the conversation that
+    // OWNS it - never the one that happens to be on screen at delivery time. All live call
+    // sites pass the owner explicitly (socket pool / flushFrames); a frame without an owner
+    // has no view it belongs to and must not touch any render state.
+    const convId = ownerConvId || COOLEMS.currentConversation;
+    if (!convId) return;
+    const st = ChatStreamState.get(convId);
     const chatContainer = document.getElementById('chatContainer');
+
+    // THE core mix fix: if this frame's own view is not the one on screen (mid-switch rebuild,
+    // or a stale handler call), re-queue it for its workspace instead of rendering into a
+    // container that already shows another workspace. On restore, flushFrames() replays it in
+    // order - nothing is lost and nothing crosses over.
+    if (convId && convId !== COOLEMS.currentConversation) {
+        WorkspaceViews.queueFrame(convId, data);
+        return;
+    }
+
     const wasNearBottom = isNearBottom(chatContainer);
 
     // End of the buffered-tail replay: live streaming resumes from here on.
     if (data.type === 'replay_end') {
-        COOLEMS._inReplay = false;
+        if (st) st.inReplay = false;
         return;
     }
 
@@ -473,9 +540,9 @@ function handleWebSocketMessage(data) {
 
     if (data.type === 'content') {
         // Replay guard FIRST (before touching the buffer): skip assistant-streaming
-        // frames that would duplicate a DB-persisted answer.
-        if (!_replayShouldRenderAssistantFrame()) return;
-        COOLEMS.streamingBuffer += data.content;
+        // frames that would duplicate a DB-persisted answer. Per-conv state, per-conv status.
+        if (!_replayShouldRenderAssistantFrame(convId)) return;
+        st.streamingBuffer += data.content;
 
         let lastMsg = chatContainer.lastElementChild;
         if (lastMsg && lastMsg.classList.contains('assistant') && lastMsg.dataset.streaming) {
@@ -483,17 +550,17 @@ function handleWebSocketMessage(data) {
             const messageContent = lastMsg.querySelector('.message-content');
             const thinkingBlock = messageContent ? messageContent.querySelector('.thinking-block') : null;
 
-            contentDiv.innerHTML = parseMarkdown(COOLEMS.streamingBuffer, true);
+            contentDiv.innerHTML = parseMarkdown(st.streamingBuffer, true);
 
             if (thinkingBlock && messageContent && !messageContent.querySelector('.thinking-block')) {
                 messageContent.insertBefore(thinkingBlock, contentDiv);
             }
 
-            if (messageContent) messageContent.setAttribute('data-raw-content', COOLEMS.streamingBuffer);
+            if (messageContent) messageContent.setAttribute('data-raw-content', st.streamingBuffer);
         } else {
-            COOLEMS.streamingBuffer = data.content;
+            st.streamingBuffer = data.content;
             // SECURITY fix 2026-10-05: appendMessage is async - fire-and-forget in this sync handler (DOM mutation happens synchronously inside).
-            void appendMessage('assistant', COOLEMS.streamingBuffer, true).catch(e => console.error('[WS] appendMessage failed:', e));
+            void appendMessage('assistant', st.streamingBuffer, true).catch(e => console.error('[WS] appendMessage failed:', e));
         }
 
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) {
@@ -502,8 +569,8 @@ function handleWebSocketMessage(data) {
             showScrollIndicator();
         }
     } else if (data.type === 'thinking') {
-        // Replay guard (same rule as content frames).
-        if (!_replayShouldRenderAssistantFrame()) return;
+        // Replay guard (same rule as content frames) - evaluated against THIS frame's owner.
+        if (!_replayShouldRenderAssistantFrame(convId)) return;
 
         let lastMsg = chatContainer.lastElementChild;
         let thinkingBlock = null;
@@ -523,9 +590,9 @@ function handleWebSocketMessage(data) {
             }
         } else {
             // (2026-10-23 live steering) a new assistant SEGMENT begins after a steering
-            // bubble / tool row / user message. Reset the accumulated content buffer so the
-            // next content chunks render only this segment - not the previous answer again.
-            COOLEMS.streamingBuffer = '';
+            // bubble / tool row / user message. Reset THIS conversation's accumulated content
+            // buffer so the next chunks render only this segment - not the previous answer again.
+            st.streamingBuffer = '';
             void appendMessage('assistant', '', true).catch(e => console.error('[WS] appendMessage failed:', e));
             lastMsg = chatContainer.lastElementChild;
             messageContent = lastMsg.querySelector('.message-content');
@@ -582,11 +649,13 @@ function handleWebSocketMessage(data) {
     } else if (data.type === 'turn_stats') {
         // (2026-10-10) final loop-stats line for the finished agentic turn - splice it
         // above 'Agentic AI: TASK DONE' in the answer bubble (idempotent, replay-safe).
-        applyTurnStatsLine(data.line);
+        applyTurnStatsLine(data.line, convId);
     } else if (data.type === 'token_stats') {
-        // LIVE token stats pushed from server after every chat_stream() call
-        // This is bulletproof — each WebSocket connection gets its own data
-        updateHistoryStatusBar(data);
+        // LIVE token stats pushed from server after every chat_stream() call.
+        // (2026-11-24 mix fix) the status bar is a SINGLE view-level element: only frames
+        // owned by the workspace on screen may write it - a background job's stats used to
+        // overwrite the visible one ("stats jumping between workspaces").
+        if (!convId || convId === COOLEMS.currentConversation) updateHistoryStatusBar(data);
     } else if (data.type === 'recovery_warning') {
         // Server recovery warning - show orange warning block in chat
         appendRecoveryWarning(data.message, data.status || 'warning');
@@ -600,26 +669,39 @@ function handleWebSocketMessage(data) {
         // provider' suggestions) looked like a broken widget and was useless for real
         // errors such as 'vision is not available (no mmproj)'. Plain text bubble = clean.
         void appendMessage('assistant', data.content, false).catch(e => console.error('[WS] appendMessage failed:', e));
-        COOLEMS.isStreaming = false; setButtonState(false); COOLEMS.streamingBuffer = '';
+        // (2026-11-24 mix fix) reset only THIS conversation's streaming state; the shared
+        // send button reflects the view on screen - a background error must not clear it.
+        st.streamingBuffer = '';
+        if (!convId || convId === COOLEMS.currentConversation) {
+            COOLEMS.isStreaming = false; setButtonState(false);
+        }
         updateConnectionStatus('error', 'Provider Error');
     } else if (data.type === 'done') {
-        COOLEMS.isStreaming = false; setButtonState(false); COOLEMS.streamingBuffer = '';
+        // (2026-11-24 mix fix) 'done' settles the conversation that OWNS it. The send button,
+        // file panel and scroll state belong to the view on screen - a background workspace's
+        // completion must not clear them while another job is visibly running.
+        st.streamingBuffer = '';
+        if (!convId || convId === COOLEMS.currentConversation) {
+            COOLEMS.isStreaming = false; setButtonState(false);
+        }
         const lastMsg = chatContainer.lastElementChild;
-        if (lastMsg) {
+        if (lastMsg && (!convId || convId === COOLEMS.currentConversation)) {
             delete lastMsg.dataset.streaming;
             lastMsg.querySelectorAll('.streaming-code').forEach(el => el.classList.remove('streaming-code'));
         }
         // (2026-10-10) flush a parked final-stats line if the 'turn_stats' frame arrived
-        // before this turn's answer bubble existed (or during replay). Idempotent inside.
-        if (COOLEMS._pendingTurnStatsLine) {
-            const _pl = COOLEMS._pendingTurnStatsLine;
-            delete COOLEMS._pendingTurnStatsLine;
-            applyTurnStatsLine(_pl);
+        // before this turn's answer bubble existed (or during replay). Per-conv, idempotent.
+        if (st.pendingTurnStatsLine) {
+            const _pl = st.pendingTurnStatsLine;
+            st.pendingTurnStatsLine = '';
+            applyTurnStatsLine(_pl, convId);
         }
-        if (COOLEMS.filesPanelOpen && typeof loadWorkingRootFiles === 'function') loadWorkingRootFiles();
-        COOLEMS.userScrolledUp = false;
-        COOLEMS.autoScrollEnabled = true;
-        hideScrollIndicator();
+        if (!convId || convId === COOLEMS.currentConversation) {
+            if (COOLEMS.filesPanelOpen && typeof loadWorkingRootFiles === 'function') loadWorkingRootFiles();
+            COOLEMS.userScrolledUp = false;
+            COOLEMS.autoScrollEnabled = true;
+            hideScrollIndicator();
+        }
     } else if (data.type === 'search_web') {
         const d = document.createElement('div'); d.className = 'search-web-link';
         d.innerHTML = `<a href="#" onclick="triggerWebSearch('${escapeHtml(data.query)}'); return false;">🔍 Search same question on internet</a>`;
@@ -628,11 +710,14 @@ function handleWebSocketMessage(data) {
     } else if (data.type === 'error') {
         logError('Server error:', data.content);
         showNotification(data.content, 'error');
-        COOLEMS.isStreaming = false;
-        COOLEMS.streamingAgentMode = false;
-        setButtonState(false);
-        if (typeof settlePendingSteerBubbles === 'function') {
-            settlePendingSteerBubbles('the response failed before this could be applied.');
+        // (2026-11-24 mix fix) only the view on screen owns the button/steer state.
+        if (!convId || convId === COOLEMS.currentConversation) {
+            COOLEMS.isStreaming = false;
+            COOLEMS.streamingAgentMode = false;
+            setButtonState(false);
+            if (typeof settlePendingSteerBubbles === 'function') {
+                settlePendingSteerBubbles('the response failed before this could be applied.');
+            }
         }
     }
 }

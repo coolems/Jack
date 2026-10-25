@@ -161,7 +161,9 @@ const ChatSocketPool = {
                 WorkspaceViews.queueFrame(convId, msg);
                 return;
             }
-            handleWebSocketMessage(msg);
+            // (2026-11-24 mix fix) pass the OWNING conversation: the handler now keeps all
+            // streaming state per-conv instead of in globals shared by every workspace.
+            handleWebSocketMessage(msg, convId);
         };
 
         ws.onerror = () => {

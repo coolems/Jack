@@ -132,6 +132,8 @@ async function deleteConversation(id) {
             // queued frames and attention badge in ALL cases — a background socket for a
             // deleted conversation would otherwise keep queueing frames into nothing.
             WorkspaceViews.drop(id, true);
+            // (2026-11-24 mix fix) drop its per-conversation render state as well.
+            if (typeof ChatStreamState !== 'undefined') ChatStreamState.drop(id);
             ChatSocketPool.clearAttention(id);
             // A deleted workspace must not keep generating (burning tokens into a deleted row):
             // stop its session in ALL cases — the current one is stopped below as well.
@@ -327,7 +329,9 @@ async function loadConversation(id) {
 
         // RESTORE THIS CHAT'S GENERATION STATE (2026-09-08 multi-chat UI fix): if this chat is
         // actively thinking/generating (or queued), the send button shows its red STOP state.
-        COOLEMS.streamingBuffer = '';
+        // NOTE (2026-11-24 mix fix): per-conversation stream state (buffer/baseline/replay) is
+        // written BELOW, right after currentConversation flips to newConvId - writing it here
+        // would bind it to the OLD conversation's state via the legacy alias.
         if (_liveStatus === 'generating' || _liveStatus === 'queued') {
             COOLEMS.isStreaming = true;
             // (2026-10-23 live steering) authoritative from the channel when known.
@@ -342,7 +346,6 @@ async function loadConversation(id) {
             setButtonState(false);                      // blue send button: free to prompt
             ChatSocketPool.updateChatStatus(newConvId, 'idle');
         }
-        COOLEMS._baselineAssistant = _countAssistantBubbles();
 
         // Flip ONLY now that the container shows newConvId's history: any earlier await window
         // (working-root POST, appendMessage loop) would have rendered live frames into the
@@ -350,6 +353,11 @@ async function loadConversation(id) {
         // COOLEMS.ws alias to THIS chat's socket and queued frames flush straight after it.
         COOLEMS.currentConversation = newConvId;          // flip right before the swap
         ChatSocketPool.clearAttention(newConvId);         // user is looking at it now — no badge
+
+        // (2026-11-24 mix fix) NOW that currentConversation IS newConvId, bind its per-conv
+        // render state: fresh buffer + baseline = the assistant bubbles just rebuilt from DB.
+        COOLEMS.streamingBuffer = '';
+        COOLEMS._baselineAssistant = _countAssistantBubbles();
 
         // (2026-09-08 multi-chat) open this chat's own socket immediately — the server
         // replays any buffered background frames on connect, so nothing is lost.

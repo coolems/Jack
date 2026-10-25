@@ -76,14 +76,19 @@ const WorkspaceViews = {
         const lastMsg = container.lastElementChild;
         if (lastMsg && lastMsg.classList.contains('assistant') && lastMsg.dataset.streaming) midStream = true;
 
+        // (2026-11-24 mix fix) read THIS conversation's own render state - the old code read
+        // COOLEMS globals that a concurrent workspace could have overwritten between stash and
+        // restore, which is how one chat's buffer leaked into another.
+        const _st = (typeof ChatStreamState !== 'undefined') ? ChatStreamState.get(convId) : null;
+
         // Detach the REAL node — listeners, dataset and countdown intervals stay attached to it.
         const node = document.createElement('div');   // holder keeps the subtree out of layout
         while (container.firstChild) node.appendChild(container.firstChild);
 
         this.views[convId] = {
             node: node,
-            streamingBuffer: COOLEMS.streamingBuffer || '',
-            baselineAssistant: COOLEMS._baselineAssistant || 0,
+            streamingBuffer: _st ? (_st.streamingBuffer || '') : '',
+            baselineAssistant: _st ? (_st.baselineAssistant || 0) : 0,
             scrollPos: container.scrollTop || 0,
             midStream: midStream,
             // The folder this workspace was using — re-activated on fast-path restore so a
@@ -129,11 +134,16 @@ const WorkspaceViews = {
         while (v.node.firstChild) container.appendChild(v.node.firstChild);
         container.scrollTop = v.scrollPos || 0;
 
-        COOLEMS.streamingBuffer = v.streamingBuffer;
-        COOLEMS._baselineAssistant = v.baselineAssistant;
-        // The stashed view was NOT rebuilt from the DB: replayed/queued frames are pure
-        // continuation of what is already on screen, so the replay guard must stay OFF.
-        COOLEMS._inReplay = false;
+        // (2026-11-24 mix fix) write back into THIS conversation's own render state - never
+        // through the current-conversation alias, which could point elsewhere if a switch raced.
+        const _stR = (typeof ChatStreamState !== 'undefined') ? ChatStreamState.get(convId) : null;
+        if (_stR) {
+            _stR.streamingBuffer = v.streamingBuffer || '';
+            _stR.baselineAssistant = v.baselineAssistant || 0;
+            // The stashed view was NOT rebuilt from the DB: replayed/queued frames are pure
+            // continuation of what is already on screen, so the replay guard must stay OFF.
+            _stR.inReplay = false;
+        }
 
         delete this.views[convId];
         return true;
@@ -144,6 +154,8 @@ const WorkspaceViews = {
         if (this.views[convId]) {
             delete this.views[convId];
             this.order = this.order.filter(id => id !== convId);
+            // (2026-11-24 mix fix) the view is gone - its per-conversation render state goes with it.
+            if (typeof ChatStreamState !== 'undefined') ChatStreamState.drop(convId);
         }
         if (alsoFrames) this.dropFrames(convId);
     },
@@ -167,7 +179,9 @@ const WorkspaceViews = {
         const q = this.queues[convId];
         if (!q || !q.length) return 0;
         delete this.queues[convId];
-        for (const msg of q) handleWebSocketMessage(msg);
+        // (2026-11-24 mix fix) tag each frame with its owner so the handler updates THIS
+        // conversation's state even if currentConversation changes mid-flush.
+        for (const msg of q) handleWebSocketMessage(msg, convId);
         return q.length;
     },
 
@@ -178,6 +192,7 @@ const WorkspaceViews = {
 
     /** Drop everything (page unload / hard reset). */
     clearAll() {
+        if (typeof ChatStreamState !== 'undefined') ChatStreamState.clearAll();
         for (const id of Object.keys(this.views)) this.drop(id, true);
         // Queues can also exist WITHOUT a stashed view (a background chat that never had its
         // DOM parked) - the views loop above would miss them, so reset the map outright.
