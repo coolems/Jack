@@ -327,32 +327,23 @@ def _make_net_ask_callback(ctx, working_dir):
                 command = str(req.get("command", "?"))
                 payload = ("# attempted by the approved python_exec code\n" + command)
                 description = ("The Python code you approved is trying to RUN AN EXTERNAL PROGRAM "
-                               "that the python_exec sandbox normally blocks: %s. Command: %s. "
-                               "Allow runs exactly this one spawn (each different command asks "
-                               "again); Deny keeps it blocked. NOTE: an allowed program runs at OS "
-                               "level, outside the sandbox's file containment." % (what, command))
+                               "(%s). Command: %s." % (what, command))
             elif kind == "file":
                 # OUT-OF-SANDBOX FILE CONSENT (2026-11-24): the approved script wants to
                 # touch a path outside working_root. Show the exact operation + path.
                 op = str(req.get("op", "?"))
                 fpath = str(req.get("path", "?"))
                 payload = ("# attempted by the approved python_exec code (operation: %s)" % op)
-                description = ("The Python code you approved is trying to ACCESS A FILE "
-                               "OUTSIDE your working_root -- the python_exec sandbox normally "
-                               "blocks this. Operation: %s on path: %s. Allow opens exactly "
-                               "this path (and its folder subtree) for the rest of this run; "
-                               "Deny keeps it blocked." % (op, fpath))
+                description = ("The Python code you approved is trying to ACCESS A FILE OUTSIDE your "
+                               "working_root. Operation: %s on path: %s." % (op, fpath))
             else:
                 host = str(req.get("host", "?"))
                 port = req.get("port", "")
                 method = str(req.get("method", "connect"))
                 payload = ("socket.%s((%r, %s))   # attempted by the approved python_exec code"
                            % (method, host, port))
-                description = ("The Python code you approved is trying to connect OUTSIDE "
-                               "your machine -- the python_exec sandbox normally blocks this. "
-                               "Target: %s:%s via socket.%s(). Allow opens exactly this one "
-                               "connection for the rest of this run; Deny keeps it blocked."
-                               % (host, port, method))
+                description = ("The Python code you approved is trying to connect OUTSIDE your machine. "
+                               "Target: %s:%s via socket.%s()." % (host, port, method))
             rid = state.new_request_id()
             await ws.send_text(json.dumps(build_frame(
                 conv_id, rid, payload, kind=kind, description=description)))

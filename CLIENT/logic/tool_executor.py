@@ -547,8 +547,7 @@ class ToolExecutor:
 
         result = await ConsentDialog("url").ask(
             websocket=websocket, conv_id=conversation_id, payload=url,
-            description=(f"The SSRF guard blocked this target by default: {why}. "
-                         "Allow opens exactly this one URL."),
+            description=f"The SSRF guard blocked this target: {why}",
             session_timer=self.session_timer)
 
         if result.allowed:
