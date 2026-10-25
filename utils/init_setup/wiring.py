@@ -324,9 +324,11 @@ def write_local_node_config(ctx: dict) -> None:
     threads = _read_int_from_config_py(cfg_py, "LLAMA_SERVER_THREADS", 8)
     gpu_layers = _read_int_from_config_py(cfg_py, "LLAMA_SERVER_GPU_LAYERS", 99)
 
-    # Concurrency by GPU tier: only a >=28 GB card (tier A) comfortably runs 2 slots with
-    # full per-slot context; everything else stays at the stable single slot.
-    concurrency = 2 if ctx["tier"]["id"] == "A" else 1
+    # Default start is ALWAYS a single inference slot: one slot keeps the whole KV budget
+    # for one conversation (full per-slot context) and boots fastest on every GPU tier.
+    # Admins who want more parallel slots raise it in config/llama_node.json or via the
+    # node wizard (utils\start_llama_node -> Configure); init never overwrites that file.
+    concurrency = 1
 
     cfg = {
         "name": socket.gethostname(),
