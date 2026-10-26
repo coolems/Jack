@@ -110,11 +110,11 @@ __tool_description__ = {
                 },
                 "height": {
                     "type": "integer",
-                    "description": "Height of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget)"
+                    "description": "Height of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget; a request ABOVE the budget is generated at the clamped size and LANCZOS-upscaled to your exact dimensions - so 4K works on every tier)"
                 },
                 "width": {
                     "type": "integer",
-                    "description": "Width of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget)"
+                    "description": "Width of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget; a request ABOVE the budget is generated at the clamped size and LANCZOS-upscaled to your exact dimensions - so 4K works on every tier)"
                 },
                 "num_inference_steps": {
                     "type": "integer",
@@ -204,6 +204,7 @@ the client GPU:
 import sys
 import os
 import json
+import math
 import base64
 import io
 import argparse
@@ -263,7 +264,16 @@ def _clamp_resolution(task, snap=32):
     if not max_pixels or max_pixels <= 0:
         return max(width, snap), max(height, snap)
     target = float(max_pixels)
-    while width * height > target and (width > snap or height > snap):
+    if width * height <= target:
+        return max(width, snap), max(height, snap)
+    # v24 (ASPECT FIX): the old loop shrank one dimension at a time, which skewed the
+    # aspect badly for oversized requests (3840x2160 -> 1312x1344: nearly square). Now
+    # scale BOTH dimensions by ONE factor so the aspect ratio is preserved - what matters
+    # when _maybe_upscale later resizes the result back to the exact requested size.
+    f = math.sqrt(target / float(width * height))
+    width = max(snap, int(width * f) // snap * snap)
+    height = max(snap, int(height * f) // snap * snap)
+    while width * height > target:  # safety net: floor() can still land just over
         if width >= height and width > snap:
             width -= snap
         elif height > snap:
@@ -436,6 +446,35 @@ def _load_pipeline(pipeline_cls, task):
     return pipe, loaded_model_id, loaded_dtype
 
 
+def _maybe_upscale(task, image):
+    """Resize the generated image to EXACTLY the requested dimensions when they exceed
+    the tier's max_pixels budget (4K support, v24).
+
+    The diffusion models are trained up to ~1328x1328 (Qwen-Image) / 1024px (SANA), so a
+    3840x2160 request is generated at the clamped size and then LANCZOS-upscaled here -
+    no new model downloads, works on every tier. The result JSON reports both: width/height
+    are the SAVED dimensions; _gen_width/_gen_height what the pipeline actually rendered.
+    """
+    try:
+        req_w = int(task.get("width"))
+        req_h = int(task.get("height"))
+    except (TypeError, ValueError):
+        return image
+    gen_w, gen_h = task.get("_used_width"), task.get("_used_height")
+    if not req_w or not req_h or not gen_w or not gen_h:
+        return image
+    if req_w == int(gen_w) and req_h == int(gen_h):
+        return image
+    # Only upscale (requested > generated); a smaller request is already handled by the clamp.
+    if req_w <= int(gen_w) and req_h <= int(gen_h):
+        return image
+    from PIL import Image as _PILImage  # Resampling lives on the module, not the instance
+
+    resized = image.resize((req_w, req_h), _PILImage.Resampling.LANCZOS)
+    task["_upscaled_from"] = f"{int(gen_w)}x{int(gen_h)}"
+    return resized
+
+
 def _save_and_encode(task, image):
     """Save *image* inside working_root and return the ok-result dict."""
     working_dir = _get_working_dir(task)
@@ -450,6 +489,9 @@ def _save_and_encode(task, image):
     if not (real_file == real_wr or real_file.startswith(real_wr + os.sep)):
         raise ValueError(f"Output path escapes working_root: {filepath}")
 
+    # v24: honor a request that exceeded the tier budget - save at EXACTLY the asked size.
+    image = _maybe_upscale(task, image)
+
     image.save(filepath)
 
     buffered = io.BytesIO()
@@ -461,8 +503,11 @@ def _save_and_encode(task, image):
         "filename": f"{safe_name}.png",
         "file_path": filepath,
         "image_base64": img_base64,
-        "width": task.get("_used_width"),
-        "height": task.get("_used_height"),
+        "width": image.width,
+        "height": image.height,
+        "_gen_width": task.get("_used_width"),
+        "_gen_height": task.get("_used_height"),
+        "_upscaled_from": task.get("_upscaled_from"),
     }
 
 
@@ -694,7 +739,7 @@ if __name__ == "__main__":
 
 _DEFAULT_MANIFEST = {
         "name": "generate_image",
-        "version": 23,  # mirrors tools/generate_tool/tool_manifest.json - only used when a legacy SERVER ships no TOOL_MANIFEST at all
+        "version": 24,  # mirrors tools/generate_tool/tool_manifest.json - only used when a legacy SERVER ships no TOOL_MANIFEST at all
         "runtime_name": "generate_tool",
         "requirements": ["torch==2.9.1+cu128", "diffusers>=0.40", "transformers", "accelerate>=0.17.0"],
         "extra_index_urls": ["https://download.pytorch.org/whl/cu128"],
@@ -793,7 +838,10 @@ TIER_MODELS = {
         "edit_model_id": _QWEN_EDIT_MODEL_ID,
         "dtype": "fp8",
         "offload": True,
-        "max_pixels": 1024 * 1024,
+        # v25 (user request): Qwen-Image cannot go above ~1760x992 natively - the budget is
+        # pinned to that ceiling so generations stay inside the model's trained range;
+        # anything above it is still LANCZOS-upscaled by _maybe_upscale.
+        "max_pixels": 1760 * 992,   # = 1,745,920 px (Qwen-Image native ceiling)
         "pipeline": "qwen_image",
     },
     "mid": {
@@ -998,7 +1046,7 @@ def _tier_config_for(tier: str) -> dict:
 def _effective_timeout(cfg: dict) -> int:
     """Subprocess budget for the generation step.
 
-    Resident tiers (mid Z-Image fp8, low SANA-Sprint when not offloaded): 
+    Resident tiers (mid Z-Image fp8, low SANA-Sprint when not offloaded):
     IMAGE_SUBPROCESS_TIMEOUT - a warm resident model generates in seconds. Offloaded
     tiers (high Qwen/Qwen-Image on every call, low SANA-Sprint below 12 GB) get a larger
     budget: the first run warms slowly and, on a fresh machine, may still be finishing
@@ -2626,6 +2674,11 @@ def generate_image(
         logger.info(f"  Tier '{tier}': pipeline={cfg.get('pipeline', 'zimage')} "
                     f"model={cfg['model_id']} dtype={cfg['dtype']} "
                     f"offload={bool(cfg.get('offload'))} max_pixels={cfg.get('max_pixels')}")
+        # v24: flag oversized requests now - the worker generates at the tier budget and
+        # LANCZOS-upscales to these exact dimensions before saving.
+        if int(width) * int(height) > int(cfg.get("max_pixels") or 0):
+            logger.info(f"  Request {width}x{height} exceeds the '{tier}' tier budget "
+                        f"({cfg.get('max_pixels')} px) - will upscale to exact size after generation")
 
         # Ensure filename doesn't have extension.
         if output_filename.endswith('.png'):

@@ -284,8 +284,23 @@
             let html = '';
             if (name === 'pip' && stage.packages) {
                 const pkgs = Object.values(stage.packages);
-                html = '<div class="sp-pkgs">' + pkgs.map(pkgRow).join('') + '</div>' +
-                        (stage.line ? '<div class="sp-line">' + escapeHtml(stage.line) + '</div>' : '');
+                // (2026-12-30) MINIMIZED BLOCK: the full per-package list unfolded into a very big
+                // space, so show only ONE row - the package pip is working on right now; when
+                // nothing is active, the LATEST one (last in insertion order = last pip processed).
+                // The rest collapse into a single dim "+N more" count. The raw last line is kept
+                // out of the display too (it duplicates the row) except on error, where it helps.
+                let pick = null;
+                for (const p of pkgs) {
+                    if (p.status === 'downloading' || p.status === 'installing') { pick = p; break; }
+                }
+                if (!pick && pkgs.length) pick = pkgs[pkgs.length - 1];
+                const restCount = pkgs.length - (pick ? 1 : 0);
+                html = '<div class="sp-pkgs">' + (pick ? pkgRow(pick) : '') +
+                        (restCount > 0
+                            ? '<div class="sp-line sp-dim">+' + restCount + ' more package' + (restCount > 1 ? 's' : '') + '</div>'
+                            : '') + '</div>' +
+                        (stage.status === 'error' && stage.line
+                            ? '<div class="sp-line">' + escapeHtml(stage.line) + '</div>' : '');
             } else if (name === 'model') {
                 html = modelBody(stage);
             } else {
