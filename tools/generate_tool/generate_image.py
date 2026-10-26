@@ -1433,7 +1433,6 @@ def _pf_install():
         return  # module missing (very old hf) or already patched - idempotent
     orig = _sdmod.hf_hub_download
 
-
     def wrapper(*args, **kwargs):
         try:
             # hf's xet bar is described with incomplete_path.name = the BASENAME only
@@ -2340,7 +2339,15 @@ def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
         if isinstance(pf, dict):
             files = model_state.setdefault("files", {})
             for key, pv in pf.items():
-                if not isinstance(pv, dict) or not pv.get("_seen"):
+                if not isinstance(pv, dict):
+                    continue
+                # 2026-11-15 audit: carry a row when it has REAL bytes on disk OR was seen.
+                # _seen alone is NOT sufficient - an interrupted run (timeout/kill) can leave
+                # rows with downloaded > 0 whose last event never set the flag, and dropping
+                # them made the next attempt's resume floor start at zero again ("the download
+                # keeps looking into older files" while its own arc restarts from nothing).
+                _has_bytes = int(pv.get("downloaded") or 0) > 0
+                if not (pv.get("_seen") or _has_bytes):
                     continue  # manifest-only rows have no real progress to carry
                 # filename must stay the BARE path - the row key is '<repo>:<path>', and a
                 # prefixed name would leak into the UI Current line on retry (2026-10-23 audit).
@@ -2351,8 +2358,13 @@ def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
                     if isinstance(fv, (int, float)) and fv > int(target.get(fk) or 0):
                         target[fk] = int(fv)
                 for fk in ("done", "_seen"):
-                    if pv.get(fk):
-                        target[fk] = True
+                    if pv.get(fk) or (fk == "_seen" and _has_bytes):
+                        target[fk] = True  # a row with real bytes DID download - it is live data, not a ghost
+                # 2026-11-15 fix: never carry the dead attempt's live speed/ETA into a
+                # reclaimed row - those numbers belonged to a finished/killed download and
+                # would be shown as if the old file were still downloading.
+                for fk in ("speed_bps", "eta_sec"):
+                    target.pop(fk, None)
                 # carry the repo tag (2026-10-23 audit fix): an untagged row is treated as
                 # CURRENT-repo by _repo_rows(), so on a retry every reclaimed row would be
                 # counted into this run's first arc - including rows of OTHER repos.
@@ -2413,6 +2425,14 @@ def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
         if progress is not None and stage_started[0]:
             model_state["status"] = "error"
             model_state["detail"] = f"timed out after {_bootstrap_timeout()}s (partial download resumes)"
+            # 2026-11-15 fix: clear the LIVE pointers - a dead attempt must not leave its
+            # last in-flight file named as 'current' with stale speed/ETA. Otherwise the
+            # next run's _reclaim_previous() re-adopts that row and the UI Current line
+            # keeps showing the OLD file from the previous attempt ("looking into older
+            # files") while the real download resumes elsewhere on disk.
+            model_state["current_file"] = None
+            model_state.pop("speed_bps", None)
+            model_state.pop("eta_sec", None)
             try:
                 progress.set_stage("model", **model_state)
             except Exception:
@@ -2451,6 +2471,12 @@ def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
     if progress is not None and stage_started[0]:
         model_state["status"] = "error"
         model_state["detail"] = tail[:300]
+        # 2026-11-15 fix: same as the timeout path - a failed attempt must not leave its
+        # last in-flight file named 'current' with stale speed/ETA for the next run to
+        # re-adopt (UI kept showing an old file from a previous attempt).
+        model_state["current_file"] = None
+        model_state.pop("speed_bps", None)
+        model_state.pop("eta_sec", None)
         try:
             progress.set_stage("model", **model_state)
         except Exception:
