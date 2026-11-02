@@ -30,16 +30,25 @@ def describe_routing(reg, model_filename: str, available_hint: str = "") -> tupl
         where = ", ".join(f"{b.instance.name} ({b.capacity} slot(s))" for b in healthy)
         return True, (f"Model '{model_filename}' is served by {where}. Requests are routed "
                       f"automatically - no reload is needed.")
+    noun = reg.backend_noun()
+    # Kind-aware advice: with the strata backend (config.SERVER_BACKEND="strata") the fix is
+    # Strata itself — its model, its process, its API key — not a llama node we could launch.
+    strata = noun == "Strata endpoint"
     if nodes:
         where = ", ".join(
             f"{b.instance.name} ({b.instance.host}:{b.instance.port}, "
             f"{'healthy' if b.healthy else 'offline'})"
             for b in nodes
         )
-        return False, (f"Model '{model_filename}' is configured but no node is serving it "
-                       f"right now: {where}. Fix or start a node with that model.")
-    return False, (f"No llama node is serving '{model_filename}'. Available: "
-                   f"{available_hint or reg.describe_models()}. Start a node with that model to use it.")
+        fix = ("Serve it in Strata (the brain never starts Strata itself) and check its "
+               "API key in config/strata_servers.json." if strata
+               else "Fix or start a node with that model.")
+        return False, (f"Model '{model_filename}' is configured but no {noun} is serving it "
+                       f"right now: {where}. {fix}")
+    tail = ("Start Strata with that model (or set its API key) to use it." if strata
+            else "Start a node with that model to use it.")
+    return False, (f"No {noun} is serving '{model_filename}'. Available: "
+                   f"{available_hint or reg.describe_models()}. {tail}")
 
 
 async def _handle_model_switch_direct(ws, server_provider, user_info, model_filename, req_id=None):

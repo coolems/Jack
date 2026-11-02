@@ -6,12 +6,18 @@ Pure relay server — NO intelligence, NO tools, NO logic, NO UI.
 Provider modes:
   - coolems_server   → Headless WebSocket brain relay ONLY (port from config.COOLEMS_DIRECT_WS_PORT,
                         overridable with --port / port=NNN). Accepts client connections, forwards to
-                        llama_server, streams back.
+                        the local LLM backend, streams back.
   - llama            → Same just relay + launches CLIENT as subprocess for local UI use.
                         SERVER stays dumb. CLIENT handles all intelligence locally.
+  - strata           → Same relay + CLIENT, local backend = Strata's endpoint (2026-11).
+                        Shorthand for config.SERVER_BACKEND = "strata".
+
+Local LLM backend (config.SERVER_BACKEND; the relay never spawns Strata — attach-only):
+  - llama  → llama-server, spawned/attached from config/llama_servers.json + llama_node.json
+  - strata → Strata's own inference endpoint (config.STRATA_URL; keys in config/strata_servers.json)
 
 Information flow:
-  CLIENT (remote or local) -> SERVER (WebSocket on COOLEMS_DIRECT_WS_PORT) → llama_server → back through chain
+  CLIENT (remote or local) -> SERVER (WebSocket on COOLEMS_DIRECT_WS_PORT) → local LLM backend → back through chain
 
 SERVER does NOTHING except relay. All tool execution, agentic logic, and conversation
 management happens on the CLIENT side.
@@ -20,6 +26,7 @@ Usage:
   python code.py                              # Auto-detect from config (default: coolems_server)
   python code.py provider=coolems_server      # Headless relay only (no UI)
   python code.py provider=llama               # Relay + launches CLIENT subprocess for local UI
+  python code.py provider=strata              # Same, with Strata as the local backend (= SERVER_BACKEND="strata")
   python code.py --port 9000                  # Override the WebSocket relay port only (CLIENT UI stays on CLIENT_UI_PORT)
 """
 
@@ -222,20 +229,29 @@ if __name__ == "__main__":
     # B3 (2026-09-02): validate the provider name up front. A typo like 'llam' used to
     # fall into the relay+CLIENT launch path and only fail later in resolve_provider_and_url()
     # after heavy startup work; reject it here with a clear message instead.
-    _VALID_SERVER_PROVIDERS = ("llama", "coolems_server")
+    _VALID_SERVER_PROVIDERS = ("llama", "strata", "coolems_server")
     if resolved_provider_name not in _VALID_SERVER_PROVIDERS:
         logger.error(
             f"Unknown provider '{resolved_provider_name}'. "
-            "Valid providers: 'llama', 'coolems_server'."
+            "Valid providers: 'llama', 'strata', 'coolems_server'."
         )
         sys.exit(2)
 
     # Track original request to distinguish headless-only from relay+client
     want_local_client = (resolved_provider_name != "coolems_server")
 
-    # Map llama → coolems_server so we get the just relay wrapper
-    if resolved_provider_name == "llama":
-        final_provider_name = "coolems_server"  # Use CoolemsServerProvider which wraps Llama
+    # Map llama/strata → coolems_server so we get the just relay wrapper
+    if resolved_provider_name in ("llama", "strata"):
+        # 2026-11: 'provider=strata' is shorthand for SERVER_BACKEND="strata" — the relay
+        # wrapper is identical, only the local engine (and its URL) differs. The CLI is the
+        # more specific request, so it overrides config.SERVER_BACKEND; the usual way to pick
+        # the engine is still config.SERVER_BACKEND with provider=coolems_server.
+        import config as _cfg
+        if getattr(_cfg, "SERVER_BACKEND", "llama") != resolved_provider_name:
+            _cfg.set_server_backend(resolved_provider_name)
+            logger.info(f"provider={resolved_provider_name} overrides config.SERVER_BACKEND "
+                        f"-> {resolved_provider_name}")
+        final_provider_name = "coolems_server"  # Use CoolemsServerProvider which wraps the backend
         logger.info(f"Using CoolemsServerProvider (just relay + local CLIENT for UI, backend={resolved_provider_name})")
     else:
         final_provider_name = resolved_provider_name

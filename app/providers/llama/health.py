@@ -35,7 +35,7 @@ import requests
 import httpx
 
 
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 
 
@@ -82,19 +82,32 @@ def _get_all_model_folders() -> list:
 class HealthChecker:
 
 
-    """Caches health state and model list for llama.cpp."""
+    """Caches health state and model list for a llama.cpp-shaped endpoint.
+
+    label/start_hint (2026-11 strata) word the probe failures: the llama path keeps
+    "llama.cpp"/"llama-server", a Strata endpoint is described as "Strata"."""
 
 
 
 
 
-    def __init__(self, api_url: str, check_interval: float):
+    def __init__(self, api_url: str, check_interval: float, headers: Optional[dict] = None,
+                 label: str = "llama.cpp", start_hint: str = "llama-server"):
 
 
         self._api_url = api_url
 
 
         self._check_interval = check_interval
+
+
+        # (2026-11 strata) Optional per-request headers (Bearer auth for a Strata
+        # endpoint). None keeps the llama.cpp probes exactly as before.
+        self._headers = headers
+
+        # (2026-11 strata) Engine name and start advice used in probe failure messages.
+        self._label = label
+        self._start_hint = start_hint
 
 
         self._is_healthy = True
@@ -121,10 +134,10 @@ class HealthChecker:
 
             client = await get_async_client()
             try:
-                resp = await client.get(f"{self._api_url}/health")
+                resp = await client.get(f"{self._api_url}/health", headers=self._headers)
                 if resp.status_code == 200:
                     try:
-                        models_resp = await client.get(f"{self._api_url}/v1/models")
+                        models_resp = await client.get(f"{self._api_url}/v1/models", headers=self._headers)
                         models_data = models_resp.json().get("data", [])
                         models = [m.get("id", "") for m in models_data]
                     except Exception:
@@ -133,25 +146,25 @@ class HealthChecker:
                     self._is_healthy = True
                     self._last_check = current_time
                     self._available_models = models
-                    logger.info(f"llama.cpp is healthy. Available models: {models}")
+                    logger.info(f"{self._label} is healthy. Available models: {models}")
                     return True, "", models
                 else:
-                    error_msg = f"llama.cpp returned status code {resp.status_code}"
+                    error_msg = f"{self._label} returned status code {resp.status_code}"
                     self._is_healthy = False
                     logger.warning(error_msg)
                     return False, error_msg, []
             except httpx.ConnectError:
-                error_msg = "llama.cpp service is not running. Please start llama-server."
+                error_msg = f"{self._label} service is not running. Please start {self._start_hint}."
                 self._is_healthy = False
                 logger.error(error_msg)
                 return False, error_msg, []
             except httpx.TimeoutException:
-                error_msg = "llama.cpp service is not responding (timeout)."
+                error_msg = f"{self._label} service is not responding (timeout)."
                 self._is_healthy = False
                 logger.error(error_msg)
                 return False, error_msg, []
             except Exception as e:
-                error_msg = f"llama.cpp health check failed: {str(e)}"
+                error_msg = f"{self._label} health check failed: {str(e)}"
                 self._is_healthy = False
                 logger.error(error_msg)
                 return False, error_msg, []
@@ -175,7 +188,7 @@ class HealthChecker:
             loaded_ids_normalized = set()
             try:
                 client = await get_async_client()
-                resp = await client.get(f"{self._api_url}/v1/models")
+                resp = await client.get(f"{self._api_url}/v1/models", headers=self._headers)
                 models_data = resp.json().get("data", [])
                 for m in models_data:
                     raw_id = m.get("id", "")

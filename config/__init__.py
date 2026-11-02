@@ -48,6 +48,15 @@ from .config import (
     LLAMA_URL,
     MODEL_NAME,
 
+    # Strata backend (SERVER_BACKEND = "strata", 2026-11)
+    STRATA_URL,
+    STRATA_SERVER_PORT,
+    STRATA_API_KEY,
+    STRATA_SERVERS_FILE,
+    StrataServerInstance,
+    get_strata_server_instances,
+    strata_auth_headers,
+
     # Chrome CDP (Browser Debugging)
     CHROME_CDP_PORT,
 
@@ -165,6 +174,7 @@ from .config import (
     # Derived helpers
     get_api_url,
     get_provider_name,
+    set_server_backend,
 )
 
 

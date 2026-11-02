@@ -1,4 +1,4 @@
-"""Multi-instance LLM backend registry (2026-09-08 multi-chat; fleet model 2026-10).
+"""Multi-instance LLM backend registry (2026-09-08 multi-chat; fleet model 2026-10).-
 
 The hand-editable ``config/llama_servers.json`` is the single source of truth for WHICH
 llama servers we talk to. This module turns that list into live, tracked backends:
@@ -21,6 +21,12 @@ llama servers we talk to. This module turns that list into live, tracked backend
 Single-instance default: when llama_servers.json holds only the legacy local entry, this
 module behaves exactly like the old single-server code path (same process, same port,
 one slot).
+
+(2026-11 strata backend) The same registry also drives ``config/strata_servers.json`` when
+config.SERVER_BACKEND = "strata": those instances carry ``kind="strata"`` and a Bearer key,
+are ALWAYS attach-only (``spawnable=False`` - Strata starts its own process, we never spawn
+or kill it), their /health + /props + /v1/models calls carry the auth header, and their
+provider handle is a :class:`StrataProvider` instead of a :class:`LlamaProvider`.
 """
 
 import asyncio
@@ -31,6 +37,8 @@ from typing import Optional
 from config import (
     LlamaServerInstance,
     get_llama_server_instances,
+    get_strata_server_instances,
+    strata_auth_headers,
     LLAMA_MAX_CONCURRENCY,
     LLAMA_SERVER_PARALLEL,
     CONTEXT_WINDOW_TOKENS,
@@ -47,13 +55,22 @@ def _is_local(host: str) -> bool:
 
 
 class LlmBackend:
-    """One llama-server instance from config/llama_servers.json."""
+    """One backend from config/llama_servers.json or config/strata_servers.json."""
 
     def __init__(self, instance: LlamaServerInstance):
         self.instance = instance
         self.key: tuple[str, int] = (instance.host.lower(), instance.port)
         self.api_url: str = instance.api_url
         self.local: bool = _is_local(instance.host)
+        # (2026-11 strata) Backend kind: "llama" for llama-server, "strata" for a Strata
+        # endpoint. Strata instances subclass LlamaServerInstance with api_key + kind and
+        # are attach-only, so the brain only probes them and authenticates every request.
+        self.kind: str = getattr(instance, "kind", "llama")
+        self.api_key: Optional[str] = getattr(instance, "api_key", None)
+        self.headers: Optional[dict] = strata_auth_headers(self.api_key)
+        # LOCAL llama nodes may be spawned by us; everything else (remotes, Strata) is
+        # ATTACH-ONLY: a failed probe must never start or restart a process we do not own.
+        self.spawnable: bool = self.local and self.kind == "llama"
         # (2026-10-25) True only when WE launched this instance's llama-server at boot
         # (tracked Popen in process_mgmt). Attached foreign nodes keep False so stop_all()
         # and the discovery relaunch never kill a node an admin started.
@@ -126,11 +143,19 @@ class LlmBackend:
         return max(1, min(int(cap), LLAMA_MAX_CONCURRENCY))
 
     def provider(self):
-        """Lazy per-instance LlamaProvider (thin URL-bound wrapper — cheap to create)."""
+        """Lazy per-instance provider handle (thin URL-bound wrapper — cheap to create).
+
+        Kind decides the class: llama nodes get LlamaProvider, Strata endpoints get
+        StrataProvider (same OpenAI-compatible wire format + Bearer auth headers)."""
         if self._provider is None:
-            from .provider import LlamaProvider
             from config import PROVIDER_DEFAULT_TIMEOUT
-            self._provider = LlamaProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT)
+            if self.kind == "strata":
+                from ..strata.provider import StrataProvider
+                self._provider = StrataProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT,
+                                                headers=self.headers)
+            else:
+                from .provider import LlamaProvider
+                self._provider = LlamaProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT)
         return self._provider
 
     # --- discovery (/props) -------------------------------------------------------
@@ -145,7 +170,7 @@ class LlmBackend:
         from .http_client import get_async_client
         try:
             client = await get_async_client()
-            resp = await client.get(f"{self.api_url}/props", timeout=5.0)
+            resp = await client.get(f"{self.api_url}/props", timeout=5.0, headers=self.headers)
             if resp.status_code != 200:
                 self.props_error = f"/props HTTP {resp.status_code}"
                 return False
@@ -223,7 +248,7 @@ class LlmBackend:
         from .http_client import get_async_client
         try:
             client = await get_async_client()
-            resp = await client.get(f"{self.api_url}/health", timeout=5.0)
+            resp = await client.get(f"{self.api_url}/health", timeout=5.0, headers=self.headers)
             ok = resp.status_code == 200
         except Exception as e:
             logger.debug("[REGISTRY] %s health probe failed: %s", self.label, e)
@@ -238,10 +263,13 @@ class LlmBackend:
             self.healthy = bool(props_ok)
             if not props_ok and not getattr(self, "_warned_props", False):
                 self._warned_props = True
+                _hint = ("" if self.headers or self.kind != "strata" else
+                         " - this Strata endpoint has NO Bearer key (set 'api_key' in "
+                         "config/strata_servers.json or config.STRATA_API_KEY)")
                 logger.warning(
-                    "[REGISTRY] %s answers /health but /props failed (%s) - not routing to it "
+                    "[REGISTRY] %s answers /health but /props failed (%s)%s - not routing to it "
                     "until /props works (a stale model key would misroute requests)",
-                    self.label, self.props_error or "unknown error",
+                    self.label, self.props_error or "unknown error", _hint,
                 )
         else:
             self.healthy = False
@@ -253,8 +281,9 @@ class LlmBackend:
 
         if self.healthy != previous:
             state = "HEALTHY" if self.healthy else "UNHEALTHY"
-            logger.info("[REGISTRY] Backend %s is now %s%s", self.label, state,
-                        "" if self.local else " (remote — attach-only)")
+            note = "" if self.spawnable else (
+                " (remote — attach-only)" if self.kind == "llama" else " (Strata — attach-only)")
+            logger.info("[REGISTRY] Backend %s is now %s%s", self.label, state, note)
         return bool(self.healthy)
 
     async def wait_healthy(self, timeout: Optional[float] = None) -> bool:
@@ -291,6 +320,7 @@ class LlmBackend:
             "name": self.instance.name,
             "host": self.instance.host,
             "port": self.instance.port,
+            "kind": self.kind,
             "model": self.model_label or self.model_key,
             "model_key": self.model_key,
             "slots": self.capacity,
@@ -322,8 +352,12 @@ class LlmBackend:
         node is ATTACHED (spawned_by_us stays False - it survives SERVER shutdown), otherwise
         we SPAWN detached with the init/admin settings from that file. No matching node
         config -> legacy start_server() path exactly as before.
+
+        (2026-11 strata) ATTACH-ONLY backends (`spawnable=False`) are probe-only: remote llama
+        nodes as before, plus every Strata endpoint - Strata launches its own inference
+        process, so the brain never spawns, relaunches or terminates it.
         """
-        if not self.local:
+        if not self.spawnable:
             return await self.probe_health()
 
         # (2026-10-25) Node-launcher reconcile when a VALID node config describes THIS port.
@@ -457,7 +491,11 @@ class LlmBackend:
 
 
 class LlmBackendRegistry:
-    """All configured llama backends, started together and health-polled."""
+    """All configured backends, started together and health-polled.
+
+    (2026-11) ``from_config(kind="strata")`` builds the same registry over
+    config/strata_servers.json instead of config/llama_servers.json - every backend then
+    reports ``kind="strata"`` and is attach-only."""
 
     def __init__(self, instances: list[LlamaServerInstance]):
         # de-dup by key (loader already dedupes; defensive for direct construction)
@@ -470,8 +508,14 @@ class LlmBackendRegistry:
                 self.backends[b.key] = b
 
     @classmethod
-    def from_config(cls) -> "LlmBackendRegistry":
-        """Build the registry from a fresh read of config/llama_servers.json."""
+    def from_config(cls, kind: str = "llama") -> "LlmBackendRegistry":
+        """Build the registry from a fresh read of the backend's config file.
+
+        ``kind`` selects the source of truth: "llama" -> config/llama_servers.json
+        (spawn-or-attach llama-server instances), "strata" -> config/strata_servers.json
+        (attach-only Strata endpoints)."""
+        if kind == "strata":
+            return cls(get_strata_server_instances())
         return cls(get_llama_server_instances())
 
     # --- accessors ------------------------------------------------------------
@@ -560,6 +604,7 @@ class LlmBackendRegistry:
                 "name": b.instance.name,
                 "host": b.instance.host,
                 "port": b.instance.port,
+                "kind": b.kind,
                 "local": b.local,
                 "healthy": bool(b.healthy),
                 "configured": b.configured_capacity,
@@ -619,6 +664,27 @@ class LlmBackendRegistry:
             )
         logger.info("=" * 78)
 
+    def registry_title(self) -> str:
+        """Operator-facing registry title naming the config file the backends came from."""
+        kinds = {b.kind for b in self.backends.values()}
+        if kinds == {"strata"}:
+            return "STRATA BACKEND REGISTRY (from config/strata_servers.json)"
+        if kinds == {"llama"}:
+            return "LLAMA BACKEND REGISTRY (from config/llama_servers.json)"
+        return "LLM BACKEND REGISTRY (mixed: " + ", ".join(sorted(kinds)) + ")"
+
+    def backend_noun(self) -> str:
+        """Client-facing wording for a serving backend, by kind (2026-11 strata).
+
+        User messages must not say "llama node" when the fleet is Strata — the fix a
+        user needs is different (start Strata / set its key, not launch a llama node)."""
+        kinds = {b.kind for b in self.backends.values()}
+        if kinds == {"strata"}:
+            return "Strata endpoint"
+        if kinds == {"llama"}:
+            return "llama node"
+        return "backend"
+
     async def start_all(self) -> bool:
         """Start/attach every configured instance and log the startup fleet table.
 
@@ -628,7 +694,7 @@ class LlmBackendRegistry:
             ok = await b.ensure_started()
             results.append((b, ok))
 
-        self.log_fleet_table("LLAMA BACKEND REGISTRY (from config/llama_servers.json)")
+        self.log_fleet_table(self.registry_title())
 
         any_ok = any(ok for _, ok in results)
         if not any_ok:
@@ -642,10 +708,14 @@ class LlmBackendRegistry:
         (2026-10-25 shutdown semantics) A node started outside us (admin launcher via
         utils/start_llama_node, or a manual llama-server we merely attached to) is NOT
         terminated on SERVER exit - it survives for other users of the machine. Only
-        backends with spawned_by_us=True and a live tracked Popen are stopped."""
+        backends with spawned_by_us=True and a live tracked Popen are stopped.
+
+        (2026-11 strata) Attach-only backends (`spawnable=False`: remotes and every Strata
+        endpoint) are skipped outright - Strata's process belongs to Strata, and killing it
+        on SERVER exit would take the local inference endpoint down for everything else."""
         from .process_mgmt import _server_processes, _terminate_process
         for b in self.backends.values():
-            if not b.local:
+            if not b.spawnable:
                 continue
             proc = _server_processes.get(b.key)
             if proc is None or proc.poll() is not None:

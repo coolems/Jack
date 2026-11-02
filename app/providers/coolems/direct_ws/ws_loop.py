@@ -137,7 +137,8 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                     hint = await available_models_hint(server_provider, user_info)
                     await ws.send(json.dumps({
                         "type": "error",
-                        "message": (f"No llama node is serving '{req.model}' right now. "
+                        # Kind-aware wording (2026-11): the strata fleet is not a llama node.
+                        "message": (f"No {reg.backend_noun()} is serving '{req.model}' right now. "
                                     f"Available: {hint}."),
                         "retryable": False,
                         "model": req.model_key,

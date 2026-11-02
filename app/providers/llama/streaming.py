@@ -171,6 +171,8 @@ async def chat_stream(
     tools: Optional[list] = None,
     stop_event: Optional[asyncio.Event] = None,
     context_window: Optional[int] = None,
+    headers: Optional[dict] = None,
+    provider_name: str = "llama",
 ) -> Tuple[str, TokenStats]:
     """
     Stream chat completions from llama.cpp via SSE.
@@ -198,6 +200,13 @@ async def chat_stream(
                    different VRAM may run different per-slot contexts; the guard and
                    TokenStats use the real value for the node that serves the request.
                    None/0 = config CONTEXT_WINDOW_TOKENS.
+        headers: Optional headers for EVERY call made here (/health + POST
+                   /v1/chat/completions). (2026-11 strata) A Strata endpoint requires
+                   {"Authorization": "Bearer <key>"} on both; llama.cpp needs none, so the
+                   llama path keeps passing None and behaves exactly as before.
+        provider_name: Name reported in TokenStats.provider_name (2026-11 strata): the
+                   llama path sends "llama" as before; the Strata wrapper sends "strata"
+                   so the CLIENT token panel names the engine that actually answered.
 
     Returns:
         Tuple of (response_string, TokenStats).
@@ -367,7 +376,7 @@ async def chat_stream(
     # ============================================================
     try:
         http_client = await get_async_client()
-        health_resp = await http_client.get(f"{api_url}/health", timeout=3.0)
+        health_resp = await http_client.get(f"{api_url}/health", timeout=3.0, headers=headers)
         if health_resp.status_code != 200:
             raise ConnectionError("Health check failed")
     except Exception:
@@ -382,12 +391,21 @@ async def chat_stream(
             # host/port/concurrency instead of the legacy defaults.
             _reg = get_registry()
             _backend = _reg.get_for_api_url(api_url) if _reg is not None else None
-            if _backend is not None and not _backend.local:
-                _backend.mark_unhealthy("remote backend not responding (brain does not spawn remotes)")
+            if _backend is not None and not _backend.spawnable:
+                # (2026-11 strata) Attach-only backends (remote llama nodes AND every Strata
+                # endpoint) are never spawned by the brain: mark them unhealthy and leave the
+                # fix to the health poller / the operator who owns the process.
+                _backend.mark_unhealthy(
+                    "backend not responding (attach-only: the brain does not spawn %s backends)"
+                    % _backend.kind
+                )
                 logger.error(
-                    "[LLAMA] Backend %s is REMOTE - the brain never spawns it. "
-                    "Check the node machine (llama-node log); leaving it to the health poller.",
+                    "[LLAMA] Backend %s is %s - the brain never spawns it. %s "
+                    "Leaving it to the health poller.",
                     _backend.label,
+                    "STRATA" if _backend.kind == "strata" else "REMOTE",
+                    "Start/restart Strata and check its API key (config/strata_servers.json)."
+                    if _backend.kind == "strata" else "Check the node machine (llama-node log).",
                 )
             elif _backend is not None:
                 # Serialize restarts between slots of the same local node.
@@ -450,12 +468,23 @@ async def chat_stream(
             "POST",
             f"{api_url}/v1/chat/completions",
             json=llama_payload,
+            # (2026-11 strata) Bearer auth headers when the backend needs them (Strata);
+            # None on the llama path, which stays byte-for-byte the old request.
+            headers=headers,
             # 2026-10 fleet: `timeout` is the long GENERATION budget (9300 s). Using it as
             # the connect timeout too means a blackholed remote node holds a slot for
             # hours. Keep generation unbounded-ish but fail an unreachable node in 10 s.
             timeout=httpx.Timeout(timeout, connect=10.0, read=timeout,
                                   write=timeout, pool=10.0),
         ) as response:
+            if response.status_code == 401:
+                # (2026-11 strata) Only Strata authenticates: a 401 means the key is missing
+                # or wrong. Actionable message, no retry storm (the worker treats it as fatal).
+                raise RuntimeError(
+                    f"Backend {api_url} rejected our credentials (HTTP 401). "
+                    "Set the Strata Bearer key in config/strata_servers.json ('api_key') "
+                    "or config.STRATA_API_KEY (env STRATA_API_KEY also works)."
+                )
             if response.status_code == 404:
                 raise FileNotFoundError(f"Model '{model}' not found in llama.cpp")
             elif response.status_code == 500:
@@ -674,7 +703,7 @@ async def chat_stream(
                 truncated=was_truncated,
                 generation_speed=gen_speed,
                 total_duration=round(total_duration, 2),
-                provider_name="llama",
+                provider_name=provider_name,
                 model=model,
                 context_window=window,
             )

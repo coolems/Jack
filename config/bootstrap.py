@@ -12,6 +12,9 @@ CONTRACT (2026-08-23):
       - ``config/llama_servers.json``   <- seeded from ``config/llama_servers.example.json``
         (hand-editable list of llama server instances the SERVER creates at boot;
         see config.get_llama_server_instances(); per-machine, gitignored)
+      - ``config/strata_servers.json``  <- seeded from ``config/strata_servers.example.json``
+        (2026-11 strata backend: hand-editable list of Strata endpoints the SERVER attaches
+        to when SERVER_BACKEND = "strata"; attach-only, per-machine, gitignored)
 
   * Existing files are NEVER touched (no overwrite, no migration). A missing
     file is created; a present-but-corrupt file is left alone and reported by
@@ -66,6 +69,13 @@ def _seed_from_example(config_dir: str, filename: str, example_name: str) -> boo
         elif filename == "llama_servers.json":
             from config import LLAMA_SERVER_PORT as _port
             content = json.dumps([{"name": "local", "host": "127.0.0.1", "port": _port}], indent=2) + "\n"
+        elif filename == "strata_servers.json":
+            # 2026-11 strata backend: attach-only endpoints (the brain never spawns Strata).
+            # The api_key placeholder stays empty; paste the real key in the gitignored file.
+            from config import STRATA_SERVER_PORT as _sport
+            content = json.dumps(
+                [{"name": "strata", "host": "127.0.0.1", "port": _sport, "api_key": ""}], indent=2
+            ) + "\n"
         else:  # pragma: no cover - defensive, unknown file type
             return False
 
@@ -104,6 +114,8 @@ def ensure_server_config_files(config_dir: str | None = None) -> list[str]:
         ("profiles.json", "profiles.example.json"),
         # 2026-09-08 multi-chat: llama server instance list (SoT for which instances we create).
         ("llama_servers.json", "llama_servers.example.json"),
+        # 2026-11 strata backend: attach-only Strata endpoints (SERVER_BACKEND = "strata").
+        ("strata_servers.json", "strata_servers.example.json"),
     ):
         if _seed_from_example(config_dir, filename, example_name):
             created.append(filename)

@@ -31,6 +31,12 @@ config/profiles.json
 # llama servers the SERVER creates at boot (see config.get_llama_server_instances()). Seeded
 # from the shipped template on first boot - never overwrite; the example stays tracked.
 config/llama_servers.json
+
+# Strata endpoint list (2026-11 strata backend): hand-edited per-machine SoT for which
+# Strata endpoints the SERVER attaches to when SERVER_BACKEND = "strata" (see
+# config.get_strata_server_instances()). It carries the Bearer key -> never commit; the
+# shipped config/strata_servers.example.json stays tracked.
+config/strata_servers.json
 # CLIENT's copy of its SERVER credentials
 CLIENT/config/.api_client_keys.json
 

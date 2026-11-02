@@ -19,15 +19,26 @@ from typing import Optional
 
 
 # --- Context / Token Limits ---
-CONTEXT_WINDOW_TOKENS: int = 181072             # Total token budget for model context def:131072
+CONTEXT_WINDOW_TOKENS: int = 185000             # Total token budget for model context (fallback)
 # MUST equal the --ctx-size the deployed llama-server actually runs with (it is started from this
 # value by command_builder.py). Raising it here without a matching restart + VRAM check silently
 # desyncs client trim math / auth_ok context_window from reality - that drift caused the 2026-08-16
 # truncated tool-call crash (see plan_20260817_trace_fix.md).
+# (2026-10 fleet / 2026-11 strata) Per-backend context wins over this number: the registry reads the
+# real ctx/slot from llama_servers.json or from the backend's /props, and the worker sets
+# req.context_window from it, so a smaller node (e.g. Strata below this window) is still trimmed
+# correctly. This value is what a backend WITHOUT a reported ctx/slot, and the CLIENT's auth_ok
+# budget, see. To actually run 185000 on Strata, start Strata itself with --max-context 185000 -
+# Jack never resizes a backend it only attaches to.
 
 # --- Provider / Model ---
 PROVIDER: str = "coolems_server"                        # Relay mode for server
-SERVER_BACKEND: str = "llama"                           # Local LLM engine (llama.cpp)
+# Local LLM engine behind coolems_server (2026-11 strata backend):
+#   "llama"  -> llama.cpp / llama-server on LLAMA_SERVER_PORT (config/llama_servers.json)
+#   "strata" -> Strata's own OpenAI-compatible endpoint on STRATA_SERVER_PORT
+#               (config/strata_servers.json). The brain NEVER spawns or kills Strata - it
+#               attaches to whatever Strata already runs and authenticates with STRATA_API_KEY.
+SERVER_BACKEND: str = "strata"                           # Local LLM engine ("llama" | "strata")
 
 # --- Coolems Distributed Provider Configuration ---
 COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_server listener (0.0.0.0 = all interfaces including localhost)
@@ -86,6 +97,21 @@ LLAMA_URL: str = f"http://localhost:{LLAMA_SERVER_PORT}"  # llama.cpp server bas
 # config/.last_model_loaded.json - written by app/providers/llama/model_persistence.py
 # after every verified launch/switch; read back on startup (see server.start_server()).
 MODEL_NAME: str = ""  # empty = "load whatever .last_model_loaded.json says"
+
+# --- Strata Backend (2026-11): SERVER_BACKEND = "strata" ---
+# Strata is a SEPARATE local app that serves an OpenAI-compatible (llama.cpp-shaped)
+# HTTP endpoint. The SERVER only talks to it over HTTP: no spawn, no kill, no model
+# loading - Strata owns the process and the model. Every request carries a Bearer token.
+STRATA_SERVER_PORT: int = 18500                         # TCP port of Strata's inference endpoint
+STRATA_URL: str = f"http://localhost:{STRATA_SERVER_PORT}"  # Strata base URL - DERIVED from STRATA_SERVER_PORT (single knob)
+# Bearer token for /props, /v1/models and /v1/chat/completions (/health needs none).
+# Precedence: strata_servers.json entry 'api_key' > this value > env STRATA_API_KEY.
+# Leave empty here and put the real key in config/strata_servers.json (gitignored) or in
+# the environment - never commit a real key.
+STRATA_API_KEY: str = ""
+# NOTE: model routing uses the id Strata reports in /props (its model_alias). The CLIENT
+# picker is built from that id, so clients never send Strata's /v1/models aliases; an alias
+# sent by hand would route to a model group with no workers.
 
 # --- Chrome CDP (Browser Debugging) ---
 CHROME_CDP_PORT: int = 9222                           # Chrome DevTools Protocol debugging port
@@ -264,9 +290,12 @@ LLAMA_MODEL_DIRS: list = []
 
 
 def get_api_url() -> str:
-    """Return the API URL for the currently selected provider."""
+    """Return the API URL for the currently selected provider.
+
+    coolems_server picks its local LLM engine from SERVER_BACKEND: "llama" -> LLAMA_URL,
+    "strata" -> STRATA_URL (the brain attaches to Strata, it never spawns it)."""
     if PROVIDER in ("llama", "coolems_server"):
-        return LLAMA_URL
+        return STRATA_URL if SERVER_BACKEND == "strata" else LLAMA_URL
     elif PROVIDER == "coolems_client":
         return ""  # Client connects via encrypted WebSocket, no local API URL needed
     raise ValueError(f"Unknown provider: {PROVIDER}")
@@ -275,6 +304,22 @@ def get_api_url() -> str:
 def get_provider_name() -> str:
     """Return the currently selected provider name."""
     return PROVIDER
+
+
+def set_server_backend(name: str) -> None:
+    """Runtime override of the local LLM engine ("llama" | "strata").
+
+    Used by code.py when the CLI names the engine explicitly (provider=llama / provider=strata),
+    which is the more specific request than config.SERVER_BACKEND. Both copies are updated:
+    get_api_url() reads this module's global, while app code reads config.SERVER_BACKEND from
+    the package re-export - keeping them apart would make the URL and the provider disagree."""
+    global SERVER_BACKEND
+    SERVER_BACKEND = name
+    try:
+        import config as _pkg
+        _pkg.SERVER_BACKEND = name
+    except Exception:  # pragma: no cover - defensive
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -466,5 +511,151 @@ def get_llama_server_instances() -> list["LlamaServerInstance"]:
             LLAMA_SERVER_PORT,
         )
         return [_default_local_instance()]
+
+    return instances
+
+
+# ---------------------------------------------------------------------------
+# Strata instances - config/strata_servers.json (2026-11 strata backend)
+# ---------------------------------------------------------------------------
+
+# Path to the hand-editable Strata endpoint list. Same contract as llama_servers.json, but
+# every entry is ATTACH-ONLY: Strata starts its own inference process, so the brain only
+# probes and talks HTTP to it. Gitignored (per-machine, carries the Bearer key); the
+# .example.json template is tracked and bootstrap.py seeds the real file at first boot.
+STRATA_SERVERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strata_servers.json")
+
+
+@_dataclass(frozen=True)
+class StrataServerInstance(LlamaServerInstance):
+    """One Strata endpoint to attach to at boot.
+
+    Shares the shape of LlamaServerInstance (name/host/port/concurrency) plus:
+      api_key   - Bearer token for /props, /v1/models and /v1/chat/completions.
+                  OPTIONAL: falls back to config.STRATA_API_KEY, then env STRATA_API_KEY.
+                  /health needs no key, so a missing key still health-probes (but /props
+                  fails, and the registry refuses to route on a failed /props).
+      concurrency - OPTIONAL cap; the node's own /props.total_slots is the routing
+                  capacity (Strata reports what it actually runs).
+
+    Strata instances are NEVER spawned or terminated by the SERVER.
+    """
+    api_key: Optional[str] = None
+
+    @property
+    def kind(self) -> str:
+        return "strata"
+
+    @property
+    def is_spawnable(self) -> bool:
+        """False always: Strata owns its process, the brain only attaches."""
+        return False
+
+
+def strata_auth_headers(api_key: Optional[str]) -> Optional[dict]:
+    """Bearer auth headers for a Strata endpoint, or None when no key is configured."""
+    key = (api_key or "").strip()
+    if not key:
+        return None
+    return {"Authorization": f"Bearer {key}"}
+
+
+def _default_strata_instance() -> "StrataServerInstance":
+    """The always-present local Strata endpoint (127.0.0.1:STRATA_SERVER_PORT)."""
+    return StrataServerInstance("strata", "127.0.0.1", STRATA_SERVER_PORT, None, None)
+
+
+def _write_default_strata_file(path: str) -> None:
+    """Re-create a missing strata_servers.json with the default local entry. Best-effort."""
+    try:
+        payload = _json.dumps(
+            [{"name": "strata", "host": "127.0.0.1", "port": STRATA_SERVER_PORT, "api_key": ""}],
+            indent=2,
+        ) + "\n"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(payload)
+    except OSError as e:
+        _logger.error("[CONFIG] Could not re-create %s: %s", path, e)
+
+
+def get_strata_server_instances() -> list["StrataServerInstance"]:
+    """Fresh read + validation of config/strata_servers.json (mirror of the llama loader).
+
+    Rules (hand-edited file - forgiving but loud):
+      * entry not an object / missing host / bad port -> skipped with a warning.
+      * duplicate host:port -> deduped, first occurrence wins, warning logged.
+      * 'api_key' missing -> falls back to config.STRATA_API_KEY, then env STRATA_API_KEY.
+      * empty/invalid list -> FALL BACK to the default local endpoint; a MISSING file is
+        re-seeded on disk with that entry so it exists for hand-editing afterwards.
+
+    Returns a non-empty list of StrataServerInstance.
+    """
+    path = STRATA_SERVERS_FILE
+    env_key = (os.environ.get("STRATA_API_KEY") or "").strip()
+    config_key = (STRATA_API_KEY or "").strip()
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = _json.load(f)
+    except FileNotFoundError:
+        _logger.warning(
+            "[CONFIG] %s not found - recreating it with the default local endpoint 127.0.0.1:%d",
+            path, STRATA_SERVER_PORT,
+        )
+        _write_default_strata_file(path)
+        return [_default_strata_instance()]
+    except (OSError, ValueError) as e:
+        _logger.warning(
+            "[CONFIG] %s unreadable/invalid JSON (%s) - keeping the default local endpoint 127.0.0.1:%d "
+            "(the corrupt file is left in place for inspection; fix it to configure more endpoints)",
+            path, e, STRATA_SERVER_PORT,
+        )
+        return [_default_strata_instance()]
+
+    if not isinstance(raw, list):
+        _logger.warning(
+            "[CONFIG] %s must be a JSON LIST of {name, host, port, api_key, concurrency} entries "
+            "- using the default local endpoint 127.0.0.1:%d",
+            path, STRATA_SERVER_PORT,
+        )
+        return [_default_strata_instance()]
+
+    instances: list[StrataServerInstance] = []
+    seen: set[tuple[str, int]] = set()
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            _logger.warning("[CONFIG] strata_servers.json entry #%d is not an object - skipped", i)
+            continue
+        host = str(entry.get("host") or "").strip()
+        port_raw = entry.get("port")
+        name = str(entry.get("name") or "").strip()
+        if not host:
+            _logger.warning("[CONFIG] strata_servers.json entry #%d has no 'host' - skipped", i)
+            continue
+        # bool is a subclass of int in Python - reject it explicitly.
+        if isinstance(port_raw, bool) or not isinstance(port_raw, int) or not (0 < port_raw < 65536):
+            _logger.warning(
+                "[CONFIG] strata_servers.json entry #%d has an invalid 'port' (%r) - skipped", i, port_raw
+            )
+            continue
+        key = ("127.0.0.1" if host.lower() == "localhost" else host.lower(), port_raw)
+        if key in seen:
+            _logger.warning("[CONFIG] strata_servers.json duplicate host:port %s:%d - deduped", host, port_raw)
+            continue
+        seen.add(key)
+        loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
+        concurrency = _parse_instance_concurrency(entry, loopback=loopback, index=i)
+        api_key = str(entry.get("api_key") or "").strip() or config_key or env_key or None
+        instances.append(
+            StrataServerInstance(name or f"{host}:{port_raw}", host, port_raw, concurrency, api_key)
+        )
+
+    if not instances:
+        _logger.warning(
+            "[CONFIG] strata_servers.json has no valid entries - using the default local endpoint 127.0.0.1:%d "
+            "(the file is kept; add a {name, host, port, api_key} entry to configure more endpoints)",
+            STRATA_SERVER_PORT,
+        )
+        return [_default_strata_instance()]
 
     return instances

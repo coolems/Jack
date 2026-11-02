@@ -5,6 +5,8 @@ SERVER ONLY — Supports 'llama' as local backend via coolems_server.
 Handles initialization for:
   - coolems_server  : Headless WebSocket brain relay (uses SERVER_BACKEND)
   - llama           : Direct llama.cpp backend (legacy mode)
+  - strata          : Direct Strata endpoint (2026-11; SERVER_BACKEND = "strata" picks the
+                      same engine when the relay wrapper is used, which is the normal mode)
 """
 
 import os
@@ -111,7 +113,14 @@ async def init_provider_and_app(provider_name: str, api_url: str):
         logger.warning("Provider startup had issues - may still work if already running.")
 
     # Set OCR models from profiles.json ocr_model paths
-    if provider_name in ("llama", "coolems_server"):
+    if provider_name in ("llama", "coolems_server") and config.SERVER_BACKEND == "strata":
+        # 2026-11: OCR needs a dedicated llama.cpp OCR instance (profiles.json 'ocr_model'
+        # dirs + ocr_server_manager). Strata serves one chat model and runs no OCR, so an
+        # empty list means OCR requests get a clear refusal instead of a doomed launch.
+        ProviderManager.set_ocr_models([])
+        logger.info("[SERVER] OCR models skipped: the strata backend runs no dedicated OCR "
+                    "instance (config.SERVER_BACKEND = \"strata\"); switch to \"llama\" for OCR")
+    elif provider_name in ("llama", "coolems_server"):
         ocr_models = _resolve_ocr_models_from_profiles()
         if ocr_models:
             ProviderManager.set_ocr_models(ocr_models)
@@ -185,11 +194,19 @@ def resolve_provider_and_url(cli_provider: str = None):
     if provider_name == "llama":
         api_url = os.environ.get("LLAMA_URL", config.LLAMA_URL)
         logger.info(f"Using llama.cpp provider at {api_url}")
+    elif provider_name == "strata":
+        api_url = os.environ.get("STRATA_URL", config.STRATA_URL)
+        logger.info(f"Using Strata provider at {api_url}")
     elif provider_name == "coolems_server":
         backend = config.SERVER_BACKEND
         if backend == "llama":
             api_url = os.environ.get("LLAMA_URL", config.LLAMA_URL)
             logger.info(f"Using coolems_server provider with local llama.cpp at {api_url}")
+        elif backend == "strata":
+            # 2026-11: the brain relays to Strata's own endpoint; it never spawns Strata.
+            api_url = os.environ.get("STRATA_URL", config.STRATA_URL)
+            logger.info(f"Using coolems_server provider with local Strata at {api_url} "
+                        f"(attach-only; key from config/strata_servers.json or config.STRATA_API_KEY)")
         else:
             # Default to llama if SERVER_BACKEND is misconfigured
             api_url = os.environ.get("LLAMA_URL", config.LLAMA_URL)
@@ -199,7 +216,7 @@ def resolve_provider_and_url(cli_provider: str = None):
     else:
         raise ValueError(
             f"Unknown server provider: '{provider_name}'. "
-            f"Valid server providers: 'llama', 'coolems_server'. "
+            f"Valid server providers: 'llama', 'strata', 'coolems_server'. "
             f"For client providers, use the CLIENT/ folder."
         )
 

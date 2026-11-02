@@ -5,7 +5,7 @@ Uses shared async HTTP client pool from http_client module instead of sync
 requests.post() — this unblocks the event loop and enables connection reuse.
 """
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import httpx
 
@@ -25,8 +25,12 @@ async def chat_non_streaming(
     model: str,
     messages: List[Dict],
     temperature: float = 0.7,
+    headers: Optional[dict] = None,
 ) -> str:
-    """Call llama.cpp model without streaming using shared async client pool."""
+    """Call llama.cpp model without streaming using shared async client pool.
+
+    headers (2026-11 strata): optional per-request headers (Bearer auth for a Strata
+    endpoint). None keeps the llama.cpp request exactly as before."""
     messages = convert_messages_for_vision(messages)
 
     llama_payload = build_llama_payload(
@@ -45,9 +49,18 @@ async def chat_non_streaming(
         resp = await http_client.post(
             f"{api_url}/v1/chat/completions",
             json=llama_payload,
+            # (2026-11 strata) Bearer headers when the backend requires them (Strata).
+            headers=headers,
             timeout=timeout,
         )
 
+        if resp.status_code == 401:
+            # (2026-11 strata) Only Strata authenticates: 401 = missing/wrong Bearer key.
+            raise RuntimeError(
+                f"Backend {api_url} rejected our credentials (HTTP 401). "
+                "Set the Strata Bearer key in config/strata_servers.json ('api_key') "
+                "or config.STRATA_API_KEY (env STRATA_API_KEY also works)."
+            )
         if resp.status_code == 404:
             raise FileNotFoundError(f"Model '{model}' not found in llama.cpp")
         elif resp.status_code != 200:

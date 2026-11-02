@@ -123,7 +123,8 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
         hint = await available_models_hint(server_provider, _client_user_info)
         await _relay_send(ws, {
             "type": "error",
-            "message": (f"No llama node is serving '{_req.model}' right now. "
+            # Kind-aware wording (2026-11): the strata fleet is not a llama node.
+            "message": (f"No {_reg.backend_noun()} is serving '{_req.model}' right now. "
                         f"Available: {hint}."),
             "retryable": False,
             "model": _req.model_key,

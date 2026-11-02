@@ -1,17 +1,19 @@
 """CoolemsServerProvider -- Smart Gateway WebSocket server.
 
 Accepts encrypted WebSocket connections from coolems_client, authenticates via API key + profile,
-filters models/tools by user role, then relays to local LlamaProvider. Enforces permissions.
+filters models/tools by user role, then relays to the local LLM backend (LlamaProvider or, since
+2026-11, StrataProvider when config.SERVER_BACKEND = "strata"). Enforces permissions.
 
 When USE_WEB_SERVER is configured in config.py:
 - Connects TO the web relay as a "brain" server instead of listening locally
 
 The logic here:
-1. Start/stop local llama-server process (delegated to LlamaProvider)
+1. Start/attach the local LLM backend (delegated to the selected backend provider; Strata is
+   attach-only — we never spawn it)
 2. Listen on Direct WebSocket port for client connections OR connect to web relay as brain
 3. Authenticate clients via API key + profile lookup (AuthGateway)
 4. Filter models/tools by user role before relaying to LLM
-5. Relay authenticated/filtered requests to LlamaProvider and responses back
+5. Relay authenticated/filtered requests to the backend provider and responses back
 
 Pure asyncio — no threads. All server tasks run on the main event loop as asyncio.Tasks.
 
@@ -81,13 +83,27 @@ class CoolemsServerProvider(BaseProvider):
     @property
     def api_url(self): return self._api_url
 
-    # --- Lazy init local LlamaProvider ---
+    # --- Lazy init local backend provider (llama.cpp or Strata) ---
 
     def _get_local_provider(self):
+        """The local inference backend this relay talks to, chosen by config.SERVER_BACKEND.
+
+        2026-11: "strata" selects StrataProvider (same OpenAI/llama.cpp wire format, plus a
+        Bearer key and attach-only lifecycle). Every relay path below stays identical —
+        queue, worker pool, auth filtering, streaming frames, token stats, OCR refusal.
+        """
         if self._local_provider is None:
-            from ..llama.provider import LlamaProvider
-            self._local_provider = LlamaProvider(self._api_url, self._timeout)
-            logger.info(f"[SERVER] Local LlamaProvider initialized at {self._api_url}")
+            import config
+            backend = getattr(config, "SERVER_BACKEND", "llama")
+            if backend == "strata":
+                from ..strata.provider import StrataProvider
+                self._local_provider = StrataProvider(self._api_url, self._timeout)
+                logger.info(f"[SERVER] Local StrataProvider initialized at {self._api_url} "
+                            f"(attach-only; auth={'Bearer key' if self._local_provider.headers else 'none'})")
+            else:
+                from ..llama.provider import LlamaProvider
+                self._local_provider = LlamaProvider(self._api_url, self._timeout)
+                logger.info(f"[SERVER] Local LlamaProvider initialized at {self._api_url}")
         return self._local_provider
 
     # --- Chat relay methods (delegate to split modules) ---
@@ -232,7 +248,7 @@ class CoolemsServerProvider(BaseProvider):
         # /health + /props HERE on the serving loop and move the poller onto this loop
         # BEFORE sizing the worker pool (workers are one per discovered slot).
         await reg.probe_all()
-        reg.log_fleet_table("LLAMA FLEET (serving loop)")
+        reg.log_fleet_table(reg.registry_title() + " (serving loop)")
         reg.start_health_poller(interval_sec=HEALTH_CHECK_INTERVAL_SEC)
 
         pool = WorkerPool(reg, queue)

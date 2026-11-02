@@ -17,11 +17,14 @@ from config import HEALTH_CHECK_TIMEOUT
 from .http_client import get_async_client
 
 
-async def _wait_for_health(api_url: str, max_attempts: int, sleep_sec: int = None) -> bool:
+async def _wait_for_health(api_url: str, max_attempts: int, sleep_sec: int = None,
+                           headers: Optional[dict] = None) -> bool:
     """Wait for llama.cpp to respond to /health. Returns True if healthy.
 
     (2026-09 threadless refactor): async - polls on the shared httpx pool with
-    await asyncio.sleep() between attempts instead of blocking time.sleep()."""
+    await asyncio.sleep() between attempts instead of blocking time.sleep().
+
+    headers (2026-11 strata): optional auth headers; None = llama.cpp as before."""
     from config import LLAMA_SERVER_STARTUP_WAIT_SEC
 
     if sleep_sec is None:
@@ -30,7 +33,7 @@ async def _wait_for_health(api_url: str, max_attempts: int, sleep_sec: int = Non
     client = await get_async_client()
     for _ in range(max_attempts):
         try:
-            resp = await client.get(f"{api_url}/health")
+            resp = await client.get(f"{api_url}/health", headers=headers)
             if resp.status_code == 200:
                 return True
         except Exception:
@@ -39,17 +42,20 @@ async def _wait_for_health(api_url: str, max_attempts: int, sleep_sec: int = Non
 
     return False
 
-async def _verify_model_loaded(api_url: str, expected_filename: str) -> bool:
+async def _verify_model_loaded(api_url: str, expected_filename: str,
+                               headers: Optional[dict] = None) -> bool:
     """Check if the expected model is actually loaded in the server.
 
     (2026-08-23 security fix) EXACT match only: strip .gguf from both sides,
     compare basenames case-insensitively for equality. The old bidirectional
     substring fallback could let a wrong/shorter id pass verification.
 
-    (2026-09 threadless refactor): async - /v1/models via the shared httpx pool."""
+    (2026-09 threadless refactor): async - /v1/models via the shared httpx pool.
+
+    headers (2026-11 strata): optional auth headers; None = llama.cpp as before."""
     try:
         client = await get_async_client()
-        models_resp = await client.get(f"{api_url}/v1/models")
+        models_resp = await client.get(f"{api_url}/v1/models", headers=headers)
         models_data = models_resp.json().get("data", [])
         if not models_data:
             return False
@@ -76,7 +82,8 @@ async def _verify_model_loaded(api_url: str, expected_filename: str) -> bool:
         logger.warning(f"[VERIFY] Could not verify model: {e}")
         return False
 
-async def get_current_model(api_url: str, force: bool = False) -> Optional[str]:
+async def get_current_model(api_url: str, force: bool = False,
+                            headers: Optional[dict] = None) -> Optional[str]:
     """Get the currently loaded model name from the server.
 
     2026-08-18 OPTIMIZED — cache-first, pooled HTTP:
@@ -104,9 +111,10 @@ async def get_current_model(api_url: str, force: bool = False) -> Optional[str]:
             return cached
 
     # ---- 2) Verify via API once (async pooled client - no loop freeze, no new TCP handshake) ----
+    # (2026-11 strata) headers carries the Strata Bearer key when the endpoint needs one.
     try:
         client = await get_async_client()
-        resp = await client.get(f"{api_url}/v1/models")
+        resp = await client.get(f"{api_url}/v1/models", headers=headers)
         models_data = resp.json().get("data", [])
         if models_data:
             model_name = models_data[0].get("id", "")
