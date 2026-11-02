@@ -17,6 +17,13 @@ Guarantees kept from the original implementation (do not regress):
   * Dependency order -- keys sorted by dot-depth (STABLE), parents before children;
     same-depth modules keep the SERVER's send order (base.py imports token_stats at
     module level and must come after it).
+    DELIVERY-ORDER CONTRACT (2026-11-14, code-review C5): 'ssrf_guard' must arrive
+    BEFORE 'ssrf_defense'. Both are dot-depth 0, so this installer keeps the SERVER's
+    send order - and tools/ssrf_defense.py is a deprecation shim that imports
+    ssrf_guard at exec time. If the SERVER ever reorders its shared-source list
+    (app/providers/coolems/tool_scanner/shared_sources.py get_shared_sources()), the
+    shim's import fails closed and every network tool loses SSRF protection. The same
+    note is recorded beside that loop; keep both in sync.
   * Fail-closed integrity -- when the SERVER promised a SHA-256 prefix for a module,
     a mismatch REFUSES exec instead of warning (see integrity.py).
   * Import-clean sources -- single-dot relative imports are rewritten to absolute form

@@ -213,7 +213,6 @@ class ToolOrchestrator:
             return result
         except Exception as e:
             logger.error(f"Tool {tool_name} execution error: {e}")
-            import traceback
             return f"ERROR: Tool execution failed: {str(e)}"
     
     def get_tools_summary(self, api_key: str = None) -> Dict:

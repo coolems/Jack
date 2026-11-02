@@ -6,7 +6,6 @@ TTSConfig    — global TTS settings (pool size, model, voices, etc.)
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

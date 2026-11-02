@@ -5,15 +5,12 @@ endpoint, verify the correct model is loaded, and query the current model name.
 """
 
 import os
-import time as _time
 import logging
-import httpx
 import asyncio
 from typing import Optional
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Server")
 
-from config import HEALTH_CHECK_TIMEOUT
 from .http_client import get_async_client
 
 

@@ -32,7 +32,6 @@ WITHOUT MTP whenever a manually-started server owned the port first.
 
 import os
 import subprocess
-import time as _time
 import logging
 import asyncio
 
@@ -69,8 +68,6 @@ from .health_check import (
 
 from .process_mgmt import (
 
-    _poll_stderr,
-    _check_stderr_early,
     _log_process_error,
     _terminate_process,
     _kill_orphaned_process,
@@ -105,11 +102,9 @@ from . import model_state as _model_state
 from .http_client import get_async_client
 
 from config import (
-    HEALTH_CHECK_TIMEOUT,
     PROVIDER_STARTUP_TIMEOUT,
     LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC,
     LLAMA_SERVER_PORT,
-    LLAMA_SERVER_PARALLEL,
 )
 
 

@@ -11,7 +11,6 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import Optional
 
 from static.voice.config import VoiceConfig
 from static.voice.engine import TTSManager

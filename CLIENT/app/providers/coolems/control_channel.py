@@ -50,7 +50,6 @@ class ControlChannel:
                 return True
             await self._teardown_locked()  # clean any half-dead state first
 
-            import websockets
             from . import _check_protocol, apply_auth_info
 
             try:

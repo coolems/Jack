@@ -24,8 +24,6 @@ async def handle_direct_ws_client(ws, server_provider):
     On disconnect, sets stop events for all active conversations belonging to this client
     so the server aborts generation on llama.cpp side (no orphaned responses).
     """
-    import websockets
-
     peer = ws.remote_address if hasattr(ws, 'remote_address') else "unknown"
     logger.info(f"[SERVER] Direct WS client connected from {peer} (TLS encrypted)")
 

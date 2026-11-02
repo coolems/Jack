@@ -4,7 +4,7 @@ import os
 import json
 import datetime
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 from .name import get_name
 
 logger = logging.getLogger("COOLEMS.AgentDNA")

@@ -4,7 +4,7 @@ import os
 import subprocess as _sp
 import sys
 
-from .paths import ROOT, _read_client_ui_port
+from .paths import _read_client_ui_port
 from .ui import info, ok, warn
 
 

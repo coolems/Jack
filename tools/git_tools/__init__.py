@@ -6,7 +6,6 @@ Tools are auto-discovered at runtime - just add a .py file.
 """
 
 import logging
-import os
 import importlib
 from pathlib import Path
 from typing import Dict, Callable

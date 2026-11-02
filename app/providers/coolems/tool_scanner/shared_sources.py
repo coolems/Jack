@@ -2,8 +2,6 @@
 
 import os
 
-from .log import logger
-
 def _read_text(path):
     """Read a text file as UTF-8 (shared by the source-serving functions)."""
     with open(path, 'r', encoding='utf-8') as f:

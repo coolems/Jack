@@ -46,6 +46,9 @@ from utils.history_trimmer import safe_trim_history, get_token_count
 # pipeline is skipped so it neither inflates the system prompt nor complicates
 # history trimming. The old logic stays in place as dead code below - re-enable
 # by setting _LESSONS_INJECTION_ENABLED = True.
+# TODO(code-review C7, plan_20261102_2135_code_review.md): re-enable with the
+# lessons text counted into message_budget (it rides in the system message, so
+# it must be measured like the tool schema) before flipping the flag.
 # ============================================================
 _LESSONS_INJECTION_ENABLED = False
 
@@ -179,18 +182,33 @@ def _append_skipped_tool_results(messages: List[Dict], tool_calls: List[Dict], s
 
 
 # Lazy-import ToolCompilationError to avoid circular dependency at module load time
+_TOOL_COMPILATION_ERROR: Any = None
+_TOOL_COMPILATION_ERROR_RESOLVED = False
+
+
 def _get_tool_compilation_error():
-    """Get the ToolCompilationError class (lazy import)."""
+    """Get the ToolCompilationError class (lazy import, resolved ONCE).
+
+    (2026-11 review fix B8) The old version re-ran the import on EVERY exception,
+    so a hot error path paid two failed imports per occurrence. The class is a
+    constant: resolve it once and cache the result (including the "not available"
+    result), so repeated calls are a dict-free attribute read.
+    """
+    global _TOOL_COMPILATION_ERROR, _TOOL_COMPILATION_ERROR_RESOLVED
+    if _TOOL_COMPILATION_ERROR_RESOLVED:
+        return _TOOL_COMPILATION_ERROR
     try:
         from tools.remote_tools.dynamic_loader import ToolCompilationError
-        return ToolCompilationError
+        _TOOL_COMPILATION_ERROR = ToolCompilationError
     except ImportError:
         # Fallback for when running in CLIENT context where module path differs
         try:
             from CLIENT.tools.remote_tools.dynamic_loader import ToolCompilationError
-            return ToolCompilationError
+            _TOOL_COMPILATION_ERROR = ToolCompilationError
         except ImportError:
-            return None
+            _TOOL_COMPILATION_ERROR = None
+    _TOOL_COMPILATION_ERROR_RESOLVED = True
+    return _TOOL_COMPILATION_ERROR
 
 
 async def run_react_loop(
@@ -348,6 +366,17 @@ async def run_react_loop(
             #      max-thinking-iterations force-completion guardian).
             #   3. TRIM     - when the budget is actually exceeded, remove oldest
             #      atomic units from the list sent to the provider.
+            # BUDGET EXPRESSION (2026-11 review fix A7) - defined ONCE per iteration and
+            # used by every stage below, so the check and the trim can never disagree:
+            #   current_tokens   = TOTAL prompt cost (messages + tool schema). Compared
+            #                      against token_limit by stages 1/2/3.
+            #   message_budget   = token_limit - est_tools_tokens = what the MESSAGE LIST
+            #                      alone may hold. Every safe_trim_history() call uses this,
+            #                      never the raw token_limit.
+            # Deriving both here (instead of re-spelling the arithmetic at each stage) is
+            # what keeps the schema counted exactly once: the anchor already includes it,
+            # and the trim budget subtracts it exactly once from the limit.
+            #
             # SERVER-TRUTH ANCHOR (2026-08-19 fix): prefer the REAL prompt token count
             # llama.cpp reported for the last request we sent. The message list only grows
             # between iterations, so "server prompt_tokens + local estimate delta since that
@@ -356,6 +385,7 @@ async def run_react_loop(
             # must NOT be added on top of it. The local chars/4 estimate stays only as a
             # fallback for iterations before any response has come back yet, and drift from
             # the server number is logged once so estimator problems remain diagnosable.
+            message_budget = max(1024, token_limit - est_tools_tokens)
             if server_prompt_tokens is not None:
                 _new_msgs = messages[messages_len_at_last_stats:]
                 current_tokens = server_prompt_tokens + sum(estimate_message_tokens(m) for m in _new_msgs)
@@ -416,7 +446,7 @@ async def run_react_loop(
                         if messages[_pi].get("role") == "user":
                             live_protected.append(_pi)
                             break
-                    messages = safe_trim_history(messages, max(1024, token_limit - est_tools_tokens), live_protected)
+                    messages = safe_trim_history(messages, message_budget, live_protected)
 
             # ---- STAGE 3: hard limit exceeded -> trim oldest atomic units ----
             if current_tokens > token_limit:
@@ -436,9 +466,16 @@ async def run_react_loop(
                 # real prompt then hit the window with almost no output room left and
                 # llama.cpp truncated its own tool-call JSON mid-string ("Failed to parse
                 # tool call arguments" 500). See plan_20260817_trace_fix.md.
-                messages = safe_trim_history(messages, max(1024, token_limit - est_tools_tokens), live_protected)
+                messages = safe_trim_history(messages, message_budget, live_protected)
+                # Post-trim figure is the LOCAL estimate (get_token_count + schema): the
+                # server anchor cannot be recomputed here because trimming shifts indices,
+                # so slicing at messages_len_at_last_stats would count removed messages.
+                # The anchor stays authoritative for the DECISION; this line is diagnostics.
                 after_trim_tokens = get_token_count(messages) + est_tools_tokens
-                logger.debug(f"[AGENTIC.DEBUG] react_loop - After trim: {len(messages)} messages, {after_trim_tokens} tokens (incl. tool schema)")
+                logger.debug(
+                    f"[AGENTIC.DEBUG] react_loop - After trim: {len(messages)} messages, "
+                    f"{after_trim_tokens} tokens (local est, incl. tool schema), message_budget={message_budget}"
+                )
 
 
             # LEARNED LESSONS - injection skipped on purpose (dead code kept for a

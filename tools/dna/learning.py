@@ -3,7 +3,7 @@
 import json
 import os
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 from config import MODEL_NAME
 

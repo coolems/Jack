@@ -55,10 +55,29 @@ from config import (
 )
 from .command_builder import _build_server_cmd
 from .health_check import _verify_model_loaded
-from .model_identity import model_basename, model_key
+from .model_identity import model_key
 from .path_utils import _collect_all_gguf, _get_default_models_dir, _get_model_scan_dirs
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Node")
+
+
+def _emit(message: str) -> None:
+    """Console line for the launcher AND the same line in the COOLEMS log (C1 fix).
+
+    node_launcher.py is BOTH an interactive admin CLI (configure/start/status via
+    utils/start_llama_node/ZZZ_LLAMA_NODE.bat) and a module the SERVER calls at boot
+    (app/providers/llama/backend_registry.py -> ensure_local_node -> start()). The old
+    code used bare print() for every step, so when the SERVER ran it those lines went
+    to stdout only and never reached logs/coolems.log - the one real print-vs-logging
+    inconsistency in runtime code (code.py even tells the operator "see [NODE] lines
+    above", which were unloggable).
+
+    Policy (documented in app/logging_config.py): standalone console scripts may print;
+    anything running INSIDE a SERVER/CLIENT process must log. _emit satisfies both -
+    the wizard keeps its formatted console output, and every line is also logged.
+    """
+    _emit(message)
+    logger.info("[NODE] %s", message)
 
 CONFIG_REL = os.path.join("config", "llama_node.json")
 EXAMPLE_REL = os.path.join("config", "llama_node.example.json")
@@ -180,7 +199,7 @@ def _ask(prompt: str, default=None, cast=str):
         try:
             return cast(raw)
         except (TypeError, ValueError):
-            print("  invalid value, try again")
+            _emit("  invalid value, try again")
 
 
 def _ask_yes_no(prompt: str, default: bool = True) -> bool:
@@ -199,16 +218,16 @@ def _model_candidates() -> list[str]:
 def _pick_model(existing: str = "") -> str:
     candidates = _model_candidates()
     if candidates:
-        print("\nLocal .gguf models found:")
+        _emit("\nLocal .gguf models found:")
         for i, p in enumerate(candidates[:20], 1):
-            print(f"  {i:2d}) {os.path.basename(p)}   ({p})")
+            _emit(f"  {i:2d}) {os.path.basename(p)}   ({p})")
         default = existing if existing else candidates[0]
         raw = _ask("Model (number or absolute path)", default, str)
         if raw.isdigit() and 1 <= int(raw) <= len(candidates):
             return candidates[int(raw) - 1]
         return raw
-    print("\nNo .gguf files found in the scan folders.")
-    print("  scanned: " + ", ".join(_get_model_scan_dirs()))
+    _emit("\nNo .gguf files found in the scan folders.")
+    _emit("  scanned: " + ", ".join(_get_model_scan_dirs()))
     return _ask("Absolute path to the model .gguf", existing or "", str)
 
 
@@ -216,13 +235,13 @@ def configure() -> int:
     """Interactive wizard -> config/llama_node.json."""
     existing = load_raw_config() or {}
     if existing:
-        print("\nCurrent configuration:")
-        print(json.dumps(existing, indent=2))
+        _emit("\nCurrent configuration:")
+        _emit(json.dumps(existing, indent=2))
 
-    print("\nPresets:")
+    _emit("\nPresets:")
     keys = list(PRESETS.keys())
     for i, k in enumerate(keys, 1):
-        print(f"  {i}) {k:8s} {PRESETS[k]['label']}")
+        _emit(f"  {i}) {k:8s} {PRESETS[k]['label']}")
     choice = _ask("Preset", "1", str)
     preset_name = keys[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(keys) else "default"
     preset = PRESETS[preset_name]
@@ -268,8 +287,8 @@ def configure() -> int:
         "auto_start": bool(auto_start),
     }
     _save_json(_path(CONFIG_REL), cfg)
-    print(f"\n[NODE] configuration written to {_path(CONFIG_REL)}")
-    print(json.dumps(cfg, indent=2))
+    _emit(f"\n[NODE] configuration written to {_path(CONFIG_REL)}")
+    _emit(json.dumps(cfg, indent=2))
     return 0
 
 
@@ -489,7 +508,7 @@ async def start(force: bool = False) -> int:
     cfg = load_config()
     state = _read_state()
     if state.get("desired") == "stopped" and not force:
-        print(f"[NODE] '{cfg['name']}' was intentionally stopped. Use 'start --force' to run it.")
+        _emit(f"[NODE] '{cfg['name']}' was intentionally stopped. Use 'start --force' to run it.")
         _LAST_START_ACTION = ""   # nothing running - caller must report down (no auto-spawn)
         return 0
 
@@ -506,7 +525,7 @@ async def start(force: bool = False) -> int:
                          model=cfg["model"], concurrency=cfg["concurrency"],
                          ctx_per_slot=cfg.get("ctx_per_slot"),
                          pid=state.get("pid"), log=_log_path(cfg["port"]))
-            print(f"[NODE] '{cfg['name']}' already running on port {cfg['port']} "
+            _emit(f"[NODE] '{cfg['name']}' already running on port {cfg['port']} "
                   f"(slots {reported}, ctx/slot {_reported_ctx(props)}, "
                   f"model {props.get('model_alias') or props.get('model_path')}) - nothing to do")
             _LAST_START_ACTION = "attached"
@@ -523,7 +542,7 @@ async def start(force: bool = False) -> int:
             _write_state(concurrency=cfg["concurrency"], ctx_per_slot=cfg.get("ctx_per_slot"),
                          effective_slots=reported, effective_ctx=_reported_ctx(props),
                          desired="running")
-            print(f"[NODE] WARNING: requested slots={cfg['concurrency']} "
+            _emit(f"[NODE] WARNING: requested slots={cfg['concurrency']} "
                   f"ctx/slot={cfg.get('ctx_per_slot') or CONTEXT_WINDOW_TOKENS}, llama reports "
                   f"slots={reported} ctx/slot={_reported_ctx(props)}. Keeping it running; "
                   f"the brain routes by the reported values.")
@@ -540,7 +559,7 @@ async def start(force: bool = False) -> int:
             from .process_mgmt import _get_process_commandline
             cmdline = await asyncio.to_thread(_get_process_commandline, pid)
             if cmdline and "llama" in cmdline.lower():
-                print(f"[NODE] llama-server (PID {pid}) is already starting/loading on port "
+                _emit(f"[NODE] llama-server (PID {pid}) is already starting/loading on port "
                       f"{cfg['port']} - not spawning another one. Check 'status' or wait.")
                 _LAST_START_ACTION = "loading"
                 return 0
@@ -553,7 +572,7 @@ async def start(force: bool = False) -> int:
                 f"port {cfg['port']} is already in use by PID {pid}. Free it or change the node port."
             )
     elif props and not _props_match(cfg, props):
-        print(f"[NODE] port {cfg['port']} runs a different llama configuration "
+        _emit(f"[NODE] port {cfg['port']} runs a different llama configuration "
               f"(model={props.get('model_path')}, slots={props.get('total_slots')}) - restarting it")
 
     model_path = _resolve_model(cfg)
@@ -564,9 +583,9 @@ async def start(force: bool = False) -> int:
         # Ours but misconfigured -> stop before respawn.
         await _stop_by_port(cfg["port"])
 
-    print(f"[NODE] starting '{cfg['name']}' on {cfg['bind']}:{cfg['port']} "
+    _emit(f"[NODE] starting '{cfg['name']}' on {cfg['bind']}:{cfg['port']} "
           f"(slots={cfg['concurrency']}, ctx/slot={cfg.get('ctx_per_slot') or CONTEXT_WINDOW_TOKENS})")
-    print("[NODE] command: " + subprocess.list2cmdline(cmd))
+    _emit("[NODE] command: " + subprocess.list2cmdline(cmd))
     proc = _spawn_detached(cmd, log_path)
     pid = proc.pid
     _write_state(desired="running", port=cfg["port"], name=cfg["name"], pid=pid,
@@ -578,16 +597,16 @@ async def start(force: bool = False) -> int:
     if not ok:
         _write_state(desired="unknown", pid=None, last_error=message)
         _LAST_START_ACTION = ""
-        print(f"[NODE] ERROR: {message}")
+        _emit(f"[NODE] ERROR: {message}")
         tail = _tail(log_path)
         if tail:
-            print("[NODE] last log lines:\n" + tail)
+            _emit("[NODE] last log lines:\n" + tail)
         await _stop_by_port(cfg["port"])
         return 1
 
     reported = ready_props.get("total_slots") if ready_props else None
     if isinstance(reported, int) and reported != cfg["concurrency"]:
-        print(f"[NODE] WARNING: llama reports {reported} slot(s) but config asks for "
+        _emit(f"[NODE] WARNING: llama reports {reported} slot(s) but config asks for "
               f"{cfg['concurrency']} - the brain will clamp routing to {reported}.")
 
     _print_summary(cfg, model_path, log_path)
@@ -596,21 +615,21 @@ async def start(force: bool = False) -> int:
 
 
 def _print_summary(cfg: dict, model_path: str, log_path: str) -> None:
-    print("\n" + "=" * 70)
-    print(f"LLAMA NODE READY: {cfg['name']}")
-    print("=" * 70)
-    print(f"  bind        : {cfg['bind']}:{cfg['port']}  (LAN {_lan_ip()})")
+    _emit("\n" + "=" * 70)
+    _emit(f"LLAMA NODE READY: {cfg['name']}")
+    _emit("=" * 70)
+    _emit(f"  bind        : {cfg['bind']}:{cfg['port']}  (LAN {_lan_ip()})")
     if str(cfg["bind"]).lower() in ("127.0.0.1", "localhost", "::1"):
-        print("  WARNING     : bind is LOOPBACK - the brain cannot reach this node.")
-        print("                Set \"bind\": \"0.0.0.0\" (or this machine's LAN IP) and restart.")
-    print(f"  model       : {os.path.basename(model_path)}")
-    print(f"  slots       : {cfg['concurrency']}   ctx/slot: {cfg.get('ctx_per_slot') or CONTEXT_WINDOW_TOKENS}")
-    print(f"  log         : {log_path}")
-    print(f"  llama-server keeps running after this launcher exits.")
-    print("\nAdd this entry to config/llama_servers.json on the SERVER (brain):")
-    print("  " + json.dumps({"name": cfg["name"], "host": _lan_ip(), "port": cfg["port"]}))
-    print("  (no concurrency needed - the brain discovers it from /props)")
-    print("=" * 70)
+        _emit("  WARNING     : bind is LOOPBACK - the brain cannot reach this node.")
+        _emit("                Set \"bind\": \"0.0.0.0\" (or this machine's LAN IP) and restart.")
+    _emit(f"  model       : {os.path.basename(model_path)}")
+    _emit(f"  slots       : {cfg['concurrency']}   ctx/slot: {cfg.get('ctx_per_slot') or CONTEXT_WINDOW_TOKENS}")
+    _emit(f"  log         : {log_path}")
+    _emit(f"  llama-server keeps running after this launcher exits.")
+    _emit("\nAdd this entry to config/llama_servers.json on the SERVER (brain):")
+    _emit("  " + json.dumps({"name": cfg["name"], "host": _lan_ip(), "port": cfg["port"]}))
+    _emit("  (no concurrency needed - the brain discovers it from /props)")
+    _emit("=" * 70)
 
 
 async def _stop_by_port(port: int) -> None:
@@ -643,10 +662,10 @@ async def stop() -> int:
         pid = await asyncio.to_thread(_find_pid_on_port, port)
         if not pid:
             _write_state(desired="stopped", pid=None, port=port)
-            print(f"[NODE] nothing is listening on port {port} - marked as stopped")
+            _emit(f"[NODE] nothing is listening on port {port} - marked as stopped")
             return 0
 
-    print(f"[NODE] stopping llama-server on port {port} ...")
+    _emit(f"[NODE] stopping llama-server on port {port} ...")
     # _stop_by_port verifies the command line and refuses to kill a non-llama process.
     await _stop_by_port(port)
     if await _healthy(port):
@@ -655,7 +674,7 @@ async def stop() -> int:
             f"not marking it stopped. Check it by hand (PID/port)."
         )
     _write_state(desired="stopped", pid=None, port=port)
-    print(f"[NODE] stopped. The 5-minute watchdog will NOT restart it until 'start --force'.")
+    _emit(f"[NODE] stopped. The 5-minute watchdog will NOT restart it until 'start --force'.")
     return 0
 
 
@@ -667,25 +686,25 @@ async def status() -> int:
 
     props = await _fetch_props(port)
     healthy = await _healthy(port)
-    print("\n" + "=" * 70)
-    print(f"LLAMA NODE STATUS: {name}  (port {port})")
-    print("=" * 70)
-    print(f"  health      : {'OK' if healthy else 'DOWN'}")
-    print(f"  desired     : {state.get('desired') or '?'}")
-    print(f"  pid         : {state.get('pid') or '?'}")
-    print(f"  log         : {state.get('log') or _log_path(port)}")
+    _emit("\n" + "=" * 70)
+    _emit(f"LLAMA NODE STATUS: {name}  (port {port})")
+    _emit("=" * 70)
+    _emit(f"  health      : {'OK' if healthy else 'DOWN'}")
+    _emit(f"  desired     : {state.get('desired') or '?'}")
+    _emit(f"  pid         : {state.get('pid') or '?'}")
+    _emit(f"  log         : {state.get('log') or _log_path(port)}")
     if props:
-        print(f"  model       : {props.get('model_path') or props.get('model_alias')}")
-        print(f"  slots       : {props.get('total_slots')}")
+        _emit(f"  model       : {props.get('model_path') or props.get('model_alias')}")
+        _emit(f"  slots       : {props.get('total_slots')}")
         ctx = (props.get("default_generation_settings") or {}).get("n_ctx")
-        print(f"  ctx/slot    : {ctx}")
-        print(f"  build       : {props.get('build_info')}")
-        print("\n  brain entry : " + json.dumps(
+        _emit(f"  ctx/slot    : {ctx}")
+        _emit(f"  build       : {props.get('build_info')}")
+        _emit("\n  brain entry : " + json.dumps(
             {"name": name, "host": _lan_ip(), "port": port}))
     else:
-        print("  props       : UNAVAILABLE - the brain cannot route to this node "
+        _emit("  props       : UNAVAILABLE - the brain cannot route to this node "
               "(llama.cpp build without /props?)")
-    print("=" * 70)
+    _emit("=" * 70)
     return 0 if (healthy and props) else 1
 
 
@@ -693,7 +712,7 @@ def print_cmd() -> int:
     cfg = load_config()
     model_path = _resolve_model(cfg)
     cmd = _build_cmd(cfg, model_path)
-    print(subprocess.list2cmdline(cmd))
+    _emit(subprocess.list2cmdline(cmd))
     return 0
 
 
@@ -701,7 +720,7 @@ async def restart(force: bool = True) -> int:
     try:
         await stop()
     except RuntimeError as e:
-        print(f"[NODE] stop skipped: {e}")
+        _emit(f"[NODE] stop skipped: {e}")
     return await start(force=True)
 
 
@@ -910,10 +929,10 @@ def dispatch(command: str, force: bool = False) -> int:
             return print_cmd()
         raise RuntimeError(f"unknown command '{command}'")
     except RuntimeError as e:
-        print(f"[NODE] ERROR: {e}")
+        _emit(f"[NODE] ERROR: {e}")
         return 1
     except Exception as e:
-        print(f"[NODE] ERROR: {type(e).__name__}: {e}")
+        _emit(f"[NODE] ERROR: {type(e).__name__}: {e}")
         return 1
     except KeyboardInterrupt:
         return 130

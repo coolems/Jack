@@ -68,7 +68,7 @@ import contextvars
 import logging
 import os
 import re
-from typing import List, Optional, Tuple
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +76,20 @@ logger = logging.getLogger(__name__)
 # Constants used by tools
 # ---------------------------------------------------------------------------
 
-MAX_FILE_SIZE: int = 10 * 1024 * 1024              # 10 MB max file read size
-MAX_TEXT_CONTENT_SIZE: int = 500_000                # Max chars for text content extraction
-MAX_WRITE_SIZE: int = 10 * 1024 * 1024             # 10 MB max write size
+# UNIT CONTRACT (2026-11-14, code-review B2): these are the SERVER-side tool
+# limits. MAX_FILE_SIZE / MAX_WRITE_SIZE are BYTE counts (f.read(n),
+# len(content)); MAX_TEXT_CONTENT_SIZE is a CHARACTER count - it is passed as
+# read_text_file(max_chars=...) and applied to the decoded string, so it is
+# deliberately NOT a byte limit and must not be compared with os.path.getsize.
+#
+# CLIENT-side twin: CLIENT/app/utils/common/file_io.py exposes the same names
+# with BYTE units (FILE_MAX_SIZE_BYTES 100MB upload cap,
+# FILE_MAX_TEXT_CONTENT_BYTES 500KB, FILE_MAX_WRITE_BYTES 10MB). The value
+# differences are intentional: the agent tool path keeps payloads small (10MB
+# read / 10MB write), while the UI upload path accepts larger bodies (100MB).
+MAX_FILE_SIZE: int = 10 * 1024 * 1024              # 10 MB max file read size (BYTES)
+MAX_TEXT_CONTENT_SIZE: int = 500_000                # Max chars for text content extraction (CHARS)
+MAX_WRITE_SIZE: int = 10 * 1024 * 1024             # 10 MB max write size (BYTES)
 
 TEXT_EXTENSIONS: set = {
     '.txt', '.md', '.py', '.js', '.ts', '.html', '.css', '.json', '.xml',
@@ -579,24 +590,30 @@ def find_file(
 def validate_file_access(
     filepath: str,
     working_root: Optional[str] = None,
-    must_exist: bool = True,
     label: str = "File",
 ) -> str:
-    """Validate that a file can be safely accessed.
-    
+    """Validate that a file EXISTS and can be safely accessed.
+
     Delegates to path_guard.validate_file_access for security validation.
-    
+
+    (2026-11 review fix B3) The old ``must_exist`` parameter was documented but
+    silently ignored: path_guard.validate_file_access ALWAYS requires existence,
+    so ``must_exist=False`` callers would still get FileNotFoundError. The
+    parameter is removed rather than implemented - no caller in the repo ever
+    passed it, and a "validate a path that may not exist" mode would need a
+    different function (containment-only), not a flag that lies about behaviour.
+
     Args:
         filepath: Path to validate (relative or absolute).
         working_root: Base allowed directory. Uses global if None.
-        must_exist: If True, the file must exist on disk.
         label: Label for error messages.
-        
+
     Returns:
         Resolved absolute path string.
-        
+
     Raises:
-        ValueError: If access is denied or file doesn't exist when required.
+        ValueError: If access is denied.
+        FileNotFoundError: If the file does not exist.
     """
     wr = working_root or get_working_root()
     

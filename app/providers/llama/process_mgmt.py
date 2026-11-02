@@ -28,7 +28,6 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Server")
 # Each llama-server instance from config/llama_servers.json tracks its own Popen so a
 # reload of one instance never kills another. The legacy no-key API below maps to the
 # default local key and keeps old call sites working unchanged.
-from .model_state import key_for_api_url as _key_for_api_url  # noqa: E402  (same package, no cycle)
 
 _DEFAULT_KEY = ("127.0.0.1", LLAMA_SERVER_PORT)  # legacy default (derived from config); server.py always passes the real key now
 _server_processes: dict[tuple, Optional[subprocess.Popen]] = {}

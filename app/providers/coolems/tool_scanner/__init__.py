@@ -20,30 +20,33 @@ small, focused modules for easier maintenance and debugging:
     tool_source.py             _locate_tool_file / get_tool_source_code / get_tool_source_code_with_deps
     config_constants.py        extract_config_constants (config/config.py -> CLIENT constants)
 
-All public names are re-exported here, so existing imports keep working:
+PUBLIC NAMES are re-exported here, so existing imports keep working:
     from .tool_scanner import scan_tool_definitions  # etc.
+
+The private helpers listed above (_server_root, _ast_node_to_python, _find_dict_end_line,
+_extract_ollama_tool_ast, _build_def_from_signature, _read_text, _locate_tool_file,
+_find_same_package_imports, logger) are NOT re-exported: every sibling module imports
+them from its own source module (e.g. ``from .log import logger``), and no code outside
+this package ever reaches for them through the facade. Re-exporting them here was dead
+weight -- a name that nothing reads. ``_sha_prefix`` IS re-exported because
+app/providers/coolems/direct_ws/tool_code_handler.py imports it from the package
+(``from ..tool_scanner import _sha_prefix``) for the integrity hash of delivered source.
 """
 
-from .build_def_from_signature import _build_def_from_signature
 from .config_constants import extract_config_constants
 from .constants import EXCLUDED_TOOL_DIRS, SKIP_FILES
-from .dict_end_line import _find_dict_end_line
 from .dna_data_files import get_dna_data_files
-from .extract_tool_ast import _extract_ollama_tool_ast
 from .framework_files import get_framework_sources
-from .log import logger
-from .node_to_python import _ast_node_to_python
-from .paths import _server_root
-from .same_package_imports import _find_same_package_imports
 from .scan import get_client_tools_dir, scan_tool_definitions
-from .sha_prefix import _sha_prefix
+from .sha_prefix import _sha_prefix  # noqa: F401 -- used by direct_ws/tool_code_handler.py
 from .shared_hashes import get_shared_hashes
-from .shared_sources import _read_text, get_all_shared_sources, get_shared_utils_source
-from .tool_source import _locate_tool_file, get_tool_source_code, get_tool_source_code_with_deps
+from .shared_sources import get_all_shared_sources, get_shared_utils_source
+from .tool_source import get_tool_source_code, get_tool_source_code_with_deps
 
 __all__ = [
     "EXCLUDED_TOOL_DIRS",
     "SKIP_FILES",
+    "_sha_prefix",
     "extract_config_constants",
     "get_all_shared_sources",
     "get_client_tools_dir",

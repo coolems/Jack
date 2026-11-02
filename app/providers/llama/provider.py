@@ -20,7 +20,6 @@ from .payload import build_llama_payload
 from .streaming import chat_stream as _chat_stream
 from .non_streaming import chat_non_streaming as _chat_non_streaming
 from .health import HealthChecker
-from .server import start_server as _start_server
 from .server import get_current_model as _get_current_model
 from .ocr import ocr_transcribe as _ocr_transcribe
 from .status import status_message as _status_message

@@ -65,6 +65,7 @@ _resolve_project_root() now locates the real project root from several anchors,
 which works identically on disk (SERVER / local dev) and in the CLIENT sandbox.
 """
 
+import ast
 import subprocess
 import sys
 import os
@@ -131,21 +132,66 @@ def _cleanup_test_artifacts():
                 pass  # Ignore permission errors on cleanup
 
 
-def _dir_has_tests(d: str) -> bool:
-    """True when *d* is a project root containing a runnable tests/ folder.
+# Candidate suite directories, in priority order (2026-11 review fix A1).
+# 'tests/' is the documented per-project layout. 'tools/test_tools/' is the layout
+# this repo itself ships: Jack's real suite lives there, while ./tests/ holds only
+# throwaway live-service scripts (strata_smoke.py / strata_ctx_check.py) that are
+# gitignored and NOT pytest-collectable. Before this, run_tests() reported
+# "[FAIL] No test target resolved" for Jack's own repo even though 33 tests pass.
+# Both candidates stay scoped to the resolved project root - discovery never climbs
+# out of it, so the 2026-10-06 "wrong tree" path-artifact guard still holds.
+_TEST_DIR_CANDIDATES = ("tests", os.path.join("tools", "test_tools"))
 
-    A valid marker is a 'tests' subdirectory holding at least one test_*.py file
-    (the same pattern the runner discovers with). This avoids matching an unrelated
-    folder that happens to be named 'tests'.
+
+def _file_has_collectable_tests(path: str) -> bool:
+    """True when *path* actually DEFINES tests (pytest-style ``def test_*`` or a
+    ``unittest.TestCase`` subclass).
+
+    A file named test_*.py that defines no test is not a suite member (2026-11
+    review fix C6): ./tests/ in this repo holds throwaway live-service scripts
+    (strata_smoke.py, strata_ctx_check.py) that only print + sys.exit, so naming
+    them test_* would make pytest collect them and report rc=5 / import-time
+    failures instead of running the real suite.
     """
     try:
-        tests_dir = os.path.join(d, "tests")
-        if not os.path.isdir(tests_dir):
-            return False
-        return any(f.startswith("test_") and f.endswith(".py")
-                   for f in os.listdir(tests_dir))
-    except OSError:
+        with open(path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError):
         return False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            return True
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                name = getattr(base, "id", None) or getattr(base, "attr", None)
+                if name in ("TestCase", "unittest.TestCase"):
+                    return True
+    return False
+
+
+def _suite_dir_in(d: str) -> Optional[str]:
+    """Return the suite directory (relative to *d*) that holds collectable tests, else None."""
+    for rel in _TEST_DIR_CANDIDATES:
+        cand = os.path.join(d, rel)
+        try:
+            if not os.path.isdir(cand):
+                continue
+            for f in os.listdir(cand):
+                if f.startswith("test_") and f.endswith(".py") and _file_has_collectable_tests(os.path.join(cand, f)):
+                    return rel
+        except OSError:
+            continue
+    return None
+
+
+def _dir_has_tests(d: str) -> bool:
+    """True when *d* is a project root containing a runnable test suite.
+
+    A valid marker is one of _TEST_DIR_CANDIDATES holding at least one test_*.py
+    file (the same pattern the runner discovers with). This avoids matching an
+    unrelated folder that happens to be named 'tests'.
+    """
+    return _suite_dir_in(d) is not None
 
 
 def _walk_up_for_tests(start: str, max_levels: int = 5) -> Optional[str]:
@@ -221,11 +267,13 @@ def _running_inside_jack_tree() -> bool:
     return os.path.isdir(parent_marker)
 
 
-def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str], str]:
-    """Locate the project root whose tests/ suite should be run.
+def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str], str, str]:
+    """Locate the project root whose test suite should be run.
 
-    Returns (root_or_None, explanation). ``root`` is None when no legitimate
-    target exists - callers must then fail loudly with *explanation*.
+    Returns (root_or_None, explanation, suite_dir). ``root`` is None when no
+    legitimate target exists - callers must then fail loudly with *explanation*.
+    ``suite_dir`` is the suite directory RELATIVE to root ('tests' for the normal
+    per-project layout, 'tools\test_tools' for this repo's own suite).
 
     Resolution order:
       0. Explicit ``project_root`` argument (must exist; a missing or test-less
@@ -250,17 +298,20 @@ def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str]
     if explicit:
         cand = os.path.abspath(os.path.expanduser(explicit.strip()))
         if not os.path.isdir(cand):
-            return None, (f"explicit project_root does not exist or is not a directory: {cand}")
-        if _dir_has_tests(cand):
-            return cand, "explicit project_root argument"
-        return None, (f"explicit test-less project has no tests/ folder with test_*.py files: "
-                      f"{os.path.join(cand, 'tests')}")
+            return None, (f"explicit project_root does not exist or is not a directory: {cand}"), "tests"
+        suite = _suite_dir_in(cand)
+        if suite:
+            return cand, "explicit project_root argument", suite
+        return None, (f"explicit test-less project has no test suite: neither "
+                      f"{os.path.join(cand, 'tests')} nor "
+                      f"{os.path.join(cand, 'tools', 'test_tools')} contains test_*.py files"), "tests"
 
     # 1) Working-root anchor: test the live tree inside the configured working root.
     wr = _working_root_anchor()
     if wr and os.path.isdir(wr):
-        if _dir_has_tests(wr):
-            return wr, "configured working root (contains tests/)"
+        suite = _suite_dir_in(wr)
+        if suite:
+            return wr, f"configured working root (contains {suite}/)", suite
 
         # A project may wrap the working folder - but ONLY wr's IMMEDIATE parent is
         # checked (max_levels=0). Checking anything higher could climb out of the
@@ -268,14 +319,16 @@ def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str]
         # (e.g. this repo) - the original path artifact.
         hit = _walk_up_for_tests(os.path.dirname(wr), max_levels=0)
         if hit:
-            return hit, "project wrapping the configured working root"
+            return hit, "project wrapping the configured working root", _suite_dir_in(hit) or "tests"
 
         # A direct child of the working root may itself be a project.
         try:
             for name in sorted(os.listdir(wr)):
                 cand = os.path.join(wr, name)
-                if os.path.isdir(cand) and _dir_has_tests(cand):
-                    return cand, f"direct child of working root ({name})"
+                if os.path.isdir(cand):
+                    suite = _suite_dir_in(cand)
+                    if suite:
+                        return cand, f"direct child of working root ({name})", suite
         except OSError:
             pass
 
@@ -283,11 +336,11 @@ def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str]
         # Do NOT fall through to CWD/module discovery - that used to silently pick
         # up Jack's own suite when the sandbox CWD sat inside the CLIENT dir, so
         # another project was "tested" against this repo's files (path artifact).
-        return None, (f"configured working root {wr} contains no tests/ folder with test_*.py "
-                      f"files (checked the working root itself, its immediate parent and its direct "
-                      f"children). To run per-project tests, add a 'tests' folder with test files "
-                      f"(pytest-style or unittest-style) inside your project at {wr}, or pass "
-                      f"project_root explicitly to target another project.")
+        return None, (f"configured working root {wr} contains no test suite with test_*.py "
+                      f"files (checked 'tests/' and 'tools/test_tools/' in the working root, its "
+                      f"immediate parent and its direct children). To run per-project tests, add a "
+                      f"'tests' folder with test files (pytest-style or unittest-style) inside your "
+                      f"project at {wr}, or pass project_root explicitly to target another project."), "tests"
 
     # 2) No working root configured at all -> legitimate local-dev / SERVER mode:
     #    legacy discovery is safe here because there is no OTHER project in play.
@@ -295,21 +348,23 @@ def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str]
         real_file = os.path.abspath(__file__)
         if os.path.isfile(real_file):
             legacy_root = os.path.dirname(os.path.dirname(os.path.dirname(real_file)))
-            if _dir_has_tests(legacy_root):
-                return legacy_root, "on-disk module path (no working root configured)"
+            suite = _suite_dir_in(legacy_root)
+            if suite:
+                return legacy_root, "on-disk module path (no working root configured)", suite
     except Exception:
         pass
 
     try:
         hit = _walk_up_for_tests(os.getcwd())
         if hit and _running_inside_jack_tree():
-            return hit, "CWD walk-up inside the Jack tree (no working root configured)"
+            return hit, "CWD walk-up inside the Jack tree (no working root configured)", _suite_dir_in(hit) or "tests"
     except Exception:
         pass
 
     # Nothing legitimate found - fail loudly (callers build the final message).
-    return None, ("could not locate a project with tests/ : no working root is configured and "
-                  "neither the module path nor the CWD tree contains a runnable tests/test_*.py suite")
+    return None, ("could not locate a project with a test suite: no working root is configured and "
+                  "neither the module path nor the CWD tree contains a runnable test_*.py suite "
+                  "under 'tests/' or 'tools/test_tools/'"), "tests"
 
 
 def _normalize_test_file(test_file: str) -> str:
@@ -319,25 +374,27 @@ def _normalize_test_file(test_file: str) -> str:
     return os.path.basename(name)
 
 
-def _build_pytest_cmd(python_exe: str, test_file: Optional[str]) -> list[str]:
+def _build_pytest_cmd(python_exe: str, test_file: Optional[str], suite_dir: str = "tests") -> list[str]:
     """pytest command (preferred runner - collects plain functions AND TestCase classes)."""
     cmd = [python_exe, "-m", "pytest"]
     if test_file:
-        cmd.append(os.path.join("tests", test_file))
+        cmd.append(os.path.join(suite_dir, test_file))
     else:
-        cmd.append("tests")
+        cmd.append(suite_dir)
     cmd.extend(["-v", "--no-header", "-p", "no:cacheprovider"])
     return cmd
 
 
-def _build_unittest_cmd(python_exe: str, test_file: Optional[str]) -> list[str]:
+def _build_unittest_cmd(python_exe: str, test_file: Optional[str], suite_dir: str = "tests") -> list[str]:
     """unittest command (fallback when the target interpreter has no pytest)."""
     cmd = [python_exe, "-m", "unittest"]
     if test_file:
         stem = test_file[:-3] if test_file.endswith(".py") else test_file
-        cmd.extend(["-v", f"tests.{stem}"])
+        # Dotted module path from the suite dir (e.g. tools/test_tools -> tools.test_tools)
+        dotted = suite_dir.replace(os.sep, ".")
+        cmd.extend(["-v", f"{dotted}.{stem}"])
     else:
-        cmd.extend(["discover", "-s", "tests", "-p", "test_*.py", "-v"])
+        cmd.extend(["discover", "-s", suite_dir, "-p", "test_*.py", "-v"])
     return cmd
 
 
@@ -376,7 +433,7 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
         explaining exactly what is missing (never silently runs the wrong project's
         suite).
     """
-    root, how = _resolve_project_root(project_root)
+    root, how, suite_dir = _resolve_project_root(project_root)
     if not root:
         return f"[FAIL] No test target resolved - {how}"
 
@@ -385,8 +442,8 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
         norm = _normalize_test_file(test_file)
         if not norm or not (norm.endswith(".py") and norm.startswith("test_")):
             return "[FAIL] Invalid test_file argument - expected a name like 'test_python_exec.py'."
-        if not os.path.isfile(os.path.join(root, "tests", norm)):
-            return f"[FAIL] Test file not found in target project: {os.path.join(root, 'tests', norm)}"
+        if not os.path.isfile(os.path.join(root, suite_dir, norm)):
+            return f"[FAIL] Test file not found in target project: {os.path.join(root, suite_dir, norm)}"
         test_file = norm
 
     # Clean up any leftover artifacts from previous runs
@@ -404,7 +461,7 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
         # never enters. In-sandbox pytest.main() runs need "-p no:capture" or a
         # pre-stubbed sys.modules["colorama"] instead.
         result = subprocess.run(
-            _build_pytest_cmd(python_exe, test_file),
+            _build_pytest_cmd(python_exe, test_file, suite_dir),
             cwd=root, capture_output=True, text=True, timeout=_TEST_TIMEOUT,
             env={**os.environ, "NO_COLOR": "1"}
         )
@@ -414,7 +471,7 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
         if _pytest_missing(result):
             runner = "unittest (fallback - no pytest in target interpreter)"
             result = subprocess.run(
-                _build_unittest_cmd(python_exe, test_file),
+                _build_unittest_cmd(python_exe, test_file, suite_dir),
                 cwd=root, capture_output=True, text=True, timeout=_TEST_TIMEOUT,
                 env={**os.environ, "NO_COLOR": "1"}
             )
@@ -428,8 +485,9 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
         # zero tests is not a green light (mirrors the NO TESTS RAN warning for unittest).
         if runner.startswith("pytest") and result.returncode == 5:
             return ("[FAIL] No tests were collected - pytest exited with code 5 "
-                    f"(no test_*.py files found under {os.path.join(root, 'tests')}, or none of them "
-                    "define collectable tests). Add test functions/classes to the project's tests/ folder.")
+                    f"(no test_*.py files found under {os.path.join(root, suite_dir)}, or none of them "
+                    "define collectable tests). Add test functions/classes to the project's "
+                    f"{suite_dir}/ folder.")
 
         # Combine output for parsing
         full_output = result.stdout + result.stderr
@@ -442,6 +500,7 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
             "## Test Results",
             "",
             f"**Project root:** {root}",
+            f"**Suite dir:** {os.path.join(root, suite_dir)}",
             f"**Resolved via:** {how}",
             f"**Runner:** {runner}",
             "",

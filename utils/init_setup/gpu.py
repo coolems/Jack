@@ -19,13 +19,21 @@ def detect_gpu() -> tuple[str | None, int | None]:
 
 
 # GPU tiers (VRAM in MB). ctx = CONTEXT_WINDOW_TOKENS value to patch into config/config.py.
+#
+# (2026-11 review fix A3) Tier A is 185_000, NOT the old 181_072: config/config.py ships
+# CONTEXT_WINDOW_TOKENS = 185000, and init is the ONLY thing that ever rewrites that
+# constant. A fresh init on a >=28 GB card used to patch it back DOWN to 181072 while the
+# shipped default says 185000 - the two numbers disagreed, and the comment in config.py
+# says the value MUST equal the --ctx-size the deployed llama-server runs with (that drift
+# caused the 2026-08-16 truncated tool-call crash). Tier A now equals the shipped default,
+# so init leaves the constant untouched (wiring.py step 6e reports "already 185000").
 def tier_for_vram(vram_mb: int | None) -> dict:
     if vram_mb is None:                      # no NVIDIA GPU found
         return {"id": "CPU", "quant": "IQ1_M", "ctx": 32768,
                 "note": "no NVIDIA GPU detected - CPU mode (slow), smallest usable model"}
     gb = vram_mb / 1024.0
     if gb >= 28:
-        return {"id": "A", "quant": "Q6_K",   "ctx": 181_072, "note": "~181K context"}
+        return {"id": "A", "quant": "Q6_K",   "ctx": 185_000, "note": "~185K context"}
     if gb >= 20:
         return {"id": "B", "quant": "Q5_K_S", "ctx": 98_304,  "note": "~96K context"}
     if gb >= 13:

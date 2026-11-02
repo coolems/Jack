@@ -13,7 +13,6 @@ Run:  python -m pytest tools/test_tools/test_sandbox_bootstrap_embed.py -v
 
 import os
 import sys
-import types
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))

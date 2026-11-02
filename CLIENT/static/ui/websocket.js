@@ -210,6 +210,16 @@ function appendGeneratedImage(data) {
     // Always-visible setup/tier line (2026-10-04) - rendered for EVERY image, cached or not.
     const setupLine = _formatSetupLine(data);
 
+    // (2026-11 review fix B9) data.file_path / data.filename come from the SERVER
+    // payload and were interpolated RAW into innerHTML and into an inline onclick
+    // string. A path containing quotes or markup (e.g. a model-generated filename
+    // like `a"><img onerror=...>.png`) injected HTML/JS into the chat. Both are now
+    // HTML-escaped, and the click handler is a real listener instead of an inline
+    // onclick built from a string - so no JS-string escaping is needed at all.
+    const filePath = data.file_path || '';
+    const safeFilePath = escapeHtml(filePath);
+    const safeFilename = escapeHtml(data.filename || 'Generated image');
+
     const imageHtml = `
         <div class="avatar">AI</div>
         <div class="message-content">
@@ -219,13 +229,12 @@ function appendGeneratedImage(data) {
                 </div>
                 <img src="data:image/png;base64,${data.image_base64}"
                      class="generated-image"
-                     onclick="window.open('${data.file_path}')"
-                     alt="${data.filename || 'Generated image'}"
+                     alt="${safeFilename}"
                      title="Click to open file">
                 ${setupLine ? `<div class="generated-image-setup">${escapeHtml(setupLine)}</div>` : ''}
                 <div class="generated-image-meta">
-                    <span>📁 ${data.file_path || 'Saved'}</span>
-                    ${data.width && data.height ? `<span>📐 ${data.width}×${data.height}</span>` : ''}
+                    <span>📁 ${safeFilePath || 'Saved'}</span>
+                    ${data.width && data.height ? `<span>📐 ${escapeHtml(String(data.width))}×${escapeHtml(String(data.height))}</span>` : ''}
                 </div>
                 <button class="copy-btn copy-top" onclick="copyMessage(this)">📋 Copy</button>
                 <button class="copy-btn copy-bottom" onclick="copyMessage(this)">📋 Copy</button>
@@ -234,7 +243,16 @@ function appendGeneratedImage(data) {
     `;
 
     messageDiv.innerHTML = imageHtml;
-    messageDiv.querySelector('.message-content').setAttribute('data-raw-content', `Generated image: ${data.file_path}`);
+    messageDiv.querySelector('.message-content').setAttribute('data-raw-content', `Generated image: ${filePath}`);
+    // Attribute assignment (not HTML parsing) keeps the raw path safe, and the
+    // listener reads it back verbatim for window.open().
+    const imgEl = messageDiv.querySelector('.generated-image');
+    if (imgEl && filePath) {
+        imgEl.setAttribute('data-file-path', filePath);
+        imgEl.addEventListener('click', () => {
+            window.open(imgEl.getAttribute('data-file-path'));
+        });
+    }
     container.appendChild(messageDiv);
 
     if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) {

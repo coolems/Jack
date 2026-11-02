@@ -121,12 +121,22 @@ class ToolExecutionLock:
         self._lock.release()
         logger.debug("[TOOL_LOCK] Chat %s released (held %.1fs)", owner, held)
 
-    async def __aenter__(self):
-        # The context manager is used as:  async with tool_lock(conv_id): ...
-        # We store the owner on a thread-local-ish attribute set by the wrapper.
-        return self
+    # (2026-11 review fix B4) NO bare __aenter__/__aexit__ on this class.
+    # The old pair returned ``self`` and did nothing on exit, so
+    # ``async with tool_lock_instance:`` looked correct while running the tool
+    # completely UNSERIALISED (and leaked no lock at all). Owner-scoped acquire/
+    # release is the only correct protocol here, and it lives on _OwnerScopedLock
+    # via the tool_lock(conv_id) factory. If someone ever writes
+    # ``async with _SHARED_LOCK:`` they now get a clear TypeError instead of a
+    # silent concurrency bug.
+    async def __aenter__(self):  # pragma: no cover - guard, not a usage path
+        raise TypeError(
+            "ToolExecutionLock is not usable as a bare async context manager: it needs an "
+            "owner. Use `async with tool_lock(conv_id):` (the _OwnerScopedLock wrapper) so "
+            "acquire/release are paired and re-entrancy per conversation works."
+        )
 
-    async def __aexit__(self, *exc):
+    async def __aexit__(self, *exc):  # pragma: no cover - paired with the guard above
         pass
 
 

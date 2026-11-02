@@ -31,6 +31,9 @@ logger = logging.getLogger("COOLEMS.Logic.ToolExecutor")
 # lookup below is skipped so it neither feeds the agentic loop nor complicates
 # history trimming. The original logic stays in place as dead code - re-enable
 # by setting _LESSONS_INJECTION_ENABLED = True.
+# TODO(code-review C7, plan_20261102_2135_code_review.md): re-enable this with a
+# lessons payload that is token-budgeted (it must fit inside react_loop's
+# message_budget) and trimmed-safe, then delete the disabled branches.
 # ============================================================
 _LESSONS_INJECTION_ENABLED = False
 

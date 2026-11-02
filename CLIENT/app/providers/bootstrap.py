@@ -140,7 +140,6 @@ async def _bootstrap_fetch_once() -> dict | None:
     Raises:
         ConnectionError: protocol version mismatch (fatal - retrying will never fix it).
     """
-    import websockets
     from config import (
         COOLEMS_CLIENT_SERVER_ADDRESS,
         get_connection_mode,

@@ -25,7 +25,6 @@ def _load_transform():
         return source_transform
     except ImportError:
         pass
-    import importlib.util
     import types
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "..", "..", "CLIENT", "tools", "remote_tools",

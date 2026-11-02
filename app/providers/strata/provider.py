@@ -4,7 +4,8 @@ StrataProvider — the SERVER talking to a Strata inference endpoint (2026-11).
 WHY THIS EXISTS
 ---------------
 config.SERVER_BACKEND chooses the local inference engine behind the COOLEMS SERVER
-relay brain: "llama" (llama-server, the default) or "strata" (Strata). Everything the
+relay brain: "strata" (Strata - the shipped default since 2026-11) or "llama"
+(llama-server, the alternative). Everything the
 brain does around generation — WebSocket relay, chat queue, per-slot worker pool, auth
 profiles, streaming frames, token stats, stop button — is unchanged; only the HTTP peer
 and its lifecycle differ.

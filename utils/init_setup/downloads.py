@@ -12,7 +12,7 @@ import urllib.request
 import zipfile
 
 from .errors import InitError
-from .ui import human, info, ok, warn
+from .ui import human, ok, warn
 
 
 class DownloadBlockedBySsl(InitError):

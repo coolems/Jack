@@ -29,7 +29,6 @@ HTTP CLIENT POOL:
     sessions across all requests.
 """
 import json
-import os
 import time
 import asyncio
 import logging

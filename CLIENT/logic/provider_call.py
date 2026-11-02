@@ -8,7 +8,6 @@ message list and retry once: the prompt text already lists every attached file's
 saved name, so the model can still work (e.g. via transcribe_image OCR) without pixels.
 """
 
-import asyncio
 import json
 import logging
 import time

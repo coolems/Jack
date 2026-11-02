@@ -17,8 +17,6 @@ import os
 import glob
 
 
-import json
-
 
 import time
 
@@ -28,8 +26,6 @@ import asyncio
 
 import logging
 
-
-import requests
 
 
 import httpx
@@ -41,14 +37,11 @@ from typing import List, Tuple, Dict, Optional
 
 
 
-from config import HEALTH_CHECK_TIMEOUT
-
 
 
 
 
 from .model_utils import _is_mmproj_file, normalize_model_name
-from .path_utils import _resolve_server_root
 from .http_client import get_async_client
 
 

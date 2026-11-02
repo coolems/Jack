@@ -165,6 +165,11 @@ async def _run_relay_with_client_async(provider_obj, final_api_url):
     logger.info("Launching local CLIENT from: %s", client_script)
     logger.info("Using Python: %s", venv_python)
 
+    # (2026-11 review fix B5) explicit flag instead of `if 'client_proc' in locals()`:
+    # the old cleanup test depended on the name existing, so when Popen itself raised
+    # (bad interpreter path, permission error) the finally-block skipped cleanup and
+    # the guard was unreadable. client_proc is now always bound (None = never started).
+    client_proc = None
     try:
         client_proc = subprocess.Popen(
             [venv_python, client_script, "--port", str(CLIENT_UI_PORT)],
@@ -195,13 +200,39 @@ async def _run_relay_with_client_async(provider_obj, final_api_url):
         logger.info("Relay task cancelled (shutdown)")
     finally:
         # Clean up CLIENT subprocess
-        if 'client_proc' in locals() and client_proc.poll() is None:
+        if client_proc is not None and client_proc.poll() is None:
             logger.info("Stopping local CLIENT process...")
+            # (2026-11 review fix B5) On Windows Popen.terminate() == TerminateProcess on
+            # THAT pid only: the CLIENT's own children (playwright browser, generate_image
+            # runtime subprocesses) survive SERVER shutdown and linger as orphans. Kill the
+            # whole process tree via psutil (pinned in requirements.txt); fall back to the
+            # plain terminate/kill if psutil is unavailable.
             try:
-                client_proc.terminate()
-                client_proc.wait(timeout=5)
-            except Exception:
-                client_proc.kill()
+                import psutil
+                proc = psutil.Process(client_proc.pid)
+                children = proc.children(recursive=True)
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except psutil.TimeoutExpired:
+                    proc.kill()
+                for child in children:
+                    try:
+                        child.kill()
+                    except psutil.Error:
+                        pass  # already gone - best effort
+            except ModuleNotFoundError:
+                try:
+                    client_proc.terminate()
+                    client_proc.wait(timeout=5)
+                except Exception:
+                    client_proc.kill()
+            except Exception as e:
+                logger.warning(f"CLIENT process-tree cleanup failed (ignored): {e}")
+                try:
+                    client_proc.kill()
+                except Exception:
+                    pass
 
         if _license_task is not None and not _license_task.done():
             _license_task.cancel()

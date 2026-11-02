@@ -55,7 +55,7 @@ def full_desktop_screenshot(filename: str = None, region: str = None) -> dict:
 
     try:
         import pyautogui
-        from PIL import ImageDraw, ImageFont
+        from PIL import ImageDraw
         
         # Generate filename if not provided
         if not filename:

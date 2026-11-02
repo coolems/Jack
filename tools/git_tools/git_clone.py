@@ -63,15 +63,17 @@ def git_clone(url: str, target_dir: str = None, depth: int = 1) -> str:
     # Check if already exists
     if os.path.exists(dest_path):
         try:
-            original_cwd = os.getcwd()
-            os.chdir(dest_path)
+            # (2026-11 review fix B7) subprocess.run(cwd=...) instead of os.chdir():
+            # os.chdir() mutates the PROCESS-wide CWD, which is shared by every other
+            # coroutine/thread in the CLIENT. A concurrent tool (or a crash between
+            # chdir and the restore) would run with the cloned repo as its CWD.
             result = subprocess.run(
                 ["git", "pull"],
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=60,
+                cwd=dest_path
             )
-            os.chdir(original_cwd)
 
             if result.returncode == 0:
                 return f"✅ Repository already exists, pulled latest:\n{dest_path}\n{result.stdout[:500]}"

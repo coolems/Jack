@@ -1,8 +1,6 @@
 """Files router package - split from monolithic files.py for better maintainability."""
 
-from fastapi import APIRouter, HTTPException
-
-from .middleware import logger
+from fastapi import APIRouter
 
 
 def create_files_router() -> APIRouter:

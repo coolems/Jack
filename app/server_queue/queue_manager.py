@@ -27,10 +27,9 @@ caller refunds the rate-limit token and the client simply resends.
 
 import asyncio
 import logging
-import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 from config import (
     QUEUE_MAX_PENDING,

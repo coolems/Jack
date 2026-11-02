@@ -299,8 +299,15 @@ class CoolemsServerProvider(BaseProvider):
             logger.info("[SERVER] Web relay brain task started")
         else:
             # Start Direct WebSocket server with TLS (secure PC-to-PC) — ALWAYS ON when not using web relay
-            from config import COOLEMS_DIRECT_WS_PORT
-            logger.info(f"[SERVER] Using DIRECT WEBSOCKET mode on port {COOLEMS_DIRECT_WS_PORT} (TLS encrypted)")
+            # (2026-11 review fix A5) Read the attribute off the config MODULE, not a value
+            # snapshot: code.py's _apply_port_override() mutates config.COOLEMS_DIRECT_WS_PORT
+            # after this module was imported, so `from config import COOLEMS_DIRECT_WS_PORT`
+            # would bind the pre-override number and the banner here could name a port that
+            # _run_direct_ws_server() (line ~137, attribute read) does not bind. Attribute
+            # access keeps banner and bind in agreement regardless of import order.
+            import config as _cfg
+            _direct_ws_port = _cfg.COOLEMS_DIRECT_WS_PORT
+            logger.info(f"[SERVER] Using DIRECT WEBSOCKET mode on port {_direct_ws_port} (TLS encrypted)")
             self._direct_ws_task = asyncio.create_task(
                 self._run_direct_ws_server(), name="coolems-direct-ws"
             )

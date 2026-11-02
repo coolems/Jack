@@ -16,7 +16,7 @@ allows. No folder logic here - authorization is by filename (see auth_gateway).
 """
 
 import logging
-from typing import List, Optional
+from typing import List
 
 from app.providers.llama.backend_registry import get_registry
 from app.providers.llama.model_identity import model_key as model_key_of

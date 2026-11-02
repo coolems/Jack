@@ -3,7 +3,7 @@ server address(es), runtime-tab fields). Verbatim move from the original flat ag
 
 from typing import Dict
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 import logging

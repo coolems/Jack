@@ -4,7 +4,7 @@ import os
 import mimetypes
 import hashlib
 from typing import Dict
-from fastapi import APIRouter, File, UploadFile, Query, HTTPException
+from fastapi import APIRouter, File, Query, HTTPException
 from fastapi.responses import FileResponse
 
 from app.utils.common import is_text_file, read_docx_as_text, read_text_file, get_working_root, FILE_MAX_WRITE_BYTES

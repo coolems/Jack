@@ -7,7 +7,6 @@ and locating vision projector (mmproj) files in model directories.
 import os
 import glob
 import logging
-from typing import Optional
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Server")
 

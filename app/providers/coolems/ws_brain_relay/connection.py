@@ -82,9 +82,13 @@ async def connect_to_web_relay(server_provider):
 
 
 
-    # Get actual context window from server config (SERVER is the source of truth)
+    # Config value is only the FALLBACK here (2026-11 review fix A4). The value the
+    # relay merges into every client's auth_ok must be the SMALLEST healthy per-slot
+    # context, exactly like direct_ws/ws_auth.py computes it - otherwise a relayed
+    # client trims against the biggest node's window and overflows a smaller one.
+    # The live number is read from the registry at send time (see brain_info below).
 
-    from config import CONTEXT_WINDOW_TOKENS as SERVER_CONTEXT_WINDOW
+    from config import CONTEXT_WINDOW_TOKENS as _CFG_CONTEXT_WINDOW
 
 
 
@@ -370,9 +374,18 @@ async def connect_to_web_relay(server_provider):
 
                 # auth_ok so CLIENTs receive the real context window through a relay.
 
-                # (2026-10-15 licensing plan v12) slim license payload {use, company} — the relay
-                # merges it into every client's auth_ok exactly like context_window.
+                # (2026-11 review fix A4) Read the registry's effective window here, NOT the
+                # static config number: with a fleet, the client must trim against the SMALLEST
+                # healthy per-slot context. Same expression as direct_ws/ws_auth.py, so a
+                # relayed client and a direct client always get the same budget. Re-read on
+                # every (re)connect, so a node that died/started since the last handshake is
+                # reflected. Falls back to config.CONTEXT_WINDOW_TOKENS when no registry exists.
                 from app import license_server
+                from app.providers.llama.backend_registry import get_registry
+                _reg = get_registry()
+                SERVER_CONTEXT_WINDOW = (
+                    _reg.effective_context_window() if _reg is not None else _CFG_CONTEXT_WINDOW
+                )
 
                 await ws.send(json.dumps({
 

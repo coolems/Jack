@@ -57,7 +57,7 @@ from config import (
 )
 
 # FIX: Import utils.history_manager BEFORE tools to prevent shadowing
-import utils.history_manager
+import utils.history_manager  # noqa: F401 -- side-effect import (must precede tools to avoid shadowing)
 
 from app.browser import WebInteract
 from app.logging_config import setup_logging

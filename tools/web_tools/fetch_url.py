@@ -36,6 +36,47 @@ from tools.ssrf_guard import ensure_url_not_ssrff, safe_session, SSRFError
 
 logger = logging.getLogger("COOLEMS.Tools.Web")
 
+# (2026-11 review fix A6) HARD CAP on the response body. `await response.read()`
+# buffers the WHOLE body in RAM with no limit, so a 300 MB "webpage" (or a
+# malicious/compressed bomb) used to land entirely in the process. fetch_url only ever
+# returns 8000 chars of extracted text, so anything past this cap is useless anyway.
+MAX_FETCH_BYTES = 4 * 1024 * 1024
+
+
+async def _read_capped(response, cap: int) -> bytes:
+    """Stream the body in chunks and stop at *cap* bytes.
+
+    Returns at most *cap* bytes; a longer body is truncated (never buffered whole).
+    Declared Content-Length above the cap is refused BEFORE any byte is read.
+    """
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            if int(declared) > cap:
+                logger.warning(
+                    f"fetch_url: refusing {response.url} - declared Content-Length "
+                    f"{int(declared):,} bytes exceeds the {cap:,} byte cap"
+                )
+                return b""
+        except (TypeError, ValueError):
+            pass  # bogus header -> fall through to the streamed cap
+
+    chunks = []
+    total = 0
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        remaining = cap - total
+        if remaining <= 0:
+            logger.warning(f"fetch_url: body of {response.url} truncated at {cap:,} bytes")
+            break
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining]
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= cap:
+            logger.warning(f"fetch_url: body of {response.url} truncated at {cap:,} bytes")
+            break
+    return b"".join(chunks)
+
 
 async def fetch_url(url: str) -> str:
     """Fetch and extract content from a URL with SSRF protection (asyncio-native)."""
@@ -66,7 +107,8 @@ async def fetch_url(url: str) -> str:
             async with session.get(url, headers=headers, allow_redirects=True) as response:
                 if response.status >= 400:
                     return f"HTTP Error: {response.status} for url: {url}"
-                content = await response.read()
+                # Capped streaming read (A6) - never buffers an unbounded body.
+                content = await _read_capped(response, MAX_FETCH_BYTES)
                 final_url = str(response.url)
 
         soup = BeautifulSoup(content, 'html.parser')

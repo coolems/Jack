@@ -5,7 +5,6 @@ ZERO hardcoded lists. Everything is discovered at runtime.
 """
 
 import os
-import sys
 import logging
 import importlib
 from typing import Dict, Any
@@ -15,30 +14,21 @@ logger = logging.getLogger(__name__)
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 
 # ===== Core infrastructure (explicit imports - these are not tools) =====
-from .utils import (
-    is_text_file,
-    is_image_file,
-    encode_image_to_base64,
-    read_text_file,
-    get_file_info,
-    MAX_FILE_SIZE,
-    MAX_TEXT_CONTENT_SIZE,
-    MAX_WRITE_SIZE,
-    TEXT_EXTENSIONS,
-    EXCLUDED_FOLDERS,
-    IMAGE_EXTENSIONS
-)
+# EXCLUDED_FOLDERS is the only name this package body actually consumes
+# (_discover_tool_folders() below). Everything else in tools/utils.py is imported
+# by the consumers that need it (``from tools.utils import ...``) - the CLIENT
+# sandbox never sees this file at all: shared_modules.py builds a synthetic
+# 'tools' namespace package instead of executing tools/__init__.py, and the
+# shared-source list ships utils.py itself. The old blanket re-export block
+# (is_text_file / read_text_file / MAX_* / *_EXTENSIONS / ToolOrchestrator /
+# AgentDNA / get_agent / the four agent_prompt names) had ZERO readers anywhere
+# in the repo (SERVER runs headless: app/initialization.py skips
+# ToolOrchestrator/Agent), so it was dead weight that also dragged
+# tool_orchestrator + dna + agent_prompt into every ``import tools``.
+from .utils import EXCLUDED_FOLDERS
 # NOTE: tool detection lives on the CLIENT side only (CLIENT/app/detection.py).
 # The old server-side tools/tool_detection.py was removed as dead code (2026-08-23):
 # nothing in the SERVER imported it and it duplicated the client copy.
-from .tool_orchestrator import ToolOrchestrator
-from .dna import AgentDNA, get_agent
-from .agent_prompt import (
-    GENERIC_TOOL_PROMPT,
-    PERSISTENT_PLAN_PROMPT,
-    get_time_awareness_instruction,
-    get_agent_system_prompt
-)
 
 
 # ===== COMPLETELY DYNAMIC TOOL DISCOVERY =====

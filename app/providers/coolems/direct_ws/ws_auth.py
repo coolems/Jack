@@ -172,27 +172,37 @@ async def _authenticate_direct_client(ws, server_provider, peer):
 
     except asyncio.TimeoutError:
         logger.warning(f"[SERVER] Direct WS client {peer} auth timeout -- disconnecting")
-        try: await ws.close()
-        except Exception: pass
+        try:
+            await ws.close()
+        except Exception as close_err:  # already-dropped socket; log for diagnostics, never mask the real cause
+            logger.debug(f"[SERVER] Direct WS close failed for {peer} after auth failure: {close_err}")
         return None, None, None
     except json.JSONDecodeError as e:
         logger.error(f"[SERVER] Invalid JSON in auth from direct WS client {peer}: {e}")
-        try: await ws.close()
-        except Exception: pass
+        try:
+            await ws.close()
+        except Exception as close_err:  # already-dropped socket; log for diagnostics, never mask the real cause
+            logger.debug(f"[SERVER] Direct WS close failed for {peer} after auth failure: {close_err}")
         return None, None, None
     # Expected connection drops during model switch - log at INFO, not ERROR
     except (ws_exc.ConnectionClosed, ws_exc.ConnectionClosedError) as e:
         logger.info(f"[SERVER] Direct WS client {peer} disconnected during auth (expected during model reload)")
-        try: await ws.close()
-        except Exception: pass
+        try:
+            await ws.close()
+        except Exception as close_err:  # already-dropped socket; log for diagnostics, never mask the real cause
+            logger.debug(f"[SERVER] Direct WS close failed for {peer} after auth failure: {close_err}")
         return None, None, None
     except ConnectionAbortedError as e:
         logger.info(f"[SERVER] Direct WS client {peer} connection aborted during auth (expected)")
-        try: await ws.close()
-        except Exception: pass
+        try:
+            await ws.close()
+        except Exception as close_err:  # already-dropped socket; log for diagnostics, never mask the real cause
+            logger.debug(f"[SERVER] Direct WS close failed for {peer} after auth failure: {close_err}")
         return None, None, None
     except Exception as e:
         logger.error(f"[SERVER] Auth error for direct WS client {peer}: {e}", exc_info=True)
-        try: await ws.close()
-        except Exception: pass
+        try:
+            await ws.close()
+        except Exception as close_err:  # already-dropped socket; log for diagnostics, never mask the real cause
+            logger.debug(f"[SERVER] Direct WS close failed for {peer} after auth failure: {close_err}")
         return None, None, None

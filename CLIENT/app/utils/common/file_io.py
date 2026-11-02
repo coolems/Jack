@@ -13,9 +13,23 @@ logger = logging.getLogger("COOLEMS.Tools")
 # Constants
 # ---------------------------------------------------------------------------
 
-FILE_MAX_SIZE_BYTES = 100 * 1024 * 1024   # 100MB
-FILE_MAX_TEXT_CONTENT_BYTES = 500 * 1024  # 500KB
-FILE_MAX_WRITE_BYTES = 10 * 1024 * 1024   # 10MB
+# UNIT CONTRACT (2026-11-14, code-review B2): every constant in this block is a
+# BYTE count, and every consumer here compares it against a byte length
+# (os.path.getsize, len(content), len(await file.read())).
+#
+# NOTE the two copies of these names are NOT wired together: CLIENT/config/config.py
+# declares FILE_MAX_*_BYTES as tunables (2 GB / 5 MB / 3 GB) but nothing imports them
+# into this module - the literals below are what the UI/upload code actually enforces.
+# If those config values are ever meant to apply, they must be read explicitly here;
+# until then treat config.py's numbers as unused declarations, not live limits.
+#
+# The SERVER-side twin lives in tools/utils.py and uses the SAME names but a
+# different unit for MAX_TEXT_CONTENT_SIZE (CHARS there, BYTES here) - see the
+# block there for the full mapping. Do not "align" the numbers: the two limits
+# guard different paths (agent tool payloads vs UI/HTTP upload bodies).
+FILE_MAX_SIZE_BYTES = 100 * 1024 * 1024   # 100MB - max image/upload body size (bytes)
+FILE_MAX_TEXT_CONTENT_BYTES = 500 * 1024  # 500KB - max text-file read size (bytes)
+FILE_MAX_WRITE_BYTES = 10 * 1024 * 1024   # 10MB - max write/upload-to-folder body (bytes)
 
 # Vision attachment budget (2026-09-10): attached images are downscaled to JPEG so
 # their base64 payload stays under this cap. ~500KB of pixels ~= 670K chars base64,
@@ -24,7 +38,10 @@ FILE_MAX_WRITE_BYTES = 10 * 1024 * 1024   # 10MB
 VISION_IMAGE_MAX_BYTES = 500 * 1024        # target max JPEG size after downscaling (~500 KB)
 VISION_IMAGE_MAX_BASE64_CHARS = 700_000   # ~525KB raw -> trigger to compress
 
-# Backward-compatible aliases (some code imports these names)
+# Backward-compatible aliases (some code imports these names). All BYTES:
+# MAX_FILE_SIZE  -> upload endpoints + image encode (len(content) / getsize)
+# MAX_TEXT_CONTENT_SIZE -> read_text_file / read_docx_as_text (byte size check)
+# MAX_WRITE_SIZE -> read_endpoints save path (len(data_bytes))
 MAX_FILE_SIZE = FILE_MAX_SIZE_BYTES
 MAX_TEXT_CONTENT_SIZE = FILE_MAX_TEXT_CONTENT_BYTES
 MAX_WRITE_SIZE = FILE_MAX_WRITE_BYTES

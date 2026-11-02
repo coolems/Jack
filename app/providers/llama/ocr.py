@@ -25,8 +25,6 @@ import asyncio
 import logging
 from typing import List
 
-import httpx
-
 from config import OCR_TIMEOUT, OCR_MAX_TOKENS
 
 from .http_client import get_async_client

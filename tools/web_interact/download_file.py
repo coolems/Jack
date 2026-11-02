@@ -53,6 +53,43 @@ _BROWSER_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9'
 }
 
+# (2026-11 review fix A6) HARD CAP on the downloaded body. _http_get_once() used
+# `await response.read()`, which buffers the ENTIRE body in RAM with no limit - a
+# multi-hundred-MB response (or a decompression bomb) landed whole in the process.
+# Downloads legitimately need the full file, so the cap is generous rather than
+# tight; exceeding it is reported as an actionable error instead of writing a
+# silently-truncated file.
+MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024  # 200 MB
+
+
+async def _read_capped(response, cap: int) -> "tuple[bytes, bool]":
+    """Stream the body in chunks, stopping at *cap* bytes.
+
+    Returns (data, truncated). A declared Content-Length above the cap is refused
+    BEFORE any byte is read, so an oversized response never even starts buffering.
+    """
+    declared = response.headers.get("Content-Length")
+    if declared:
+        try:
+            if int(declared) > cap:
+                return b"", True
+        except (TypeError, ValueError):
+            pass  # bogus header -> rely on the streamed cap
+
+    chunks = []
+    total = 0
+    async for chunk in response.content.iter_chunked(256 * 1024):
+        remaining = cap - total
+        if remaining <= 0:
+            return b"".join(chunks), True
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining]
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= cap:
+            return b"".join(chunks), True
+    return b"".join(chunks), False
+
 # --- WAF JavaScript proof-of-work challenge solving (2026-10) -----------------
 # Some sites (e.g. mfe.gov.ro, nginx + JS-challenge WAF edge) answer non-browser
 # clients with HTTP 503 and an HTML page that:
@@ -300,7 +337,8 @@ async def _http_get_once(session, url: str, headers: dict) -> dict:
     where a download actually went before it failed.
     """
     async with session.get(url, headers=headers) as response:
-        body = await response.read()
+        # Capped streaming read (A6) - an oversized body is flagged, never buffered whole.
+        body, oversized = await _read_capped(response, MAX_DOWNLOAD_BYTES)
         redirects = []
         for h in (response.history or []):
             dest = (h.headers or {}).get("Location") or str(h.url)
@@ -311,6 +349,7 @@ async def _http_get_once(session, url: str, headers: dict) -> dict:
             "content_type": (response.headers or {}).get("Content-Type", ""),
             "body": body,
             "redirects": redirects,
+            "oversized": oversized,
         }
 
 
@@ -437,7 +476,11 @@ async def download_file(url: str, filename: str = None, download_dir: str = "", 
                 challenge = parse_waf_challenge(result["body"])
                 if challenge is not None:
                     logger.info(f"WAF JS PoW challenge detected (HTTP {status}) for {url} -- solving offline")
-                    i = solve_waf_pow(challenge)
+                    # (2026-11 review fix B6) The solver is a tight SHA-1 loop with a
+                    # ~5s wall-clock budget. Running it here blocked the event loop for
+                    # that whole window - the UI, the WS relay and every other chat in
+                    # the process froze. Run it in a worker thread instead.
+                    i = await asyncio.to_thread(solve_waf_pow, challenge)
                     if i is not None:
                         cookie_value = challenge.cookie_value(i)
                         logger.info(f"WAF PoW solved in-process: i={i:,} cookie={cookie_value!r}")
@@ -459,7 +502,19 @@ async def download_file(url: str, filename: str = None, download_dir: str = "", 
                     f.write(content)
                 return f"Downloaded: {filename} ({len(content):,} bytes){note}"
 
+            def _oversized_error(res: dict) -> str:
+                return (f"Download failed [diagnosis=size_cap_exceeded]: {url}\n"
+                        f"  body exceeds the {MAX_DOWNLOAD_BYTES:,} byte cap "
+                        f"(MAX_DOWNLOAD_BYTES in tools/web_interact/download_file.py)\n"
+                        f"  content_type: {res['content_type'] or '(none)'}\n"
+                        f"  suggested_action: this file is too large for the tool's memory cap. "
+                        f"Download it outside Jack (browser / curl), or raise the cap deliberately "
+                        f"if this machine can hold it.")
+
             if status == 200:
+                if result.get("oversized"):
+                    logger.warning(f"download_file: {url} exceeded the {MAX_DOWNLOAD_BYTES:,} byte cap - not saved")
+                    return _oversized_error(result)
                 return _save_and_report(result["body"], waf_note)
 
             # Transient failures (WAF blip 503, rate-limit 429, 502/504): one polite retry after a pause.
@@ -471,6 +526,9 @@ async def download_file(url: str, filename: str = None, download_dir: str = "", 
                 last_status = result["status"]
 
             if last_status == 200:
+                if result.get("oversized"):
+                    logger.warning(f"download_file: {url} retry exceeded the {MAX_DOWNLOAD_BYTES:,} byte cap - not saved")
+                    return _oversized_error(result)
                 return _save_and_report(result["body"])   # recovered on the retry -- still a success
 
             diagnosis, action = _diagnose(last_status, result["content_type"], result["body"], result["redirects"])

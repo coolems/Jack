@@ -7,12 +7,11 @@ Thin wrapper that imports from focused modules:
 - provider_call.py: Provider call with automatic restart
 """
 
-import json
 import logging
 from typing import List, Dict, Any
 from dataclasses import dataclass, field
 
-from .base_mode import BaseModeConfig, build_messages, push_token_stats, check_stop_event
+from .base_mode import BaseModeConfig, build_messages
 from .tool_executor import ToolExecutor
 from .react_loop import run_react_loop
 
@@ -21,18 +20,33 @@ logger = logging.getLogger("COOLEMS.Logic.Agentic")
 
 
 # Lazy-import ToolCompilationError to avoid circular dependency at module load time
+_TOOL_COMPILATION_ERROR: Any = None
+_TOOL_COMPILATION_ERROR_RESOLVED = False
+
+
 def _get_tool_compilation_error():
-    """Get the ToolCompilationError class (lazy import)."""
+    """Get the ToolCompilationError class (lazy import, resolved ONCE).
+
+    (2026-11 review fix B8) The old version re-ran the import on EVERY exception,
+    so a hot error path paid two failed imports per occurrence. The class is a
+    constant: resolve it once and cache the result (including the "not available"
+    result), so repeated calls are a dict-free attribute read.
+    """
+    global _TOOL_COMPILATION_ERROR, _TOOL_COMPILATION_ERROR_RESOLVED
+    if _TOOL_COMPILATION_ERROR_RESOLVED:
+        return _TOOL_COMPILATION_ERROR
     try:
         from tools.remote_tools.dynamic_loader import ToolCompilationError
-        return ToolCompilationError
+        _TOOL_COMPILATION_ERROR = ToolCompilationError
     except ImportError:
         # Fallback for when running in CLIENT context where module path differs
         try:
             from CLIENT.tools.remote_tools.dynamic_loader import ToolCompilationError
-            return ToolCompilationError
+            _TOOL_COMPILATION_ERROR = ToolCompilationError
         except ImportError:
-            return None
+            _TOOL_COMPILATION_ERROR = None
+    _TOOL_COMPILATION_ERROR_RESOLVED = True
+    return _TOOL_COMPILATION_ERROR
 
 
 @dataclass

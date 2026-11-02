@@ -62,6 +62,10 @@ The SERVER never runs tools — it authenticates, applies profiles and relays LL
 - **SERVER** (`code.py`) — headless relay + control plane. Accepts authenticated WebSocket clients, enforces role profiles (which models/tools each user may use), manages the backend registry, request queue and worker pool, and streams model responses back to the right chat. Two provider modes:
   - `coolems_server` → headless relay only (no UI)
   - `llama` → just relay + launches the CLIENT as a subprocess for local UI use
+  Which **local LLM engine** sits behind `coolems_server` is `config.SERVER_BACKEND`:
+  - `"llama"` (llama.cpp) → `config/llama_servers.json`, llama-server on `LLAMA_SERVER_PORT` (5000). The SERVER spawns LOCAL instances and attaches to LAN ones.
+  - `"strata"` (2026-11) → `config/strata_servers.json`, Strata's own OpenAI-compatible endpoint on `STRATA_SERVER_PORT` (18500). The SERVER **never spawns or kills** Strata — it attaches to whatever Strata already runs and authenticates with `STRATA_API_KEY`. Vision/OCR are refused on this backend (Strata reports `images:false` and runs no dedicated OCR instance).
+  `python code.py provider=strata` is shorthand for `SERVER_BACKEND="strata"` (the CLI arg wins over the config value).
 - **CLIENT** (`CLIENT/code_client.py`) — where all intelligence lives. Can be relocated on another machine and configured to connect to server. It hosts the web UI, the ChatBus background sessions, the agentic loop and every tool execution (files, browser via CDP/Playwright, Python exec, OCR, image generation). All LLM requests are routed through the SERVER; direct LLM access from the client is blocked by design.
 - **llama_server** — llama.cpp runtime with pre-downloaded model weights (see `llama_server/download llama_server files.md` for where to get the binaries and how to lay them out). Local instances run on the SERVER machine; remote ones run wherever you put a GPU.
 
@@ -104,9 +108,12 @@ The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeF
 ├── config/                 # SERVER configuration (+ .example templates, bootstrapped at startup)
 │   ├── .api_keys.json      #    ← your API keys  (gitignored; seeded from .api_keys.example.json)
 │   ├── profiles.json       #    ← role profiles  (gitignored; seeded from profiles.example.json)
-│   └── llama_servers.json  #    ← LLM backends: local + LAN instances (gitignored; seeded from .example)
+│   ├── llama_servers.json  #    ← llama backends: local + LAN instances (gitignored; seeded from .example)
+│   └── strata_servers.json #    ← Strata endpoints, used when SERVER_BACKEND="strata" (gitignored; seeded from .example)
 ├── app/                    # Shared server-side modules
 │   ├── providers/          #     llama backend registry, queue integration, auth gateway plumbing
+│   │   ├── llama/          #     llama.cpp backend (spawn local + attach LAN)
+│   │   └── strata/         #     Strata backend (2026-11): attach-only, OpenAI-compatible endpoint
 │   ├── server_queue/       #     per-model queues + WorkerPool (one worker per slot)
 │   └── auth_gateway/       #     key/profile validation and enforcement
 ├── CLIENT/
@@ -119,7 +126,8 @@ The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeF
 ├── utils/                  # Helper scripts (zzz_init.py, gen_ui_certs.py) + ScreenShot.png
     ├── llama_server/           # Local LLM runtime binaries + models (binaries are NOT in git)
 ├── web_server_relay/       # Optional single-file pure-PHP internet relay (index.php; not part of the standard LAN deployment)
-└── tests/                  # Test suite
+├── tools/test_tools/       # THE test suite (pytest): run_tests() / python -m pytest tools/test_tools
+└── tests/                  # Throwaway live-service checks (gitignored, not pytest-collectable)
 ```
 
 ---
@@ -247,7 +255,7 @@ Profiles live in **`config/profiles.json`**: one JSON object per role name. The 
 
 ### Step 4 — Start the SERVER (relay only)
 
-The SERVER is headless — no UI, no tools. It authenticates clients and relays them to the LLM backends listed in `config/llama_servers.json`.
+The SERVER is headless — no UI, no tools. It authenticates clients and relays them to the local LLM engine chosen by `config.SERVER_BACKEND` (`"strata"` by default → `config/strata_servers.json`; `"llama"` → `config/llama_servers.json`).
 
 **Windows:** double-click **`ZZZ_SERVER.bat`** from the repo root (or run it from a terminal):
 
@@ -392,7 +400,9 @@ Notes:
 ## Configuration (summary)
 
 - **SERVER** config lives in `config/` — real values (API keys, profiles, backend list, per-machine state) are **gitignored**; only `.example` templates are tracked and used to bootstrap first runs. See steps 2–3 above for the exact file shapes.
-    - **`llama_servers.json`** — the fleet: one entry per llama-server instance: `name`, `host`, `port`, plus OPTIONAL `concurrency` (upper bound only). LOCAL (`127.0.0.1`) entries are spawned by the SERVER; remote hosts are attach-only, probed every 30 s via `/health` + `/props`. Slot counts for ALL entries are discovered from `/props.total_slots`, not configured.r llama-server instance: `name`, `host`, `port`, plus `concurrency` for LOCAL (`127.0.0.1`) entries that the SERVER spawns. Remote hosts are attach-only: probed every 30 s via `/health` + `/props` (model, slots, context), never started/stopped. Remote slot counts are discovered, not configured.
+  - **`SERVER_BACKEND`** (in `config/config.py`) — `"llama"` | `"strata"`: the local inference engine behind `coolems_server`. Default `"strata"`.
+  - **`llama_servers.json`** — the llama fleet: one entry per llama-server instance: `name`, `host`, `port`, plus OPTIONAL `concurrency` (upper bound only). LOCAL (`127.0.0.1`) entries are spawned by the SERVER; remote hosts are attach-only, probed every 30 s via `/health` + `/props`. Slot counts for ALL entries are discovered from `/props.total_slots`, never configured.
+  - **`strata_servers.json`** — the Strata fleet (used only when `SERVER_BACKEND="strata"`): one entry per endpoint: `name`, `host`, `port`, optional `api_key`, optional `ctx_per_slot`. ALWAYS attach-only — Jack never starts, restarts or kills Strata; it reads `/health` + `/props` for the model and per-slot context. Missing file is seeded from `strata_servers.example.json` at startup.
   - **`llama_node.json`** — per GPU machine. Init writes the local-node defaults (auto-start); the admin wizard (`utils\start_llama_node`) overwrites it: `name`, `model`, `bind`, `port`, `concurrency` (`--parallel`), `ctx_per_slot`, `threads`, `gpu_layers`, `extra_args`. The node launcher uses it; the SERVER never reads it.
   - **`profiles.json`** — per role: `allowed_models` (GGUF **filenames**, `null` = all), **required** `max_parallel_slots` (parallel generations across the whole fleet; missing/invalid = authentication denied), `max_connections`, `max_rate_limit`, tools.
   - **`config.py`** — queue limits: `QUEUE_MAX_PENDING` (32 **per model group**), `QUEUE_FULL_GRACE_SEC` (5 s), `QUEUE_FULL_RETRY_AFTER_SEC` (60 s), `QUEUE_MODEL_WAIT_SEC` (120 s, model configured but all nodes down), `LLAMA_MAX_CONCURRENCY` (8).

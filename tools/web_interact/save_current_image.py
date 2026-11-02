@@ -181,7 +181,6 @@ async def save_current_image(filename: str = None, download_dir: str = "") -> st
                 logger.error(f"SSRF validation failed in save_current_image, refusing to proceed (no fallback): {e!r}")
                 return "Error: Access blocked for security."
 
-            import aiohttp
             cookies = await wi.context.cookies()
             cookie_header = '; '.join([f"{c['name']}={c['value']}" for c in cookies])
             

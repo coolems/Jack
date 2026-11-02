@@ -251,7 +251,6 @@ def resolve_provider_and_url(cli_provider: str = None):
     Raises:
         ValueError if any non-coolems_client provider is requested.
     """
-    import os
 
     if cli_provider:
         provider_name = cli_provider.strip().lower()
