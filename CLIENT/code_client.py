@@ -103,6 +103,18 @@ ensure_database_file(DB_PATH)  # parent dir exists (file itself is created by in
 init_db(DB_PATH)
 migrate_conversation_colors(DB_PATH)
 
+# Cycle-history rows left by an older build (deleted workspace, FK enforcement off)
+# are not owned by any workspace but are still readable by the history API.
+from app.db_manager import get_db_connection, close_db_connection
+from app.websocket.turn_ops import prune_orphan_turn_logs
+_conn = get_db_connection()
+try:
+    prune_orphan_turn_logs(_conn)
+except Exception as _e:
+    logger.warning(f"turn_log orphan prune skipped: {_e}")
+finally:
+    close_db_connection(_conn)
+
 # ===== Provider-Dependent Objects (initialized in main()) =====
 provider = None
 tool_orchestrator = None

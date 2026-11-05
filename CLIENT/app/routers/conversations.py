@@ -9,6 +9,11 @@ UPDATED (2025-07-12):
 
 UPDATED (2025-06-25):
     - Refactored to use centralized db_manager for safe pooled connections with WAL mode
+
+FIXED (2026-12-04): workspace deletion failed with "FOREIGN KEY constraint failed"
+    (HTTP 500 -> "Failed to delete workspace"). turn_log rows are CHILDREN of the
+    conversation, so DELETE must clear them first - both delete and truncate now go
+    through app.websocket.turn_ops.
 """
 import json
 import uuid
@@ -17,6 +22,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 
 from app.helpers import get_client_ip
 from app.db_manager import get_db_connection, close_db_connection
+from app.websocket.turn_ops import delete_conversation_rows, truncate_turn_logs
 import logging
 
 logger = logging.getLogger("COOLEMS")
@@ -223,15 +229,27 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
         conn = get_db_connection()
         try:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
-            cursor.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
+            # CHILD-FIRST: cycle history and messages reference the conversation row,
+            # and foreign keys are ON on every connection - clearing the parent first
+            # raises IntegrityError and the workspace can never be deleted.
+            counts = delete_conversation_rows(conn.cursor(), conv_id)
             conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to delete conversation {conv_id}: {e}")
+            raise HTTPException(status_code=500, detail="Failed to delete workspace")
         finally:
             close_db_connection(conn)
 
-        logger.info(f"Client {current_ip} deleted conversation: {conv_id}")
-        return {"status": "deleted"}
+        logger.info(
+            f"Client {current_ip} deleted conversation: {conv_id} "
+            f"(messages={counts['messages']}, turn_logs={counts['turn_log']})"
+        )
+        return {
+            "status": "deleted",
+            "deleted_messages": counts["messages"],
+            "deleted_turn_logs": counts["turn_log"],
+        }
 
     @router.delete("/{conv_id}/messages/truncate")
     async def truncate_messages(conv_id: str, data: Dict, request: Request):
@@ -243,22 +261,32 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT id FROM messages WHERE conversation_id = ? ORDER BY timestamp",
+                "SELECT id, timestamp FROM messages WHERE conversation_id = ? ORDER BY timestamp",
                 (conv_id,)
             )
             rows = cursor.fetchall()
 
             deleted_count = 0
+            pruned_turn_logs = 0
             if message_index < len(rows):
                 ids_to_delete = [row[0] for row in rows[message_index:]]
                 deleted_count = len(ids_to_delete)
                 placeholders = ",".join("?" * deleted_count)
                 cursor.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", ids_to_delete)
+                # Cycle rows belong to the CONVERSATION, not to the answer they describe:
+                # without this prune, a reload rebuilds cycle blocks for answers that are gone.
+                pruned_turn_logs = truncate_turn_logs(
+                    cursor, conv_id, ids_to_delete, rows[message_index][1]
+                )
                 conn.commit()
-                logger.info(f"Client {current_ip} truncated {deleted_count} messages from conversation {conv_id}")
+                logger.info(
+                    f"Client {current_ip} truncated {deleted_count} messages from "
+                    f"conversation {conv_id} (turn_logs={pruned_turn_logs})"
+                )
         finally:
             close_db_connection(conn)
-        return {"status": "truncated", "deleted_count": deleted_count, "remaining_count": message_index}
+        return {"status": "truncated", "deleted_count": deleted_count,
+                "remaining_count": message_index, "deleted_turn_logs": pruned_turn_logs}
 
     @router.post("/{conv_id}/reset-state")
     async def reset_conversation_state(conv_id: str, request: Request):

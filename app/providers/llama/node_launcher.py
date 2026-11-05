@@ -75,9 +75,18 @@ def _emit(message: str) -> None:
     Policy (documented in app/logging_config.py): standalone console scripts may print;
     anything running INSIDE a SERVER/CLIENT process must log. _emit satisfies both -
     the wizard keeps its formatted console output, and every line is also logged.
+
+    FIX (2026-10-26): the body called _emit(message) instead of print(message), so every
+    emitted line recursed into itself until RecursionError - the admin menu's "1) Start"
+    died before spawning anything (dispatch's own error handler then recursed too, so the
+    real error was never shown). Console output goes to stdout via print(); the logger
+    writes the log file and, inside a SERVER run, the COOLEMS console handler.
     """
-    _emit(message)
-    logger.info("[NODE] %s", message)
+    print(message, flush=True)
+    # Most call sites already carry the [NODE] tag; strip it before logging so the log
+    # file never shows "[NODE] [NODE] ...".
+    logger.info("[NODE] %s", message[6:].lstrip() if message.startswith("[NODE]") else message)
+
 
 CONFIG_REL = os.path.join("config", "llama_node.json")
 EXAMPLE_REL = os.path.join("config", "llama_node.example.json")

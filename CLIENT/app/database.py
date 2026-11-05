@@ -15,6 +15,32 @@ from app.db_manager import get_db_connection, init_db_manager
 logger = logging.getLogger("COOLEMS.Database")
 
 
+TURN_LOG_SCHEMA = """
+                CREATE TABLE IF NOT EXISTS turn_log (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT,
+                    message_id TEXT DEFAULT NULL,
+                    payload TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations (id)
+                )
+            """
+
+
+def _create_turn_log_table(cursor) -> None:
+    """Create the cycle-history table and its lookup index (idempotent).
+
+    turn_log is a CHILD of conversations: one row per agentic turn, holding the
+    collapsed cycle block the UI renders on reload. Because app/db_manager enforces
+    foreign keys on every connection, deleting a workspace must clear these rows
+    first - see app/websocket/turn_ops.delete_conversation_rows().
+    """
+    cursor.execute(TURN_LOG_SCHEMA)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_turn_log_conversation ON turn_log (conversation_id)"
+    )
+
+
 def _safe_sql_literal(value: str) -> str:
     """Escape a string for safe use in SQL literal (handles quotes, slashes, colons)."""
     return "'" + value.replace("'", "''") + "'"
@@ -63,6 +89,7 @@ def init_db(db_path: str):
                     FOREIGN KEY (conversation_id) REFERENCES conversations (id)
                 )
             """)
+            _create_turn_log_table(cursor)
             logger.info("Created fresh database tables")
         else:
             cursor.execute("PRAGMA table_info(messages)")
@@ -85,6 +112,8 @@ def init_db(db_path: str):
             if "working_root" not in conv_cols:
                 cursor.execute("ALTER TABLE conversations ADD COLUMN working_root TEXT DEFAULT NULL")
                 logger.info("Added working_root column to conversations")
+            # Cycle history for pre-existing databases (added 2026-12-04).
+            _create_turn_log_table(cursor)
         conn.commit()
         logger.info("Database initialized successfully")
     except Exception as e:

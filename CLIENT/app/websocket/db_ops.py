@@ -18,6 +18,12 @@ FIXED (2026-10-09):
       one ("working_root stops changing after the first switch"). It now
       resolves each conversation's OWN stored value (per-workspace DB contract).
 
+UPDATED (2026-12-04):
+    - save_assistant_message / save_user_message now RETURN the new message id, so a
+      turn's cycle-history row (app/websocket/turn_ops.save_turn_log) can be linked to
+      the answer it describes. NULL message_id is reserved for turns that never
+      produced an answer (stopped / failed).
+
 FIXED (2026-08-30):
     - UI-only working-root renames were silently lost: the sync UPDATE had no
       rowcount check and ran only as part of message saves, so when no message
@@ -116,6 +122,7 @@ def save_user_message(
         file_contents: Optional list of file content dicts.
         auto_title: If True and workspace title is "New Workspace" (or legacy "New Chat"), update it.
     """
+    msg_id = str(uuid.uuid4())
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -126,7 +133,7 @@ def save_user_message(
             "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
-                str(uuid.uuid4()),
+                msg_id,
                 conv_id,
                 "user",
                 content,
@@ -154,6 +161,7 @@ def save_user_message(
                 )
 
         conn.commit()
+        return msg_id
     finally:
         close_db_connection(conn)
 
@@ -164,6 +172,7 @@ def save_assistant_message(
     content: str,
 ):
     """Save an assistant (AI) response to the database."""
+    msg_id = str(uuid.uuid4())
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -173,7 +182,7 @@ def save_assistant_message(
         cursor.execute(
             "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), conv_id, "assistant", content, None, None),
+            (msg_id, conv_id, "assistant", content, None, None),
         )
         cursor.execute(
             "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -181,6 +190,9 @@ def save_assistant_message(
         )
         _sync_conversation_working_root(cursor, conv_id)
         conn.commit()
+        # The id lets the turn's cycle-history row reference THIS answer
+        # (turn_log.message_id); NULL is reserved for turns with no answer.
+        return msg_id
     finally:
         close_db_connection(conn)
 
@@ -231,6 +243,7 @@ def save_partial_response(
     Appends '[Generation stopped by user]' marker.
     """
     content = partial_response + "\n\n_[Generation stopped by user]_"
+    msg_id = str(uuid.uuid4())
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -240,7 +253,7 @@ def save_partial_response(
         cursor.execute(
             "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), conv_id, "assistant", content, None, None),
+            (msg_id, conv_id, "assistant", content, None, None),
         )
         cursor.execute(
             "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
