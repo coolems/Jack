@@ -206,8 +206,10 @@ class ToolOrchestrator:
         # (2026-08-29 threadless refactor): web_interact tools are async now. If a
             # legacy sync path ever receives an un-awaited coroutine, surface it as a
             # clear error instead of returning the coroutine object to the LLM.
-            import asyncio as _asyncio
-            if isinstance(result, _asyncio.Coroutine):
+            # (2026-11-06 fix): 'asyncio.Coroutine' was REMOVED in Python 3.12, so the old
+            # isinstance() check raised AttributeError on every sync call. inspect.iscoroutine
+            # is the version-proof form (inspect is already imported at module level).
+            if inspect.iscoroutine(result):
                 result.close()  # prevent 'never awaited' warning; we cannot await here
                 return f"ERROR: Tool '{tool_name}' is async and requires an async execution path."
             return result
