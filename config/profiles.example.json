@@ -18,7 +18,6 @@
     "ocr_model": null,
     "allowed_tools": [
       "get_current_time",
-      "get_time_for_city",
       "web_search",
       "fetch_url"
     ],

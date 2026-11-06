@@ -8,7 +8,7 @@ __tool_description__ = {
         "parameters": {
             "type": "object",
             "properties": {
-                "timezone": {"type": "string", "description": "IANA timezone (e.g., 'America/New_York', 'Europe/London'). Optional - omit for system local time. For a city name, use the get_time_for_city tool instead; this tool only accepts IANA zones."}
+                "timezone": {"type": "string", "description": "IANA timezone (e.g., 'America/New_York', 'Europe/London'). Optional - omit for system local time. Only IANA zones are accepted; bare city names are rejected."}
             },
             "required": []
         }
@@ -29,8 +29,7 @@ def get_current_time(timezone: str = None, system_timezone: str = "UTC") -> str:
     Args:
         timezone: Optional IANA timezone name (e.g., 'America/New_York', 'Europe/London').
                   If not provided, uses system local time. NOTE: this is an IANA zone
-                  only - a bare city name will be rejected as unknown; use the
-                  get_time_for_city tool for city names.
+                  only - a bare city name will be rejected as unknown.
         system_timezone: Fallback label used in the output when the resolved tzinfo
                   cannot be named (rare); defaults to "UTC".
 
@@ -96,7 +95,7 @@ def get_current_time(timezone: str = None, system_timezone: str = "UTC") -> str:
         
         # Add suggestion if timezone was auto-detected
         if not timezone:
-            result += f"\n\n💡 Tip: For specific timezones, ask for time in a city (e.g., 'What time is it in Tokyo?')"
+            result += f"\n\n💡 Tip: Pass an IANA timezone (e.g., 'Asia/Tokyo', 'Europe/London') for a specific zone."
         
         logger.info(f"Time tool executed: Local={local_full}, Offset={formatted_offset}")
         return result
