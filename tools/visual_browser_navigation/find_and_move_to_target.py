@@ -28,7 +28,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "find_and_move_to_target",
-        "description": "Prepares a browser screenshot for precise manual targeting. Stamps the target description as a text banner on the screenshot and returns the annotated image (path + base64, visible in the result) plus a vision prompt asking for [left, top, right, bottom] coordinates. It does NOT call a vision model or compute coordinates itself: view the returned image, locate the element yourself, then move the mouse with set_pos() and click it. Use whenever you need to target an element on screen.",
+        "description": "Prepares a browser screenshot for precise manual targeting: stamps the target description as a banner and returns the annotated image (path + base64) plus a prompt asking for [left, top, right, bottom]. No vision call is made and no coordinates are computed - view the returned image, find the element yourself, then set_pos() and click it.",
         "parameters": {
             "type": "object",
             "properties": {

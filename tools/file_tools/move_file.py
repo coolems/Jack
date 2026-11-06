@@ -4,27 +4,27 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "move_file",
-        "description": "Move a file to another directory inside the working_root. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. Source and destination use path (directory only, no filename) and filename (just the file name). Relative paths resolve against working_root ONLY. If path is empty, the file is in working_root folder. Use path dot or path root to access working_root directly. Paths outside working_root are NOT allowed - ask user to change working_root first.",
+        "description": "Move a file inside working_root. Filenames are bare; *_path = directories.",
         "parameters": {
             "type": "object",
             "properties": {
                 "source_path": {
                     "type": "string",
-                    "description": "Source directory path ONLY (no filename). Relative paths resolve against working_root. Empty string uses working_root. Use dot or root for working_root. Example: 'local_ai/config' to move a file from that subfolder.",
+                    "description": "Source directory inside working_root. '' / '.' / 'root' = working_root.",
                     "default": ""
                 },
                 "source_filename": {
                     "type": "string",
-                    "description": "Source FILE NAME ONLY (no path, no slashes). Example: 'myfile.txt'. NEVER include '/' or '\\' - use the 'source_path' parameter for directories."
+                    "description": "Source bare file name, no slashes ('myfile.txt')."
                 },
                 "destination_path": {
                     "type": "string",
-                    "description": "Destination directory path ONLY (no filename). Relative paths resolve against working_root. Empty string uses working_root. Use dot or root for working_root. Example: 'local_ai/CLIENT/data' to move a file into that subfolder.",
+                    "description": "Destination directory inside working_root. '' / '.' / 'root' = working_root.",
                     "default": ""
                 },
                 "new_filename": {
                     "type": "string",
-                    "description": "Optional new FILE NAME ONLY (keeps original if not provided). Just the name, no slashes. NEVER include '/' or '\\'."
+                    "description": "Optional new bare name; keeps the original if omitted."
                 }
             },
             "required": ["source_filename", "destination_path"]

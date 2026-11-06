@@ -27,7 +27,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "validate_target_area",
-        "description": "Marks a target area on a browser screenshot before mouse movement. Stamps the target description as a text banner on the screenshot, returns the annotated image path and image dimensions so you can visually confirm the right element BEFORE moving the mouse. No vision call is made; view the annotated image (view_image) and determine click coordinates yourself.",
+        "description": "Marks a target area on a browser screenshot before moving the mouse: stamps the target description as a banner and returns the annotated image path plus image dimensions, so you can confirm the right element first. No vision call is made - view the annotated image and choose click coordinates yourself.",
         "parameters": {
             "type": "object",
             "properties": {

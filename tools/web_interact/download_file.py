@@ -46,7 +46,13 @@ logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 # and save_current_image(). Keep this a COMPLETE Chrome UA: truncated UAs ending at
 # 'AppleWebKit/537.36' (no '(KHTML, like Gecko) Chrome/x ... Safari/y' tokens) are a
 # well-known bot signature that WAFs answer with 403/503 on many sites.
-_BROWSER_HEADERS = {
+#
+# PUBLIC NAME ON PURPOSE (2026-11 live-test fix): loader.globals_builder.install_shared_deps()
+# merges only NON-underscore symbols from a shared_dep into the tool's exec globals, and
+# source_transform rewrites 'from .download_file import X' to a bare pass. An
+# underscore-prefixed constant here was therefore invisible to save_current_image on the
+# CLIENT and raised "name '_BROWSER_HEADERS' is not defined" on every image save.
+BROWSER_HEADERS = {
     'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
     'Accept': '*/*',
@@ -456,7 +462,7 @@ async def download_file(url: str, filename: str = None, download_dir: str = "", 
             # ('...AppleWebKit/537.36' with no Chrome token) is a known bot signature --
             # WAFs answer 403/503 for it on many sites. Same complete-Chrome-UA approach
             # as tools/web_tools/fetch_url.py (which rotates this Windows UA + a Mac variant).
-            headers = dict(_BROWSER_HEADERS)
+            headers = dict(BROWSER_HEADERS)
 
             async def _one_get(extra_headers=None):
                 h = dict(headers)

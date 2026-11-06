@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "get_time_difference",
-        "description": "Calculate time difference between two timezones or cities. Returns current time in both zones and hours/minutes offset. Use when comparing schedules across locations.",
+        "description": "Time difference between two timezones or cities - current time in both plus the hours/minutes offset.",
         "parameters": {
             "type": "object",
             "properties": {

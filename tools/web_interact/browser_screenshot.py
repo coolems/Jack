@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "browser_screenshot",
-        "description": "Take a screenshot of the Chrome browser window only. Use this while browsing the internet since the browser is in debug mode and we connect to it via CDP. Saves as PNG to the working_root folder. Returns the Chrome window title, absolute position on screen, and mouse position. Automatically draws a red circle on the mouse cursor position. Returns the image data so you can see what's on screen directly.",
+        "description": "Screenshot the Chrome window only (debug-mode browser, connected via CDP). Saves a PNG in working_root, draws a red circle on the cursor, and returns the window title, its screen position, the mouse position and the image data.",
         "parameters": {
             "type": "object",
             "properties": {

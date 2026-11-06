@@ -189,6 +189,8 @@ async def _acquire_live_page(wi):
         logger.debug(f"ensure_page: context.pages scan failed: {e}")
 
     # 3. create a fresh page in the existing context (retried)
+    # 2026-11-06 latency fix: the settle wait was a fixed 0.5s per attempt (up to +1.5s on a
+    # cold attach). The target-registration race resolves in milliseconds, so 0.15s is enough.
     for _attempt in range(3):
         try:
             wi.page = await wi.context.new_page()
@@ -196,7 +198,7 @@ async def _acquire_live_page(wi):
             return wi.page
         except Exception as e:
             logger.warning(f"ensure_page: could not create new page (attempt {_attempt + 1}/3): {e}")
-            await _aio.sleep(0.5)
+            await _aio.sleep(0.15)
 
     return None
 

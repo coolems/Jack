@@ -155,6 +155,8 @@ from .config import (
     WEB_SEARCH_BING_TIMEOUT,
     WEB_SEARCH_SEARXNG_TIMEOUT,
     WEB_SEARCH_RESULT_SNIPPET_CHARS,
+    WEB_SEARCH_OVERALL_DEADLINE_SEC,
+    WEB_SEARCH_OUTPUT_MAX_CHARS,
     WEB_SEARCH_SEARXNG_INSTANCES,
 
     # File Handling (python_exec limits shipped to CLIENT tools via config_constants;

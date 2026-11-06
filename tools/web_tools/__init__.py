@@ -34,6 +34,10 @@ class WebTools:
                 continue
             if filename == '__init__.py':
                 continue
+            # Shared modules (_search_core, _search_providers) are not tools - they hold
+            # the logic the tools import. Same convention as edit_tools/search_tools.
+            if filename.startswith('_'):
+                continue
             
             tool_name = filename[:-3]
             module_path = f"tools.web_tools.{tool_name}"

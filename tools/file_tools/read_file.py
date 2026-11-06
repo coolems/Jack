@@ -12,17 +12,17 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read a file's content from the working_root directory. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. Path parameter is directory only (no filename) - relative paths resolve against working_root ONLY. Filename is just the file name, no path. If path is empty, file is read from working_root folder. Use path dot or path root to access working_root directly. Paths outside working_root are NOT allowed - ask user to change working_root first.",
+        "description": "Read a file's content from working_root. path = directory, filename = bare name.",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Just the file name ONLY (no path, no slashes). Example: 'config.py', 'myfile.txt'. NEVER include directory paths here - use the 'path' parameter for that."
+                    "description": "Bare file name, no slashes ('config.py'). Folder goes in path."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory path ONLY (no filename). Relative paths resolve against working_root. Empty string reads from working_root. Use dot or root for working_root. Example: 'local_ai/tools/file_tools' to read a file in that subfolder.",
+                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
                     "default": ""
                 }
             },

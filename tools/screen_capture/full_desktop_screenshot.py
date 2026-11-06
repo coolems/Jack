@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "full_desktop_screenshot",
-        "description": "Take a screenshot of the ENTIRE desktop screen - all windows, applications, desktop icons, and taskbar. This is NOT just the browser. Saves the screenshot as a PNG in the working_root folder. Automatically draws a red circle on the mouse cursor position. Returns the image data so you can see what's on screen directly.",
+        "description": "Screenshot the ENTIRE desktop (all windows, icons, taskbar) - not just the browser. Saves a PNG in working_root, draws a red circle on the cursor, and returns the image data.",
         "parameters": {
             "type": "object",
             "properties": {

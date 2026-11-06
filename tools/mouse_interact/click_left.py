@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "click_left",
-        "description": "Perform a left mouse button click at the current cursor position or at specified coordinates. Supports single and double clicks.",
+        "description": "Left mouse click at the current cursor position or given coordinates. Supports single and double clicks.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -15,11 +15,11 @@ __tool_description__ = {
                 },
                 "x": {
                     "type": "integer",
-                    "description": "X coordinate to click at (optional, uses current position if not provided)"
+                    "description": "X coordinate (optional; current position if omitted)"
                 },
                 "y": {
                     "type": "integer",
-                    "description": "Y coordinate to click at (optional, uses current position if not provided)"
+                    "description": "Y coordinate (optional; current position if omitted)"
                 }
             },
             "required": []

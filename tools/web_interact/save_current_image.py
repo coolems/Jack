@@ -45,8 +45,14 @@ async def save_current_image(filename: str = None, download_dir: str = "") -> st
         # Find the main image on the page
         image_url = None
         
-        # Strategy 1: Look for img tag that's likely the main content
-        candidates = await wi.page.evaluate("""() => {
+        # Strategy 1: Look for img tag that's likely the main content.
+        # 2026-11-06 fix: this returns a JSHandle for the ELEMENT itself instead of a src
+        # string that is then re-found with query_selector(f'img[src="{src}"]'). That lookup
+        # raises "Unexpected token ... Did you mean to CSS.escape it?" for any src containing
+        # quotes or percent-encoded characters - NASA asset URLs are exactly that
+        # ('...UGC%209391.jpg?w=2883&h=3257&fit=clip&crop=faces%2Cfocalpoint'), so Method 1
+        # never ran and the tool fell through to a fetch that the site's WAF blocked (HTTP 494).
+        best_handle = await wi.page.evaluate_handle("""() => {
             const images = document.querySelectorAll('img');
             let best = null;
             let bestScore = 0;
@@ -74,11 +80,11 @@ async def save_current_image(filename: str = None, download_dir: str = "") -> st
                 }
             }
             
-            return best ? { src: best.src, width: best.width, height: best.height } : null;
+            return best;
         }""")
-        
-        if candidates and candidates.get('src'):
-            image_url = candidates['src']
+        img_element = best_handle.as_element()
+        if img_element is not None:
+            image_url = await img_element.get_attribute("src")
             logger.info(f"[SAVE_IMAGE] Found image via DOM: {image_url}")
         
         # Strategy 2: If no suitable img tag, try to get background image
@@ -146,27 +152,38 @@ async def save_current_image(filename: str = None, download_dir: str = "") -> st
         except ValueError as e:
             return f"❌ Failed to save image: {e}"
         
-        # Method 1: Try to get the image via Playwright's built-in screenshot
+        # Method 1: Screenshot the detected element itself (fastest, always available).
         try:
-            if candidates and candidates.get('src'):
-                img_element = await wi.page.query_selector(f'img[src="{image_url}"]')
-                if img_element:
-                    await img_element.screenshot(path=filepath)
-                    file_size = os.path.getsize(filepath)
-                    return f"✅ Image saved successfully!\n📁 File: {filename}\n📂 Path: {filepath}\n📊 Size: {file_size:,} bytes\n🔗 Source: {image_url}"
+            if img_element is not None:
+                await img_element.screenshot(path=filepath)
+                file_size = os.path.getsize(filepath)
+                return f"✅ Image saved successfully!\n📁 File: {filename}\n📂 Path: {filepath}\n📊 Size: {file_size:,} bytes\n🔗 Source: {image_url}"
         except Exception as e:
             logger.warning(f"[SAVE_IMAGE] Element screenshot failed: {e}")
-        
-        # Method 2: Download via page context
+
+        # Method 2: Fetch through the BROWSER context (Playwright APIRequestContext).
+        # 2026-11-06 fix: this used page.context.expect_download() around page.goto(image_url),
+        # which never yields a download for an image (the browser renders it inline) and also
+        # navigated the page away. context.request.get() reuses Chrome's own headers and TLS
+        # fingerprint, so it succeeds where the aiohttp fallback is WAF-blocked (measured on
+        # science.nasa.gov: HTTP 200 in 0.6s vs HTTP 494 for the aiohttp path).
         try:
-            async with wi.page.context.expect_download(timeout=3000) as download_info:
-                await wi.page.goto(image_url)
-            download = await download_info.value
-            await download.save_as(filepath)
-            file_size = os.path.getsize(filepath)
-            return f"✅ Image saved successfully via browser download!\n📁 File: {filename}\n📂 Path: {filepath}\n📊 Size: {file_size:,} bytes\n🔗 Source: {image_url}"
+            from tools.ssrf_guard import ensure_url_not_ssrff, SSRFError as _SSRFError
+            try:
+                ensure_url_not_ssrff(image_url)
+            except Exception as e:  # includes SSRFError -> hard stop, no fallback path
+                logger.error(f"SSRF validation failed in save_current_image, refusing to proceed (no fallback): {e!r}")
+                return "Error: Access blocked for security."
+
+            response = await wi.context.request.get(image_url, timeout=30000)
+            if response.ok:
+                content = await response.body()
+                with open(filepath, 'wb') as f:
+                    f.write(content)
+                return f"✅ Image saved successfully via browser request!\n📁 File: {filename}\n📂 Path: {filepath}\n📊 Size: {len(content):,} bytes\n🔗 Source: {image_url}"
+            logger.warning(f"[SAVE_IMAGE] Browser request returned HTTP {response.status}")
         except Exception as e:
-            logger.warning(f"[SAVE_IMAGE] Context download failed: {e}")
+            logger.warning(f"[SAVE_IMAGE] Browser context request failed: {e}")
         
         # Method 3: Fallback to HTTP request with browser headers.
         # SSRF protection (2026-09 audit): the old bare ClientSession() here had NO
@@ -188,9 +205,9 @@ async def save_current_image(filename: str = None, download_dir: str = "") -> st
             # truncated UA ending at 'AppleWebKit/537.36' is a bot signature that WAFs block
             # on many sites -- a complete Chrome UA passes those checks. Image Accept +
             # session cookies kept here.
-            from .download_file import _BROWSER_HEADERS
+            from .download_file import BROWSER_HEADERS
             headers = {
-                **_BROWSER_HEADERS,
+                **BROWSER_HEADERS,
                 'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
                 'Referer': wi.page.url,
                 'Cookie': cookie_header

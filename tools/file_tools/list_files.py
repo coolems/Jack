@@ -4,13 +4,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "list_files",
-        "description": "List files in the working_root directory or subdirectories within it. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. When user asks about work folder, working folder, or current folder use path empty string to list the current working_root directory. Relative paths resolve against working_root only. If a path would escape working_root the tool returns an error telling the user to change working_root first.",
+        "description": "List files in a working_root directory. Use path='' for the root (also '.' / 'root').",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory path ONLY (no filename). Relative paths resolve against working_root. Empty string lists working_root. Use dot or root for working_root. Example: 'local_ai/tools/file_tools' to list files in that subfolder.",
+                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
                     "default": ""
                 }
             },

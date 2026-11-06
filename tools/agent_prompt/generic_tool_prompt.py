@@ -4,9 +4,13 @@ from tools.agent_prompt.planning_prompt import PLANNING_PROMPT
 
 GENERIC_TOOL_PROMPT = """
 
-## WORKING_ROOT CONFIGURATION - IMPORTANT
-**You CANNOT change your working_root directory yourself.** It is set in your system configuration.
+## PATH ARGUMENTS - ONE RULE FOR EVERY TOOL
+Every tool that touches files or searches takes the same shape, so tool schemas do not repeat it:
+- `path` = DIRECTORY only, relative to working_root. `''`, `'.'` or `'root'` = working_root itself. Never a file path, never `../`.
+- `filename` = BARE NAME only, no slashes ('config.py'). Put the folder in `path`.
+- Absolute paths outside working_root are refused by the file tools (see the consent route below for python_exec).
 
+**You CANNOT change your working_root directory yourself.** It is set in your system configuration.
 When a user asks you to change the working_root or work in a different folder:
 1. Tell them you cannot change it directly
 2. Guide them to **modify the working_root setting in the output panel of the UI**

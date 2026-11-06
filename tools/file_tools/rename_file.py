@@ -4,22 +4,22 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "rename_file",
-        "description": "Rename a file inside the working_root directory. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. Path parameter is directory only (no filename) - relative paths resolve against working_root ONLY. Old and new filenames are just the name, no path. If path is empty, file is in working_root folder. Use path dot or path root to access working_root directly. Paths outside working_root are NOT allowed - ask user to change working_root first.",
+        "description": "Rename a file in working_root. Both names are bare; path = directory.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory path ONLY (no filename). Relative paths resolve against working_root. Empty string renames in working_root. Use dot or root for working_root. Example: 'local_ai/config' to rename a file inside that subfolder.",
+                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
                     "default": ""
                 },
                 "old_filename": {
                     "type": "string",
-                    "description": "Current FILE NAME ONLY (no path, no slashes). Example: 'oldfile.txt'. NEVER include '/' or '\\' - use the 'path' parameter for directories."
+                    "description": "Current bare file name, no slashes ('oldfile.txt')."
                 },
                 "new_filename": {
                     "type": "string",
-                    "description": "New FILE NAME ONLY (no path, no slashes). Example: 'newfile.txt'. NEVER include '/' or '\\' - use the 'path' parameter for directories."
+                    "description": "New bare file name, no slashes ('newfile.txt')."
                 }
             },
             "required": ["old_filename", "new_filename"]

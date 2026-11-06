@@ -22,7 +22,7 @@ __tool_description__ = {
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Filename of the image to transcribe. Can include folder path relative to working_root (e.g. 'my_image.png' or 'subfolder/my_image.png'). File must exist inside working_root."
+                    "description": "Image path relative to working_root ('shot.png' or 'subfolder/shot.png'); must exist inside working_root."
                 },
                 "image_base64": {
                     "type": "string",

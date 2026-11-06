@@ -78,14 +78,9 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "run_tests",
-        "description": "Run the test suite to verify all tools are working correctly. "
-                      "Targets the ACTIVE project: the tests/ folder inside the current "
-                      "working root (or an explicit project_root argument). Per-project "
-                      "suites live in <project>/tests - each project keeps its own suite "
-                      "next to its code (pytest-style or unittest-style, both supported). "
-                      "Use this after any code changes to ensure nothing is broken. Returns "
-                      "detailed test results including pass/fail status, execution time, and "
-                      "failure details.",
+        "description": "Run the test suite of the ACTIVE project (its tests/ folder, or an "
+                      "explicit project_root). pytest- or unittest-style both work. Use after "
+                      "any code change. Returns pass/fail status, timing and failure details.",
         "parameters": {
             "type": "object",
             "properties": {

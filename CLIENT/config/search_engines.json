@@ -1,48 +1,48 @@
 {
   "engines": [
     {
-      "id": "wikipedia",
-      "name": "Wikipedia",
+      "id": "ddgs",
+      "name": "DuckDuckGo (ddgs package)",
       "enabled": true,
       "priority": 1,
       "settings": {
-        "timeout": 15
+        "timeout": 8
       }
     },
     {
-      "id": "ddgs",
-      "name": "DuckDuckGo (DDGS library)",
+      "id": "bing_rss",
+      "name": "Bing RSS (structured, direct URLs)",
       "enabled": true,
       "priority": 2,
       "settings": {
-        "default_results": 5
+        "timeout": 10
+      }
+    },
+    {
+      "id": "bing",
+      "name": "Bing HTML (fallback)",
+      "enabled": true,
+      "priority": 3,
+      "settings": {
+        "timeout": 12
       }
     },
     {
       "id": "ddghtml",
       "name": "DuckDuckGo HTML",
       "enabled": true,
-      "priority": 3,
-      "settings": {
-        "timeout": 20
-      }
-    },
-    {
-      "id": "bing",
-      "name": "Bing",
-      "enabled": true,
       "priority": 4,
       "settings": {
-        "timeout": 15
+        "timeout": 12
       }
     },
     {
       "id": "searxng",
-      "name": "SearXNG",
+      "name": "SearXNG instances",
       "enabled": true,
       "priority": 5,
       "settings": {
-        "timeout": 15,
+        "timeout": 10,
         "instances": [
           "https://searx.be",
           "https://search.bus-hit.me",
@@ -51,6 +51,42 @@
           "https://searx.privacydev.net",
           "https://searx.tiegeek.fr"
         ]
+      }
+    },
+    {
+      "id": "wikipedia",
+      "name": "Wikipedia (definitions / encyclopaedia)",
+      "enabled": true,
+      "priority": 6,
+      "settings": {
+        "timeout": 12
+      }
+    },
+    {
+      "id": "github",
+      "name": "GitHub repositories (code / libraries)",
+      "enabled": true,
+      "priority": 7,
+      "settings": {
+        "timeout": 12
+      }
+    },
+    {
+      "id": "hackernews",
+      "name": "Hacker News (discussion)",
+      "enabled": true,
+      "priority": 8,
+      "settings": {
+        "timeout": 12
+      }
+    },
+    {
+      "id": "arxiv",
+      "name": "arXiv (papers / preprints)",
+      "enabled": true,
+      "priority": 9,
+      "settings": {
+        "timeout": 15
       }
     }
   ]

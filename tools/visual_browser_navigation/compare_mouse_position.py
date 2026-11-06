@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "compare_mouse_position",
-        "description": "Compare two screenshots and detect the red circle (mouse cursor marker) in each. Returns the (x, y) position of the red circle in both images, whether the positions are different, and the pixel difference (dx, dy, distance). Use this to verify if the mouse actually moved where you expected after a set_pos() call. Both images must have been created by full_desktop_screenshot() which draws the red circle.",
+        "description": "Compare two screenshots and locate the red cursor circle in each. Returns both positions, whether they differ, and the pixel delta (dx, dy, distance) - use it to verify a set_pos() actually moved the cursor. Both images must come from full_desktop_screenshot(), which draws the circle.",
         "parameters": {
             "type": "object",
             "properties": {

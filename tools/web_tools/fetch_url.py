@@ -4,13 +4,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "fetch_url",
-        "description": "Fetch and extract readable text content from a SINGLE webpage URL. Returns page title and cleaned article/text content (truncated to 8000 chars). Strips scripts, styles, and navigation. Use ONLY when you already have a direct URL to read. Do NOT use for navigating, clicking, or JS-heavy sites (use web automation/browser instead). Always verify URL starts with http:// or https://.",
+        "description": "Fetch readable text from ONE webpage URL (title + cleaned article, truncated to 8000 chars; scripts/styles/nav stripped). Use only when you already have a direct URL - for navigating, clicking or JS-heavy sites use the browser tools instead.",
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "Full URL to fetch. Must be a direct link to a webpage. Example: 'https://example.com/article' or 'https://news.site/story.html'"
+                    "description": "Direct link to a webpage, e.g. 'https://example.com/article'."
                 }
             },
             "required": ["url"]

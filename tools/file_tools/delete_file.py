@@ -4,18 +4,18 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "delete_file",
-        "description": "Soft-delete a file by adding .deleted extension. File must be inside working_root directory. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. Path parameter is directory only (no filename) - relative paths resolve against working_root ONLY. Filename is just the file name, no path. If path is empty, file is in working_root folder. Use path dot or path root to access working_root directly. Paths outside working_root are NOT allowed - ask user to change working_root first.",
+        "description": "Soft-delete a file (adds .deleted extension). path = directory, filename = bare name.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory path ONLY (no filename). Relative paths resolve against working_root. Empty string deletes from working_root. Use dot or root for working_root. Example: 'local_ai/config' to delete a file inside that subfolder.",
+                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
                     "default": ""
                 },
                 "filename": {
                     "type": "string",
-                    "description": "Just the FILE NAME ONLY (no path, no slashes). Example: 'myfile.txt', 'data.csv'. NEVER include '/' or '\\' in filename - use the 'path' parameter for directories instead."
+                    "description": "Bare file name, no slashes ('myfile.txt'). Folder goes in path."
                 }
             },
             "required": ["filename"]

@@ -15,11 +15,11 @@ __tool_description__ = {
                 },
                 "x": {
                     "type": "integer",
-                    "description": "X coordinate to scroll at (optional, uses current position if not provided)"
+                    "description": "X coordinate (optional; current position if omitted)"
                 },
                 "y": {
                     "type": "integer",
-                    "description": "Y coordinate to scroll at (optional, uses current position if not provided)"
+                    "description": "Y coordinate (optional; current position if omitted)"
                 }
             },
             "required": []

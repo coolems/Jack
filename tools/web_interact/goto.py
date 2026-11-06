@@ -4,12 +4,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "goto",
-        "description": "Navigate to a specific URL. Use wait_until='commit' for fast loads or 'networkidle' for full rendering. Auto-adds https:// if missing.",
+        "description": "Navigate to a specific URL. Returns as soon as the page is ready (wait_until='commit'); pass 'networkidle' or 'domcontentloaded' when you need to wait for full rendering or deferred scripts. Auto-adds https:// if missing.",
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "Target URL to navigate to"},
-                "wait_until": {"type": "string", "description": "When to consider navigation successful", "default": "commit"},
+                "wait_until": {"type": "string", "description": "commit (default), domcontentloaded, load, or networkidle", "default": "commit"},
                 "timeout": {"type": "integer", "description": "Max wait time in ms", "default": 60000}
             },
             "required": ["url"]
@@ -18,7 +18,6 @@ __tool_description__ = {
 }
 
 import logging
-import asyncio
 
 logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 
@@ -61,13 +60,19 @@ async def goto(url: str, wait_until: str = "commit", timeout: int = 60000) -> st
     try:
         await wi.page.goto(url, wait_until=wait_until, timeout=timeout)
 
-        try:
-            await wi.page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            logger.debug("Timeout handled at tools/web_interact/goto.py")
-
-        await asyncio.sleep(0.5)
+        # No extra wait here (2026-11-06): Playwright's own wait_until already honours
+        # 'load' / 'domcontentloaded' / 'networkidle', so the old unconditional
+        # wait_for_load_state("networkidle", 5000) + sleep(0.5) piled 0.5-5.5 s onto
+        # every navigation even when the caller explicitly asked for a fast 'commit'.
         title = await wi.page.title()
+        if not title and wait_until == "commit":
+            # Navigation committed but the DOM may not be parsed yet: one bounded
+            # window only when the title is actually missing, never a fixed pause.
+            try:
+                await wi.page.wait_for_load_state("domcontentloaded", timeout=400)
+                title = await wi.page.title()
+            except Exception:
+                logger.debug("Title not available yet after commit at tools/web_interact/goto.py")
         return f"✅ Navigated to: {url}\n📄 Title: {title}\n🔗 URL: {wi.page.url}"
     except Exception as e:
         return f"❌ Navigation failed: {str(e)}"

@@ -13,13 +13,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "insert_lines",
-        "description": "Insert literal text after a given 1-based line of an existing text file inside working_root. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. Path parameter is directory only (no filename) - relative paths resolve against working_root ONLY. Filename is just the file name, no path. If path is empty, the file is in working_root folder. after_line=0 inserts at the start of the file; after_line=N inserts after line N (the new text becomes line N+1). Use edit_file to change existing text and write_file(mode='a') to append at the end. Line endings follow the repository policy: LF for normal text, CRLF only for .bat/.cmd.",
+        "description": "Insert literal text after a 1-based line of an existing text file in working_root. after_line=0 inserts at the start; after_line=N makes the text line N+1. Use edit_file to change existing text and write_file(mode='a') to append at the end. Line endings follow the repo policy (LF; CRLF only for .bat/.cmd).",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Just the FILE NAME ONLY (no path, no slashes) of the existing file. Example: 'config.py'. NEVER include '/' or '\\' - use the 'path' parameter for directories."
+                    "description": "Bare file name of the existing file, no slashes ('config.py')."
                 },
                 "after_line": {
                     "type": "integer",
@@ -31,7 +31,7 @@ __tool_description__ = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory path ONLY (no filename). Relative paths resolve against working_root. Empty string means working_root. Use dot or root for working_root. Example: 'tools/file_tools' to insert into a file inside that subfolder.",
+                    "description": "Directory inside working_root. '' / '.' / 'root' = working_root.",
                     "default": ""
                 }
             },

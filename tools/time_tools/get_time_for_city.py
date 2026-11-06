@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "get_time_for_city",
-        "description": "Get current time for a specific city worldwide. Resolves city name to IANA timezone automatically. Returns full time info block. Use when user asks 'what time is it in [city]'.",
+        "description": "Current time for a city worldwide (resolved to an IANA timezone automatically). Use for 'what time is it in [city]'.",
         "parameters": {
             "type": "object",
             "properties": {

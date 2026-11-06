@@ -100,7 +100,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "generate_image",
-        "description": "Generate an image from a text prompt using the GPU-tier-appropriate diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Creates a PNG file in the working_root folder and returns the image data.",
+        "description": "Generate an image from a text prompt using the GPU-tier-appropriate diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Creates a PNG file in the working_root folder and returns the image data. width/height default to the user's Settings > Runtime resolution (600x400); both are snapped to tier-safe multiples (32 on high/low, 16 on mid) and clamped to the tier's pixel budget - a request above the budget renders at the clamped size and is LANCZOS-upscaled to the exact dimensions, so 4K works on every tier.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -110,11 +110,11 @@ __tool_description__ = {
                 },
                 "height": {
                     "type": "integer",
-                    "description": "Height of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget; a request ABOVE the budget is generated at the clamped size and LANCZOS-upscaled to your exact dimensions - so 4K works on every tier)"
+                    "description": "Height in pixels. Omit unless the user asked for a specific size - see the tool description for defaults, snapping and clamping."
                 },
                 "width": {
                     "type": "integer",
-                    "description": "Width of the image in pixels. Omit unless the user asks for a specific size - the default comes from the user's Settings > Runtime tab (Image Generator, default resolution 600x400; the worker snaps to tier-safe multiples - 32 on high (Qwen-Image) and low (SANA-Sprint), 16 on mid (Z-Image) - and clamps to the tier's max-pixel budget; a request ABOVE the budget is generated at the clamped size and LANCZOS-upscaled to your exact dimensions - so 4K works on every tier)"
+                    "description": "Width in pixels. Omit unless the user asked for a specific size - see the tool description for defaults, snapping and clamping."
                 },
                 "num_inference_steps": {
                     "type": "integer",

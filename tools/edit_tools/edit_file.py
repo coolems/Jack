@@ -20,13 +20,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "edit_file",
-        "description": "Edit an existing text file inside working_root by replacing literal text. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. Path parameter is directory only (no filename) - relative paths resolve against working_root ONLY. Filename is just the file name, no path. If path is empty, the file is in working_root folder. old_string must match EXACTLY (whitespace-sensitive, literal - no regex) and must appear exactly once unless replace_all is true; include enough surrounding context to make it unique. Empty new_string deletes the match. Use write_file to create a new file or rewrite it entirely. Line endings follow the repository policy: LF for normal text, CRLF only for .bat/.cmd.",
+        "description": "Patch an existing text file in working_root by replacing literal text (no regex). old_string must match exactly once unless replace_all=true - add context to make it unique. Empty new_string deletes the match. Use write_file to create or fully rewrite a file. Line endings follow the repo policy (LF; CRLF only for .bat/.cmd).",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Just the FILE NAME ONLY (no path, no slashes) of the existing file to edit. Example: 'read_file.py'. NEVER include '/' or '\\' - use the 'path' parameter for directories."
+                    "description": "Bare file name of the existing file, no slashes ('read_file.py')."
                 },
                 "old_string": {
                     "type": "string",
@@ -38,7 +38,7 @@ __tool_description__ = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory path ONLY (no filename). Relative paths resolve against working_root. Empty string means working_root. Use dot or root for working_root. Example: 'tools/file_tools' to edit a file inside that subfolder.",
+                    "description": "Directory inside working_root. '' / '.' / 'root' = working_root.",
                     "default": ""
                 },
                 "replace_all": {

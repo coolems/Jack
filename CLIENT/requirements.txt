@@ -11,6 +11,11 @@
 # fetch_url + download_file run through PinnedConnector/safe_session; 2026-09 rewrite)
 aiohttp==3.14.3
 beautifulsoup4==4.12.2
+
+# ddgs: the DuckDuckGo provider of web_search (tools/web_tools/_search_providers.py).
+# Same pin as the SERVER requirements.txt. Without it the ddgs provider reports
+# 'package not installed' on the CLIENT, which was the case here until 2026-11-06.
+ddgs==9.16.0
 fastapi==0.115.14
 httpx==0.27.0
 playwright==1.63.0

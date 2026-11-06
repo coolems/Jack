@@ -19,27 +19,27 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "grep",
-        "description": "Search file contents inside working_root using ripgrep and return matches with file paths and line numbers. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. path is a DIRECTORY only (relative to working_root; empty = working_root); it searches recursively. pattern is a regular expression (ripgrep syntax). Use include to limit file types (one glob, e.g. '*.py'). Gitignored folders are skipped by default; pass include_ignored=true to search them (heavy folders like venv/ and model weights stay excluded either way). Results are capped and the full list is spilled to .temp/spill/ when capped. Returns 'No matches ...' when nothing matches.",
+        "description": "Search file contents inside working_root with ripgrep; returns matches with file paths and line numbers. path is a directory (recursive). Gitignored folders are skipped unless include_ignored=true; heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded either way. Capped results are spilled to .temp/spill/ with a locator.",
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Regular expression to search for (ripgrep/PCRE2 syntax). Examples: 'def get_working_root', 'TODO|FIXME', 'class\\s+\\w+Tools'."
+                    "description": "Regular expression (ripgrep/PCRE2). Examples: 'def get_working_root', 'TODO|FIXME', 'class\\s+\\w+Tools'."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search, relative to working_root. Empty string = whole working_root. Use dot or root for working_root. Example: 'tools/search_tools'. NEVER a file path.",
+                    "description": "Directory to search, relative to working_root. '' / '.' / 'root' = whole working_root. Example: 'tools/search_tools'.",
                     "default": ""
                 },
                 "include": {
                     "type": "string",
-                    "description": "One glob to limit which files are searched, e.g. '*.py', '*.md', 'tools/*.json'. Matched relative to the directory being searched (path). Negations and comma lists are rejected.",
+                    "description": "One glob limiting which files are searched ('*.py', '*.md', 'tools/*.json'), matched relative to the directory being searched. Negations and comma lists are rejected.",
                     "default": ""
                 },
                 "context_lines": {
                     "type": "integer",
-                    "description": "Lines of context before/after each match (0-10). Default 0.",
+                    "description": "Context lines before/after each match (0-10). Default 0.",
                     "default": 0
                 },
                 "ignore_case": {
@@ -49,12 +49,12 @@ __tool_description__ = {
                 },
                 "include_ignored": {
                     "type": "boolean",
-                    "description": "Also search gitignored/hidden files. Heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded regardless. Default false.",
+                    "description": "Also search gitignored/hidden files. Heavy folders stay excluded regardless. Default false.",
                     "default": False
                 },
                 "max_matches": {
                     "type": "integer",
-                    "description": "Maximum matches in the result (1-250). Beyond it the full list is saved to .temp/spill/. Default 250.",
+                    "description": "Max matches returned (1-250); the full list is spilled when capped. Default 250.",
                     "default": 250
                 }
             },

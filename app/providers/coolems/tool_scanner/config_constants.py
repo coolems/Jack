@@ -29,6 +29,10 @@ def extract_config_constants():
         'WEB_SEARCH_BING_TIMEOUT',
         'WEB_SEARCH_SEARXNG_TIMEOUT',
         'WEB_SEARCH_RESULT_SNIPPET_CHARS',
+        # web_search rewrite (2026-11-06): one shared deadline for the whole call and the
+        # output size cap (oversized reports spill to .temp/spill/ with a locator).
+        'WEB_SEARCH_OVERALL_DEADLINE_SEC',
+        'WEB_SEARCH_OUTPUT_MAX_CHARS',
         'WEB_SEARCH_SEARXNG_INSTANCES',
         # Vision tools (transcribe_image, generate_image)
         'OCR_TIMEOUT',

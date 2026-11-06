@@ -15,27 +15,27 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "glob_files",
-        "description": "List files whose names match a glob pattern inside working_root, sorted newest-first. ALL paths are locked inside working_root - absolute paths outside working_root are NOT allowed. path is a DIRECTORY only (relative to working_root; empty = working_root); the search is recursive. pattern is a glob such as '*.py', '**/*.json', 'tools/**/*.md'; it is matched relative to the directory being searched (path), so '*.py' with path='tools/search_tools' lists that folder's files while 'tools/**/*.py' with an empty path scopes to tools/. Gitignored folders are skipped by default; include_ignored=true also lists them (heavy folders like venv/ and model weights stay excluded either way). Returns paths relative to working_root, capped, with the full list spilled to .temp/spill/ when capped.",
+        "description": "List files whose names match a glob pattern inside working_root, sorted newest-first. path is a directory (recursive). Gitignored folders are skipped unless include_ignored=true; heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded either way. Returns paths relative to working_root, capped, with the full list spilled to .temp/spill/ when capped.",
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern for file names/paths. Examples: '*.py', '*.md', 'tests/test_*.py', '**/*.json'."
+                    "description": "Glob pattern ('*.py', '**/*.json', 'tools/**/*.md'), matched relative to the directory being searched: '*.py' with path='tools/search_tools' lists that folder; 'tools/**/*.py' with path='' scopes to tools/."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search, relative to working_root. Empty string = whole working_root. Use dot or root for working_root. NEVER a file path.",
+                    "description": "Directory to search, relative to working_root. '' / '.' / 'root' = whole working_root.",
                     "default": ""
                 },
                 "include_ignored": {
                     "type": "boolean",
-                    "description": "Also list gitignored/hidden files. Heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded regardless. Default false.",
+                    "description": "Also list gitignored/hidden files. Heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded either way. Default false.",
                     "default": False
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum paths in the result (1-100). Beyond it the full list is saved to .temp/spill/. Default 100.",
+                    "description": "Max paths returned (1-100); the full list is spilled when capped. Default 100.",
                     "default": 100
                 }
             },

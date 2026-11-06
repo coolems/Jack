@@ -245,6 +245,12 @@ WEB_SEARCH_DDGS_TIMEOUT: int = 20                       # Timeout (s) for DuckDu
 WEB_SEARCH_BING_TIMEOUT: int = 15                       # Timeout (s) for Bing HTML
 WEB_SEARCH_SEARXNG_TIMEOUT: int = 15                    # Timeout (s) for SearXNG HTML
 WEB_SEARCH_RESULT_SNIPPET_CHARS: int = 200              # Max chars per result snippet
+# One shared deadline for a whole web_search call (2026-11-06 rewrite): every enabled
+# provider runs concurrently, so the call is bounded by this instead of the sum of the
+# per-engine timeouts (the old sequential chain could run minutes on dead engines).
+WEB_SEARCH_OVERALL_DEADLINE_SEC: int = 12               # Overall web_search deadline (s)
+# Report size sent to the model; the full report spills to .temp/spill/ with a locator.
+WEB_SEARCH_OUTPUT_MAX_CHARS: int = 8000                 # Max chars of web_search output
 WEB_SEARCH_SEARXNG_INSTANCES: list = [
     "https://searx.be",
     "https://search.bus-hit.me",

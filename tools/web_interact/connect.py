@@ -15,26 +15,56 @@ import asyncio
 
 logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 
+# Polling budgets for the auto-launch path. Chrome binds the debug port well under 1s
+# on a warm machine, so we poll instead of sleeping a fixed 5/10s (2026-11-06 latency
+# fix: the fixed sleep added 5s on every fresh launch even when the port was ready).
+CDP_POLL_INTERVAL = 0.25
+CDP_POLL_TIMEOUT = 15.0
+PAGE_SETTLE = 0.25
 
-async def _reset_wi_state(wi) -> None:
-    """Drop ALL stale connection state from a WebInteract instance.
+# Only a genuinely unreachable endpoint may trigger a Chrome launch. The old heuristic
+# ('connect' in msg) also matched Playwright's "Target page, context or browser has been
+# closed" from a STOPPED driver - that spawned a second browser window while the first one
+# already held the port (2026-11-06 incident).
+_ENDPOINT_UNREACHABLE_MARKERS = (
+    "econnrefused",
+    "connection refused",
+    "could not connect",
+    "connectionrefused",
+    "failed to connect",
+    "socket hang up",
+    "network error",
+    "timed out",
+)
 
-    2026-09-14 fix (goto 'No page available' root cause): the old code set
-    ``wi._connected = True`` and never cleared it, so after the browser died the flag
-    stayed True forever and every later connect() short-circuited with "Already
-    connected" while holding a dead page object. Any failure path must reset state so
-    the NEXT call performs a real CDP handshake instead of trusting a blind flag.
 
-    Only OUR driver handle is stopped (the node.exe Playwright process) -- stopping it
-    never closes any Chrome window: CDP attach does not own the browser, and there is no
-    kill logic anywhere in this file (2026-09-11 contract).
+def _is_endpoint_unreachable(message: str) -> bool:
+    """True only when nothing answers the CDP port - never for driver/target lifecycle errors."""
+    lowered = message.lower()
+    return any(marker in lowered for marker in _ENDPOINT_UNREACHABLE_MARKERS)
+
+
+async def _reset_wi_state(wi, stop_driver: bool = False) -> None:
+    """Drop stale connection state from a WebInteract instance.
+
+    2026-09-14 fix (goto 'No page available'): the old code set ``wi._connected = True``
+    and never cleared it, so after the browser died the flag stayed True forever and every
+    later connect() short-circuited with "Already connected" while holding a dead page.
+    Any failure path must reset state so the NEXT call performs a real CDP handshake.
+
+    2026-11-06 latency fix: by default the Playwright DRIVER stays alive. ``browser.close()``
+    on a CDP-attached browser only releases OUR handle - it does not close any Chrome window
+    (verified: 24 chrome.exe processes before and after, tabs intact) - and reusing one driver
+    costs ~0.03s instead of ~1.7s for stop+start. ``stop_driver=True`` is used only when the
+    driver itself must be torn down (disconnect / process cleanup).
     """
-    try:
-        if getattr(wi, "playwright", None) is not None:
-            await wi.playwright.stop()
-    except Exception as stop_error:
-        logger.debug(f"connect: could not stop playwright driver during reset: {stop_error}")
-    wi.playwright = None
+    if stop_driver:
+        try:
+            if getattr(wi, "playwright", None) is not None:
+                await wi.playwright.stop()
+        except Exception as stop_error:
+            logger.debug(f"connect: could not stop playwright driver during reset: {stop_error}")
+        wi.playwright = None
     wi.browser = None
     wi.context = None
     wi.page = None
@@ -44,22 +74,20 @@ async def _reset_wi_state(wi) -> None:
 async def _probe_alive(wi) -> bool:
     """Cheap liveness check for an existing connection (2026-09-14 fix).
 
-    The ``_connected`` flag alone is NOT proof the browser still exists -- it is only a
-    record of what happened on the previous call. Probe with real CDP round-trips:
-      1. page.title()          -> proves the page target is alive; re-validate wi.page
-                                  against context.pages (the old tab may be gone even if
-                                  another one in the same browser is fine).
-      2. browser.is_connected()-> proves the CDP endpoint still answers when no usable
-                                  page survived (e.g. every tab was closed by the user).
+    ``_connected`` alone is NOT proof the browser still exists - it only records what
+    happened on the previous call. Probe with real CDP round-trips:
+      1. page.title()           -> proves the page target is alive; re-validate wi.page
+      2. browser.is_connected() -> proves the CDP endpoint answers when no page survived
 
     Any exception means the connection is stale and the caller must reset + reconnect.
+    Measured cost on a live connection: ~2ms.
     """
     try:
         if wi.page is not None:
             await wi.page.title()
             return True
     except Exception:
-        pass  # page target dead -- maybe a different tab in the same browser survives
+        pass  # page target dead - maybe a different tab in the same browser survives
 
     try:
         if wi.browser is not None and wi.context is not None:
@@ -75,47 +103,119 @@ async def _probe_alive(wi) -> bool:
 
     try:
         if wi.browser is not None and await wi.browser.is_connected():
-            # CDP endpoint alive but no usable page -- caller will create one.
-            return True
+            return True  # endpoint alive but no usable page - caller will create one
     except Exception:
         pass
 
     return False
 
 
+async def _acquire_page(wi) -> bool:
+    """Get or create a usable page (never closes an existing one). Returns True if live.
+
+    2026-11-06 fixes:
+      * A dead tab (e.g. the page object left over from a stopped Playwright driver, whose
+        target reports 'Target page, context or browser has been closed') used to re-raise and
+        abort the whole connect. Now every tab is probed and, if none is alive, a fresh page is
+        created - the same self-heal ensure_page() performs.
+      * The destroyed-context retry slept a fixed 1s per attempt; the race resolves in
+        milliseconds, so the settle wait is now PAGE_SETTLE.
+    """
+    try:
+        for p in list(wi.context.pages):
+            try:
+                await p.title()
+                wi.page = p
+                return True
+            except Exception:
+                continue  # this tab's target is dead - try the next one
+    except Exception as scan_error:
+        logger.debug(f"connect: context.pages scan failed: {scan_error}")
+
+    for _attempt in range(3):
+        try:
+            wi.page = await wi.context.new_page()
+            await wi.page.title()
+            return True
+        except Exception as e:
+            logger.warning(f"connect: could not create page (attempt {_attempt + 1}/3): {e}")
+            await asyncio.sleep(PAGE_SETTLE)
+    return False
+
+
+async def _attach(wi, pw) -> bool:
+    """CDP handshake + context/page setup on an already-started driver.
+
+    Returns True only when a usable page exists - a browser that answers the port but yields
+    no page is not a connection, so the caller keeps polling (fresh-launch path).
+    """
+    wi.browser = await pw.chromium.connect_over_cdp(wi.cdp_url)
+    wi.context = wi.browser.contexts[0] if wi.browser.contexts else await wi.browser.new_context()
+    wi._connected = await _acquire_page(wi)
+    return wi._connected
+
+
+def _launch_debug_chrome(port: int) -> None:
+    """Launch a FRESH, SEPARATE debug-mode Chrome window (BETA 'super alfa' launch).
+
+    Dedicated --user-data-dir means a second instance on its own profile dir opens a
+    brand-new window and binds the port cleanly even when another Chrome is already
+    running - it can never steal or close an existing window. There is no kill logic
+    anywhere in this file (2026-09-11 contract).
+
+    Sync on purpose: subprocess.Popen returns immediately, so there is nothing to await -
+    readiness is handled by the CDP poll in connect().
+    """
+    chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    args = [chrome_path,
+            f"--remote-debugging-port={port}",
+            r"--user-data-dir=C:\chrome-debug-profile",
+            "--no-first-run",
+            "--no-default-browser-check"]
+    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+async def _resolve_cdp_port() -> int:
+    """CDP port from config (CHROME_CDP_PORT) - no hardcoded literal, no fallback.
+
+    On the CLIENT the SERVER ships it via config_constants (injected exec global); on the
+    SERVER 'from config import ...' works normally. If neither provides it, fail loudly.
+    """
+    port = globals().get("CHROME_CDP_PORT")  # path 1 - injected exec global on the CLIENT
+    if port is not None:
+        return port
+    try:
+        from config import CHROME_CDP_PORT as _imported  # path 2 - SERVER; neutralized in delivered copies
+        return _imported
+    except (ImportError, NameError):
+        pass
+    raise RuntimeError(
+        "Cannot determine the Chrome CDP port for auto-launch: CHROME_CDP_PORT is not "
+        "available (SERVER did not ship it via config_constants and 'config' is not "
+        "importable). Set CHROME_CDP_PORT in config/config.py - no fallback port is used."
+    )
+
+
 async def connect(_attempts: int = 0) -> str:
     """Attach to a Chrome browser over CDP (remote debugging port).
 
-    CONTRACT (2026-09-11, final -- after the 'closed my UI' incident):
-      * If a CDP endpoint already answers on the debug port -> attach and return.
-        The running browser is NEVER touched: no process killing, no window
-        closing, no relaunching, no profile switching.
-      * If nothing answers -> launch a FRESH, SEPARATE Chrome window in debug
-        mode with its own dedicated user-data-dir (BETA's proven 'super alfa'
-        launch). A second instance on its own profile dir opens a brand-new
-        window and binds the port cleanly even when another Chrome is already
-        running -- it can never steal or close an existing window.
+    CONTRACT (2026-09-11, final - after the 'closed my UI' incident):
+      * CDP endpoint already answers -> attach and return. The running browser is NEVER
+        touched: no process killing, no window closing, no relaunching, no profile switch.
+      * Nothing answers -> launch a FRESH debug-mode Chrome on its own profile dir.
 
-    RELIABILITY FIX (2026-09-14, after the 'goto: No page available' incident):
-      * A previous successful connect no longer short-circuits blindly on the
-        ``_connected`` flag -- every call first PROBES liveness (_probe_alive).
-        If the browser died in between (orphan debug Chrome closed, machine
-        sleep, user closed the tab), state is reset and a real re-attach or
-        fresh launch happens instead of returning "Already connected" with a
-        dead page object. That blind flag was exactly why goto() saw
-        ``wi.page is None`` right after connect reported success.
-      * Every failure path resets ALL stale state (_reset_wi_state) so no dead
-        references can leak into the next call.
+    RELIABILITY (2026-09-14): a previous successful connect no longer short-circuits on the
+    blind ``_connected`` flag - every call probes liveness first, resets stale state, then
+    does a real re-attach or fresh launch.
 
-    SANDBOX NOTE: this source only uses subprocess.Popen with a fixed argument
-    list -- exactly what the CLIENT AST guard allowlists for 'connect'. No
-    socket import, no subprocess.run, no os module. Playwright performs the CDP
-    handshake itself; connection refusal IS our port probe.
+    LATENCY (2026-11-06):
+      * One Playwright driver per process, reused across reconnects (~1.2s to start once,
+        ~0.03s per re-attach, instead of ~1.7s stop+start each time).
+      * Auto-launch polls the CDP endpoint (0.25s interval, 15s cap) instead of a fixed
+        5s/10s sleep - returns as soon as Chrome binds the port.
     """
     from .shared_instance import get_web_interact, set_web_interact
     from . import WebInteract as WI
-
-    phase = "connect"  # which step failed: 'connect' (CDP handshake) or 'page' (after CDP ok)
 
     try:
         wi = get_web_interact()
@@ -123,67 +223,78 @@ async def connect(_attempts: int = 0) -> str:
             wi = WI()
             set_web_interact(wi)
 
-        # LIVENESS PROBE before trusting the flag (2026-09-14 fix). A stale flag with a
-        # dead browser used to return "Already connected" and leave every later tool
-        # (goto, browser_screenshot, ...) with wi.page = None -> 'No page available'.
         if wi._connected:
             if await _probe_alive(wi):
-                # Still alive. Make sure a usable page exists for the next tool call.
-                try:
-                    if wi.page is None and wi.context is not None:
-                        if wi.context.pages:
-                            wi.page = wi.context.pages[0]
-                        else:
-                            wi.page = await wi.context.new_page()
-                        await wi.page.title()
+                if wi.page is None and wi.context is not None:
+                    await _acquire_page(wi)
+                if wi.page is None:
+                    logger.warning("connect: alive but no usable page -- full reconnect")
+                    await _reset_wi_state(wi)
+                else:
                     return "Already connected to Chrome browser."
-                except Exception as page_error:
-                    logger.warning(
-                        f"connect: alive check passed but no usable page ({page_error}) -- full reconnect"
-                    )
             else:
                 logger.info("connect: _connected flag was stale (browser gone) -- resetting and reconnecting")
+                await _reset_wi_state(wi)
 
-        # Stale state (from a dead connection or a previously failed attempt) must be
-        # cleared before starting a fresh handshake.
-        if wi._connected or wi.browser is not None or wi.page is not None:
+        if wi.browser is not None or wi.page is not None or wi.context is not None:
             await _reset_wi_state(wi)
 
         from playwright.async_api import async_playwright
+        if wi.playwright is None:
+            wi.playwright = await async_playwright().start()
 
-        wi.playwright = await async_playwright().start()
-        wi.browser = await wi.playwright.chromium.connect_over_cdp(wi.cdp_url)
-        phase = "page"  # CDP handshake succeeded; the driver must NOT be stopped below
-
-        if wi.browser.contexts:
-            wi.context = wi.browser.contexts[0]
-        else:
-            wi.context = await wi.browser.new_context()
-
-        # Get or create a page (never close an existing one)
-        page_created = False
-        for attempt in range(3):
-            try:
-                if wi.context.pages:
-                    wi.page = wi.context.pages[0]
+        try:
+            attached = await _attach(wi, wi.playwright)
+        except Exception as attach_error:
+            if _is_endpoint_unreachable(str(attach_error)):
+                # Nothing on the port: launch our own debug window, then poll until it is ready.
+                if _attempts >= 2:
+                    raise
+                await _reset_wi_state(wi)  # drop the handles of the failed handshake, keep the driver
+                port = await _resolve_cdp_port()
+                logger.info(f"connect: no CDP endpoint ({attach_error}) -- launching debug Chrome, polling port {port}")
+                _launch_debug_chrome(port)
+                deadline = asyncio.get_running_loop().time() + CDP_POLL_TIMEOUT
+                last_error = attach_error
+                while asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(CDP_POLL_INTERVAL)
+                    await _reset_wi_state(wi)  # never stack browser handles across polls
+                    try:
+                        if await _attach(wi, wi.playwright):
+                            break
+                    except Exception as poll_error:
+                        last_error = poll_error
+                        await _reset_wi_state(wi)
                 else:
-                    wi.page = await wi.context.new_page()
-                await wi.page.title()
-                page_created = True
-                break
-            except Exception as e:
-                if "execution context was destroyed" in str(e).lower():
-                    await asyncio.sleep(1)
-                    continue
-                raise e
+                    await _reset_wi_state(wi)
+                    raise RuntimeError(
+                        f"Chrome was launched but no usable CDP page answered on port {port} within "
+                        f"{CDP_POLL_TIMEOUT}s: {last_error}"
+                    )
+            else:
+                # NOT a port problem: a stopped driver or a dead browser target (the
+                # 'Target page, context or browser has been closed' case). Replacing the driver
+                # fixes it; launching Chrome here would open a SECOND window for a port that is
+                # already bound - exactly the 2026-11-06 incident.
+                logger.info(f"connect: driver/browser state is dead ({attach_error}) -- restarting the driver")
+                await _reset_wi_state(wi, stop_driver=True)
+                wi.playwright = await async_playwright().start()
+                if not await _attach(wi, wi.playwright):
+                    raise RuntimeError(
+                        f"Chrome answered the CDP port ({wi.cdp_url}) but no usable page could be "
+                        "created after restarting the Playwright driver."
+                    )
+                attached = True
+        else:
+            if not attached:
+                # The endpoint is live but produced no page - say so instead of claiming success.
+                raise RuntimeError(
+                    f"Chrome answered the CDP port ({wi.cdp_url}) but no usable page could be "
+                    "created: the browser has no open tab and new_page() failed."
+                )
 
-        if not page_created:
-            wi.page = await wi.context.new_page()
-
-        wi._connected = True
         page_title = await wi.page.title() if wi.page else "New Tab"
         page_url = wi.page.url if wi.page else "about:blank"
-
         return f"""Connected to Chrome browser!
 
 Current Page: {page_title}
@@ -192,56 +303,10 @@ Total Pages: {len(wi.context.pages) if wi.context else 0}"""
 
     except Exception as e:
         error_msg = str(e)
-
-        # ALWAYS reset stale state on failure (2026-09-14 fix): the old code stopped the
-        # driver but kept _connected/page/context/browser references, which poisoned the
-        # next call. Resetting is safe -- it only drops OUR handles, never touches Chrome.
         wi_ref = locals().get('wi')
         if wi_ref is not None:
+            # Drop OUR handles only - never closes a Chrome window (2026-09-11 contract).
             await _reset_wi_state(wi_ref)
-
-        # ── Fresh debug-mode Chrome window (BETA launch logic, proven) ─────────────
-        # Launched with a DEDICATED --user-data-dir so it ALWAYS opens as a brand-new
-        # separate window and binds the port cleanly. It can never be absorbed by an
-        # existing instance (different profile lock) and it can never close any
-        # existing window: there is no kill logic anywhere in this file.
-        if ("connect" in error_msg.lower() or "refused" in error_msg.lower()) \
-                and _attempts < 2:
-            try:
-                # CDP port comes from config (CHROME_CDP_PORT) - no hardcoded literal. On the
-                # CLIENT the SERVER ships it via config_constants (injected exec global); on the
-                # SERVER "from config import ..." works normally. If neither provides it, fail
-                # loudly instead of guessing a port (2026-10-02 no-fallback contract).
-                _cdp_port = globals().get("CHROME_CDP_PORT")  # injected exec global on the CLIENT (path 1)
-                if _cdp_port is None:
-                    try:
-                        from config import CHROME_CDP_PORT as _imported_cdp_port  # path 2 - SERVER; neutralized to 'pass' in delivered copies
-                        _cdp_port = _imported_cdp_port
-                    except (ImportError, NameError):
-                        pass  # UnboundLocalError is a NameError subclass: covers the neutralized-import case
-                if _cdp_port is None:
-                    raise RuntimeError(
-                        "Cannot determine the Chrome CDP port for auto-launch: CHROME_CDP_PORT is not "
-                        "available (SERVER did not ship it via config_constants and 'config' is not "
-                        "importable). Set CHROME_CDP_PORT in config/config.py - no fallback port is used."
-                    )
-                chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-                args = [chrome_path,
-                        f"--remote-debugging-port={_cdp_port}",
-                        r"--user-data-dir=C:\chrome-debug-profile",
-                        "--no-first-run",
-                        "--no-default-browser-check"]
-
-                subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                # Longer settle wait on the second attempt (loaded machine: first
-                # launch may need more than 5s to bind the port).
-                await asyncio.sleep(10 if _attempts == 1 else 5)
-
-                # Retry connection.
-                return await connect(_attempts + 1)
-            except Exception as start_error:
-                return f"Failed to start Chrome automatically and could not connect: {start_error}"
-
         return f"Failed to connect: {error_msg}"
 
 
@@ -249,13 +314,10 @@ Total Pages: {len(wi.context.pages) if wi.context else 0}"""
 # The CLIENT source transform NEUTRALIZES same-package imports ('from .shared_instance
 # import X' becomes a bare pass), so sibling tools cannot import this function directly.
 # Instead we register THIS compiled copy of connect() in the process-wide anchor module;
-# ensure_connected()/ensure_page() then trigger reconnects through
-# shared_instance.do_connect_fallback(), which resolves to exactly this function no
-# matter which exec'd copy they closed over. 'set_connect_function' is a bare name on
-# purpose: it resolves from the injected module globals (shared_instance's public symbols
-# are merged into every web_interact tool's exec context). On the SERVER, where connect.py
-# runs as a normal imported module and that global does not exist, the try/except makes
-# registration a silent no-op -- direct calls work there anyway.
+# ensure_connected()/ensure_page() trigger reconnects through shared_instance
+# .do_connect_fallback(), which resolves to exactly this function no matter which exec'd
+# copy they closed over. 'set_connect_function' is a bare name on purpose: it resolves
+# from the injected module globals. On the SERVER the try/except makes it a no-op.
 try:
     set_connect_function(connect)  # noqa: F821 -- injected by the CLIENT loader at exec time
 except Exception:  # pragma: no cover - best-effort; never break connect itself
