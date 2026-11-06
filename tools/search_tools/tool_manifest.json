@@ -1,0 +1,17 @@
+{
+  "runtime_name": "search_tool",
+  "binary": "rg.exe",
+  "upstream": "@vscode/ripgrep-win32-x64",
+  "upstream_version": "1.18.0",
+  "ripgrep_version": "15.0.0 (rev 3a612f88b8)",
+  "license": "MIT",
+  "homepage": "https://github.com/microsoft/vscode-ripgrep",
+  "tarball_url": "https://registry.npmjs.org/@vscode/ripgrep-win32-x64/-/ripgrep-win32-x64-1.18.0.tgz",
+  "tarball_size": 2111160,
+  "tarball_sha256": "725006b9662fa0f73cb0dc7d62b666524b80cfe125214ca75dab5293ef9e4203",
+  "tarball_member": "package/bin/rg.exe",
+  "binary_size": 5429760,
+  "binary_sha256": "f9dde63498b3193f098355dbec97af99dc4f6b8fa0df5ed04114a03012c042cb",
+  "self_test_args": ["--no-config", "--version"],
+  "note": "Binary is NOT shipped in the tool payload. The CLIENT unpacks it into its own runtime folder (CLIENT/tools/runtimes/search_tool) either during the init phase (utils/init_setup/ripgrep.py) or on first use, verifying the sha256 BEFORE the binary is ever executed."
+}

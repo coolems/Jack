@@ -58,6 +58,11 @@ venv/
 # CLIENT-side tool runtimes (2026-09-11): NEVER commit.
 CLIENT/tools/runtimes/
 
+# Server-side / dev tool runtime (legacy location <working_root>/tools/<runtime_name>):
+# holds the unpacked ripgrep binary for search_tools - fetched at init or on first use,
+# never committed (same rule as CLIENT/tools/runtimes/).
+tools/search_tool/
+
 # OS files
 .DS_Store
 Thumbs.db

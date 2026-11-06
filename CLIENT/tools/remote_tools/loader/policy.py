@@ -30,6 +30,14 @@ ALLOWED_TOOL_IMPORTS: dict[str, set[str]] = {
     # surface: subprocess only, Popen with fixed args. If a future rewrite needs more,
     # it must be an explicit new row here -- not an accident.
     "connect": {"subprocess"},
+    # grep / glob_files (2026-11-06): ripgrep search engine. subprocess.run spawns the
+    # PINNED, sha256-verified rg binary with a PLAIN argv vector -- never shell=True and
+    # never a command string, so a search pattern can never inject a command. '--no-config'
+    # is always prepended so a stray RIPGREP_CONFIG_PATH / rg.conf beside the binary cannot
+    # inject a --pre preprocessor. shutil is NOT needed here (the tarball unpack lives in
+    # _rg_runtime.py, which uses urllib/tarfile/hashlib - none of them blocklisted).
+    "grep": {"subprocess"},
+    "glob_files": {"subprocess"},
 }
 
 # Tool-specific allowlist for dangerous function calls.
@@ -51,6 +59,10 @@ ALLOWED_TOOL_CALLS: dict[str, set[str]] = {
     # NO subprocess.run -- process inspection/kill was part of the removed 2026-09-10
     # repair path and must not come back without a deliberate policy change.
     "connect": {"subprocess.Popen"},
+    # grep / glob_files: subprocess.run of the verified rg binary with a fixed argv vector
+    # (see the import rows above). NO Popen, NO shell, NO process inspection/kill.
+    "grep": {"subprocess.run"},
+    "glob_files": {"subprocess.run"},
 }
 
 

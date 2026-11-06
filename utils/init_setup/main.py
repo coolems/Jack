@@ -5,12 +5,13 @@ import secrets
 import shutil
 import sys
 
-from .constants import HF_MMPROJ_FILE, LLAMA_BUILD, MMPROJ_SIZE, MIN_PYTHON, OCR_FILES
+from .constants import HF_MMPROJ_FILE, LLAMA_BUILD, MMPROJ_SIZE, MIN_PYTHON, OCR_FILES, RG_RUNTIME_NAME
 from .errors import InitError
 from .gpu import detect_gpu
 from .llama import install_llama_libs
 from .models import download_model_files, select_model
 from .paths import ROOT, _read_client_ui_port
+from .ripgrep import install_ripgrep
 from .ui import ask, ask_download_now, ask_yn, header, human, info, line, ok, warn, _utf8_console
 from .wiring import wire_configs
 
@@ -87,6 +88,10 @@ def main() -> int:
         header("STEP 3 - LLAMA.CPP BINARIES")
         install_llama_libs(gpu_name)
 
+        # ---- ripgrep for the search tools (grep / glob_files) -----------
+        header("STEP 3b - SEARCH ENGINE (RIPGREP)")
+        install_ripgrep()
+
         # ---- model + optional file downloads (or skipped for later) ---------------------------
         if download_now:
             header("STEP 4 - MODEL DOWNLOADS")
@@ -120,6 +125,11 @@ def main() -> int:
         header("INIT COMPLETE")
         print()
         ok(f"llama.cpp {LLAMA_BUILD}:      llama_server\\llama-server.exe")
+        rg_exe = os.path.join(ROOT, "CLIENT", "tools", "runtimes", RG_RUNTIME_NAME, "rg.exe")
+        if os.path.isfile(rg_exe):
+            ok(f"ripgrep (search tools):   {rg_exe}")
+        else:
+            warn(f"ripgrep (SKIPPED - offline/SSL): grep + glob_files fetch it themselves on first use")
         if ctx.get("download_now", True):
             ok(f"Model:                        {ctx['model_path']}")
         else:

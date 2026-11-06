@@ -57,3 +57,20 @@ OCR_FILES: list[tuple[str, int]] = [
     ("GLM-OCR-Q8_0.gguf",        950_433_408),
     ("mmproj-GLM-OCR-Q8_0.gguf", 484_403_648),
 ]
+
+# ---- ripgrep (search_tools: grep + glob_files) -------------------------------------
+# Same upstream as deepseek-harness: @vscode/ripgrep 1.18.0, whose optional platform
+# package ships the binary. Verified 2026-11-06 by fetching the tarball, extracting
+# package/bin/rg.exe and running it (ripgrep 15.0.0, features:+pcre2). npm ships a
+# .tgz (gzip tar), NOT a zip - see downloads.extract_member().
+RG_PKG = "@vscode/ripgrep-win32-x64"
+RG_VERSION = "1.18.0"
+# npm's tarball path uses the package name WITHOUT the scope after the '-' separator
+# (verified 2026-11-06 by downloading it): .../@vscode/ripgrep-win32-x64/-/ripgrep-win32-x64-<ver>.tgz
+RG_TARBALL_URL = f"https://registry.npmjs.org/{RG_PKG}/-/ripgrep-win32-x64-{RG_VERSION}.tgz"
+RG_TARBALL_SIZE = 2_111_160
+RG_TARBALL_SHA256 = "725006b9662fa0f73cb0dc7d62b666524b80cfe125214ca75dab5293ef9e4203"
+RG_MEMBER = "package/bin/rg.exe"          # the only file we take out of the tarball
+RG_BINARY_SIZE = 5_429_760
+RG_BINARY_SHA256 = "f9dde63498b3193f098355dbec97af99dc4f6b8fa0df5ed04114a03012c042cb"
+RG_RUNTIME_NAME = "search_tool"           # name used by tools/tool_bootstrap/runtime_paths.py

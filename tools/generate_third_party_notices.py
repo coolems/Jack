@@ -127,6 +127,21 @@ def build_notices():
         "",
     ]
 
+    # ripgrep search engine binary (not a pip dep — downloaded at install time by init,
+    # or by the search tool on first use; never committed to the repo)
+    lines += [
+        "ripgrep (search engine binary, CLIENT/tools/runtimes/search_tool/rg.exe)",
+        "  License: MIT",
+        "  Copyright holder: Microsoft Corporation (upstream: github.com/microsoft/vscode-ripgrep)",
+        "  Package: @vscode/ripgrep 1.18.0 -> @vscode/ripgrep-win32-x64 1.18.0 (rg 15.0.0)",
+        "  Note: NOT a pip dependency and NOT shipped in the repo - the init phase (or the tool on",
+        "  first use) downloads the pinned npm tarball and extracts package/bin/rg.exe after",
+        "  verifying its sha256. Same terms as llama.cpp above: downloaded at install time, so the",
+        "  upstream MIT licence binds user-to-upstream. ripgrep itself embeds PCRE2 (BSD-3-Clause)",
+        "  and its own MIT licence text, which ships inside the tarball as package/LICENSE.",
+        "",
+    ]
+
     return "\n".join(lines), unknown, copyleft
 
 
