@@ -16,19 +16,23 @@ coolems.com. This module is the ONLY place that:
 The CLIENT composes the badge text from those two fields only — no license number,
 no dates, nothing else ever leaves this machine.
 
-OFFLINE MODE: any failure of the network check falls back to the cached last_check in
-the state file (atomic write). An EXPIRED cache (valid_until passed) is treated as NOT
-licensed even offline — clients then see "not registered" again until renewed.
+OFFLINE MODE (2026-11-09, narrowed): the cache fallback applies ONLY when the endpoint is
+genuinely UNREACHABLE (DNS/socket/timeout). An expired cache (valid_until passed) is
+treated as NOT licensed even offline — clients see "not registered" again until renewed.
+
+A TLS TRUST failure or a bad endpoint answer is NOT offline: it raises LicenseCheckError
+with the reason (cert verification, a refused redirect, HTTP status, malformed JSON).
+Falling back to the cache there would let a MITM look like a valid license — the endpoint
+answer is authoritative, so an unverifiable answer must never be answered from cache.
 
     PRIVATE-USE E-MAIL CONFIRMATION (v15, refined v16 2026-10-12): a private install that HAS an
-        e-mail also asks the web side (POST {"mode":"private","email":...}) on server start + once per day;
-        the endpoint sends a one-time confirmation link and only writes the address into its own
-        private_license.json after the user clicks it. Private individual use is FREE for commercial
-        use, so the badge now reflects the confirmation state: e-mail confirmed on the web side ->
-        "PRIVATE LICENSE · licensed <e-mail> for commercial use"; not (yet) confirmed / no e-mail ->
-        "PRIVATE USE · license not acquired". The slim payload carries {email, private_licensed}
-        for that; nothing else leaves this machine.
-    
+    e-mail also asks the web side (POST {"mode":"private","email":...}) on server start + once per day;
+    the endpoint sends a one-time confirmation link and only writes the address into its own
+    private_license.json after the user clicks it. Private individual use is FREE for commercial
+    use, so the badge now reflects the confirmation state: e-mail confirmed on the web side ->
+    "PRIVATE LICENSE · licensed <e-mail> for commercial use"; not (yet) confirmed / no e-mail ->
+    "PRIVATE USE · license not acquired". The slim payload carries {email, private_licensed}
+    for that; nothing else leaves this machine.
 NOTE on IP tracking: ip_history lives on the WEB side now
 (coolems_site/jack/licenses/ip_history.json, written by index.php). The local
 state file no longer stores it.
@@ -39,10 +43,14 @@ The endpoint answer is authoritative for licensed status.
 """
 
 import json
+import logging
 import os
 import ssl
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+
+logger = logging.getLogger("COOLEMS.License")
 
 # ===== Paths & constants =========================================================
 
@@ -82,26 +90,46 @@ def default_state() -> dict:
 
 
 def load_state() -> dict:
-    """Read the local license state. Missing/corrupt file -> fresh default (never fatal)."""
+    """Read the local license state. Missing/corrupt file -> fresh default, LOUDLY logged.
+
+    Never fatal (the server must boot), but the operator sees WHY the state is empty:
+    a corrupt or unreadable state file used to silently reset licensing to 'not asked'.
+    """
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if not isinstance(data, dict):
-            return default_state()
-        base = default_state()
-        for key in base:
-            if key in data:
-                base[key] = data[key]
-        # Defensive type checks (the file is operator-editable by design).
-        if not isinstance(base.get("last_check"), dict):
-            base["last_check"] = None
-        return base
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
+        # Normal first-run state — not an error.
         return default_state()
+    except json.JSONDecodeError as e:
+        logger.error("license_state.json is CORRUPT (%s) — treating licensing as "
+                     "not registered; fix or re-run the licensing step", e)
+        return default_state()
+    except OSError as e:
+        logger.error("license_state.json unreadable (%s: %s) — treating licensing as "
+                     "not registered", type(e).__name__, e)
+        return default_state()
+
+    if not isinstance(data, dict):
+        logger.error("license_state.json is not a JSON object (%s) — treating licensing "
+                     "as not registered", type(data).__name__)
+        return default_state()
+    base = default_state()
+    for key in base:
+        if key in data:
+            base[key] = data[key]
+    # Defensive type checks (the file is operator-editable by design).
+    if not isinstance(base.get("last_check"), dict):
+        base["last_check"] = None
+    return base
 
 
 def save_state(state: dict) -> None:
-    """Atomic write of the local license state. Never raises to callers."""
+    """Atomic write of the local license state. Never raises to callers, but logs loudly.
+
+    A failed write means the offline cache is NOT updated — the next unreachable check
+    will use an older (or no) answer, so it must be visible in the log.
+    """
     try:
         os.makedirs(LICENSE_DIR, exist_ok=True)
         tmp = STATE_FILE + ".tmp"
@@ -115,8 +143,9 @@ def save_state(state: dict) -> None:
             if os.path.exists(STATE_FILE):
                 os.remove(STATE_FILE)
             os.rename(tmp, STATE_FILE)
-    except OSError:
-        pass  # license bookkeeping must never crash the server
+    except OSError as e:
+        logger.error("license_state.json write FAILED (%s: %s) — the offline cache is "
+                     "not updated; %s", type(e).__name__, e, STATE_FILE)
 
 
 def record_company_registration(company: str, email: str = "", users_requested: int = 0,
@@ -174,31 +203,238 @@ def is_expired(cache: dict | None) -> bool:
 
 # ===== Server check =============================================================
 
-def _build_ssl_context():
-    """TLS context for the endpoint. Uses the SERVER certs if present (self-signed
-    deployments), otherwise the system default CA bundle."""
+class LicenseCheckError(Exception):
+    """The license endpoint could not be reached VERIFIABLY.
+
+    Raised by perform_check() instead of falling back to the cache, so the operator sees
+    WHY (TLS trust, a refused redirect, HTTP status, malformed answer). Cache fallback
+    stays for genuine reachability failures only — see _is_unreachable().
+    """
+
+
+# Network-level failures = "the endpoint is not reachable right now" -> cache fallback OK.
+# Everything else = the answer could not be verified -> raise, never guess.
+# ssl.SSLError is deliberately NOT here: the request path wraps it in URLError (OSError),
+# and a wrapped SSLError (cert verify failed) is a TRUST failure, not an outage.
+_UNREACHABLE_ERRORS = (
+    urllib.error.URLError,        # DNS / refused / connection reset (wraps socket errors)
+    ConnectionError,              # socket-level, incl. reset
+    TimeoutError,                 # urlopen timeout (Python 3.10+)
+)
+
+
+def _is_unreachable(exc: Exception) -> bool:
+    """True when the failure means 'no endpoint answer', not 'unverified answer'.
+
+    HTTPError is NEVER unreachable: an HTTP status arrived, so the endpoint answered and
+    we must not replace that answer with the cache (it is already converted to
+    LicenseCheckError in _request_endpoint — this guard keeps the classification correct
+    even if the call order ever changes).
+
+    URLError carries the underlying reason: a wrapped socket/timeout error is unreachable,
+    but a wrapped SSLCertVerificationError is a TRUST failure -> NOT unreachable.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return False
+    if isinstance(exc, urllib.error.URLError):
+        return not isinstance(exc.reason, ssl.SSLError)
+    return isinstance(exc, _UNREACHABLE_ERRORS)
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """TLS trust for the license endpoint: system CA bundle + hostname verification.
+
+    coolems.com is a public CA-signed host (measured live 2026-11-07: subject
+    CN=coolems.com, issuer "Let's Encrypt / YR1"). ssl.create_default_context() gives
+    CERT_REQUIRED + check_hostname=True against the OS trust store — the correct trust
+    model for a public host, the same one a browser uses.
+
+    NO certificate pin, deliberately (2026-11-07). Let's Encrypt leaf certs are valid for
+    ~90 days (measured window: 89 days), so a leaf SHA-256 pin would break every license
+    check at each rotation and need a manual re-read ~4x per year. The reliable
+    alternative — pinning the ISSUER/chain — is not enforceable here: ssl exposes only the
+    leaf via getpeercert(), and ssl.SSLContext.verify_callback is documented as unreliable
+    across CPython/OpenSSL builds (see app/providers/coolems/ssl_pinning.py header). A pin
+    that cannot be enforced correctly is worse than no pin. ssl_pinning stays for the relay
+    link, where the cert IS self-signed and pinning is the right tool.
+
+    NO local-cert branch either. The old code imported
+    app.providers.coolems.ssl_context.detect_server_certs, a symbol that never existed
+    (git log -S shows only the commit that added the import line), and pointed cafile at
+    the LAN self-signed cert (CN=coolems-direct-ws, no CA extension) — that can never
+    verify a public chain, so the branch would have failed TLS and silently used system CAs.
+    """
+    return ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+
+
+class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect on the license request.
+
+    urllib follows HTTPS -> HTTP redirects, re-sends the POST body in PLAINTEXT and then
+    accepts the plaintext 200 as the license answer (verified live 2026-11-07). The
+    endpoint answer is authoritative for licensed status, so an answer arriving over an
+    unverified connection must never be used — and the registered e-mail must never leave
+    the box unencrypted. Refusing keeps both guarantees: the failure surfaces as
+    LicenseCheckError naming the redirect target.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise LicenseCheckError(
+            f"license endpoint redirected ({code}) {req.full_url} -> {newurl} — refusing "
+            "to follow: the license answer must come from the configured endpoint over TLS "
+            "(point COOLEMS_LICENSE_ENDPOINT at the real URL)"
+        )
+
+
+# Trust is decided once, so the request path is fixed too: one module-level opener with
+# the CA-verified HTTPS handler and the no-redirect policy. urlopen(context=...) would
+# rebuild an opener per call and still follow redirects.
+_OPENER = urllib.request.build_opener(
+    _RefuseRedirect(),
+    urllib.request.HTTPSHandler(context=_build_ssl_context()),
+)
+
+
+def _trust_failure_message(exc: Exception) -> str:
+    """Plain-language TLS trust failure for the license endpoint."""
+    host = urllib.request.urlsplit(ENDPOINT_URL).netloc
+    return (f"license endpoint TLS verification failed for {host}: "
+            f"{type(exc).__name__}: {exc}")
+
+
+def _request_endpoint(req, timeout: int) -> dict:
+    """One HTTPS round trip to the license endpoint. Raises on anything unverifiable.
+
+    Raises:
+      LicenseCheckError  - TLS trust failure (cert verification), a redirect (refused),
+                           HTTP status != 200, non-JSON / non-object answer.
+      URLError / OSError - unreachable (the caller may then use the cache fallback).
+    """
     try:
-        from app.providers.coolems.ssl_context import detect_server_certs  # type: ignore
-        certfile = detect_server_certs()
-        if certfile and os.path.isfile(certfile):
-            return ssl.create_default_context(cafile=certfile)
-    except Exception:
-        pass
-    return ssl.create_default_context()
+        with _OPENER.open(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise LicenseCheckError(
+                    f"license endpoint answered HTTP {resp.status} for {ENDPOINT_URL} "
+                    f"(method={req.get_method()}) — answer not usable"
+                )
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        # urlopen raises HTTPError for non-2xx before the status check above can run.
+        # The endpoint's error body is the ONLY way to learn WHY it failed (the server
+        # answers a JSON {reason, detail} on a fatal), so read it best-effort and quote it.
+        detail = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        if body:
+            try:
+                err = json.loads(body)
+                if isinstance(err, dict) and err.get("reason"):
+                    detail = f" — server reason={err['reason']}"
+                    if err.get("detail"):
+                        detail += f": {err['detail']}"
+            except json.JSONDecodeError:
+                detail = f" — body={body[:120]!r}"
+        raise LicenseCheckError(
+            f"license endpoint answered HTTP {e.code} for {ENDPOINT_URL} "
+            f"(method={req.get_method()}) — answer not usable{detail}"
+        ) from e
+    except ssl.SSLError as e:
+        # Trust failure. The request path also surfaces it wrapped as
+        # URLError(reason=SSLError) — both paths raise here, never the cache.
+        raise LicenseCheckError(_trust_failure_message(e)) from e
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, ssl.SSLError):
+            raise LicenseCheckError(_trust_failure_message(e.reason)) from e
+        raise
+
+    try:
+        answer = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise LicenseCheckError(
+            f"license endpoint returned non-JSON for {ENDPOINT_URL}: "
+            f"{raw[:120]!r} ({e})"
+        ) from e
+    if not isinstance(answer, dict):
+        raise LicenseCheckError(
+            f"license endpoint returned {type(answer).__name__}, expected a JSON object "
+            f"for {ENDPOINT_URL}: {raw[:120]!r}"
+        )
+    return answer
+
+
+def _perform_one_check(state: dict, payload: dict, method: str, timeout: int) -> dict:
+    """POST/GET the endpoint once and turn the answer into a server-side result.
+
+    Cache fallback ONLY on unreachable (the result then carries "offline": True);
+    anything unverifiable raises LicenseCheckError.
+    """
+    body = json.dumps(payload).encode("utf-8") if method == "POST" else None
+    req = urllib.request.Request(
+        ENDPOINT_URL,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        answer = _request_endpoint(req, timeout)
+    except LicenseCheckError:
+        raise
+    except Exception as e:
+        if not _is_unreachable(e):
+            raise LicenseCheckError(
+                f"license check failed for {ENDPOINT_URL}: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+        cache = state.get("last_check") or {}
+        if payload.get("mode") == "private":
+            # A private license is perpetual; a pending cache simply stays pending.
+            if cache.get("licensed"):
+                return {"status": "licensed", "offline": True}
+            return {"status": "pending", "offline": True, "reason": "confirmation_pending"}
+        if cache.get("licensed") and not is_expired(cache):
+            return {"status": "licensed", "offline": True}
+        out = {"status": "pending", "offline": True}
+        if cache.get("licensed"):
+            out["reason"] = "expired"
+        return out
+
+    state["last_check"] = {**answer, "checked_at": _now_iso()}
+    save_state(state)
+
+    if payload.get("mode") == "private":
+        if answer.get("licensed"):
+            return {"status": "licensed"}
+        return {"status": "pending",
+                "reason": answer.get("reason") or "confirmation_pending"}
+
+    licensed = bool(answer.get("licensed")) and not is_expired(state["last_check"])
+    return {"status": "licensed"} if licensed else {"status": "pending"}
 
 
 def perform_check(state: dict | None = None, timeout: int = CHECK_TIMEOUT_SEC) -> dict:
     """Check the license with the Coolems KG endpoint.
 
-    - private installs: no network call at all.
-    - company installs: HTTPS POST {company, email} to ENDPOINT_URL (GET fallback when
-      no e-mail was entered). On success caches the full answer in last_check + saves.
-    - OFFLINE MODE: on ANY failure falls back to the cached last_check; if never checked,
-      status stays 'pending'. NEVER raises, NEVER blocks the server.
+    - private installs WITHOUT e-mail: no network call at all.
+    - private installs WITH e-mail: HTTPS POST {mode:"private", email}.
+    - company installs: HTTPS POST {company, email} (GET when no e-mail — IP-only match).
+    - On success the full answer is cached in last_check + saved.
     - EXPIRY: a licensed cache whose valid_until has passed is treated as NOT licensed
       (live answer or offline fallback alike) — clients see "not registered" again.
 
-    Returns a dict with "status": private | licensed | pending (server-side view).
+    Failure policy (2026-11-09 — no blind fallback):
+      unreachable (DNS / refused / timeout / reset) -> cached last_check, "offline": True.
+      anything else -> raises LicenseCheckError with the reason. TLS trust failures,
+      refused redirects, HTTP != 200 and malformed JSON are NEVER answered from cache:
+      the endpoint answer is authoritative, so an answer we could not verify must not be
+      replaced by a guess.
+
+    Raises:
+      LicenseCheckError  - the endpoint could not be verified.
+    Returns:
+      {"status": "private" | "licensed" | "pending", ...} — "offline": True only on the
+      cache fallback; "reason" carries confirmation_pending / expired / not_registered.
     """
     state = state if state is not None else load_state()
 
@@ -208,67 +444,17 @@ def perform_check(state: dict | None = None, timeout: int = CHECK_TIMEOUT_SEC) -
 
     if state["choice"] == "private":
         # Private WITH e-mail: ask the web side (mode=private). The endpoint either
-        # confirms it (licensed:true via:"private") or answers confirmation_pending;
-        # same offline-fallback rules as company checks. NEVER raises.
+        # confirms it (licensed:true via:"private") or answers confirmation_pending.
         payload = {"mode": "private", "email": state["email"]}
-        body = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            ENDPOINT_URL, data=body,
-            headers={"Content-Type": "application/json"}, method="POST",
-            )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout, context=_build_ssl_context()) as resp:
-                answer = json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            # OFFLINE MODE — fall back to the cached last_check (a licensed private
-            # cache is perpetual; a pending cache simply stays pending).
-            cache = state.get("last_check") or {}
-            if cache.get("licensed"):
-                return {"status": "licensed", "offline": True}
-            return {"status": "pending", "offline": True, "reason": "confirmation_pending"}
-
-        state["last_check"] = {**answer, "checked_at": _now_iso()}
-        save_state(state)
-        if answer.get("licensed"):
-            return {"status": "licensed"}
-        return {"status": "pending", "reason": answer.get("reason") or "confirmation_pending"}
+        return _perform_one_check(state, payload, "POST", timeout)
 
     if state["choice"] != "company" or not state.get("company"):
         # Not registered yet — no check possible.
         return {"status": "pending", "reason": "not_registered"}
 
     payload = {"company": state["company"], "email": state.get("email", "")}
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        ENDPOINT_URL,
-        data=body if payload["email"] else None,   # no e-mail -> GET (IP-only match)
-        headers={"Content-Type": "application/json"},
-        method="POST" if payload["email"] else "GET",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_build_ssl_context()) as resp:
-            answer = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        # OFFLINE MODE — fall back to the cached last successful answer. An expired
-        # cache does NOT count as licensed (renewal required before clients see it).
-        cache = state.get("last_check") or {}
-        if cache.get("licensed") and not is_expired(cache):
-            return {"status": "licensed", "offline": True}
-        reason = "expired" if cache.get("licensed") else None
-        out = {"status": "pending", "offline": True}
-        if reason:
-            out["reason"] = reason
-        return out
-
-    # Successful round trip — cache the full answer (the web side tracks IP history).
-    state["last_check"] = {**answer, "checked_at": _now_iso()}
-    save_state(state)
-
-    licensed = bool(answer.get("licensed")) and not is_expired(state["last_check"])
-    if not licensed:
-        return {"status": "pending"}
-    return {"status": "licensed"}
+    return _perform_one_check(state, payload,
+                              "POST" if payload["email"] else "GET", timeout)
 
 
 # ===== What the CLIENTs receive (SLIM payload — nothing else leaves this box) ====
@@ -324,9 +510,8 @@ async def license_loop() -> None:
     Runs the network call in a worker thread (await to_thread) so it NEVER blocks
     the event loop - boot and all WS traffic stay responsive even when the endpoint
     is down (the 10 s timeout would otherwise stall the whole server).
-    Never raises; exits cleanly on CancelledError."""
+    Exits cleanly on CancelledError; every other failure is REPORTED, never swallowed."""
     import asyncio as _la
-    import logging
     logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 
     while True:
@@ -336,9 +521,20 @@ async def license_loop() -> None:
                               (st.get("choice") == "private" and st.get("email"))
             if needs_check:
                 result = await _la.to_thread(perform_check)
-                logger.info("[SERVER] License check: status=%s", (result or {}).get("status"))
-        except Exception as e:  # pragma: no cover - bookkeeping must never die
-            logger.debug(f"Periodic license check failed (non-fatal): {e}")
+                status = (result or {}).get("status")
+                if (result or {}).get("offline"):
+                    # Cache fallback: the endpoint was unreachable, not unverified.
+                    logger.warning("[SERVER] License check: status=%s from CACHE "
+                                   "(endpoint unreachable)", status)
+                else:
+                    logger.info("[SERVER] License check: status=%s", status)
+        except LicenseCheckError as e:
+            # The endpoint could not be VERIFIED - this is an operator-visible problem
+            # (TLS trust, pin config, HTTP status, malformed answer), not "offline".
+            logger.error("[SERVER] License check FAILED (not verified, no cache used): %s", e)
+        except Exception as e:  # pragma: no cover - the loop itself must never die
+            logger.error("[SERVER] License check loop error (non-fatal): %s: %s",
+                         type(e).__name__, e)
         try:
             await _la.sleep(PERIODIC_CHECK_INTERVAL_SEC)
         except _la.CancelledError:
@@ -351,11 +547,10 @@ def start_license_task() -> "object | None":
     (a synchronous perform_check() here would stall the whole server up to 10 s when
     the endpoint is unreachable). Returns the task handle (None when no loop)."""
     import asyncio as _la
-    import logging
     logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 
     try:
-        loop = _la.get_running_loop()
+        _la.get_running_loop()   # raises RuntimeError when no loop is running
     except RuntimeError:
         return None
     task = _la.create_task(license_loop(), name="license-check-loop")

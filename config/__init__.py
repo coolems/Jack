@@ -36,6 +36,8 @@ from .config import (
     WEB_RELAY_DEFAULT_PORT,
     WEB_RELAY_VERIFY_SSL_CERTS,
     WEB_RELAY_CERT_PIN_FINGERPRINT,   # (2026-09-01 S3) optional cert pin for the relay link
+    # (2026-11-07) No LICENSE cert pin: the license endpoint is CA-verified by design
+    # (app/license_server.py::_build_ssl_context) — see config/config.py for the reasoning.
     COOLEMS_RECONNECT_MIN_DELAY,
     COOLEMS_RECONNECT_MAX_DELAY,
 

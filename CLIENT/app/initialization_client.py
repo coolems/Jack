@@ -145,7 +145,7 @@ async def init_provider_and_app(provider_name: str, api_url: str):
             "SERVER did not deliver" in str(e) or "framework_sources" in str(e)
         ):
             raise
-        logger.error(f"[ERROR] Failed to initialize remote tools at startup ({type(e).__name__}: {e})")
+        logger.error(f"Failed to initialize remote tools at startup ({type(e).__name__}: {e})")
         raise RuntimeError(
             f"CLIENT cannot start - SERVER did not deliver tools/DNA "
             f"({type(e).__name__}: {e}). "

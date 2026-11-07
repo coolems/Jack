@@ -10,7 +10,6 @@ Used to filter both Python logging output and raw stderr from uvicorn/websockets
 """
 
 import re
-from urllib.parse import unquote
 import sys
 import logging
 
@@ -80,11 +79,16 @@ def redact_sensitive_data(text):
 def redact_email(text):
     """Remove email=... parameters from URLs (2026-10-01 hardening).
 
-    Percent-decodes the text FIRST so both forms are caught:
+    Matches BOTH forms directly, without percent-decoding the message:
         ?email=bob@example.com   -> removed
         ?email=bob%40example.com -> removed  (the encoded form leaked to disk -
                                              found by the 2026-10-01 audit)
-    Only params prefixed with 'email=' are touched, so bare addresses inside
+    Decoding the whole line first (the original implementation) corrupted
+    unrelated text -- any %20/%40 outside the email param became a space/@, so
+    logged URLs stopped matching reality. The pattern accepts %xx escapes as
+    value characters instead, so only the email parameter is touched.
+
+    Only params prefixed with 'email=' are removed, so bare addresses inside
     ordinary log text (chat echoes, docs) are intentionally left alone.
 
     Args:
@@ -93,7 +97,12 @@ def redact_email(text):
     Returns:
         str: Text with email= parameters removed
     """
-    return re.sub(r'(?i)email=[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+', '', unquote(text))
+    # Local-part and domain both accept literal chars and %xx escapes; the '@'
+    # may be literal or %40. Trailing %xx in the domain is consumed so nothing
+    # of the address survives.
+    _enc = r'(?:%[0-9a-fA-F]{2}|[A-Za-z0-9._+-])'
+    _dom = r'(?:%[0-9a-fA-F]{2}|[A-Za-z0-9.-])+'
+    return re.sub(rf'(?i)email={_enc}+?(?:@|%40){_dom}+', '', text)
 
 
 class SensitiveStderr:

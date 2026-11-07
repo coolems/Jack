@@ -78,6 +78,14 @@ WEB_RELAY_VERIFY_SSL_CERTS: bool = False      # Full CA verification of the rela
 # path to the relay's .pem/.crt (fingerprinted at startup). To obtain it once from a
 # trusted network:  openssl s_client -connect <relay>:<port> </dev/null | openssl x509 -outform DER | sha256sum
 WEB_RELAY_CERT_PIN_FINGERPRINT: str = ""
+
+# (2026-11-07) The LICENSE endpoint (https://coolems.com) has NO cert-pin knob on purpose.
+# It is a public CA-signed host (Let's Encrypt), so trust = the system CA bundle + hostname
+# verification (app/license_server.py::_build_ssl_context). A leaf SHA-256 pin would break
+# every license check at each ~90-day LE rotation, and issuer-level pinning is not
+# enforceable in this CPython/OpenSSL build (ssl exposes only the leaf; verify_callback is
+# unreliable — see app/providers/coolems/ssl_pinning.py header). Cert pinning stays for the
+# SELF-SIGNED relay link (WEB_RELAY_CERT_PIN_FINGERPRINT), where it is the right tool.
 COOLEMS_RECONNECT_MIN_DELAY: float = 1.0      # Min delay between reconnect attempts (seconds)
 COOLEMS_RECONNECT_MAX_DELAY: float = 30.0     # Max delay between reconnect attempts (seconds)
 

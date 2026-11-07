@@ -150,17 +150,17 @@ class RemoteToolOrchestrator:
         try:
             result = await self._fetcher.fetch_tools()
         except Exception as e:
-            logger.error(f"[ERROR] Failed to fetch tool definitions from SERVER: {e}", exc_info=True)
+            logger.error(f"Failed to fetch tool definitions from SERVER: {e}", exc_info=True)
             return 0
 
         if result is None:
-            logger.error("[ERROR] fetch_tools returned None — SERVER may be unavailable")
+            logger.error("fetch_tools returned None — SERVER may be unavailable")
             return 0
 
         try:
             return self.install_from_response(result)
         except Exception as e:
-            logger.error(f"[ERROR] Failed to process tools_response from SERVER: {e}", exc_info=True)
+            logger.error(f"Failed to process tools_response from SERVER: {e}", exc_info=True)
             return 0
 
     def install_from_response(self, result: Dict[str, Any]) -> int:
@@ -205,7 +205,7 @@ class RemoteToolOrchestrator:
                             + (" (EMPTY = allow everything)" if _bl_count == 0 else ""))
 
             if not definitions:
-                logger.warning("[WARN] SERVER sent empty tool list (no tools available)")
+                logger.warning("SERVER sent empty tool list (no tools available)")
                 return 0
 
             # Store in cache
@@ -234,7 +234,7 @@ class RemoteToolOrchestrator:
             if shared_sources:
                 success = self._loader.install_shared_modules(shared_sources, expected_hashes=shared_hashes or None)
                 if not success:
-                    logger.warning("[WARN] Failed to install some shared modules from SERVER")
+                    logger.warning("Failed to install some shared modules from SERVER")
                 else:
                     module_names = [k for k, v in shared_sources.items() if v]
                     logger.info(f"[INIT] Shared modules installed: {module_names}")
@@ -247,7 +247,7 @@ class RemoteToolOrchestrator:
             if framework_sources:
                 fw_success = self._loader.install_shared_modules(framework_sources, expected_hashes=shared_hashes or None)
                 if not fw_success:
-                    logger.warning("[WARN] Failed to install some framework modules from SERVER")
+                    logger.warning("Failed to install some framework modules from SERVER")
                 else:
                     fw_names = [k for k, v in framework_sources.items() if v]
                     logger.info(f"[INIT] Framework modules installed: {fw_names}")
@@ -273,7 +273,7 @@ class RemoteToolOrchestrator:
             return len(definitions)
 
         except Exception as e:
-            logger.error(f"[ERROR] Failed to process tools_response from SERVER: {e}", exc_info=True)
+            logger.error(f"Failed to process tools_response from SERVER: {e}", exc_info=True)
             return 0
 
     # --- Public interface (matches ToolOrchestrator) ---
@@ -350,7 +350,7 @@ class RemoteToolOrchestrator:
                 self.tools[tool_name] = func
                 return True
             except ToolCompilationError as e:
-                logger.error(f"[ERROR] Failed to compile cached tool {tool_name}: {e}")
+                logger.error(f"Failed to compile cached tool {tool_name}: {e}")
 
                 # FIX (2026-09-11, audit): the CACHED source can be STALE -- it was
                 # delivered by an older SERVER build before this tool file was fixed on
@@ -364,13 +364,13 @@ class RemoteToolOrchestrator:
                 # NON-RETRYABLE exactly like today).
                 self._cache.invalidate_source(tool_name)
                 logger.warning(
-                    f"[WARN] Cached source for '{tool_name}' failed to compile -- "
+                    f"Cached source for '{tool_name}' failed to compile -- "
                     "refetching fresh source from SERVER (stale-cache self-heal)"
                 )
 
         # Need to fetch from SERVER
         if not self._fetcher or not self.provider:
-            logger.error(f"[ERROR] Cannot load tool {tool_name} — no provider connected")
+            logger.error(f"Cannot load tool {tool_name} — no provider connected")
             return False
 
         try:
@@ -378,7 +378,7 @@ class RemoteToolOrchestrator:
 
             if result is None or result.get("error"):
                 err = result.get("error", "unknown error") if result else "no response"
-                logger.error(f"[ERROR] SERVER denied/missing tool {tool_name}: {err}")
+                logger.error(f"SERVER denied/missing tool {tool_name}: {err}")
                 return False
 
             source = result["source_code"]
@@ -418,7 +418,7 @@ class RemoteToolOrchestrator:
             # Re-raise compilation errors so they're NOT retried by retry logic
             raise
         except Exception as e:
-            logger.error(f"[ERROR] Failed to load tool {tool_name} from SERVER: {e}", exc_info=True)
+            logger.error(f"Failed to load tool {tool_name} from SERVER: {e}", exc_info=True)
             return False
 
     # ------------------------------------------------------------------
@@ -532,7 +532,7 @@ class RemoteToolOrchestrator:
 
         func = self.tools.get(tool_name)
         if not func:
-            logger.error(f"[ERROR] Tool '{tool_name}' not found in registry after ensure_tool_loaded")
+            logger.error(f"Tool '{tool_name}' not found in registry after ensure_tool_loaded")
             return f"Error: Tool '{tool_name}' is not available."
 
         try:
@@ -583,11 +583,11 @@ class RemoteToolOrchestrator:
             if asyncio.iscoroutine(result):
                 result = await result
 
-            logger.debug(f"[DEBUG] Tool {tool_name} executed successfully")
+            logger.debug(f"Tool {tool_name} executed successfully")
             return result
 
         except Exception as e:
-            logger.error(f"[ERROR] Tool execution failed for {tool_name}: {e}")
+            logger.error(f"Tool execution failed for {tool_name}: {e}")
             return f"Tool execution error: {e}"
 
     # --- Utility methods ---
