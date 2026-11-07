@@ -58,7 +58,11 @@ def _smoke_test_venv(venv_py: str) -> bool:
     """
     try:
         r = subprocess.run([venv_py, "-c", "import sys"], capture_output=True,
-                           text=True, timeout=60)
+                           text=True, timeout=60,
+                           # Explicit UTF-8 + replace: the Windows locale default (cp1252)
+                           # can raise UnicodeDecodeError in subprocess's reader thread, and
+                           # a failed decode reads as "venv is broken" -> a needless rebuild.
+                           encoding="utf-8", errors="replace")
         return r.returncode == 0
     except PermissionError:
         # POSIX: a relocated venv may have lost its exec bit - restore and retry once.
@@ -68,7 +72,8 @@ def _smoke_test_venv(venv_py: str) -> bool:
             return False
         try:
             r = subprocess.run([venv_py, "-c", "import sys"], capture_output=True,
-                               text=True, timeout=60)
+                               text=True, timeout=60,
+                               encoding="utf-8", errors="replace")
             return r.returncode == 0
         except Exception:
             return False
@@ -127,7 +132,11 @@ def _venv_python(runtime_dir: str) -> str:
 def _run_checked(cmd: list, timeout: int, label: str) -> None:
     """Run *cmd*, raising a clean RuntimeError with the tail of stderr on failure."""
     logger.info(f"[bootstrap] {label}: {' '.join(cmd)}")
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    # Explicit UTF-8 + replace (see _smoke_test_venv): pip/git output is UTF-8, and the
+    # Windows locale default (cp1252) raises UnicodeDecodeError in subprocess's reader
+    # thread - the decode failure then masked the real install error as empty output.
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
         detail = (r.stderr or r.stdout or "").strip()[-500:]
         raise RuntimeError(f"{label} failed (exit {r.returncode}): {detail}")

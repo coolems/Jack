@@ -426,7 +426,8 @@ class RemoteToolOrchestrator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _call_pyexec_with_context(func, arguments, websocket=None, conversation_id: str = None, loop=None):
+    def _call_pyexec_with_context(func, arguments, websocket=None, conversation_id: str = None,
+                                  loop=None, cycle=None):
         """Run a python_exec tool call with the chat's relay context registered.
 
         tools.exec_tools.python_exec reads this context (threading.local on a
@@ -437,6 +438,10 @@ class RemoteToolOrchestrator:
         be captured by the caller on the event-loop thread before to_thread (a worker
         thread cannot see a running loop). Missing args -> no context: the sandbox
         keeps its original instant hard block.
+
+        *cycle* (2026-11-07) is this turn's app.cycle_recorder.CycleRecorder. The relay
+        needs it so the file / network / subprocess cards it shows are recorded as rows
+        of THIS turn's history instead of vanishing when the user answers them.
 
         AUDIT FIX 2026-11-24b: this method was originally inserted one indent level too
         deep (8 spaces), which silently nested it INSIDE ensure_tool_loaded() as a local
@@ -456,13 +461,42 @@ class RemoteToolOrchestrator:
         if websocket is not None and conversation_id and loop is not None:
             local.context = {"websocket": websocket,
                              "conversation_id": conversation_id,
-                             "loop": loop}
+                             "loop": loop,
+                             "cycle": cycle}
         else:
             local.context = None
         try:
             return func(**arguments)
         finally:
             local.context = None
+
+    @staticmethod
+    def _call_desktop_with_context(func, arguments, conversation_id: str = None):
+        """Run a Computer Use (cua_*) tool call with the chat's desktop consent channel.
+
+        tools/computer_use/_consent.py reads this channel (threading.local on the
+        sys.modules anchor 'tools._consent') to decide WHICH conversation may use which
+        app. Desktop tools run via asyncio.to_thread, so the channel is set on THIS
+        worker thread and cleared in the finally block - concurrent chats never share
+        grants. No conversation id -> no channel -> every app-bound call fails closed.
+
+        The store is the dep module the loader already installed (install_shared_deps
+        registers each same-package dep as sys.modules['tools.<dep>']), so the CLIENT's
+        consent gate and the tool read the SAME object.
+        """
+        import sys as _sys
+
+        consent = _sys.modules.get("tools._consent")
+        if consent is None or not conversation_id:
+            return func(**arguments)
+        try:
+            consent.register_context(conversation_id)
+            return func(**arguments)
+        finally:
+            try:
+                consent.clear_context()
+            except Exception:
+                pass
 
     async def execute_tool(
     self,
@@ -471,7 +505,8 @@ class RemoteToolOrchestrator:
     conversation_history: list = None,
     api_key: str = None,
     websocket=None,
-    conversation_id: str = None
+    conversation_id: str = None,
+    cycle=None
     ) -> Any:
         """Execute a tool by name with the given arguments. Fetches if needed.
 
@@ -486,6 +521,11 @@ class RemoteToolOrchestrator:
               process-wide threading.local anchor (_call_pyexec_with_context) so the
               sandboxed child's socket gate can relay out-of-sandbox connection requests
               to THIS chat's UI approval card while the tool runs.
+              cycle (2026-11-07): the turn's CycleRecorder, carried in the same context so
+              those relay cards land in the turn's history.
+              desktop tools (2026-11-07): the conversation id is carried on the
+              'tools._consent' channel so the Computer Use tools can verify the user's
+              per-app grant themselves (fail-closed without a channel).
         """
         # Ensure tool is loaded (may raise ToolCompilationError)
         await self.ensure_tool_loaded(tool_name)
@@ -529,7 +569,13 @@ class RemoteToolOrchestrator:
                 _net_loop = asyncio.get_running_loop()
                 result = await asyncio.to_thread(
                     self._call_pyexec_with_context, func, arguments,
-                    websocket, conversation_id, _net_loop)
+                    websocket, conversation_id, _net_loop, cycle)
+            elif tool_name.startswith("cua_"):
+                # COMPUTER USE (2026-11-07): the per-app grant lives on the
+                # tools._consent channel, keyed by conversation id. Set it for the
+                # duration of the call so the tool can verify the grant itself.
+                result = await asyncio.to_thread(
+                    self._call_desktop_with_context, func, arguments, conversation_id)
             else:
                 result = await asyncio.to_thread(func, **arguments)
 

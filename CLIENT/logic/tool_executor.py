@@ -132,6 +132,20 @@ def _sanitize_image_result(result_text: str) -> str:
 IMAGE_TOOLS = frozenset({"generate_image"})
 
 
+def result_is_error(result: Any) -> bool:
+    """Decide whether a tool result counts as a FAILED call for the cycle history.
+
+    Tools report failures as text starting with 'ERROR:' (the orchestrator's permission
+    block, tool-level errors, sandbox refusals). Anything else - including None and a
+    long multi-line report that merely mentions the word - is a successful call, so the
+    turn block's ok flag stays honest without parsing every tool's wording.
+    """
+    if not isinstance(result, str):
+        return False
+    head = result.lstrip()
+    return head.startswith("ERROR:") or head.startswith("ERROR ")
+
+
 # ============================================================
 # URL CONSENT GATE (2026-07-15) - browser tools pointing at local targets.
 # The SSRF guard hard-blocks file:// and loopback URLs; those two categories are NOT
@@ -188,6 +202,95 @@ def _extract_image_payloads(tool_result):
     return payloads
 
 
+# ============================================================
+# DESKTOP CONSENT GATE (2026-11-07) - Computer Use tools (tools/computer_use/*).
+# The AI thinks on a remote SERVER, but these tools read and drive applications on
+# THIS machine. Every app-bound call therefore goes through the shared consent dialog
+# (kind 'desktop') BEFORE execution, with the APP IDENTITY as the payload - the user
+# approves "may this AI drive that app?", not code.
+
+# The gate is CLIENT-side; the tool files ALSO verify the grant themselves (fail-closed),
+# so no path can bypass it: the CLIENT records the decision in tools._consent (the dep's
+# store, reached through sys.modules['tools._consent']) and the tool re-reads it.
+# cua_capabilities is NOT gated - it is read-only preflight that grants nothing.
+# ============================================================
+from .tool_lock import DESKTOP_CONSENT_TOOLS
+
+#: One-shot enumeration grant key used by cua_list_apps (window titles are app data).
+DESKTOP_ENUMERATE_KEY = "desktop:enumerate"
+
+
+def _desktop_payload(tool_name: str, tool_args: Dict) -> tuple:
+    """(app_identity, description) shown on the desktop consent card.
+
+    The identity comes from tools._consent.call_identity(), which resolves handles,
+    windows and snapshots to the SAME app the tool will verify the grant against - so the
+    card can never name an app different from the one the Allow covers.
+    """
+    store = _desktop_consent_store()
+    identity = ""
+    if store is not None:
+        try:
+            identity = store.call_identity(tool_name, tool_args) or ""
+        except Exception:
+            identity = ""
+    if not identity:
+        identity = "the desktop (no identifiable app)"
+
+    action = {
+        "cua_get_app": "bind an app handle and read its windows",
+        "cua_list_apps": "list every running app (window titles)",
+        "cua_list_windows": "read this app's window list and rectangles",
+        "cua_get_state": "read this app's UI control tree",
+        "cua_screenshot": "capture this app's window as an image",
+        "cua_click": "click in this app's window",
+        "cua_hover": "move the pointer over this app's window",
+        "cua_drag": "drag inside this app's window",
+        "cua_scroll": "scroll inside this app's window",
+        "cua_type_text": "type text into this app's focused field",
+        "cua_press_key": "send a key chord to this app",
+        "cua_paste": "paste text into this app (the clipboard is restored afterwards)",
+        "cua_perform_action": "run a UI action on one of this app's controls",
+        "cua_select_text": "select text inside this app's field",
+        "cua_show_window": "unhide/unminimize this app's window (no focus steal)",
+    }.get(tool_name, tool_name)
+
+    description = (f"The AI wants to {action} on: {identity}. Nothing is launched, activated, "
+                   "closed or killed, and a delivered action is never treated as proof. Deny to "
+                   "block this app for the rest of the session.")
+    return identity, description
+
+
+def _desktop_consent_store():
+    """The tools._consent store (the single source of desktop grants), or None.
+
+    install_shared_deps() registers each same-package dep as sys.modules['tools.<dep>'],
+    so the CLIENT reaches the SAME object the tool files read - one store, two writers.
+    """
+    import sys as _sys
+    mod = _sys.modules.get("tools._consent")
+    if mod is None:
+        try:
+            import tools._consent as _c  # local SERVER package path (non-CLIENT runs)
+            mod = _c
+        except Exception:
+            mod = None
+    return mod
+
+
+class _DesktopConsent:
+    """Outcome of one desktop consent ask (mirrors ConsentResult's shape)."""
+
+    def __init__(self, decision: str, request_id: str = "", explain_instruction: str = ""):
+        self.decision = decision
+        self.request_id = request_id
+        self.explain_instruction = explain_instruction
+
+    @property
+    def allowed(self) -> bool:
+        return self.decision in ("allow", "allow_category_until_done")
+
+
 class ToolExecutor:
     """Wrapper for executing tools with proper context and permission checking.
 
@@ -200,18 +303,70 @@ class ToolExecutor:
                  provider: BaseProvider = None,
                  current_model: str = MODEL_NAME,
                  api_key: str = None,
-                 session_timer=None):  # (2026-08-23) active-time timer; paused while user menus are open
+                 session_timer=None,  # (2026-08-23) active-time timer; paused while user menus are open
+                 cycle=None):  # (2026-11-07) app.cycle_recorder.CycleRecorder for THIS turn
         self.orchestrator = orchestrator
         self.lesson_manager = lesson_manager
         self.provider = provider
         self.current_model = current_model
         self.api_key = api_key
         self.session_timer = session_timer  # may be None (non-bus / legacy callers)
+        # The turn's live history recorder (None for legacy callers). Every recorder call
+        # goes through _rec(), which swallows errors: history is best-effort and must never
+        # break a tool call.
+        self.cycle = cycle
 
         # Detect if orchestrator uses async execute_tool (RemoteToolOrchestrator)
         self._is_async_orchestrator = inspect.iscoroutinefunction(
             getattr(self.orchestrator, 'execute_tool', None)
         )
+
+    # ------------------------------------------------------------------
+    # Cycle-history hooks (2026-11-07) - best-effort, never raise
+    # ------------------------------------------------------------------
+
+    async def _rec(self, method: str, *args, **kwargs) -> None:
+        """Call one CycleRecorder method, swallowing every error.
+
+        History is a display feature: a dead recorder, a dead socket or a recorder
+        without the method must NEVER stop an approved tool call.
+        """
+        rec = getattr(self, "cycle", None)
+        if rec is None:
+            return
+        fn = getattr(rec, method, None)
+        if fn is None:
+            return
+        try:
+            await fn(*args, **kwargs)
+        except Exception as exc:
+            logger.debug("[CYCLE] recorder.%s failed (non-fatal): %r", method, exc)
+
+    async def _record_consent_pending(self, request_id: str, payload: Any,
+                                      kind: str = "python", description: str = "") -> None:
+        """Open the consent row when a card actually appears on screen."""
+        await self._rec("consent_pending", kind, request_id or "", payload, description)
+
+    async def _record_consent_decision(self, request_id: str, decision: str,
+                                       kind: str = "python", payload: Any = "") -> None:
+        """Fold the card's answer into its row (the card itself is transient).
+
+        A row is folded when a card actually appeared (a real request_id) OR when the
+        answer is NOT an auto-allow: 'deny' / 'explain' / 'unavailable' mean the user saw
+        a card or the ask could not be answered at all - both belong in the history. The
+        auto-allow paths ('allow' / 'allow_category_until_done' from a per-kind grant)
+        answer without a card, so they add no consent row; the grant row records them
+        once per kind (deduped in TurnLog).
+        """
+        if request_id or decision not in ("allow", "allow_category_until_done"):
+            await self._rec("consent", kind, decision, request_id, payload)
+        if decision == "allow_category_until_done":
+            await self._rec("grant", kind, request_id)
+
+    async def _record_tool(self, name: str, args: Any, ok: bool,
+                           output: Any, duration_ms: float) -> None:
+        """Record one tool call - including calls the user declined (they happened, nothing ran)."""
+        await self._rec("tool", name, args, bool(ok), output, float(duration_ms or 0.0))
 
     async def execute(
         self,
@@ -259,9 +414,17 @@ class ToolExecutor:
         if tool_name == "python_exec":
             _consent = await self._ask_user_for_python_exec(tool_args, websocket, conversation_id)
             if _consent.allowed:
-                pass  # approved (or auto-run active for this task) -> fall through and execute
+                # The card appeared and the user answered it - record that answer (the
+                # helper skips auto-allow answers that never showed a card).
+                await self._record_consent_decision(
+                    getattr(_consent, "request_id", ""), _consent.decision, "python",
+                    (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else "")
+                # approved (or auto-run active for this task) -> fall through and execute
             elif _consent.decision == "explain":
                 logger.info("[EXEC-APPROVAL] python_exec EXPLAIN requested - nothing executed, AI will explain + re-ask")
+                await self._record_consent_decision(
+                    getattr(_consent, "request_id", ""), "explain", "python",
+                    (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else "")
                 return _consent.explain_instruction, ""
             else:
                 logger.warning("[EXEC-APPROVAL] python_exec NOT executed - user declined (or approval unavailable)")
@@ -270,6 +433,13 @@ class ToolExecutor:
                              "with something like: \"You decided to not execute this python code. Now you can instruct me in a new "
                              "direction.\" Also include your continuation plan <plan> - the remaining steps of the current task so far, "
                              "clearly numbered - in case the user wants to resume it later.")
+                # The card happened even though nothing ran: record the decision AND a failed
+                # tool call, so the turn block shows the declined attempt instead of silence.
+                await self._record_consent_decision(
+                    getattr(_consent, "request_id", ""), _consent.decision, "python",
+                    (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else "")
+                await self._record_tool(tool_name, tool_args, False, "NOT executed - user declined",
+                                        (time.time() - exec_start) * 1000.0)
                 return deny_msg, ""
 
         # ============================================================
@@ -289,6 +459,8 @@ class ToolExecutor:
                     pass  # allowed (grant registered / auto-consent active) -> fall through
                 elif _url_consent.decision == "explain":
                     logger.info("[URL-CONSENT] EXPLAIN requested - nothing opened, AI will explain + re-ask")
+                    await self._record_consent_decision(
+                        getattr(_url_consent, "request_id", ""), "explain", "url", url_arg)
                     return _url_consent.explain_instruction, ""
                 else:
                     logger.warning("[URL-CONSENT] %s NOT executed - blocked target declined or unconsentable", tool_name)
@@ -297,7 +469,43 @@ class ToolExecutor:
                                 "Tell the user they can click Allow on the approval card (or ask them again in a new task). "
                                 "Otherwise use an alternative approach: serve the file over http://localhost, read it as text "
                                 "with the file tools, or explain what you intended.")
+                    await self._record_consent_decision(
+                        getattr(_url_consent, "request_id", ""), _url_consent.decision, "url", url_arg)
+                    await self._record_tool(tool_name, tool_args, False, "NOT executed - URL refused",
+                                            (time.time() - exec_start) * 1000.0)
                     return deny_msg, ""
+
+        # ============================================================
+        # USER APPROVAL GATE for Computer Use tools (2026-11-07).
+        # The payload is an APP IDENTITY, so the card asks "may this AI drive that
+        # application?". Denied/explained calls never reach the orchestrator; the tool
+        # files re-verify the grant themselves, so this gate cannot be bypassed.
+        # ============================================================
+        if tool_name in DESKTOP_CONSENT_TOOLS:
+            _desktop = await self._maybe_ask_desktop_consent(tool_name, tool_args,
+                                                             websocket, conversation_id)
+            if _desktop.allowed:
+                await self._record_consent_decision(_desktop.request_id, _desktop.decision,
+                                                    "desktop", _desktop_payload(tool_name, tool_args)[0])
+            elif _desktop.decision == "explain":
+                logger.info("[DESKTOP-CONSENT] %s EXPLAIN requested - nothing touched, AI will explain + re-ask", tool_name)
+                await self._record_consent_decision(_desktop.request_id, "explain", "desktop",
+                                                    _desktop_payload(tool_name, tool_args)[0])
+                return _desktop.explain_instruction, ""
+            else:
+                logger.warning("[DESKTOP-CONSENT] %s NOT executed - app access refused (%s)",
+                               tool_name, _desktop.decision)
+                identity = _desktop_payload(tool_name, tool_args)[0]
+                deny_msg = ("USER DECISION: Desktop access was refused. This call did NOT read or "
+                            f"touch anything on the machine ({identity}) and must not be retried or "
+                            "worked around with another tool. Tell the user they can Allow the app on "
+                            "the approval card, or ask them again in a new task. If they want the "
+                            "information another way, offer a non-desktop approach (file tools, "
+                            "browser tools, or just explain what you intended).")
+                await self._record_consent_decision(_desktop.request_id, _desktop.decision, "desktop", identity)
+                await self._record_tool(tool_name, tool_args, False, "NOT executed - desktop access refused",
+                                        (time.time() - exec_start) * 1000.0)
+                return deny_msg, ""
 
         # Send tool start notification (skip if silent mode)
         if not silent:
@@ -309,6 +517,8 @@ class ToolExecutor:
             }))
 
         # Execute the tool -- handle both sync and async orchestrators
+        # `cycle` travels with the call context so SERVER-side tools (and the python_exec
+        # sandbox relay) can record their OWN consent cards on this turn's recorder.
         if self._is_async_orchestrator:
             # RemoteToolOrchestrator -- execute_tool is a coroutine (may fetch from SERVER)
             tool_result = await self.orchestrator.execute_tool(
@@ -317,7 +527,8 @@ class ToolExecutor:
                 conversation_history=conversation_history,
                 api_key=self.api_key,
                 websocket=websocket,
-                conversation_id=conversation_id
+                conversation_id=conversation_id,
+                cycle=self.cycle
             )
         elif tool_name == 'generate_image':
             # Sync orchestrator + blocking subprocess -- run in thread
@@ -337,7 +548,8 @@ class ToolExecutor:
                 conversation_history=conversation_history,
                 api_key=self.api_key,
                 websocket=websocket,
-                conversation_id=conversation_id
+                conversation_id=conversation_id,
+                cycle=self.cycle
             )
 
         exec_elapsed = time.time() - exec_start
@@ -387,6 +599,9 @@ class ToolExecutor:
                 "tool": tool_name,
                 "output": result_str[:AGENTIC_TOOL_OUTPUT_MAX_CHARS]
             }))
+            # The call happened and failed: record it so the turn block shows the refusal.
+            await self._record_tool(tool_name, tool_args, False, result_str,
+                                    (time.time() - exec_start) * 1000.0)
             return result_str, ""
 
         # Send tool end notification (skip if silent mode)
@@ -452,6 +667,12 @@ class ToolExecutor:
 
         total_elapsed = time.time() - exec_start
         logger.debug(f"[AGENTIC.DEBUG] ToolExecutor.execute() - COMPLETE | tool='{tool_name}' total_time={total_elapsed:.2f}s")
+
+        # Cycle history (2026-11-07): record the call that actually ran, with an honest ok
+        # flag (result_is_error reads the tool's own ERROR: prefix). Done last so the row
+        # carries the final sanitized output the model saw.
+        await self._record_tool(tool_name, tool_args, not result_is_error(result_str),
+                                result_str, total_elapsed * 1000.0)
         return result_str, agent_lessons
     # ------------------------------------------------------------------
     # python_exec user approval (2026-09-24) - see app/chat_bus/exec_approval.py
@@ -500,6 +721,82 @@ class ToolExecutor:
             except Exception:
                 pass  # dead socket - the grant still holds in state; card shows it client-side
         return result
+    # ------------------------------------------------------------------
+    # Desktop consent gate for Computer Use tools (2026-11-07) - shared dialog, kind='desktop'
+    # ------------------------------------------------------------------
+
+    async def _maybe_ask_desktop_consent(self, tool_name: str, tool_args: Dict,
+                                         websocket: Any, conversation_id: str = None):
+        """Ask the local user before a Computer Use tool touches an application.
+
+        Fail-closed everywhere: no consent store, no approval state, or an undeliverable
+        frame means the call does NOT run. The grant is recorded in the SAME store the
+        tool reads (tools._consent), under the exact key the tool will verify - so the
+        card, the grant and the tool can never disagree about which app is allowed.
+
+        'Allow until task done' grants the desktop kind only (per-kind flags): later
+        desktop calls in THIS run still need the app to be named on the card, but the
+        dialog is skipped for an app already granted in this conversation.
+        """
+        store = _desktop_consent_store()
+        if store is None:
+            logger.warning("[DESKTOP-CONSENT] tools._consent not installed - failing closed")
+            return _DesktopConsent("unavailable")
+
+        conv_id = conversation_id or ""
+        try:
+            key = store.consent_key_for_call(tool_name, tool_args)
+        except Exception as exc:
+            logger.warning("[DESKTOP-CONSENT] key derivation failed (%r) - failing closed", exc)
+            return _DesktopConsent("unavailable")
+        if not key or not conv_id:
+            # No identifiable app or no chat to ask through: the tool itself fails closed.
+            logger.info("[DESKTOP-CONSENT] %s has no identifiable app / no conversation - failing closed", tool_name)
+            return _DesktopConsent("unavailable")
+
+        try:
+            if store.was_denied(key, conv_id):
+                logger.info("[DESKTOP-CONSENT] %s already denied for this session - not asking again", tool_name)
+                return _DesktopConsent("deny")
+            if store.call_granted(tool_name, tool_args, conv_id):
+                # Already allowed in THIS conversation: no repeat card (their rule).
+                logger.info("[DESKTOP-CONSENT] %s allowed (session grant) key=%s", tool_name, key)
+                return _DesktopConsent("allow")
+        except Exception as exc:
+            logger.warning("[DESKTOP-CONSENT] grant lookup failed (%r) - failing closed", exc)
+            return _DesktopConsent("unavailable")
+
+        from app.chat_bus import ConsentDialog, explain_instruction
+
+        identity, description = _desktop_payload(tool_name, tool_args)
+        result = await ConsentDialog("desktop").ask(
+            websocket=websocket, conv_id=conv_id, payload=identity,
+            description=description, session_timer=self.session_timer)
+
+        request_id = getattr(result, "request_id", "")
+        if result.decision == "explain":
+            return _DesktopConsent("explain", request_id, result.explain_instruction)
+
+        if result.allowed:
+            run_wide = result.decision == "allow_category_until_done"
+            try:
+                store.grant_call(tool_name, tool_args, conv_id, run_wide=run_wide)
+            except Exception as exc:
+                logger.warning("[DESKTOP-CONSENT] grant record failed (%r) - failing closed", exc)
+                return _DesktopConsent("unavailable", request_id)
+            if run_wide:
+                logger.info("[DESKTOP-CONSENT] allow-until-task-done active for desktop kind")
+            logger.info("[DESKTOP-CONSENT] %s allowed (%s) app=%s", tool_name, result.decision, identity)
+            return _DesktopConsent(result.decision, request_id)
+
+        # deny / unavailable: block this app for the session so it is not re-asked.
+        try:
+            store.deny_call(tool_name, tool_args, conv_id)
+        except Exception as exc:
+            logger.debug("[DESKTOP-CONSENT] deny record failed (non-fatal): %r", exc)
+        return _DesktopConsent(result.decision, request_id,
+                               explain_instruction("desktop", identity) if result.decision == "explain" else "")
+
     # ------------------------------------------------------------------
     # URL consent gate for browser tools (2026-07-15) - shared dialog, kind='url'
     # ------------------------------------------------------------------

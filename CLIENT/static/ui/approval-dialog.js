@@ -77,6 +77,16 @@ const APPROVAL_DIALOG_CONFIG = {
         statusAllow: '\u2705 Connection allowed - the script may reach that target now.',
         statusRunAll: '\u26A1 Allow-until-task-done enabled: network access requests will be approved without asking until this task ends.',
         statusDeny: '\u274C Connection denied - it stays blocked and the AI was told.'
+    },
+    desktop: {
+        icon: '\u{1F5A5}\uFE0F',              // 🖥️ (this machine's desktop / an app on it)
+        title: 'Desktop access request',
+        allowLabel: '&#10003; Allow this app',
+        denyLabel: '&times; Block this app',
+        runAllLabel: '&#9889; Allow until task done',
+        statusAllow: '\u2705 Allowed - the AI may read/drive that app now (nothing is launched, activated or closed).',
+        statusRunAll: '\u26A1 Allow-until-task-done enabled: desktop access requests will be approved without asking until this task ends.',
+        statusDeny: '\u274C Blocked - that app was not read or touched, and the AI was told not to work around it.'
     }
 };
 

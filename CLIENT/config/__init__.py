@@ -80,6 +80,7 @@ from .config import (
     AGENTIC_MAX_TOOL_ITERATIONS,
     AGENTIC_MAX_THINKING_ITERATIONS,
     AGENTIC_TOKEN_WARNING_THRESHOLD,
+    AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION,
     AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
     AGENTIC_ITERATION_TIMEOUT_SEC,
     AGENTIC_TOOL_OUTPUT_MAX_CHARS,
@@ -114,6 +115,11 @@ from .config import (
     _remember_good_server,
     # (2026-10-02) Runtime tab - python_exec dialog behavior (live reader)
     get_runtime_settings,
+    # (2026-11-07) consent card kinds + their settings.json key pairs. Exported so the
+    # settings endpoints and the UI stay driven by ONE list (CONSENT_KINDS) instead of
+    # per-file hardcoded copies. 'desktop' = Computer Use (tools/computer_use/*).
+    CONSENT_KINDS,
+    CONSENT_SETTING_KEYS,
 )
 
 # --- Search engines (search_engines.json - single source of truth) ---

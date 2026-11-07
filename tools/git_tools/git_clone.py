@@ -71,6 +71,11 @@ def git_clone(url: str, target_dir: str = None, depth: int = 1) -> str:
                 ["git", "pull"],
                 capture_output=True,
                 text=True,
+                # git output is UTF-8; the Windows locale default (cp1252) raises
+                # UnicodeDecodeError in subprocess's reader thread and silently yields
+                # empty stdout. Decode explicitly and never fail on undecodable bytes.
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
                 cwd=dest_path
             )
@@ -93,6 +98,11 @@ def git_clone(url: str, target_dir: str = None, depth: int = 1) -> str:
             cmd,
             capture_output=True,
             text=True,
+            # git output is UTF-8; the Windows locale default (cp1252) raises
+            # UnicodeDecodeError in subprocess's reader thread and silently yields
+            # empty stdout. Decode explicitly and never fail on undecodable bytes.
+            encoding="utf-8",
+            errors="replace",
             timeout=300
         )
 

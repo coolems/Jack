@@ -23,7 +23,9 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         values so the UI always shows the active one. Used by the Settings modal.
         """
         try:
-            from config import _load_settings, COOLEMS_CLIENT_SERVER_ADDRESS, _resolve_client_server_address, WEB_RELAY_UI_ENABLED, get_runtime_settings
+            from config import (_load_settings, COOLEMS_CLIENT_SERVER_ADDRESS,
+                               _resolve_client_server_address, WEB_RELAY_UI_ENABLED,
+                               get_runtime_settings, CONSENT_KINDS)
 
             settings = _load_settings()
 
@@ -45,9 +47,13 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
             settings["python_exec_auto_approve"] = runtime["python_exec_auto_approve"]
             settings["python_exec_auto_approve_seconds"] = runtime["python_exec_auto_approve_seconds"]
 
-            # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for the
-            # OTHER three card kinds - fully detached from the python_exec pair.
-            for _kind in ("url", "file", "network", "subprocess"):  # (2026-10-24)
+            # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for every
+            # consent card kind except python (which keeps its own historical pair) -
+            # fully detached from each other. Driven by config.CONSENT_KINDS so a new
+            # kind never needs a second hardcoded list here.
+            for _kind in CONSENT_KINDS:
+                if _kind == "python":
+                    continue
                 settings[_kind + "_consent_auto_approve"] = runtime["approvals"][_kind]["mode"]
                 settings[_kind + "_consent_auto_approve_seconds"] = runtime["approvals"][_kind]["seconds"]
             # (2026-10-03) Runtime tab: image generator - model line + default resolution.
@@ -154,9 +160,13 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                 if not (1 <= sec <= 3600):
                     return JSONResponse(status_code=400, content={"detail": "python_exec_auto_approve_seconds must be between 1 and 3600"})
                 current["python_exec_auto_approve_seconds"] = sec
-            # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for url / file /
-            # network consent cards - same validation as python_exec, fully detached keys.
-            for _kind in ("url", "file", "network", "subprocess"):  # (2026-10-24)
+            # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for every
+            # consent card kind - same validation as python_exec, fully detached keys.
+            # Driven by config.CONSENT_KINDS so a new kind needs no second hardcoded list.
+            from config import CONSENT_KINDS as _KINDS
+            for _kind in _KINDS:
+                if _kind == "python":
+                    continue  # python keeps its historical python_exec_* pair
                 _mode_key = _kind + "_consent_auto_approve"
                 _sec_key = _kind + "_consent_auto_approve_seconds"
                 if _mode_key in data:

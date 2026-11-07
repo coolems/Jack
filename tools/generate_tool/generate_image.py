@@ -100,7 +100,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "generate_image",
-        "description": "Generate an image from a text prompt using the GPU-tier-appropriate diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Creates a PNG file in the working_root folder and returns the image data. width/height default to the user's Settings > Runtime resolution (600x400); both are snapped to tier-safe multiples (32 on high/low, 16 on mid) and clamped to the tier's pixel budget - a request above the budget renders at the clamped size and is LANCZOS-upscaled to the exact dimensions, so 4K works on every tier.",
+        "description": "Generate an image from a text prompt with the GPU-tier diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Saves a PNG in working_root and returns the image data. width/height default to the user's Settings > Runtime resolution (600x400), snap to tier-safe multiples and are clamped to the tier's pixel budget - an oversized request renders at the clamped size and is LANCZOS-upscaled to the exact dimensions, so 4K works on every tier.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -887,7 +887,12 @@ def _probe_gpu() -> dict:
         r = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=10,
+            # nvidia-smi writes UTF-8; text=True without an explicit encoding uses the
+            # Windows locale default (cp1252) and raises UnicodeDecodeError in
+            # subprocess's reader thread on non-Latin GPU names, which then reads as
+            # 'no GPU found' and silently downgrades the tier choice.
+            encoding="utf-8", errors="replace")
     except Exception as e:
         logger.debug(f"  GPU probe failed (nvidia-smi): {e}")
         return {}
@@ -2799,7 +2804,12 @@ def generate_image(
                 stderr=subprocess.PIPE,
                 timeout=timeout_s,
                 env=_tool_env(rt),
-                text=True
+                # Explicit UTF-8: text=True alone uses the Windows locale default (cp1252),
+                # and the worker's JSON can carry non-Latin text (prompts, tracebacks that
+                # quote model file paths). A cp1252 decode failure inside subprocess's reader
+                # thread yielded an empty stdout, so the real error was lost and reported as
+                # 'Unknown subprocess error'. utf-8 + replace never fails the call.
+                text=True, encoding="utf-8", errors="replace"
             )
         except subprocess.TimeoutExpired:
             # The model cache was already prepared before this step (2026-09-12), so a

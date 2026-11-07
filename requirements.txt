@@ -21,11 +21,17 @@ psutil==7.2.2
 
 # pyautogui: UNMAINTAINED (last release 0.9.54, May 2023; no declared Python
 # >=3.12 support). Pinned by intent -- there is no newer version to move to.
-# All call sites (tools/mouse_interact/*, screen_capture) lazy-import with a
-# graceful fallback, so if it ever breaks the tool returns an error string
-# instead of crashing SERVER/CLIENT. Revisit this pin only when upstream
-# ships a release (e.g. merged PR #955 for 3.12-era X11 fixes).
+# Only one call site left: tools/web_interact/browser_screenshot.py lazy-imports
+# it with a graceful fallback, so if it ever breaks the tool returns an error
+# string instead of crashing SERVER/CLIENT. The desktop mouse/keyboard layer is
+# now native Win32 (comtypes + ctypes) in tools/computer_use/_desktop_win.py.
 pyautogui==0.9.54
+
+# comtypes: Windows UI Automation provider used by tools/computer_use/_desktop_uia.py
+# (snapshot + pattern actions). Windows-only; the tools report an honest
+# 'desktop unavailable' error on other platforms. Verified 1.4.6 against the
+# installed dist-info in venv.
+comtypes==1.4.6
 
 pydantic==2.13.3
 pytest==9.0.3

@@ -39,6 +39,9 @@ LICENSE_TABLE = {
     "pillow":            ("HPND / PIL",          "Python Software Foundation and contributors"),
     "aiohttp":           ("Apache-2.0",          "Aio-libs team and contributors"),
     "beautifulsoup4":    ("MIT",                 "Michael Foord et al."),
+    # Verified 2026-11-07 against comtypes-1.4.6.dist-info (METADATA classifier
+    # 'License :: OSI Approved :: MIT License' + LICENSE.txt) in CLIENT/venv.
+    "comtypes":          ("MIT",                 "Thomas Heller and comtypes developers"),
     "cryptography":      ("Apache-2.0 / BSD dual", "Python Cryptographic Authority and contributors"),
     "ddgs":              ("MIT",                 "deedy5 (verified: ddgs-9.16.0.dist-info/licenses/LICENSE.md)"),
     "fastapi":           ("MIT",                 "Sebastián Ramírez (tiangolo) and contributors"),

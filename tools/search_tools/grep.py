@@ -19,7 +19,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "grep",
-        "description": "Search file contents inside working_root with ripgrep; returns matches with file paths and line numbers. path is a directory (recursive). Gitignored folders are skipped unless include_ignored=true; heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded either way. Capped results are spilled to .temp/spill/ with a locator.",
+        "description": "Search file contents inside working_root with ripgrep; matches come with file paths and line numbers. Gitignored and heavy folders (venv, node_modules, .git, model weights, runtimes) are skipped unless include_ignored=true. Capped results spill to .temp/spill/ with a locator.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -29,12 +29,12 @@ __tool_description__ = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search, relative to working_root. '' / '.' / 'root' = whole working_root. Example: 'tools/search_tools'.",
+                    "description": "Directory to search (recursive); '' / '.' / 'root' = whole working_root.",
                     "default": ""
                 },
                 "include": {
                     "type": "string",
-                    "description": "One glob limiting which files are searched ('*.py', '*.md', 'tools/*.json'), matched relative to the directory being searched. Negations and comma lists are rejected.",
+                    "description": "One glob limiting which files are searched ('*.py', '*.md'), relative to the searched directory. Negations and comma lists are rejected.",
                     "default": ""
                 },
                 "context_lines": {
@@ -140,7 +140,14 @@ def grep(pattern: str, path: str = "", include: str = "", context_lines: int = 0
             # necessarily working_root (CLIENT/code_client.py chdirs into CLIENT/), so
             # without this an include='*.py' or a heavy-dir negation would be matched
             # against the wrong base and silently return nothing.
+            # encoding/errors are EXPLICIT, never left to the locale default: on Windows
+            # text=True decodes with cp1252, and ripgrep emits UTF-8 (emoji in .html/.md,
+            # non-Latin text in logs). A cp1252 decode raised UnicodeDecodeError inside
+            # subprocess's own reader thread, so stdout came back EMPTY and grep reported
+            # "No matches" for a search that actually had hits. utf-8 + replace keeps every
+            # byte readable and never fails the call.
             r = subprocess.run([exe, *argv], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
                                timeout=DEADLINE_S, cwd=dirpath)
         except subprocess.TimeoutExpired:
             return f"Error: search timed out after {DEADLINE_S}s - narrow the pattern or the path."

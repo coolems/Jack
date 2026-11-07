@@ -345,9 +345,26 @@ def _make_net_ask_callback(ctx, working_dir):
                 description = ("The Python code you approved is trying to connect OUTSIDE your machine. "
                                "Target: %s:%s via socket.%s()." % (host, port, method))
             rid = state.new_request_id()
-            await ws.send_text(json.dumps(build_frame(
-                conv_id, rid, payload, kind=kind, description=description)))
+            frame = build_frame(conv_id, rid, payload, kind=kind, description=description)
+            await ws.send_text(json.dumps(frame))
+            # History (2026-11-07): the card is transient - the ONLY survivor is its row in
+            # this turn's cycle history, so open the row here and fold the decision below.
+            # Best-effort: a missing/broken recorder must never change the answer.
+            cycle = ctx.get("cycle") if isinstance(ctx, dict) else None
+            if cycle is not None:
+                try:
+                    await cycle.consent_pending(kind, rid, frame.get("code", ""),
+                                                frame.get("description", ""))
+                except BaseException:
+                    pass
             decision = await state.wait_for_decision(rid, kind=kind)
+            if cycle is not None:
+                try:
+                    await cycle.consent(kind, decision, rid, frame.get("code", ""))
+                    if decision == "allow_category_until_done":
+                        await cycle.grant(kind, rid)
+                except BaseException:
+                    pass
             if decision == "explain":
                 # (2026-07-18 unified dialog) the user wants an explanation: deny THIS one
                 # operation (fail-closed - asking for info allows nothing) and stash the

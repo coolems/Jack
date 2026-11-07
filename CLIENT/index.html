@@ -508,6 +508,33 @@
                                 </div>
                             </div>
 
+                            <!-- (2026-11-07) Desktop Access - Computer Use (tools/computer_use/*).
+                                 The card names the APP the AI wants to read or drive. Manual by
+                                 default: these tools move your real pointer and keyboard. -->
+                            <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                                <label>🖥️ Desktop Access Dialog Behavior</label>
+                                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                    When the AI wants to read or drive an application on this machine (UI Automation snapshot, window capture, click/scroll/type), this dialog names that app and lets you decide. Nothing is launched, activated, closed or killed, and a delivered action is never treated as proof. Each category has its OWN auto-allow timer - fully independent from the others (2026-11-07).
+                                </p>
+                                <div style="display: flex; gap: 16px; margin-bottom: 10px;">
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="desktopConsentBehavior" id="desktopConsentManual" value="manual" checked onchange="saveRuntimeSettings()">
+                                        Wait for my decision (default)
+                                    </label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                        <input type="radio" name="desktopConsentBehavior" id="desktopConsentAuto" value="auto" onchange="saveRuntimeSettings()">
+                                        Auto-approve after
+                                    </label>
+                                </div>
+                                <div id="desktopConsentSecondsGroup" style="display:none; align-items:center; gap:8px;">
+                                    <input type="number" id="desktopConsentSeconds" min="1" max="3600" step="1" value="5"
+                                    autocomplete="off" onchange="saveRuntimeSettings()"
+                                    style="width: 90px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                        background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
+                                    <span style="color: var(--text-secondary); font-size: 13px;">seconds (1 - 3600) - the dialog still opens, then approves by itself</span>
+                                </div>
+                            </div>
+
                         <!-- (2026-10-03) Image Generator - model line + default resolution for generate_image().
                              Saved to settings.json via POST /api/settings and read LIVE by the tool on
                              every generation, so a save applies to the very next image - no restart. -->

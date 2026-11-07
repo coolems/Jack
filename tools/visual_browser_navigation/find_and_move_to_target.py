@@ -17,36 +17,34 @@ What this tool ACTUALLY does (it is an annotation + prompt helper, NOT a locator
    plus a ready-made vision_prompt asking for [left, top, right, bottom]
 
 It does NOT call any vision model and does NOT return coordinates or confidence.
-The AI reads the returned image, locates the target itself, then moves the mouse
-with set_pos() to its own chosen coordinates and clicks.
-
-IMPORTANT: Returns image_base64 so the AI automatically sees the verification
-image as part of the tool result - no separate view_image() call needed.
+The AI reads the returned image, locates the target itself, then acts on it with the
+Computer Use tools: cua_click with window-local pixels, relative 0..999, or - preferred -
+a cua_get_state snapshotId + elementIndex, which needs no pixel guess at all.
 """
 
 __tool_description__ = {
     "type": "function",
     "function": {
         "name": "find_and_move_to_target",
-        "description": "Prepares a browser screenshot for precise manual targeting: stamps the target description as a banner and returns the annotated image (path + base64) plus a prompt asking for [left, top, right, bottom]. No vision call is made and no coordinates are computed - view the returned image, find the element yourself, then set_pos() and click it.",
+        "description": "Prepares a browser screenshot for manual targeting: stamps the target description as a banner and returns the annotated image (path + base64) plus a prompt asking for [left, top, right, bottom]. No vision call is made and no coordinates are computed - view the image, find the element yourself, then click it with cua_click (window px, relative 0..999, or a cua_get_state element).",
         "parameters": {
             "type": "object",
             "properties": {
                 "screenshot_path": {
                     "type": "string",
-                    "description": "Path to the screenshot image inside working_root, e.g. from browser_screenshot()."
+                    "description": "Screenshot inside working_root, e.g. from browser_screenshot()."
                 },
                 "target_description": {
                     "type": "string",
-                    "description": "What element to target (e.g., 'search button', 'first property card'). Stamped on the annotated image."
+                    "description": "What element to target (e.g., 'search button'). Stamped on the image."
                 },
                 "image_width": {
                     "type": "number",
-                    "description": "Optional width override in pixels; defaults to the actual image width read from the file."
+                    "description": "Optional width override; defaults to the image's real width."
                 },
                 "image_height": {
                     "type": "number",
-                    "description": "Optional height override in pixels; defaults to the actual image height read from the file."
+                    "description": "Optional height override; defaults to the image's real height."
                 }
             },
             "required": ["screenshot_path", "target_description"]
@@ -111,7 +109,8 @@ def find_and_move_to_target(screenshot_path, target_description, image_width=Non
 
     IMPORTANT: Returns image_base64 so the AI automatically sees the screenshot
     as part of the tool result - no separate view_image() call needed. After
-    reviewing it, YOU determine the coordinates and act with set_pos()/click_left().
+    reviewing it, YOU determine the target and act with cua_click (preferred: a
+    cua_get_state snapshotId + elementIndex, so no pixel guess is needed).
 
     SECURITY: All screenshot paths are validated inside working_root before access.
 
@@ -185,7 +184,7 @@ def find_and_move_to_target(screenshot_path, target_description, image_width=Non
             "target_description": target_description,
             "annotated_image": annotated_result["annotated_image"],
             "image_base64": image_base64,
-            "next_action": "Review the returned image, locate the target yourself, then move the mouse with set_pos() and click",
+            "next_action": "Review the returned image, locate the target yourself, then act with cua_click (element index from cua_get_state, or window pixels / relative 0..999)",
             "vision_prompt": f"Look at this screenshot and find: '{target_description}'. "
                            f"Return ONLY the bounding box coordinates as [left, top, right, bottom] "
                            f"in pixels. The image is {image_width}x{image_height}. "

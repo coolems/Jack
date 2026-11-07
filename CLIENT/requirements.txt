@@ -22,9 +22,15 @@ playwright==1.63.0
 
 # pyautogui: UNMAINTAINED (last release 0.9.54, May 2023; no declared Python
 # >=3.12 support). Pinned by intent -- there is no newer version to move to.
-# All call sites lazy-import with a graceful fallback. Revisit only when
-# upstream ships a release (e.g. merged PR #955 for 3.12-era X11 fixes).
+# Only one call site left: tools/web_interact/browser_screenshot.py lazy-imports
+# it with a graceful fallback. The desktop mouse/keyboard layer is now native
+# Win32 (comtypes + ctypes) in tools/computer_use/_desktop_win.py.
 pyautogui==0.9.54
+
+# comtypes: Windows UI Automation provider used by tools/computer_use/_desktop_uia.py
+# (the CLIENT compiles and runs those tools). Windows-only; honest error results
+# elsewhere. Verified 1.4.6 against the dist-info installed in CLIENT/venv.
+comtypes==1.4.6
 
 pillow==12.3.0   # image downscaling for attached vision images (encode_image_to_base64)
 pydantic==2.13.3

@@ -82,10 +82,16 @@ async def agentic_mode(
       passed to the loop as a protected id) - it must remain at all times.
     - No minimum-message floor: in a long run only [system + current user prompt]
       may remain, and that is fine.
-    - At 95% of the safe token budget (AGENTIC_TOKEN_WARNING_THRESHOLD) a console
-      warning fires once per run and a context-guardian [SYSTEM NOTICE] tells the AI to
-      finish its current work step, write a plan_<...>_continue.md file with what is done
-      / remaining so we can resume in the next work loop, and end with TASK DONE.
+    - Usage is measured in SERVER units: the real prompt_tokens llama.cpp reported for the
+      last request, kept as an OVERHEAD on top of our chars/4 estimate, so the figure tracks
+      new messages AND trims instead of going stale (2026-11-07 fix).
+    - At 95% of the history budget a console/UI warning fires once per run ("trimming is
+      about to engage"). At AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION of the FULL context
+      window a context-guardian [SYSTEM NOTICE] tells the AI to finish its current work step,
+      write a plan_<...>_continue.md file with what is done / remaining so we can resume in
+      the next work loop, and end with TASK DONE. One notice per crossing; a trim that brings
+      usage back under the threshold re-arms it. The notice quotes sent/left against the same
+      window the UI status bar shows, so guardian and UI can never disagree.
     - Per-message token lengths are cached on the message dicts (`_est_tokens`)
       so trimming never re-tokenizes history every iteration.
 

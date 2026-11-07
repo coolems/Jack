@@ -458,6 +458,11 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
         result = subprocess.run(
             _build_pytest_cmd(python_exe, test_file, suite_dir),
             cwd=root, capture_output=True, text=True, timeout=_TEST_TIMEOUT,
+            # Explicit UTF-8: the Windows locale default (cp1252) raises
+            # UnicodeDecodeError inside subprocess's reader thread when a test's output
+            # carries non-Latin text, which would return empty stdout and read as
+            # "no tests collected". utf-8 + replace never fails the run.
+            encoding="utf-8", errors="replace",
             env={**os.environ, "NO_COLOR": "1"}
         )
         runner = "pytest"
@@ -468,6 +473,8 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
             result = subprocess.run(
                 _build_unittest_cmd(python_exe, test_file, suite_dir),
                 cwd=root, capture_output=True, text=True, timeout=_TEST_TIMEOUT,
+                # Same explicit UTF-8 contract as the pytest path above.
+                encoding="utf-8", errors="replace",
                 env={**os.environ, "NO_COLOR": "1"}
             )
 

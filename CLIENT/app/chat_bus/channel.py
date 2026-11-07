@@ -53,6 +53,10 @@ class ChatChannel:
         # Messages typed by the user DURING a run. Drained by the ReAct loop at its next safe
         # boundary (before a provider call / before pending tool calls), never as a new turn.
         self._steer_queue: deque[dict] = deque(maxlen=max(1, CHAT_STEER_QUEUE_MAX))
+        # (2026-11 steer-history fix) ids the ReAct loop already injected. A steer must be
+        # applied EXACTLY once: the loop can drain twice (stop / teardown race), so applied
+        # ids are remembered and never handed out again by drain_steer().
+        self._applied_steers: set[str] = set()
         # (2026-08-23 session stats) duration of the PREVIOUS completed turn, in ACTIVE seconds
         # (approval-menu pauses excluded - see logic.base_mode.SessionTimer). The next turn's
         # config reads this so the UI status bar can show "last session" time. 0 = no previous
@@ -99,10 +103,40 @@ class ChatChannel:
         return len(self._steer_queue)
 
     def drain_steer(self) -> list[dict]:
-        """Remove and return every queued steering message (FIFO)."""
-        items = list(self._steer_queue)
+        """Remove and return every steering message the loop has NOT injected yet (FIFO).
+
+        Already-applied items are dropped from the queue instead of returned: they were
+        injected once already, so handing them out again would duplicate the user turn.
+        """
+        pending = [item for item in self._steer_queue
+                   if item.get("id") not in self._applied_steers]
         self._steer_queue.clear()
-        return items
+        return pending
+
+    # --- applied-steer bookkeeping (2026-11 steer-history fix) -----------------
+
+    def mark_steer_applied(self, steer_id: str | None) -> None:
+        """Record that ONE steering message reached the model. Idempotent.
+
+        An applied steer must never be drained again: the loop can drain twice (stop /
+        teardown race), and re-injecting the same text would duplicate the user turn and
+        the history row. drain_steer() therefore drops anything already marked applied.
+        """
+        if not steer_id:
+            return
+        self._applied_steers.add(str(steer_id))
+
+    def applied_steer_count(self) -> int:
+        """How many steering messages this turn actually injected."""
+        return len(self._applied_steers)
+
+    def has_unapplied_steer(self) -> bool:
+        """True when a queued steer has NOT been injected yet.
+
+        This is the gate the ReAct loop uses: has_pending_steer() alone would keep
+        firing for a steer that was already applied but not yet removed from the queue.
+        """
+        return any(item.get("id") not in self._applied_steers for item in self._steer_queue)
     # --- subscribers (UI sockets attached to this chat) ---------------------------
 
     def attach(self, ws) -> None:

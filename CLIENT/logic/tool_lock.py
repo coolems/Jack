@@ -31,20 +31,29 @@ logger = logging.getLogger("COOLEMS.Logic.ToolLock")
 
 # Tools that physically interact with the screen, mouse, or shared browser instance.
 # Anything NOT in this set runs without the lock (file ops, HTTP fetches, searches, etc.).
+#
+# 2026-11-07: the pyautogui mouse_interact/ screen_capture tools were replaced by the
+# Computer Use port (tools/computer_use/*), so the screen tools are the cua_* set.
+# compare_mouse_position went with them - cua_click/cua_hover report cursor_after, so
+# pixel-circle comparison is no longer needed.
 SCREEN_BROWSER_TOOLS: frozenset[str] = frozenset({
-    # --- mouse_interact ---
-    "click_left",
-    "click_middle",
-    "click_right",
-    "drag",
-    "get_pos",
-    "get_screen_size",
-    "scroll_down",
-    "scroll_up",
-    "set_pos",
-    "set_pos_relative",
-    # --- screen_capture ---
-    "full_desktop_screenshot",
+    # --- computer_use (UI Automation + Win32 SendInput: the physical desktop) ---
+    "cua_capabilities",
+    "cua_click",
+    "cua_drag",
+    "cua_get_app",
+    "cua_get_state",
+    "cua_hover",
+    "cua_list_apps",
+    "cua_list_windows",
+    "cua_paste",
+    "cua_perform_action",
+    "cua_press_key",
+    "cua_screenshot",
+    "cua_scroll",
+    "cua_select_text",
+    "cua_show_window",
+    "cua_type_text",
     # --- web_interact (shared browser) ---
     "browser_screenshot",
     "check_url",
@@ -58,10 +67,32 @@ SCREEN_BROWSER_TOOLS: frozenset[str] = frozenset({
     "reload",
     "save_current_image",
     "scroll",
-    # --- visual_browser_navigation ---
-    "compare_mouse_position",
+    # --- visual_browser_navigation (annotates browser screenshots) ---
     "find_and_move_to_target",
     "validate_target_area",
+})
+
+
+#: Computer Use tools that need the LOCAL USER's per-app consent card (kind 'desktop').
+#: cua_capabilities is deliberately NOT here: it is read-only preflight that opens no
+#: dialog and grants nothing. The gate lives in logic/tool_executor.py; the tool files
+#: re-verify the grant themselves (fail-closed) so a bypass cannot work.
+DESKTOP_CONSENT_TOOLS: frozenset[str] = frozenset({
+    "cua_get_app",          # binds an app handle - the call the user consents to
+    "cua_list_apps",        # reads window titles of every running app
+    "cua_list_windows",
+    "cua_get_state",        # reads the app's UIA control tree
+    "cua_screenshot",       # captures the app's window pixels
+    "cua_click",
+    "cua_hover",
+    "cua_drag",
+    "cua_scroll",
+    "cua_type_text",
+    "cua_press_key",
+    "cua_paste",
+    "cua_perform_action",
+    "cua_select_text",
+    "cua_show_window",
 })
 
 

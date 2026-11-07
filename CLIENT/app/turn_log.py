@@ -28,15 +28,71 @@ PENDING_DECISION = "pending"
 UNANSWERED_DECISION = "unanswered"
 
 
+#: Legacy wording: a "Allow until task done" unlock used to be recorded as a message
+#: line in `feedback`. Rows written by that build are normalized into a `grants` row on
+#: read, so the cycle block shows one unlock row instead of an AI-speech-looking line.
+LEGACY_GRANT_FEEDBACK_PREFIX = "Allow-until-task-done enabled:"
+
+
+def _dedupe_feedback(rows: List[Dict]) -> List[Dict]:
+    """Drop repeated notice texts inside the SAME step (the loop can re-emit one notice)."""
+    seen: set = set()
+    out: List[Dict] = []
+    for row in rows:
+        key = (row.get("step_no"), row.get("text"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _normalize_legacy_grant_lines(data: Dict) -> Dict:
+    """Turn an old grant MESSAGE line into a `grants` row (once per consent row).
+
+    Only payloads that have NO grant rows are rebuilt - a payload that already carries
+    them keeps them untouched, so a new row is never duplicated or reordered.
+    """
+    consents = data.get("consents") or []
+    feedback = data.get("feedback") or []
+
+    if not data.get("grants"):
+        grant_rows: List[Dict] = []
+        grant_steps: set = set()
+        for c in consents:
+            if c.get("decision") != "allow_category_until_done":
+                continue
+            step_no = int(c.get("step_no", 0) or 0)
+            if step_no in grant_steps:
+                continue
+            grant_steps.add(step_no)
+            grant_rows.append({"step_no": step_no, "kind": c.get("kind", "python"),
+                               "request_id": c.get("request_id", "")})
+        if grant_rows:
+            data["grants"] = grant_rows
+            # The matching message line is the same fact - drop it from the notices.
+            feedback = [f for f in feedback
+                        if not str(f.get("text", "")).startswith(LEGACY_GRANT_FEEDBACK_PREFIX)]
+
+    data["feedback"] = _dedupe_feedback(feedback)
+    return data
+
+
 def parse_payload(raw: Any) -> Optional[Dict]:
-    """Parse a stored payload. Never raises - bad/empty data means 'no history'."""
+    """Parse a stored payload. Never raises - bad/empty data means 'no history'.
+
+    Legacy rows (grant message lines, repeated notices) are normalized here, so the UI
+    reader sees the same shape for rows written by older builds and new ones.
+    """
     if not raw:
         return None
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    return _normalize_legacy_grant_lines(data)
 
 
 def _clip_output(text: str) -> str:
@@ -168,7 +224,14 @@ class TurnLog:
 
     def add_grant(self, step_no: int, kind: str, request_id: str = "",
                   at_ts: Optional[float] = None) -> Dict:
-        """A consent auto-allow timer / category grant that skipped the card."""
+        """A consent auto-allow timer / category grant that skipped the card.
+
+        ONE row PER KIND: a later auto-approved call of the same kind is the same fact,
+        so it must not print a second unlock row. The FIRST row (first request_id) wins.
+        """
+        existing = next((g for g in self.grants if g["kind"] == kind), None)
+        if existing is not None:
+            return existing
         row = {"step_no": int(step_no), "kind": kind,
                "request_id": request_id or "",
                "at_ts": at_ts if at_ts is not None else time.time()}
@@ -186,6 +249,12 @@ class TurnLog:
 
     def add_feedback(self, step_no: int, text: str,
                      at_ts: Optional[float] = None) -> Dict:
+        """A loop notice. The same text inside the SAME step is recorded once - the loop
+        can re-emit one notice (retry path) and the block must not show it twice."""
+        existing = next((f for f in self.feedback
+                         if f["step_no"] == int(step_no) and f["text"] == (text or "")), None)
+        if existing is not None:
+            return existing
         row = {"step_no": int(step_no), "text": text or "",
                "at_ts": at_ts if at_ts is not None else time.time()}
         self.feedback.append(row)

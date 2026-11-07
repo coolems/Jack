@@ -290,6 +290,8 @@ class ChatBus:
                     "type": "steer_rejected",
                     "steer_id": item.get("id"),
                     "content": item.get("text", ""),
+                    # Placement time (when the user typed it), same as steer_applied.
+                    "at_ts": item.get("received_at"),
                     "code": code,
                     "message": message,
                 })

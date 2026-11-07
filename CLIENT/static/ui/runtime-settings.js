@@ -28,8 +28,12 @@
 // 'manual' until the user opened Settings > Runtime, so on a fresh page load the FIRST
 // python_exec dialog showed "no time limit" even when settings.json said "auto after 5s".
 // approvals[kind] (2026-07-18 unified consent dialog): per-kind auto-approve settings,
-// fully detached per category - python / url / file / network each have their own mode+seconds.
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess consent cards
+// fully detached per category - each kind has its own mode+seconds.
+// (2026-11-07) 'desktop' added: the Computer Use gate (tools/computer_use/*) asks for
+// permission to READ or DRIVE an application on this machine. Manual by default - the
+// safest kind, since it moves the user's real pointer/keyboard.
+const CONSENT_KINDS = ['python', 'url', 'file', 'network', 'subprocess', 'desktop'];
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess; (2026-11-07) desktop
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
 let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
@@ -59,7 +63,7 @@ async function refreshRuntimeSettingsFromApi() {
 
     // (2026-07-18 unified consent dialog) per-kind auto-approve pairs - fully detached.
     const approvals = {};
-    ['python', 'url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // (2026-10-24)
+    CONSENT_KINDS.forEach(function (kind) {  // (2026-10-24) subprocess; (2026-11-07) desktop
         let m = 'manual';
         let s = 5;
         if (kind === 'python') {   // historical key names
@@ -93,8 +97,8 @@ async function refreshRuntimeSettingsFromApi() {
         const secInput = document.getElementById('pyExecAutoSeconds');
         if (secInput) secInput.value = String(seconds);
 
-        // (2026-07-18) fill the three per-kind consent rows (url / file / network).
-        ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
+        // (2026-07-18) fill the per-kind consent rows (url / file / network / subprocess / desktop).
+        CONSENT_KINDS.filter(function (kind) { return kind !== 'python'; }).forEach(function (kind) {
             const a = approvals[kind];
             const manualEl = document.getElementById(kind + 'ConsentManual');
             const autoEl = document.getElementById(kind + 'ConsentAuto');
@@ -148,6 +152,7 @@ function _ensureDefaultRadioSelection() {
         ['fileConsentManual', 'fileConsentAuto'],
         ['networkConsentManual', 'networkConsentAuto'],
         ['subprocessConsentManual', 'subprocessConsentAuto'],
+        ['desktopConsentManual', 'desktopConsentAuto'],
         ['imgTierAuto', 'imgTierHigh', 'imgTierMid', 'imgTierLow']
     ];
     groups.forEach(function (ids) {
@@ -189,7 +194,7 @@ function toggleConsentSecondsGroup(kind, show) {
     if (group) group.style.display = show ? 'flex' : 'none';
 }
 
-// Read all four per-kind consent settings from the Runtime tab controls (python uses its
+// Read every per-kind consent setting from the Runtime tab controls (python uses its
 // historical radio/seconds ids). Returns approvals[kind] = {mode, seconds}.
 function readApprovalsFromControls() {
     const out = {};
@@ -200,7 +205,7 @@ function readApprovalsFromControls() {
     let pySeconds = pySec ? parseInt(pySec.value, 10) : NaN;
     if (!Number.isFinite(pySeconds)) pySeconds = 5;
     out.python = { mode: pyMode, seconds: Math.min(3600, Math.max(1, pySeconds)) };
-    ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
+    CONSENT_KINDS.filter(function (kind) { return kind !== 'python'; }).forEach(function (kind) {  // desktop row added 2026-11-07
         const autoEl = document.getElementById(kind + 'ConsentAuto');
         const secInput = document.getElementById(kind + 'ConsentSeconds');
         let s = secInput ? parseInt(secInput.value, 10) : NaN;
@@ -239,7 +244,7 @@ async function saveRuntimeSettings() {
     // (2026-11-24 fix) show/hide EACH kind's seconds input when its radio changes -
     // previously only the python group was toggled, so selecting "Auto-approve after"
     // on URL / File Access / Network never revealed their seconds field.
-    ['url', 'file', 'network', 'subprocess'].forEach(function (kind) {  // subprocess row added 2026-10-24
+    CONSENT_KINDS.filter(function (kind) { return kind !== 'python'; }).forEach(function (kind) {  // desktop row added 2026-11-07
         toggleConsentSecondsGroup(kind, approvalsNow[kind].mode === 'auto');
     });
 
@@ -273,7 +278,10 @@ async function saveRuntimeSettings() {
                     // (2026-11-23) subprocess (External Program) consent was read from the controls
                     // but never sent - its selection was silently dropped on every save.
                     subprocess_consent_auto_approve: approvalsNow.subprocess.mode,
-                    subprocess_consent_auto_approve_seconds: approvalsNow.subprocess.seconds
+                    subprocess_consent_auto_approve_seconds: approvalsNow.subprocess.seconds,
+                    // (2026-11-07) desktop (Computer Use) consent - same detached pair.
+                    desktop_consent_auto_approve: approvalsNow.desktop.mode,
+                    desktop_consent_auto_approve_seconds: approvalsNow.desktop.seconds
             }))
         });
 

@@ -455,7 +455,11 @@ IMAGE_GEN_SIZE_MIN, IMAGE_GEN_SIZE_MAX = 32, 4096
 #   url_consent_auto_approve / url_consent_auto_approve_seconds
 #   file_consent_auto_approve / file_consent_auto_approve_seconds
 #   network_consent_auto_approve / network_consent_auto_approve_seconds
-CONSENT_KINDS = ("python", "url", "file", "network", "subprocess")  # (2026-10-24)
+#: Consent kinds with a card. 'desktop' (2026-11-07) gates Computer Use: binding an app
+#: handle, listing running apps, capturing a window, or sending input. It is the only
+#: kind whose payload is an APP identity rather than code/URL/path/socket, because the
+#: thing being approved is "may this AI drive that application?".
+CONSENT_KINDS = ("python", "url", "file", "network", "subprocess", "desktop")  # (2026-10-24) subprocess; (2026-11-07) desktop
 #: settings.json key names per kind (python keeps its historical python_exec_* keys).
 CONSENT_SETTING_KEYS = {
     "python":  ("python_exec_auto_approve",        "python_exec_auto_approve_seconds"),
@@ -463,6 +467,7 @@ CONSENT_SETTING_KEYS = {
     "file":    ("file_consent_auto_approve",       "file_consent_auto_approve_seconds"),
     "network": ("network_consent_auto_approve",    "network_consent_auto_approve_seconds"),
     "subprocess": ("subprocess_consent_auto_approve", "subprocess_consent_auto_approve_seconds"),  # (2026-10-24)
+    "desktop": ("desktop_consent_auto_approve",    "desktop_consent_auto_approve_seconds"),  # (2026-11-07)
 }
 CONSENT_AUTO_APPROVE_DEFAULT = "manual"
 CONSENT_AUTO_APPROVE_SECONDS_DEFAULT = 5
@@ -652,8 +657,24 @@ PROVIDER_DEFAULT_TEMPERATURE: float = 0.6
 
 # --- Agentic Loop ---
 AGENTIC_MAX_TOOL_ITERATIONS: int = 2000             # Max total tool iterations (prevents infinite loops)
-AGENTIC_MAX_THINKING_ITERATIONS: int = 1            # Max consecutive thinking-only responses before forcing completion
-AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.95     # Fraction of the safe token budget (max_history_tokens) where the console warning + context-guardian message fire
+#: Max consecutive marker-free prose replies before the loop asks for a final answer.
+#: (2026-11-07 fix) Was 1, which ended productive runs mid-task: ONE prose turn between two
+#: tool batches (a summary, a plan write, an answer to a mid-run question) immediately
+#: injected "provide your final answer and end this agentic loop", so a run stopped at ~48%
+#: of the context window with ~133K tokens still free. The user read that as a context-guardian
+#: stop because the notice named no cause and earlier guardian notices sat in history.
+#: 3 = a genuine stall (three marker-free replies with no tool work) still ends the run.
+AGENTIC_MAX_THINKING_ITERATIONS: int = 3
+AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.95     # Fraction of the MESSAGE-LIST budget (max_history_tokens) where the console/UI "trimming is about to engage" warning fires
+#: (2026-11-07) Fraction of the FULL context window (CONTEXT_WINDOW_TOKENS, the number the UI
+#: status bar shows as "N K ctx") at which the context-guardian [SYSTEM NOTICE] is injected.
+#: It used to be measured against max_history_tokens() (= HISTORY_CONTEXT_FRACTION 0.90 of the
+#: window) AND quoted as a percentage OF that budget, so the notice said "96% of the safe
+#: budget" while the status bar still showed ~100K tokens free - a contradiction the user
+#: reported. The threshold is now a fraction of the window itself and the notice quotes sent /
+#: left against that same window, so guardian and UI can never disagree. Default 0.90 = the
+#: moment the history budget is reached, which is exactly when trimming starts.
+AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION: float = 0.90
 AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS: int = 3  # Max times per run the near-limit guardian may be injected - bounded so a pathological prompt cannot loop forever
 AGENTIC_ITERATION_TIMEOUT_SEC: int = 180          # Timeout per single provider call iteration (3 minutes)
 AGENTIC_TOOL_OUTPUT_MAX_CHARS: int = 160

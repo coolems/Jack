@@ -73,6 +73,9 @@ async def _reject_pending_steers(channel, sink, message: str, code: str) -> int:
                 "type": "steer_rejected",
                 "steer_id": item.get("id") if isinstance(item, dict) else None,
                 "content": item.get("text", "") if isinstance(item, dict) else "",
+                # Placement time (when the user typed it) - the UI puts the rejected row
+                # inside the turn block at that moment, like the applied steers do.
+                "at_ts": item.get("received_at") if isinstance(item, dict) else None,
                 "code": code,
                 "message": message,
             }))

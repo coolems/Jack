@@ -53,6 +53,10 @@ pyautogui==0.9.54
   License: MIT
   Copyright holder: Nathan Hoad et al.
 
+comtypes==1.4.6
+  License: MIT
+  Copyright holder: Thomas Heller and comtypes developers
+
 pydantic==2.13.3
   License: MIT
   Copyright holder: Samuel Colvin, Colin O'Flynn and contributors (pydantic-dev)

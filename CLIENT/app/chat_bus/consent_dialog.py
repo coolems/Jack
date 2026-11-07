@@ -41,7 +41,9 @@ logger = logging.getLogger("COOLEMS.ChatBus.ConsentDialog")
 
 
 #: Canonical card kinds - every frame built by build_frame() carries one of these.
-KINDS = ("python", "url", "file", "network", "subprocess")  # (2026-10-24) subprocess: sandboxed python_exec spawn of a shell/interpreter/network tool
+#: 'desktop' (2026-11-07) gates Computer Use: the payload is the app identity the AI
+#: wants to read/drive, not code, a URL or a path.
+KINDS = ("python", "url", "file", "network", "subprocess", "desktop")  # (2026-10-24) subprocess; (2026-11-07) desktop
 
 #: Every kind's card offers the "Allow until task done" (allow_category_until_done) button. 2026-07-18 rev4:
 #: grants are PER KIND - clicking it on a python card only unlocks later python cards; url /
@@ -123,6 +125,10 @@ class ConsentResult:
     """Outcome of one consent ask (see ConsentDialog.ask)."""
     decision: str                 # 'allow' | 'deny' | 'allow_category_until_done' | 'explain' | 'unavailable'
     explain_instruction: str = ""  # non-empty ONLY when decision == 'explain'
+    # (2026-11-07) The card's request id, so callers can record the card as a row of THIS
+    # turn's cycle history (app.chat_bus.cycle_recorder). '' when no card was shown
+    # (auto-allow grant, or an undeliverable frame).
+    request_id: str = ""
 
     @property
     def allowed(self) -> bool:
@@ -187,6 +193,6 @@ class ConsentDialog:
 
         if decision == "explain":
             logger.info("[CONSENT:%s] request=%s -> explain (AI will answer, then re-ask)", self.kind, request_id)
-            return ConsentResult("explain", explain_instruction(self.kind, payload[:200]))
+            return ConsentResult("explain", explain_instruction(self.kind, payload[:200]), request_id)
         logger.info("[CONSENT:%s] request=%s -> %s", self.kind, request_id, decision)
-        return ConsentResult(decision)
+        return ConsentResult(decision, "", request_id)

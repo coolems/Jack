@@ -15,22 +15,22 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "glob_files",
-        "description": "List files whose names match a glob pattern inside working_root, sorted newest-first. path is a directory (recursive). Gitignored folders are skipped unless include_ignored=true; heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded either way. Returns paths relative to working_root, capped, with the full list spilled to .temp/spill/ when capped.",
+        "description": "List files whose names match a glob pattern inside working_root, newest-first. Returns paths relative to working_root, capped; the full list spills to .temp/spill/ when capped. Gitignored and heavy folders (venv, node_modules, .git, model weights, runtimes) are skipped unless include_ignored=true.",
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern ('*.py', '**/*.json', 'tools/**/*.md'), matched relative to the directory being searched: '*.py' with path='tools/search_tools' lists that folder; 'tools/**/*.py' with path='' scopes to tools/."
+                    "description": "Glob pattern ('*.py', '**/*.json', 'tools/**/*.md'), matched relative to the searched directory."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search, relative to working_root. '' / '.' / 'root' = whole working_root.",
+                    "description": "Directory to search (recursive); '' / '.' / 'root' = whole working_root.",
                     "default": ""
                 },
                 "include_ignored": {
                     "type": "boolean",
-                    "description": "Also list gitignored/hidden files. Heavy folders (venv, node_modules, .git, model weights, runtimes) stay excluded either way. Default false.",
+                    "description": "Also list gitignored/hidden files. Heavy folders stay excluded regardless. Default false.",
                     "default": False
                 },
                 "max_results": {
@@ -102,7 +102,11 @@ def glob_files(pattern: str, path: str = "", include_ignored: bool = False,
             # necessarily working_root (CLIENT/code_client.py chdirs into CLIENT/), so
             # without this a pattern scoped to the searched directory silently returned
             # nothing. Patterns are therefore read relative to the directory being searched.
+            # Explicit utf-8 + errors="replace" (see grep.py): the locale default on
+            # Windows is cp1252, which raises UnicodeDecodeError in subprocess's reader
+            # thread on UTF-8 output and silently returns an empty list.
             r = subprocess.run([exe, *argv], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
                                timeout=DEADLINE_S, cwd=dirpath)
         except subprocess.TimeoutExpired:
             return f"Error: file listing timed out after {DEADLINE_S}s - narrow the pattern or the path."

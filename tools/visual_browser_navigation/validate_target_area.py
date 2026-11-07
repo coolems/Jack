@@ -27,13 +27,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "validate_target_area",
-        "description": "Marks a target area on a browser screenshot before moving the mouse: stamps the target description as a banner and returns the annotated image path plus image dimensions, so you can confirm the right element first. No vision call is made - view the annotated image and choose click coordinates yourself.",
+        "description": "Marks a target area on a browser screenshot before clicking: stamps the target description as a banner and returns the annotated image path plus image dimensions, so you can confirm the right element first. No vision call is made - view the annotated image and choose the target yourself.",
         "parameters": {
             "type": "object",
             "properties": {
-                "screenshot_path": {"type": "string", "description": "Path to the screenshot image inside working_root, e.g. from browser_screenshot()."},
-                "target_description": {"type": "string", "description": "What element you intend to click, e.g. 'search button' or 'login field'. Stamped on the annotated image."},
-                "confidence_threshold": {"type": "number", "description": "Accepted for API compatibility; unused - this tool makes no vision call and has no confidence score."}
+                "screenshot_path": {"type": "string", "description": "Screenshot inside working_root, e.g. from browser_screenshot()."},
+                "target_description": {"type": "string", "description": "What element you intend to click, e.g. 'search button'. Stamped on the image."},
+                "confidence_threshold": {"type": "number", "description": "Accepted for API compatibility; unused - no vision call, no confidence score."}
             },
             "required": ["screenshot_path", "target_description"]
         }
@@ -133,7 +133,8 @@ def validate_target_area(screenshot_path, target_description, confidence_thresho
                       f"Review the annotated image to confirm before moving mouse. "
                       f"Image size: {img_width}x{img_height}",
             "next_step": "Use view_image() on annotated_image to visually confirm the target, "
-                        "determine click coordinates yourself, then move the mouse with set_pos()"
+                        "then act with cua_click (element index from cua_get_state, or window "
+                        "pixels / relative 0..999)"
         }
 
     except (ValueError, FileNotFoundError) as e:
