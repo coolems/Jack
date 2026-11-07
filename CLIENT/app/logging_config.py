@@ -5,8 +5,8 @@ Provides:
 - Rotating file handlers (10 MB max, 3 backups) to prevent log bloat
 - Colored console output for development
 - Separate error-only log file
-- Default INFO level to suppress debug spam in production
-- Verbose logging toggle via utils.logging_utils.set_verbose_logging()
+- Sensitive-data redaction on every handler (file + console)
+- Main COOLEMS logger at INFO; child loggers inherit it by propagation
 
 Log Files:
     logs/coolems.log  - All levels (DEBUG+ when verbose, INFO+ by default)
@@ -15,11 +15,13 @@ Log Files:
 Usage:
     # At startup:
     from app.logging_config import setup_logging
-    logger, ws_logger, provider_logger, agent_logger, db_logger = setup_logging()
+    logger = setup_logging()
 
-    # To enable verbose logging at runtime:
-    from utils.logging_utils import set_verbose_logging
-    set_verbose_logging(True)
+    # To go verbose for the whole COOLEMS subtree:
+    logging.getLogger("COOLEMS").setLevel(logging.DEBUG)
+
+    # Third-party frame dumps stay pinned; opt in per-library if needed:
+    logging.getLogger("websockets").setLevel(logging.DEBUG)
 """
 
 import sys
@@ -46,34 +48,31 @@ class ColoredFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        """
-        Format a log record with appropriate color/prefix.
-
-        Args:
-            record: The log record to format.
-
-        Returns:
-            Formatted string with color or prefix applied.
-        """
+        # 2026-11-07 FIX (same bug SERVER fixed on 2026-08-18): the old code MUTATED
+        # record.msg. A LogRecord is shared by every handler that sees it - when a
+        # child logger had its own ColoredFormatter console handler AND propagated
+        # to an ancestor with another one, the prefix was applied twice per line
+        # ("[INFO] [INFO]") and the record was permanently corrupted. Wrap the FINAL
+        # formatted string instead: idempotent, no record mutation.
+        formatted = super().format(record)
         if sys.platform == "win32":
             if record.levelno >= logging.ERROR:
-                record.msg = f"[ERROR] {record.msg}"
+                return f"[ERROR] {formatted}"
             elif record.levelno >= logging.WARNING:
-                record.msg = f"[WARN] {record.msg}"
+                return f"[WARN] {formatted}"
             elif record.levelno >= logging.INFO:
-                record.msg = f"[INFO] {record.msg}"
-            elif record.levelno >= logging.DEBUG:
-                record.msg = f"[DEBUG] {record.msg}"
+                return f"[INFO] {formatted}"
+            else:  # DEBUG and below
+                return f"[DEBUG] {formatted}"
         else:
             if record.levelno >= logging.ERROR:
-                record.msg = f"{Colors.RED}{record.msg}{Colors.RESET}"
+                return f"{Colors.RED}{formatted}{Colors.RESET}"
             elif record.levelno >= logging.WARNING:
-                record.msg = f"{Colors.YELLOW}{record.msg}{Colors.RESET}"
+                return f"{Colors.YELLOW}{formatted}{Colors.RESET}"
             elif record.levelno >= logging.INFO:
-                record.msg = f"{Colors.GREEN}{record.msg}{Colors.RESET}"
-            elif record.levelno >= logging.DEBUG:
-                record.msg = f"{Colors.BLUE}{record.msg}{Colors.RESET}"
-        return super().format(record)
+                return f"{Colors.GREEN}{formatted}{Colors.RESET}"
+            else:
+                return f"{Colors.BLUE}{formatted}{Colors.RESET}"
 
 
 # FIX (2026-08-17): anchor the log dir to this module's location (app/ -> <CLIENT>/logs)
@@ -86,37 +85,29 @@ MAX_LOG_BYTES: int = 10 * 1024 * 1024  # 10 MB per file
 BACKUP_COUNT: int = 3                   # Keep 3 rotated backups (~40 MB total max)
 
 
-def _errors_filter(record: logging.LogRecord) -> bool:
+def setup_logging() -> logging.Logger:
     """
-    Filter that returns True only for ERROR and CRITICAL records.
-
-    Used by the errors.log handler to only capture serious issues.
-
-    Args:
-        record: The log record to evaluate.
-
-    Returns:
-        True if the record is ERROR or CRITICAL level.
-    """
-    return record.levelno >= logging.ERROR
-
-
-def setup_logging() -> tuple[logging.Logger, ...]:
-    """
-    Configure logging for COOLEMS CLIENT.
+    Configure logging for COOLEMS CLIENT. Returns the main COOLEMS logger.
 
     Sets up:
     - Rotating file handler for all logs (10 MB max, 3 backups)
     - Rotating file handler for errors only
-    - Colored console handler for main logger
-    - Default INFO level (DEBUG suppressed unless verbose enabled)
+    - ONE colored console handler on the main COOLEMS logger
+    - COOLEMS at INFO; third-party WebSocket frame dumps pinned to INFO
+    - SensitiveLogFilter on file + console handlers (2026-10-01 hardening)
 
-    IMPORTANT: The COOLEMS.Agent logger (used by agentic.py) defaults to
-    INFO level. To enable verbose debug logging for the agentic loop,
-    call set_verbose_logging(True) from utils.logging_utils.
+    Child loggers (COOLEMS.WebSocket, COOLEMS.Provider, COOLEMS.Agent,
+    COOLEMS.Database, COOLEMS.Tools.*) are deliberately left at NOTSET so they
+    inherit COOLEMS's level through propagation. Setting COOLEMS to DEBUG makes
+    the whole subtree verbose with no per-module plumbing; an explicit
+    setLevel() on a child would FREEZE it and break that.
 
-    Returns:
-        Tuple of (main_logger, ws_logger, provider_logger, agent_logger, db_logger)
+    (2026-11-07 simplification) The previous version returned a 5-tuple of
+    per-module loggers that nothing consumed (code_client.py unpacked them and
+    discarded them; app/websocket/handler.py creates its own ws_logger), and the
+    four child setLevel(INFO) calls froze those subtrees so verbose logging could
+    never reach them. utils/logging_utils.py, the only "verbose toggle", had zero
+    production callers and is gone. Contract now matches SERVER/app/logging_config.py.
     """
     os.makedirs(_LOGS_DIR, exist_ok=True)
 
@@ -138,6 +129,7 @@ def setup_logging() -> tuple[logging.Logger, ...]:
     coolems_handler.setLevel(logging.DEBUG)
 
     # --- errors.log: ERROR+ only, rotating ---
+    # setLevel() is the filter; a separate callable filter would be redundant.
     errors_handler = RotatingFileHandler(
         os.path.join(_LOGS_DIR, "errors.log"),
         maxBytes=MAX_LOG_BYTES,
@@ -146,6 +138,7 @@ def setup_logging() -> tuple[logging.Logger, ...]:
     )
     errors_handler.setFormatter(logging.Formatter(log_format))
     errors_handler.setLevel(logging.ERROR)
+
     # --- Sensitive-data redaction on FILE + CONSOLE handlers (2026-10-01 hardening) ---
     # uvicorn.error / websockets records PROPAGATE up to the root logger and were written
     # RAW into coolems.log/errors.log -- including ?api_key=... query params in WS connection
@@ -182,33 +175,27 @@ def setup_logging() -> tuple[logging.Logger, ...]:
     root.addHandler(coolems_handler)
     root.addHandler(errors_handler)
 
-    # --- Per-module loggers with DEFAULT INFO level ---
-    # DEBUG output is suppressed by default to prevent log bloat.
-    # Use utils.logging_utils.set_verbose_logging(True) to enable.
+    # --- Main logger + exactly ONE console handler ---
+    # 2026-08-18 FIX (duplicate console lines): the old code attached a SECOND
+    # ColoredFormatter StreamHandler to every COOLEMS.* child logger while those
+    # children ALSO propagated their records up to the "COOLEMS" logger's own
+    # console handler. Result: each line was printed twice, and because the old
+    # formatter mutated record.msg, the second pass added a doubled prefix
+    # ("[INFO] [INFO]"). Now there is exactly ONE console handler (on COOLEMS);
+    # every child propagates to it by default (propagate=True) - no per-child
+    # handlers needed. File output still flows via root's rotating handlers.
     logger = logging.getLogger("COOLEMS")
     logger.setLevel(logging.INFO)
+    # Idempotent like the root logger above: a second setup_logging() call must not
+    # stack a second console handler (that would print every line twice).
+    logger.handlers.clear()
 
-    ws_logger = logging.getLogger("COOLEMS.WebSocket")
-    ws_logger.setLevel(logging.INFO)
-
-    provider_logger = logging.getLogger("COOLEMS.Provider")
-    provider_logger.setLevel(logging.INFO)
-
-    agent_logger = logging.getLogger("COOLEMS.Agent")
-    agent_logger.setLevel(logging.INFO)
-
-    db_logger = logging.getLogger("COOLEMS.Database")
-    db_logger.setLevel(logging.INFO)
-
-    # Console handler attached only to the main COOLEMS logger
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(
-        ColoredFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    )
+    console_handler.setFormatter(ColoredFormatter(log_format))
     console_handler.setLevel(logging.INFO)
     # Same redaction on the console stream (2026-10-01): COOLEMS.* loggers write here
     # directly and bypass the uvicorn stderr wrapper.
     console_handler.addFilter(redact)
     logger.addHandler(console_handler)
 
-    return logger, ws_logger, provider_logger, agent_logger, db_logger
+    return logger

@@ -75,7 +75,11 @@ from entry.sensitive_filter import (
 )
 
 # == Logging Setup ==
-logger, ws_logger, provider_logger, agent_logger, db_logger = setup_logging()
+# setup_logging() returns the main COOLEMS logger (2026-11-07: the old 5-tuple of
+# per-module loggers was never consumed - handler.py creates its own ws_logger).
+# Child COOLEMS.* loggers inherit this logger's level by propagation; set COOLEMS
+# to DEBUG to go verbose for the whole subtree.
+logger = setup_logging()
 
 logger.info("=" * 60)
 logger.info("COOLEMS CLIENT Starting Up")

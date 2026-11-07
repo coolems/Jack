@@ -5,7 +5,7 @@ Provides:
 - Rotating file handlers (10 MB max, 3 backups) to prevent log bloat
 - Colored console output for development
 - Separate error-only log file
-- Default INFO level to suppress debug spam in production
+- Main COOLEMS logger at INFO; child loggers inherit it by propagation
 
 Log Files:
     logs/coolems.log  - All levels (DEBUG+ when verbose, INFO+ by default)
@@ -14,7 +14,13 @@ Log Files:
 Usage:
     # At startup:
     from app.logging_config import setup_logging
-    logger, ws_logger, provider_logger, agent_logger, db_logger = setup_logging()
+    logger = setup_logging()
+
+    # To go verbose for the whole COOLEMS subtree:
+    logging.getLogger("COOLEMS").setLevel(logging.DEBUG)
+
+    # Third-party frame dumps stay pinned; opt in per-library if needed:
+    logging.getLogger("websockets").setLevel(logging.DEBUG)
 """
 
 import sys
@@ -77,23 +83,28 @@ MAX_LOG_BYTES: int = 10 * 1024 * 1024  # 10 MB per file
 BACKUP_COUNT: int = 3                   # Keep 3 rotated backups (~40 MB total max)
 
 
-def _errors_filter(record: logging.LogRecord) -> bool:
-    """Filter that returns True only for ERROR and CRITICAL records."""
-    return record.levelno >= logging.ERROR
-
-
-def setup_logging() -> tuple[logging.Logger, ...]:
+def setup_logging() -> logging.Logger:
     """
-    Configure logging for COOLEMS SERVER.
+    Configure logging for COOLEMS SERVER. Returns the main COOLEMS logger.
 
     Sets up:
     - Rotating file handler for all logs (10 MB max, 3 backups)
     - Rotating file handler for errors only
-    - Colored console handler for main logger
-    - Default INFO level (DEBUG suppressed unless verbose enabled)
+    - ONE colored console handler on the main COOLEMS logger
+    - COOLEMS at INFO; third-party WebSocket frame dumps pinned to INFO
 
-    Returns:
-        Tuple of (main_logger, ws_logger, provider_logger, agent_logger, db_logger)
+    Child loggers (COOLEMS.WebSocket, COOLEMS.Provider, COOLEMS.Agent,
+    COOLEMS.Database, COOLEMS.Tools.*) are deliberately left at NOTSET so they
+    inherit COOLEMS's level through propagation. Setting COOLEMS to DEBUG makes
+    the whole subtree verbose with no per-module plumbing; an explicit
+    setLevel() on a child would FREEZE it and break that.
+
+    (2026-11-07 simplification) The previous version returned a 5-tuple of
+    per-module loggers that nothing consumed, and its annotation/docstring
+    promised a tuple the body never returned (returned None) - the documented
+    unpack form raised TypeError. The tuple, the four child setLevel(INFO)
+    calls and the unused _errors_filter() are gone; the security pins and the
+    module-path log dir are kept.
     """
     os.makedirs(_LOGS_DIR, exist_ok=True)
 
@@ -115,6 +126,7 @@ def setup_logging() -> tuple[logging.Logger, ...]:
     coolems_handler.setLevel(logging.DEBUG)
 
     # --- errors.log: ERROR+ only, rotating ---
+    # setLevel() is the filter; a separate callable filter would be redundant.
     errors_handler = RotatingFileHandler(
         os.path.join(_LOGS_DIR, "errors.log"),
         maxBytes=MAX_LOG_BYTES,
@@ -147,35 +159,24 @@ def setup_logging() -> tuple[logging.Logger, ...]:
     # Set uvicorn.error=TRACE/DEBUG manually for protocol work.
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)
 
-    # --- Per-module loggers with DEFAULT INFO level ---
-    logger = logging.getLogger("COOLEMS")
-    logger.setLevel(logging.INFO)
-
-    ws_logger = logging.getLogger("COOLEMS.WebSocket")
-    ws_logger.setLevel(logging.INFO)
-
-    provider_logger = logging.getLogger("COOLEMS.Provider")
-    provider_logger.setLevel(logging.INFO)
-
-    agent_logger = logging.getLogger("COOLEMS.Agent")
-    agent_logger.setLevel(logging.INFO)
-
-    db_logger = logging.getLogger("COOLEMS.Database")
-    db_logger.setLevel(logging.INFO)
-
-    # Console handler attached only to the main COOLEMS logger
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(
-        ColoredFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    )
-    console_handler.setLevel(logging.INFO)
-    logger.addHandler(console_handler)
-
+    # --- Main logger + exactly ONE console handler ---
     # 2026-08-18 FIX (duplicate console lines): the old code attached a SECOND
     # ColoredFormatter StreamHandler to every COOLEMS.* child logger while those
     # children ALSO propagated their records up to the "COOLEMS" logger's own
     # console handler. Result: each line was printed twice, and because the old
     # formatter mutated record.msg, the second pass added a doubled prefix
     # ("[INFO] [INFO]"). Now there is exactly ONE console handler (on COOLEMS);
-    # every child propagates to it by default (propagate=True) — no per-child
+    # every child propagates to it by default (propagate=True) - no per-child
     # handlers needed. File output still flows via root's rotating handlers.
+    logger = logging.getLogger("COOLEMS")
+    logger.setLevel(logging.INFO)
+    # Idempotent like the root logger above: a second setup_logging() call must not
+    # stack a second console handler (that would print every line twice).
+    logger.handlers.clear()
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(ColoredFormatter(log_format))
+    console_handler.setLevel(logging.INFO)
+    logger.addHandler(console_handler)
+
+    return logger

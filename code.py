@@ -49,6 +49,8 @@ if _script_dir not in sys.path:
 # == Logging Setup ==
 logger = logging.getLogger("COOLEMS")
 setup_logging()  # Every COOLEMS.* message (relay, llama provider, pipe drainers) is written to logs/coolems.log + errors.log.
+# Return value (the COOLEMS logger) intentionally unused here - code.py already holds
+# its own logger and every child logger reaches it via logging.getLogger().
 
 
 def _parse_args():

@@ -3,7 +3,6 @@
 Sub-modules:
     history_manager  - conversation history loading/trimming (token budgets)
     history_trimmer  - token-aware message trimming helpers
-    logging_utils    - runtime verbose-logging toggle
     retry            - generic retry-with-backoff decorator/helpers
     clear_logs       - CLI: delete rotated log files (utils/clear_logs.py)
     clear_pycache    - CLI: remove __pycache__ directories
