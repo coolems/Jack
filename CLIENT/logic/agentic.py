@@ -172,6 +172,7 @@ RULES:
             current_model=config.model,
             api_key=config.api_key,
             session_timer=getattr(config, "session_timer", None),  # (2026-08-23) pause clock while user menus are open
+            cycle=getattr(config, "cycle", None),  # (2026-11-08) loop history: tools + consent cards land in this turn's block
         )
 
     # (2026-10-09) Per-workspace working root: resolve THIS conversation's folder from

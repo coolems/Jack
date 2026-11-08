@@ -48,13 +48,29 @@
 .avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
 .message.user .avatar { background: var(--accent); }
 
+/* FLEXIBLE ANSWER FRAME (2026-11-08, user request): the AI bubble used to size itself to
+   its content, so a long answer sat in a narrow frame and the text got cut off at the
+   edge. It now grows to the available width of the chat (still capped by max-width so it
+   never crosses the avatar), and it has NO max-height - the whole answer is visible;
+   #chatContainer scrolls. */
+/* MINIMUM SIZE (2026-11-08, user request: "when we add a message in UI we must have a
+   minimum length there just to fit those copy and edit buttons"). A short answer ("hi")
+   shrank the bubble to one line, so the Copy chip at top:8px and the Copy chip at
+   bottom:8px overlapped each other. Chip height is ~18px (11px text + 2px padding + 1px
+   border, css below), so the bubble must be taller than 8+18+gap+18+8 = 52px: min-height
+   56px gives the two chips a 4px gap. min-width 200px already keeps the chip inside. */
 .message-content {
     background: var(--bg-secondary); padding: 16px;
     border-radius: 12px; border: 1px solid var(--border);
-    max-width: calc(100% - 60px); width: fit-content; min-width: 200px;
+    max-width: calc(100% - 60px); width: auto; min-width: 200px;
+    min-height: 56px;            /* room for the top Copy chip and the bottom one */
     line-height: 1.6; overflow-wrap: break-word;
     position: relative; transition: all 0.2s;
 }
+
+/* Code inside an answer keeps its own horizontal scroll and grows vertically, so a long
+   block is never clipped inside the bubble. */
+.message-content pre { overflow-x: auto; overflow-y: visible; }
 
 .message.user .message-content { background: var(--accent); border-color: var(--accent); }
 .message-images { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -174,13 +190,18 @@
     color: var(--text-secondary); background: var(--bg-primary); line-height: 1.5;
 }
 
-/* ===== COPY & EDIT BUTTONS ===== */
+/* ===== COPY & EDIT BUTTONS =====
+   Repo shape kept (git HEAD): floating chips on the bubble edge, hidden until hover, dark
+   chip, accent on hover, green "Copied!". Only the SIZE is reduced (2026-11-08 user request
+   "they were smaller before"): 12px -> 11px text, 4px 8px -> 2px 6px padding, 4px -> 3px
+   radius, icon 14 -> 12 (message.js / cycle-block.js). The Edit chip's right offset follows
+   the narrower Copy chip so the pair still sits side by side with the repo's gap. */
 .copy-btn {
     position: absolute; right: 8px;
     background: rgba(38, 38, 38, 0.9); border: 1px solid var(--border);
-    color: var(--text-secondary); padding: 4px 8px; border-radius: 4px;
-    font-size: 12px; cursor: pointer; opacity: 0;
-    transition: all 0.2s; display: flex; align-items: center; gap: 4px;
+    color: var(--text-secondary); padding: 2px 6px; border-radius: 3px;
+    font-size: 11px; cursor: pointer; opacity: 0;
+    transition: all 0.2s; display: flex; align-items: center; gap: 3px;
     z-index: 10; backdrop-filter: blur(4px);
 }
 
@@ -191,11 +212,11 @@
 .copy-btn.copied { background: #22c55e; color: white; border-color: #22c55e; opacity: 1; }
 
 .edit-btn {
-    position: absolute; right: 80px;
+    position: absolute; right: 68px;
     background: rgba(38, 38, 38, 0.9); border: 1px solid var(--border);
-    color: var(--text-secondary); padding: 4px 8px; border-radius: 4px;
-    font-size: 12px; cursor: pointer; opacity: 0;
-    transition: all 0.2s; display: flex; align-items: center; gap: 4px;
+    color: var(--text-secondary); padding: 2px 6px; border-radius: 3px;
+    font-size: 11px; cursor: pointer; opacity: 0;
+    transition: all 0.2s; display: flex; align-items: center; gap: 3px;
     z-index: 10; backdrop-filter: blur(4px);
 }
 

@@ -81,8 +81,15 @@ class LlmBackend:
 
         # --- discovered via /props (2026-10 fleet) --------------------------------
         self.total_slots: Optional[int] = None   # what llama.cpp reports (--parallel N)
-        self.ctx_per_slot: Optional[int] = None  # n_ctx of ONE slot
+        # n_ctx of ONE slot. A configured value on the instance (llama_node.json /
+        # strata_servers.json 'ctx_per_slot') is the starting point; /props overwrites it
+        # with what the node actually reports.
+        self.ctx_per_slot: Optional[int] = getattr(instance, "ctx_per_slot", None)
         self.model_key: str = ""                 # canonical routing key (see model_identity)
+        # (2026-11 strata) Extra canonical keys this backend must route: an endpoint can
+        # name the same model under an alias id (/props.model_alias, /v1/models ids,
+        # llama's router aliases). Clients pick those ids from the catalog.
+        self.model_aliases: set[str] = set()
         self.model_label: str = ""               # display basename
         self.build: str = ""                     # llama.cpp build_info
         self.props_at: float = 0.0
@@ -158,6 +165,20 @@ class LlmBackend:
                 self._provider = LlamaProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT)
         return self._provider
 
+    def serves_model(self, model_key: str) -> bool:
+        """True when requests for this canonical model key may run on this backend.
+
+        (2026-11 strata) One endpoint serves one model under SEVERAL ids: ``/props`` names
+        the GGUF file, ``/props.model_alias`` and ``/v1/models`` report the alias id the
+        CLIENT picker shows and sends. Both must route to the same slot group, otherwise
+        the worker's routing guard rejects a request for the very model this backend
+        serves - and with ``parallel`` slots that is every request, not just one.
+        """
+        if not model_key:
+            return False
+        key = model_key_of(model_key)
+        return key == self.model_key or key in self.model_aliases
+
     # --- discovery (/props) -------------------------------------------------------
 
     async def refresh_props(self) -> bool:
@@ -193,6 +214,16 @@ class LlmBackend:
             if raw_model:
                 self.model_label = model_basename(str(raw_model))
                 self.model_key = model_key_of(str(raw_model))
+                # (2026-11 strata) Every other id this endpoint answers for the SAME model
+                # becomes a routable key. The canonical key stays the model_path basename so
+                # profile authorization (GGUF filenames) keeps matching the display name.
+                aliases: set[str] = set()
+                for raw in (data.get("model_alias"), *(data.get("aliases") or [])):
+                    if isinstance(raw, str) and raw:
+                        k = model_key_of(raw)
+                        if k and k != self.model_key:
+                            aliases.add(k)
+                self.model_aliases = aliases
             else:
                 # /props without a model means the node is loading or running in router
                 # mode. Never keep a previous model key: routing an old-model request
@@ -323,6 +354,7 @@ class LlmBackend:
             "kind": self.kind,
             "model": self.model_label or self.model_key,
             "model_key": self.model_key,
+            "model_aliases": sorted(self.model_aliases),
             "slots": self.capacity,
             "ctx_per_slot": self.ctx_per_slot,
             "build": self.build,
@@ -535,15 +567,34 @@ class LlmBackendRegistry:
         return [b for b in self.backends.values() if b.healthy]
 
     def backends_for_model(self, model: str) -> list[LlmBackend]:
-        """Backends whose discovered model matches *model* (healthy or not)."""
+        """Backends whose discovered model matches *model* (healthy or not).
+
+        (2026-11 strata) Matches the canonical key AND the endpoint's alias ids, so a
+        client that picked the alias from ``/v1/models`` lands in this backend's queue."""
         want = model_key_of(model)
         if not want:
             return []
-        return [b for b in self.backends.values() if b.model_key == want]
+        return [b for b in self.backends.values() if b.serves_model(want)]
 
     def model_configured(self, model: str) -> bool:
         """True when at least one node is CONFIGURED for this model (healthy or not)."""
         return bool(self.backends_for_model(model))
+
+    def canonical_model_key(self, model: str) -> str:
+        """The queue key a request for *model* must use.
+
+        (2026-11 strata) Workers poll ONE queue per backend - the backend's canonical
+        ``model_key``. A client may name the model by an alias id (``/v1/models``), whose
+        key would land in a FIFO no worker reads, so the request is re-keyed to the group
+        that serves it. Falls back to the caller's key when no backend claims the model
+        (the "no node serves this" path then reports it as asked)."""
+        want = model_key_of(model)
+        if not want:
+            return ""
+        for b in self.backends.values():
+            if b.serves_model(want):
+                return b.model_key
+        return want
 
     def model_healthy(self, model: str) -> bool:
         """True when at least one HEALTHY node serves this model."""
@@ -575,7 +626,7 @@ class LlmBackendRegistry:
         want = model_key_of(model) if model else ""
         candidates = [
             b for b in self.backends.values()
-            if b.healthy and b.busy < b.capacity and (not want or b.model_key == want)
+            if b.healthy and b.busy < b.capacity and (not want or b.serves_model(want))
         ]
         if not candidates:
             return None
@@ -613,6 +664,7 @@ class LlmBackendRegistry:
                 "ctx_per_slot": b.ctx_per_slot,
                 "model": b.model_label,
                 "model_key": b.model_key,
+                "model_aliases": sorted(b.model_aliases),
                 "build": b.build,
                 "busy": b.busy,
                 "error": b.props_error or b.last_error,

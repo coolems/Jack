@@ -238,7 +238,7 @@ const ChatSocketPool = {
                         (prev === 'generating' || prev === 'queued')) {
                 this.setAttention(convId, 'done');
             } else if ((t === 'queue_start' || t === 'content' || t === 'thinking' ||
-                        t === 'tool_start' || t === 'tool_end') &&
+                        t === 'tool_start' || t === 'tool_end' || t === 'cycle_consent') &&
                         this.attention[convId] === 'dialog') {
                 this.clearAttention(convId);   // the dialog was answered - turn resumed
             }

@@ -677,7 +677,10 @@ AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.95     # Fraction of the MESSAGE-LIST
 AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION: float = 0.90
 AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS: int = 3  # Max times per run the near-limit guardian may be injected - bounded so a pathological prompt cannot loop forever
 AGENTIC_ITERATION_TIMEOUT_SEC: int = 180          # Timeout per single provider call iteration (3 minutes)
-AGENTIC_TOOL_OUTPUT_MAX_CHARS: int = 160
+# UI frame budget for the `tool_end` notification only (the chat's last-tool strip shows the
+# real result). The ReAct history is NOT trimmed here - it keeps what the tool returned
+# (image data sanitized separately). 160 chars hid the whole tool result from the UI.
+AGENTIC_TOOL_OUTPUT_MAX_CHARS: int = 6000
 
 # --- Database ---
 # FIX (2026-08-17): anchor the DB file to the CLIENT start point (<CLIENT>/) instead of

@@ -104,6 +104,7 @@ def build_agentic_config(
     last_session_sec: float = 0.0,  # previous turn's duration for the UI "last session" stat
     steer_source: Any = None,       # (2026-10-23) live mid-run steering queue (ChatChannel)
     on_steer_applied: Any = None,   # async callback: persist one applied steering message
+    cycle: Any = None,              # (2026-11-08) this turn's app.cycle_recorder.CycleRecorder
 ) -> "AgenticModeConfig":
     """
     Build an AgenticModeConfig with defaults from config.py.
@@ -127,6 +128,8 @@ def build_agentic_config(
         api_key: API key for role-based permission checking.
         steer_source: (2026-10-23) live mid-run steering queue owned by the chat channel.
         on_steer_applied: (2026-10-23) async callback persisting each applied steering message.
+        cycle: (2026-11-08) this turn's CycleRecorder - the loop-history recorder the UI
+            builds its collapsed turn block from. None = no history (legacy callers).
 
     Returns:
         Fully constructed AgenticModeConfig instance.
@@ -154,4 +157,5 @@ def build_agentic_config(
         last_session_sec=last_session_sec,
         steer_source=steer_source,
         on_steer_applied=on_steer_applied,
+        cycle=cycle,
     )

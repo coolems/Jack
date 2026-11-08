@@ -340,8 +340,10 @@
 
             // (2026-09-24) Attach the card to the chat ONLY when this run has real setup data -
             // a fully-cached machine produces no rows, so its section stays invisible.
+            // (2026-11-08) `card.mount` = the live strip of the current cycle block (loop-history
+            // UI); fall back to the chat container when no block owns this tool.
             if (!card.attached && Object.keys(st).length > 0 && card.el.parentNode === null) {
-                const container = document.getElementById('chatContainer');
+                const container = card.mount || document.getElementById('chatContainer');
                 if (container) {
                     container.appendChild(card.el);
                     card.attached = true;
@@ -478,9 +480,11 @@
         }
 
         /** Render (or resume) the Setup/Downloads section for one tool. Idempotent per tool. */
-        function start(toolName) {
+        function start(toolName, mount) {
             if (!toolName || activeCards.has(toolName)) return;
-            const container = document.getElementById('chatContainer');
+            // (2026-11-08) mount = live strip of the owning cycle block; chat container is
+            // only the fallback for a tool that no block owns (non-agentic turn).
+            const container = mount || document.getElementById('chatContainer');
             if (!container) return;
 
             const el = document.createElement('div');
@@ -490,11 +494,11 @@
                 '<div class="sp-header"><span class="sp-title">⬇️ Setup / Downloads — ' + escapeHtml(toolName) + '</span>' +
                 '<span class="sp-header-status">waiting for setup data…</span></div>' +
                 '<div class="sp-body"><div class="sp-stages"></div></div>';
-            // (2026-09-24) NOT appended yet: renderCard() attaches it to the chat only when this
+            // (2026-09-24) NOT appended yet: renderCard() attaches it only when this
             // run actually produces setup data - a fully-cached machine never shows the section.
             void container;
 
-            const card = { toolName, el, timer: null, emptyPolls: 0, attached: false };
+            const card = { toolName, el, mount: container, timer: null, emptyPolls: 0, attached: false };
             activeCards.set(toolName, card);
             poll(card);
 

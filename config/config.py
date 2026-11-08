@@ -421,6 +421,26 @@ def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Opti
     return raw
 
 
+def _parse_instance_ctx_per_slot(entry: dict, source: str, index: int) -> Optional[int]:
+    """Validate an optional ``ctx_per_slot`` override on a server instance entry.
+
+    (2026-11 strata) Only a fallback for an endpoint whose /props reports no n_ctx: a
+    reported per-slot context always wins (backend_registry.refresh_props overwrites this).
+    Bad input is said and ignored - it must never stop a boot.
+    """
+    raw = entry.get("ctx_per_slot")
+    if raw is None:
+        return None
+    # bool is a subclass of int in Python - reject it explicitly.
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        _logger.warning(
+            "[CONFIG] %s entry #%d has an invalid 'ctx_per_slot' (%r) - ignored "
+            "(the per-slot context comes from /props)", source, index, raw
+        )
+        return None
+    return raw
+
+
 def _default_local_instance() -> "LlamaServerInstance":
     """The always-present local instance (legacy single-server behaviour).
 
@@ -550,11 +570,17 @@ class StrataServerInstance(LlamaServerInstance):
                   /health needs no key, so a missing key still health-probes (but /props
                   fails, and the registry refuses to route on a failed /props).
       concurrency - OPTIONAL cap; the node's own /props.total_slots is the routing
-                  capacity (Strata reports what it actually runs).
+                  capacity (Strata reports what it actually runs). THIS is the knob for
+                  "how many sessions may generate at once" on a Strata endpoint: Jack
+                  spawns one worker per slot up to this cap.
+      ctx_per_slot - OPTIONAL per-slot context used for client trim math. The endpoint's
+                  /props n_ctx wins whenever it reports one; this only covers an endpoint
+                  that answers /props without a context figure.
 
     Strata instances are NEVER spawned or terminated by the SERVER.
     """
     api_key: Optional[str] = None
+    ctx_per_slot: Optional[int] = None
 
     @property
     def kind(self) -> str:
@@ -660,14 +686,16 @@ def get_strata_server_instances() -> list["StrataServerInstance"]:
         loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
         concurrency = _parse_instance_concurrency(entry, loopback=loopback, index=i)
         api_key = str(entry.get("api_key") or "").strip() or config_key or env_key or None
+        ctx_per_slot = _parse_instance_ctx_per_slot(entry, "strata_servers.json", i)
         instances.append(
-            StrataServerInstance(name or f"{host}:{port_raw}", host, port_raw, concurrency, api_key)
+            StrataServerInstance(name or f"{host}:{port_raw}", host, port_raw,
+                                 concurrency, api_key, ctx_per_slot)
         )
 
     if not instances:
         _logger.warning(
             "[CONFIG] strata_servers.json has no valid entries - using the default local endpoint 127.0.0.1:%d "
-            "(the file is kept; add a {name, host, port, api_key} entry to configure more endpoints)",
+            "(the file is kept; add a {name, host, port, api_key, concurrency} entry to configure more endpoints)",
             STRATA_SERVER_PORT,
         )
         return [_default_strata_instance()]

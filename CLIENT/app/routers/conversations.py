@@ -22,7 +22,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 
 from app.helpers import get_client_ip
 from app.db_manager import get_db_connection, close_db_connection
-from app.websocket.turn_ops import delete_conversation_rows, truncate_turn_logs
+from app.websocket.turn_ops import delete_conversation_rows, truncate_turn_logs, load_turn_logs
 import logging
 
 logger = logging.getLogger("COOLEMS")
@@ -124,7 +124,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             logger.info(f"Client {current_ip} viewing conversation {conv_id}")
 
             cursor.execute(
-                "SELECT role, content, media_urls, file_contents, timestamp FROM messages WHERE conversation_id = ? ORDER BY timestamp",
+                "SELECT id, role, content, media_urls, file_contents, timestamp FROM messages "
+                "WHERE conversation_id = ? ORDER BY timestamp, rowid",
                 (conv_id,)
             )
             rows = cursor.fetchall()
@@ -136,11 +137,14 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         messages = []
         for row in rows:
             messages.append({
-                "role": row[0],
-                "content": row[1],
-                "media_urls": json.loads(row[2]) if row[2] else [],
-                "file_contents": json.loads(row[3]) if row[3] else [],
-                "timestamp": row[4]
+                # (2026-11-08) the id anchors a cycle block: turn_log.message_id points at
+                # the answer that turn produced, so the UI rebuilds each block right above it.
+                "id": row[0],
+                "role": row[1],
+                "content": row[2],
+                "media_urls": json.loads(row[3]) if row[3] else [],
+                "file_contents": json.loads(row[4]) if row[4] else [],
+                "timestamp": row[5]
             })
 
         return {
@@ -148,6 +152,9 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             "system_prompt": conv_info_full[0] if conv_info_full else f"You are {agent.get_name()}.",
             # Per-chat working root (2026-08-29): additive field. NULL for legacy chats -> UI keeps current folder.
             "working_root": conv_info_full[1] if conv_info_full and len(conv_info_full) > 1 else None,
+            # Cycle history (2026-11-08): one row per agentic turn, already normalized
+            # by turn_ops.load_turn_logs -> the UI rebuilds collapsed cycle blocks from it.
+            "turn_logs": load_turn_logs(conv_id),
             "owner_ip": conv_info[0]
         }
 
@@ -261,7 +268,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT id, timestamp FROM messages WHERE conversation_id = ? ORDER BY timestamp",
+                "SELECT id, timestamp FROM messages WHERE conversation_id = ? "
+                "ORDER BY timestamp, rowid",
                 (conv_id,)
             )
             rows = cursor.fetchall()

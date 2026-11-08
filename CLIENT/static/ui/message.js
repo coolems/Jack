@@ -3,23 +3,69 @@
  * Uses COOLEMS shared state from app.js.
  */
 
+/**
+ * (2026-11-08) ONE clipboard path for every copy button: the async Clipboard API when the
+ * page is a secure context, the hidden-textarea fallback otherwise. Shared by the message
+ * bubbles and the turn-block Copy chip so both behave identically.
+ */
+async function copyTextToClipboard(raw) {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(raw); return; }
+    const ta = document.createElement('textarea');
+    ta.value = raw; ta.style.cssText = 'position:fixed;left:-999999px';
+    document.body.appendChild(ta); ta.select();
+    if (!document.execCommand('copy')) throw new Error('copy failed');
+    document.body.removeChild(ta);
+}
+
+function _markCopied(btn) {
+    const orig = btn.innerHTML;
+    btn.classList.add('copied');
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied!';
+    setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = orig; }, 2000);
+}
+
 async function copyMessage(btn) {
-    const raw = btn.closest('.message-content').getAttribute('data-raw-content');
+    // (2026-11-08) works on both shapes: a user prompt (.cycle-user-bubble) and a plain
+    // assistant bubble (.message-content).
+    const holder = btn.closest('.cycle-user-bubble') || btn.closest('.message-content');
+    const raw = holder ? holder.getAttribute('data-raw-content') : null;
     if (!raw) { showNotification('Nothing to copy', 'warning'); return; }
     try {
-        if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(raw); }
-        else { const ta = document.createElement('textarea'); ta.value = raw; ta.style.cssText = 'position:fixed;left:-999999px'; document.body.appendChild(ta); ta.select(); if (!document.execCommand('copy')) throw new Error(); document.body.removeChild(ta); }
-        const orig = btn.innerHTML; btn.classList.add('copied');
-        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied!';
-        setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = orig; }, 2000);
+        await copyTextToClipboard(raw);
+        _markCopied(btn);
+    } catch (e) { showNotification('Failed to copy', 'error'); }
+}
+
+/**
+ * (2026-11-08, user request "copy options lost") Copy the AI answer of one turn block.
+ * Since the loop-history UI the AI's text lives in the block's AI strip (.cycle-ai-answer
+ * segments), not in a bubble - so the strip's Copy chip reads those segments' RAW text
+ * (dataset.raw, protocol markers scrubbed via scrubAiText) and joins the segments of this
+ * turn. Raw text, not innerHTML: the clipboard gets the real markdown, not rendered markup.
+ */
+async function copyCycleAnswer(btn) {
+    const block = btn.closest('.cycle-block');
+    const strip = block ? block.querySelector('.cycle-ai') : null;
+    if (!strip) { showNotification('Nothing to copy', 'warning'); return; }
+    const scrub = (typeof scrubAiText === 'function') ? scrubAiText : (t => t);
+    const parts = Array.from(strip.querySelectorAll('.cycle-ai-answer'))
+        .map(el => scrub(el.dataset.raw || ''))
+        .filter(Boolean);
+    const raw = parts.join('\n\n');
+    if (!raw) { showNotification('This turn has no answer text yet', 'warning'); return; }
+    try {
+        await copyTextToClipboard(raw);
+        _markCopied(btn);
     } catch (e) { showNotification('Failed to copy', 'error'); }
 }
 
 
 
 function startEditMessage(btn) {
-    const messageDiv = btn.closest('.message');
-    const messageContent = btn.closest('.message-content');
+    // (2026-11-08) the user prompt is a .cycle-user node now; the old .message shape is
+    // still supported so an edit box works in either view.
+    const messageDiv = btn.closest('.cycle-user') || btn.closest('.message');
+    const messageContent = btn.closest('.cycle-user-bubble') || btn.closest('.message-content');
     const rawContent = messageContent.getAttribute('data-raw-content');
     if (!rawContent) { showNotification('Cannot edit this message', 'warning'); return; }
     if (COOLEMS.isStreaming) { showNotification('Please wait', 'warning'); return; }
@@ -43,7 +89,8 @@ function startEditMessage(btn) {
 
 
 function saveEditMessage(btn) {
-    const messageDiv = btn.closest('.message'); const messageContent = btn.closest('.message-content');
+    const messageDiv = btn.closest('.cycle-user') || btn.closest('.message');
+    const messageContent = btn.closest('.cycle-user-bubble') || btn.closest('.message-content');
     const newContent = messageContent.querySelector('.edit-textarea').value.trim();
     if (!newContent) { showNotification('Message cannot be empty', 'warning'); return; }
     messageDiv.classList.remove('editing');
@@ -55,7 +102,8 @@ function saveEditMessage(btn) {
 
 
 function cancelEditMessage(btn) {
-    const messageDiv = btn.closest('.message'); const messageContent = btn.closest('.message-content');
+    const messageDiv = btn.closest('.cycle-user') || btn.closest('.message');
+    const messageContent = btn.closest('.cycle-user-bubble') || btn.closest('.message-content');
     messageDiv.classList.remove('editing');
     const ta = messageContent.querySelector('.edit-textarea'); const act = messageContent.querySelector('.edit-actions');
     if (messageDiv._editCleanup) { messageDiv._editCleanup(); delete messageDiv._editCleanup; } else { if (ta) ta.remove(); if (act) act.remove(); }
@@ -380,10 +428,20 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
     const container = document.getElementById('chatContainer');
     const welcome = document.getElementById('welcome');
     if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
+
+    // (2026-11-08 loop-history UI) THE ONLY chat-level message the new view keeps is the
+    // user's own prompt. Everything the AI says belongs to a turn block; a normal one-shot
+    // turn still renders as a plain streaming answer bubble (role assistant).
     const messageDiv = document.createElement('div');
-    messageDiv.className = 'message ' + role;
+    messageDiv.className = role === 'user' ? 'cycle-user' : 'message assistant';
     if (streaming) messageDiv.dataset.streaming = 'true';
-    messageDiv.dataset.messageIndex = container.querySelectorAll('.message').length;
+    // (2026-11-08) THE INDEX CONTRACT for edit/resend: the index sent to
+    // DELETE /messages/truncate must be the position among CHAT-LEVEL items, and the server
+    // counts the same set - every DB row EXCEPT a '[STEER]' marker (folded into the block).
+    // So the count must include a turn block (.cycle-block = one DB answer row), otherwise
+    // an edit after a turn would cut the history at the wrong row.
+    messageDiv.dataset.messageIndex =
+        container.querySelectorAll('.cycle-user, .message, .cycle-block').length;
     let mediaHtml = '';
 
     // BUG FIX (2026-10-03): declared OUTSIDE the if-block on purpose - the
@@ -398,7 +456,7 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
         // SECURITY fix 2026-10-05: tokens are minted ASYNC (header auth) - the <img>
         // starts with an empty src and gets its ?t= URL once the token arrives. No
         // credential ever sits in the DOM or in a static URL.
-        mediaHtml = '<div class="message-images">' + mediaUrls.map(url => {
+        mediaHtml = '<div class="' + (role === 'user' ? 'cycle-user-images' : 'message-images') + '">' + mediaUrls.map(url => {
             const name = String(url).split('/').pop();
             if (url.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
                 imageEntries.push({ rel: url, name });
@@ -417,11 +475,35 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
             }).join('') + '</div>';
         }
     }
-    const contentHtml = role === 'assistant' ? parseMarkdown(content) : escapeHtml(content).replace(/\n/g, '<br>');
-    const copyIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Copy';
-    const editIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg> Edit';
-    messageDiv.innerHTML = '<div class="avatar">' + (role === 'user' ? 'U' : 'AI') + '</div><div class="message-content">' + (role === 'user' ? '<button class="edit-btn copy-top" onclick="startEditMessage(this)">' + editIcon + '</button>' : '') + '<button class="copy-btn copy-top" onclick="copyMessage(this)">' + copyIcon + '</button>' + mediaHtml + fileContentHtml + '<div class="content-text">' + contentHtml + '</div>' + (role === 'user' ? '<button class="edit-btn copy-bottom" onclick="startEditMessage(this)">' + editIcon + '</button>' : '') + '<button class="copy-btn copy-bottom" onclick="copyMessage(this)">' + copyIcon + '</button></div>';
-    messageDiv.querySelector('.message-content').setAttribute('data-raw-content', content);
+    const copyIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Copy';
+    const editIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg> Edit';
+
+    if (role === 'user') {
+        // (2026-11-08) THE REPO SHAPE (git HEAD message.js): Copy and Edit are floating
+        // chips anchored to the bubble - a pair at the top edge and a pair at the bottom
+        // edge (.copy-top / .copy-bottom), revealed by hovering the bubble. No actions row.
+        messageDiv.innerHTML =
+            '<div class="cycle-user-bubble">' +
+                '<button class="edit-btn copy-top" onclick="startEditMessage(this)">' + editIcon + '</button>' +
+                '<button class="copy-btn copy-top" onclick="copyMessage(this)">' + copyIcon + '</button>' +
+                mediaHtml + fileContentHtml +
+                '<div class="content-text">' + escapeHtml(content).replace(/\n/g, '<br>') + '</div>' +
+                '<button class="edit-btn copy-bottom" onclick="startEditMessage(this)">' + editIcon + '</button>' +
+                '<button class="copy-btn copy-bottom" onclick="copyMessage(this)">' + copyIcon + '</button>' +
+            '</div>';
+        messageDiv.querySelector('.cycle-user-bubble').setAttribute('data-raw-content', content);
+    } else {
+        const contentHtml = parseMarkdown(content);
+        messageDiv.innerHTML =
+            '<div class="avatar">AI</div>' +
+            '<div class="message-content">' +
+                '<button class="copy-btn copy-top" onclick="copyMessage(this)">' + copyIcon + '</button>' +
+                mediaHtml + fileContentHtml +
+                '<div class="content-text">' + contentHtml + '</div>' +
+                '<button class="copy-btn copy-bottom" onclick="copyMessage(this)">' + copyIcon + '</button>' +
+            '</div>';
+        messageDiv.querySelector('.message-content').setAttribute('data-raw-content', content);
+    }
 
     // SECURITY fix 2026-10-05: mint media tokens now (appendMessage is async; every
     // caller already awaits or fire-and-forgets it). Each <img> gets its ?t= URL as
@@ -449,4 +531,8 @@ window.appendSteerMessage = appendSteerMessage;
 window.markSteerBubble = markSteerBubble;
 window.settlePendingSteerBubbles = settlePendingSteerBubbles;
 window.sendSteerMessage = sendSteerMessage;
+// (2026-11-08) cycle-block.js renders the AI strip's Copy chip with onclick="copyCycleAnswer(this)"
+// and is loaded BEFORE this file, so the handler must be an explicit global.
+window.copyCycleAnswer = copyCycleAnswer;
+window.copyMessage = copyMessage;
 

@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import re
 import time
+import uuid
 from typing import Dict, Any, Tuple
 
 from config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS
@@ -135,15 +136,23 @@ IMAGE_TOOLS = frozenset({"generate_image"})
 def result_is_error(result: Any) -> bool:
     """Decide whether a tool result counts as a FAILED call for the cycle history.
 
-    Tools report failures as text starting with 'ERROR:' (the orchestrator's permission
-    block, tool-level errors, sandbox refusals). Anything else - including None and a
-    long multi-line report that merely mentions the word - is a successful call, so the
-    turn block's ok flag stays honest without parsing every tool's wording.
+    Tools report failures with a leading `ERROR:` / `Error:` / `error:` marker (the
+    orchestrator's permission block, tool-level errors, sandbox refusals). Repo-wide the
+    LOWERCASE form is by far the most common (96 sites vs 3 uppercase), so matching only
+    `ERROR:` recorded genuine failures as `ok: true` - the turn block would have shown a
+    red-free summary for a run that actually failed.
+
+    Anything else - including None and a long multi-line report that merely mentions the
+    word somewhere in the body - is a successful call, so the ok flag stays honest without
+    parsing every tool's wording. Only the HEAD of the result is inspected for that reason.
     """
     if not isinstance(result, str):
         return False
     head = result.lstrip()
-    return head.startswith("ERROR:") or head.startswith("ERROR ")
+    if not head:
+        return False
+    lowered = head[:12].lower()
+    return lowered.startswith("error:") or lowered.startswith("error ")
 
 
 # ============================================================
@@ -364,9 +373,10 @@ class ToolExecutor:
             await self._rec("grant", kind, request_id)
 
     async def _record_tool(self, name: str, args: Any, ok: bool,
-                           output: Any, duration_ms: float) -> None:
+                           output: Any, duration_ms: float, call_id: str = "") -> None:
         """Record one tool call - including calls the user declined (they happened, nothing ran)."""
-        await self._rec("tool", name, args, bool(ok), output, float(duration_ms or 0.0))
+        await self._rec("tool", name, args, bool(ok), output, float(duration_ms or 0.0),
+                        call_id=call_id)
 
     async def execute(
         self,
@@ -395,6 +405,12 @@ class ToolExecutor:
             Tuple of (tool_result, agent_lessons)
         """
         exec_start = time.time()
+        # (2026-11-08 loop history) One id per execution. `tool_start`, `tool_end` and the
+        # recorded cycle row all carry it, so the UI's LIVE per-tool timer (started on
+        # tool_start, stopped on the row) always belongs to THIS call - never to another
+        # tool of the same batch or another workspace. The conversation prefix makes the id
+        # workspace-scoped, so a timer map keyed by call_id cannot collide across chats.
+        call_id = f"{(conversation_id or '')[:8]}:{uuid.uuid4().hex[:8]}"
 
         from app.keys import get_key_role
         
@@ -439,7 +455,7 @@ class ToolExecutor:
                     getattr(_consent, "request_id", ""), _consent.decision, "python",
                     (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else "")
                 await self._record_tool(tool_name, tool_args, False, "NOT executed - user declined",
-                                        (time.time() - exec_start) * 1000.0)
+                                        (time.time() - exec_start) * 1000.0, call_id=call_id)
                 return deny_msg, ""
 
         # ============================================================
@@ -456,7 +472,13 @@ class ToolExecutor:
             if isinstance(url_arg, str) and url_arg.strip():
                 _url_consent = await self._maybe_ask_url_consent(url_arg, websocket, conversation_id)
                 if _url_consent.allowed:
-                    pass  # allowed (grant registered / auto-consent active) -> fall through
+                    # (2026-11-08) The card must DISAPPEAR once answered - including when the
+                    # auto-approve timer fired. The UI removes the card on the cycle_consent
+                    # frame, so an ALLOWED url consent has to be recorded here exactly like the
+                    # python/desktop gates do; without it the card stayed on screen after the
+                    # timer auto-allowed the target.
+                    await self._record_consent_decision(
+                        getattr(_url_consent, "request_id", ""), _url_consent.decision, "url", url_arg)
                 elif _url_consent.decision == "explain":
                     logger.info("[URL-CONSENT] EXPLAIN requested - nothing opened, AI will explain + re-ask")
                     await self._record_consent_decision(
@@ -472,7 +494,7 @@ class ToolExecutor:
                     await self._record_consent_decision(
                         getattr(_url_consent, "request_id", ""), _url_consent.decision, "url", url_arg)
                     await self._record_tool(tool_name, tool_args, False, "NOT executed - URL refused",
-                                            (time.time() - exec_start) * 1000.0)
+                                            (time.time() - exec_start) * 1000.0, call_id=call_id)
                     return deny_msg, ""
 
         # ============================================================
@@ -504,7 +526,7 @@ class ToolExecutor:
                             "browser tools, or just explain what you intended).")
                 await self._record_consent_decision(_desktop.request_id, _desktop.decision, "desktop", identity)
                 await self._record_tool(tool_name, tool_args, False, "NOT executed - desktop access refused",
-                                        (time.time() - exec_start) * 1000.0)
+                                        (time.time() - exec_start) * 1000.0, call_id=call_id)
                 return deny_msg, ""
 
         # Send tool start notification (skip if silent mode)
@@ -513,7 +535,12 @@ class ToolExecutor:
             await websocket.send_text(json.dumps({
                 "type": "tool_start",
                 "tool": tool_name,
-                "input": str(tool_args)
+                "input": str(tool_args),
+                "call_id": call_id,
+                # Wall-clock start of THIS call - the UI ticks the per-tool timer from it,
+                # so the duration shown is the real execution time, not a frame arrival time.
+                "started_at": exec_start,
+                "conv_id": conversation_id or "",
             }))
 
         # Execute the tool -- handle both sync and async orchestrators
@@ -597,11 +624,14 @@ class ToolExecutor:
             await websocket.send_text(json.dumps({
                 "type": "tool_end",
                 "tool": tool_name,
-                "output": result_str[:AGENTIC_TOOL_OUTPUT_MAX_CHARS]
+                "output": result_str[:AGENTIC_TOOL_OUTPUT_MAX_CHARS],
+                "call_id": call_id,
+                "duration_ms": round((time.time() - exec_start) * 1000.0, 1),
+                "conv_id": conversation_id or "",
             }))
             # The call happened and failed: record it so the turn block shows the refusal.
             await self._record_tool(tool_name, tool_args, False, result_str,
-                                    (time.time() - exec_start) * 1000.0)
+                                    (time.time() - exec_start) * 1000.0, call_id=call_id)
             return result_str, ""
 
         # Send tool end notification (skip if silent mode)
@@ -610,7 +640,10 @@ class ToolExecutor:
             await websocket.send_text(json.dumps({
                 "type": "tool_end",
                 "tool": tool_name,
-                "output": result_str[:AGENTIC_TOOL_OUTPUT_MAX_CHARS]
+                "output": result_str[:AGENTIC_TOOL_OUTPUT_MAX_CHARS],
+                "call_id": call_id,
+                "duration_ms": round((time.time() - exec_start) * 1000.0, 1),
+                "conv_id": conversation_id or "",
             }))
 
         # (2026-09-11) IMAGE-TO-UI PUSH: content-producing tools must render their
@@ -629,6 +662,11 @@ class ToolExecutor:
                         "filename": _img.get("filename"),
                         "width": _img.get("width"),
                         "height": _img.get("height"),
+                        # (2026-11-08 loop history) the image belongs to THIS tool call of
+                        # THIS conversation - the block renders it as a row + a thumbnail in
+                        # the last-tool strip, and never into another workspace's view.
+                        "call_id": call_id,
+                        "conv_id": conversation_id or "",
                         # (2026-10-04) always-visible setup/tier report for the image card.
                         "setup": _img.get("setup"),
                         "pipeline": _img.get("pipeline"),
@@ -672,7 +710,7 @@ class ToolExecutor:
         # flag (result_is_error reads the tool's own ERROR: prefix). Done last so the row
         # carries the final sanitized output the model saw.
         await self._record_tool(tool_name, tool_args, not result_is_error(result_str),
-                                result_str, total_elapsed * 1000.0)
+                                result_str, total_elapsed * 1000.0, call_id=call_id)
         return result_str, agent_lessons
     # ------------------------------------------------------------------
     # python_exec user approval (2026-09-24) - see app/chat_bus/exec_approval.py

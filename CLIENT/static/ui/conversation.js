@@ -34,10 +34,67 @@ async function getChatSessionStatus(convId) {
     return 'idle';
 }
 
-/** Baseline = assistant bubbles that belong to the DB history, not to a live turn. */
+/**
+ * Baseline = history that belongs to the DB, not to a live turn.
+ * (2026-11-08 loop-history UI) history is now ONE collapsed block per agentic turn plus
+ * plain assistant bubbles for normal one-shot answers, so the baseline counts both.
+ */
 function _countAssistantBubbles() {
     const c = document.getElementById('chatContainer');
-    return c ? c.querySelectorAll('.message.assistant').length : 0;
+    if (!c) return 0;
+    return c.querySelectorAll('.cycle-block').length + c.querySelectorAll('.message.assistant').length;
+}
+
+/**
+ * (2026-11-08 loop-history UI) THE REBUILD SHAPE, shared by workspace load and edit/resend:
+ *   user prompt            -> .cycle-user bubble (the only chat-level message kept)
+ *   agentic turn           -> ONE collapsed cycle block; its AI strip holds everything the
+ *                             AI said, so the answer message itself is NOT a bubble
+ *   normal one-shot answer -> plain assistant bubble (no turn_log row exists for it)
+ * Messages and turn rows merge by their own timestamps, so a turn that stopped before
+ * producing an answer still sits where it happened. CycleBlock.rebuild() refuses a turn_id
+ * owned by another workspace, so a reload can never paint another workspace's history.
+ */
+/**
+ * (2026-10-23 live steering, the committed approach) An applied steer is persisted as a
+ * PLAIN user message (raw text, no injection header), so a reload shows exactly what the
+ * user typed, in chronological order, before the final assistant answer. No marker, no
+ * folding: a steering message is a chat-level message like any other prompt.
+ */
+async function _renderHistory(convId, data) {
+    const container = document.getElementById('chatContainer');
+    const turnLogs = data.turn_logs || [];
+    const turnByMsg = {};
+    for (const row of turnLogs) {
+        if (row.message_id) turnByMsg[row.message_id] = row;
+    }
+
+    const items = [];
+    for (const msg of (data.messages || [])) {
+        if (msg.role === 'assistant' && turnByMsg[msg.id]) {
+            items.push({ t: msg.timestamp, kind: 'turn', row: turnByMsg[msg.id] });
+            continue;
+        }
+        items.push({ t: msg.timestamp, kind: 'msg', msg });
+    }
+    for (const row of turnLogs) {
+        if (!row.message_id) items.push({ t: row.created_at, kind: 'turn', row });
+    }
+    items.sort((a, b) => String(a.t) < String(b.t) ? -1 : (String(a.t) > String(b.t) ? 1 : 0));
+
+    let blocks = 0;
+    for (const it of items) {
+        if (it.kind === 'turn') {
+            if (CycleBlock.rebuild(convId, it.row, null)) blocks++;
+            continue;
+        }
+        // SECURITY fix 2026-10-05: appendMessage is async (media tokens are minted via header auth).
+        await appendMessage(it.msg.role, it.msg.content, false, it.msg.media_urls, it.msg.file_contents);
+        // Tag the node with its DB id so a later rebuild can anchor a turn block to it.
+        const appended = container ? container.lastElementChild : null;
+        if (appended && it.msg.id) appended.dataset.msgId = it.msg.id;
+    }
+    return { messages: (data.messages || []).length, blocks };
 }
 
 
@@ -134,6 +191,9 @@ async function deleteConversation(id) {
             WorkspaceViews.drop(id, true);
             // (2026-11-24 mix fix) drop its per-conversation render state as well.
             if (typeof ChatStreamState !== 'undefined') ChatStreamState.drop(id);
+            // (2026-11-08 loop-history UI) its turn blocks, timers and turn_id ownership go too,
+            // so a deleted workspace can never keep a live timer or claim a turn_id forever.
+            if (typeof CycleBlock !== 'undefined') CycleBlock.clear(id);
             ChatSocketPool.clearAttention(id);
             // A deleted workspace must not keep generating (burning tokens into a deleted row):
             // stop its session in ALL cases — the current one is stopped below as well.
@@ -282,6 +342,9 @@ async function loadConversation(id) {
         // SLOW PATH: first open / page reload / evicted (or stale mid-stream) stash ->
         // rebuild from the DB. A leftover stash would shadow this fresh DOM on the next switch.
         WorkspaceViews.drop(newConvId, false);
+        // (2026-11-08) the container is about to be wiped: release this workspace's blocks and
+        // turn_id ownership first, or rebuild() would treat the dead nodes as "already rendered".
+        if (typeof CycleBlock !== 'undefined') CycleBlock.clear(newConvId);
 
         const response = await fetch(`/api/conversations/${newConvId}/messages`);
         if (!response.ok) {
@@ -316,13 +379,10 @@ async function loadConversation(id) {
             container.appendChild(newWelcome);
         }
 
-        // Append all messages from server data
-        for (const msg of data.messages) {
-            // SECURITY fix 2026-10-05: appendMessage is async (media tokens are minted via header auth).
-            await appendMessage(msg.role, msg.content, false, msg.media_urls, msg.file_contents);
-        }
+        // (2026-11-08) rebuild: user prompts + turn blocks + plain one-shot bubbles.
+        const hist = await _renderHistory(newConvId, data);
 
-        log('Loaded', data.messages.length, 'messages for conversation', newConvId);
+        log('Loaded', hist.messages, 'messages for conversation', newConvId, '+', hist.blocks, 'turn block(s)');
 
         // Refresh conversation list in sidebar
         await loadConversations();
@@ -568,12 +628,13 @@ async function editAndResend(messageIndex, newContent) {
             container.appendChild(newWelcome);
         }
 
-        for (const msg of data.messages) {
-            // SECURITY fix 2026-10-05: appendMessage is async (media tokens are minted via header auth).
-            await appendMessage(msg.role, msg.content, false, msg.media_urls, msg.file_contents);
-        }
+        // (2026-11-08) the truncate already pruned this turn's turn_log rows server-side, so the
+        // rebuild shows only the surviving history. Release the workspace's blocks + turn_id
+        // ownership BEFORE wiping, or rebuild() would see the dead nodes as "already rendered".
+        if (typeof CycleBlock !== 'undefined') CycleBlock.clear(COOLEMS.currentConversation);
+        const hist = await _renderHistory(COOLEMS.currentConversation, data);
 
-        log('[EDIT] UI rebuilt with', data.messages.length, 'messages');
+        log('[EDIT] UI rebuilt with', hist.messages, 'messages,', hist.blocks, 'turn block(s)');
 
         // (2026-09-08 multi-chat UI fix) the rebuild is DB-authoritative: leave replay mode
         // and reset the baseline so the incoming live stream renders into one fresh bubble.

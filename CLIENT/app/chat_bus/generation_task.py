@@ -15,9 +15,11 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 
 from app.chat_bus.channel import ChannelStatus, ChannelWebSocket
 from app.chat_bus.exec_approval import ExecApprovalState
+from app.cycle_recorder import CycleRecorder
 from app.websocket.message_types import (
     send_recovery_warning,
     send_system,
@@ -32,6 +34,7 @@ from app.websocket.db_ops import (
     save_user_message,
     _sync_conversation_working_root,
 )
+from app.websocket.turn_ops import save_turn_log
 from app.db_manager import get_db_connection, close_db_connection
 from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_config
 from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
@@ -90,11 +93,17 @@ class _StatusSink:
     The SERVER tells us when a queued request actually starts (queue_start frame) and the
     turn ends (done/error/cancelled); mapping those onto ChannelStatus drives the sidebar
     dot without any extra protocol work on the UI side.
+
+    `cycle` (2026-11-08): when set, every streamed content/thinking chunk is ALSO captured
+    into this turn's CycleRecorder, so the AI text of each reasoning step lands inside the
+    turn block (thinking + speech) instead of only in a chat bubble. The recorder swallows
+    its own errors, so capture can never affect delivery.
     """
 
-    def __init__(self, channel, inner: ChannelWebSocket):
+    def __init__(self, channel, inner: ChannelWebSocket, cycle=None):
         self._channel = channel
         self._inner = inner
+        self.cycle = cycle
 
     async def send_text(self, data):
         try:
@@ -110,6 +119,13 @@ class _StatusSink:
             self._channel.set_status(ChannelStatus.GENERATING)
         elif t in ("done",):
             pass  # status set by the runner after post-processing
+        if self.cycle is not None and isinstance(msg, dict) and t in ("content", "thinking"):
+            chunk = msg.get("content")
+            if isinstance(chunk, str) and chunk:
+                try:
+                    self.cycle.capture(chunk, "thinking" if t == "thinking" else "answer")
+                except Exception:
+                    pass  # history is best-effort
         await self._inner.send_text(data)
 
     def __getattr__(self, name):
@@ -192,6 +208,49 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     session_timer.start()
     last_session_sec = float(getattr(channel, "last_session_duration_sec", 0.0) or 0.0)
 
+    # (2026-11-08 loop history) ONE recorder per agentic turn, minted HERE with a fresh
+    # turn_id. That id travels on every cycle_* frame and into the persisted turn_log row,
+    # which is what lets the UI bind frames to the right workspace's block (see
+    # static/ui/cycle-block.js CycleBlock.target). A normal one-shot turn has no loop, so
+    # it gets no block - its answer is a plain bubble.
+    cycle = None
+    _cycle_closed = False
+    answer_msg_id = None
+    if agent_mode:
+        cycle = CycleRecorder(sink, conv_id, turn_id=str(uuid.uuid4()),
+                              turn_started_at=time.time(), last_turn_sec=last_session_sec)
+        # The sink captures streamed AI text into the recorder (speech rows), so the block
+        # shows everything the AI said during this loop, not just the final answer.
+        sink.cycle = cycle
+        try:
+            await cycle.start()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"[CHATBUS] cycle_start failed for conv={conv_id}: {e}")
+
+    async def _close_cycle(final_text: str, stopped: bool) -> None:
+        """Settle + persist + announce this turn's cycle history EXACTLY ONCE.
+
+        Idempotent: settle_now() memoizes the payload, so a graceful finish and a hard
+        cancel cannot produce two rows or two cycle_end frames. History is best-effort -
+        a failure here must never change what the user got from the turn.
+        """
+        nonlocal _cycle_closed
+        if cycle is None or _cycle_closed:
+            return
+        _cycle_closed = True
+        try:
+            payload = cycle.settle_now(final_text or "", stopped=stopped)
+            if answer_msg_id:
+                save_turn_log(db_path, conv_id, payload, answer_msg_id)
+            else:
+                save_turn_log(db_path, conv_id, payload, None)
+            await sink.send_text(json.dumps({
+                "type": "cycle_end", "conv_id": conv_id,
+                "turn_id": cycle.turn_id, "payload": payload,
+            }))
+        except Exception as e:  # pragma: no cover - history must never break a turn
+            logger.debug(f"[CHATBUS] cycle history close failed for conv={conv_id}: {e}")
+
     try:
         conversation_history = list(prepared.get("history", []))
         final_response = ""
@@ -222,6 +281,9 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                         # message only after it was actually injected.
                         steer_source=channel,
                         on_steer_applied=_persist_applied_steer,
+                        # (2026-11-08 loop history) this turn's recorder: steps, tools,
+                        # consent cards, steers and every AI text land in one block.
+                        cycle=cycle,
                     )
                 result = await agentic_mode(agent_config, conversation_history, enhanced_message, media_files)
                 conversation_history.append({"role": "assistant", "content": result})
@@ -280,6 +342,9 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                     "The task was stopped before this steering message could be applied.",
                     "task_stopped",
                 )
+                # The block must settle BEFORE 'done': the UI clears the streaming state on
+                # 'done', so a cycle_end arriving after it would land in a closed block.
+                await _close_cycle(channel_ws.captured_text or "", stopped=True)
                 try:
                     await send_done(sink)
                 except Exception:
@@ -310,7 +375,10 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         # --- persist the assistant answer (the bus guarantees this even when nobody was looking) ---
         if final_response and not stop_event.is_set():
             try:
-                save_assistant_message(db_path, conv_id, final_response)
+                # The returned id links this turn's cycle-history row to the answer it
+                # describes (turn_log.message_id), so a reload can place the block exactly
+                # where the answer sits in the history.
+                answer_msg_id = save_assistant_message(db_path, conv_id, final_response)
                 channel._answer_persisted = True  # (2026-09-09 audit) answer is now in the DB
                 agent.learn_lesson(
                     f"Completed interaction: {user_msg[:50]}...",
@@ -346,6 +414,10 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
             "task_ended",
         )
 
+        # Settle the turn block BEFORE 'done' (same rule as the cancel path): the UI closes
+        # the open block on 'done', so cycle_end must arrive first.
+        await _close_cycle(final_response or "", stopped=False)
+
         channel.set_status(ChannelStatus.DONE)
         try:
             await send_done(sink)
@@ -362,6 +434,15 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
             logger.info(f"[CHATBUS] Session time settled for conv={conv_id}: {_elapsed:.1f}s active (approval-menu pauses excluded)")
         except Exception as e:  # pragma: no cover - stats must never break the turn
             logger.debug(f"Session timer settle failed for conv={conv_id}: {e}")
+
+        # (2026-11-08 loop history) Safety net: if any path above raised before reaching
+        # _close_cycle(), the turn's block must still settle (partial steps/tools/consent
+        # are facts). Idempotent - a turn that already closed is a no-op.
+        try:
+            await _close_cycle(final_response if 'final_response' in locals() else "",
+                               stopped=bool(stop_event.is_set()))
+        except Exception as e:  # pragma: no cover - history must never break a turn
+            logger.debug(f"[CHATBUS] cycle settle in finally failed for conv={conv_id}: {e}")
 
 
 def register_stop_event(stop_events: dict, conv_id: str, event: asyncio.Event) -> None:

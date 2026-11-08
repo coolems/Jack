@@ -67,9 +67,12 @@ SCREEN_BROWSER_TOOLS: frozenset[str] = frozenset({
     "reload",
     "save_current_image",
     "scroll",
-    # --- visual_browser_navigation (annotates browser screenshots) ---
-    "find_and_move_to_target",
-    "validate_target_area",
+    # --- visual_browser_navigation: REMOVED 2026-11-08 (user request) ---
+    # find_and_move_to_target and validate_target_area are gone: the Computer Use tools
+    # (cua_get_state + cua_click, or window px from cua_screenshot) target elements
+    # directly, so the banner-annotation bridge is dead weight in the tool schema. Their
+    # files under tools/visual_browser_navigation/ are deleted, so neither name may stay
+    # in this set - a name with no tool behind it only costs schema tokens.
 })
 
 

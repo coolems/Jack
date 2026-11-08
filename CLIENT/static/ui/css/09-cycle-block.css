@@ -1,0 +1,434 @@
+/* =====================================================================
+   09-cycle-block.css - The loop-history UI (2026-11-08).
+
+   One collapsed line per agentic turn, plus two always-visible strips under it:
+     .cycle-live  -> consent cards, the newest tool (live timer)
+     .cycle-ai    -> everything the AI said during this turn (thinking + answers)
+
+   Two size contracts, both from the user:
+     * IO FRAMES (2026-11-08, revised): input and output are shown inside a framed window in
+       EVERY tool block AND in the last-tool strip - input 5 visible lines, output 4 visible
+       lines, scrollable. The DOM keeps the full text; only the frame is clipped, so nothing
+       is lost.
+     * LAST-TOOL strip -> ONE info line (tool number + name + status + live timer; no call
+       id, no start time, no second stats row), visible the WHOLE time the turn runs. The AI
+       ANSWER strip has no cap either: the whole answer is readable, streamed live, inside
+       the scrolling chat.
+   ===================================================================== */
+
+/* THE BLOCK NEVER GETS SQUASHED (2026-11-08, user request): #chatContainer is a flex
+   COLUMN, and a flex item with `overflow: hidden` has an automatic minimum size of 0 -
+   so when the chat grew taller than the container the browser squeezed the block below
+   its own content and the AI answer was cut off at the border. Two rules fix it:
+   `flex-shrink: 0` keeps the block at its real height, and `min-height: max-content`
+   makes clipping impossible even if some ancestor squeezes it - the block is ALWAYS at
+   least as tall as its own content, so the whole answer is visible and the chat scrolls. */
+.cycle-block {
+    width: 100%;
+    flex-shrink: 0;
+    min-height: max-content;
+    border: 1px solid var(--border-color, #2a2f3a);
+    border-radius: 10px;
+    background: var(--bg-secondary, #141821);
+    margin: 10px 0;
+    overflow: hidden;
+}
+
+.cycle-block.settled { border-color: var(--border-color, #2a2f3a); }
+.cycle-block.stopped { border-color: var(--warning, #f59e0b); }
+
+/* ---- collapsed summary line ---- */
+.cycle-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text-secondary, #9aa4b2);
+    user-select: none;
+}
+.cycle-head:hover { background: var(--bg-tertiary, #1b2029); color: var(--text-primary, #e6edf3); }
+.cycle-head:focus-visible { outline: 1px solid var(--accent, #4f8cff); outline-offset: -2px; }
+
+.cycle-caret { font-size: 11px; opacity: 0.7; flex-shrink: 0; }
+.cycle-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cycle-timer {
+    flex-shrink: 0;
+    color: var(--text-muted, #6b7686);
+    font-variant-numeric: tabular-nums;
+}
+.cycle-timer.live { color: var(--success, #2ecc71); }
+
+/* ---- expanded body ---- */
+.cycle-body {
+    display: none;
+    padding: 6px 14px 12px;
+    border-top: 1px solid var(--border-color, #2a2f3a);
+}
+.cycle-block.expanded .cycle-body { display: block; }
+
+.cycle-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--border-color, #232833);
+    font-size: 13px;
+}
+.cycle-row:last-child { border-bottom: none; }
+
+.cycle-row-key {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted, #6b7686);
+}
+.cycle-row-meta { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-secondary, #9aa4b2); }
+
+/* ---- step rows ---- */
+.cycle-row-step .cycle-row-meta { color: var(--text-primary, #e6edf3); }
+.cycle-row-step .cycle-row-key { color: var(--accent, #4f8cff); }
+
+/* ---- tool rows: name + live timer, input (5 lines), output (4 lines) ---- */
+.cycle-tool-head { display: flex; align-items: center; gap: 8px; }
+.cycle-tool-name { font-family: ui-monospace, monospace; font-weight: 600; color: var(--accent, #4f8cff); }
+.cycle-tool-status { font-size: 12px; color: var(--success, #2ecc71); }
+.cycle-row-tool[data-ok="0"] .cycle-tool-status { color: var(--danger, #e5534b); }
+.cycle-row-tool[data-ok="0"] .cycle-tool-name { color: var(--danger, #e5534b); }
+.cycle-tool-timer {
+    margin-left: auto;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--text-muted, #6b7686);
+    font-variant-numeric: tabular-nums;
+}
+.cycle-row-tool[data-running="1"] .cycle-tool-timer { color: var(--success, #2ecc71); }
+
+/* ---- io frames: a real window for input/output (user request 2026-11-08) ----
+   Every tool block AND the always-visible last-tool strip renders input and output inside
+   this frame: a title bar (input / output) over a scrollable body clipped to a fixed
+   number of lines - input 5, output 4. The <pre> keeps the FULL text, so the scrollbar
+   reveals whatever the frame clips. The height is set inline by cycle-rows.js /
+   cycle-shell.js (one source of truth for the numbers); `overflow: auto` scrolls inside it.
+
+   THE GEOMETRY FIX (2026-11-08): the inline cap is the box's HEIGHT. The global
+   `* { box-sizing: border-box }` folds this box's own 6px padding into that height, so a
+   5-line budget showed ~4.25 lines and a 4-line budget ~3.25 - fewer lines than the contract.
+   `.cycle-io-pre` is therefore `box-sizing: content-box`: the inline height IS the scroll
+   viewport (padding sits outside it). `height` (not max-height) makes it a FIXED window, so a
+   short value - or an empty frame - still occupies the whole window instead of collapsing.
+
+   SECOND FIX (2026-11-08, measured in a real browser): `line-height: 1.35` is UNITLESS, so the
+   line box is 1.35 x the resolved font metrics - Chrome rounded it to 16.5px, so a 5-line budget
+   (6.75em = 81px) showed only 4.94 lines: the 5th line was sliced off. The line box is now an
+   INTEGER 16px, so 5 x 16 = 80px shows exactly 5 lines and 4 x 16 = 64px exactly 4. The JS uses
+   LINE_PX = 16 (the same number) instead of an em multiplier. */
+.cycle-io {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;              /* a row may never squash the frame below its own height */
+    border: 1px solid var(--border-color, #2a2f3a);
+    border-radius: 6px;
+    background: var(--bg-tertiary, #1b2029);
+    overflow: hidden;              /* the frame itself never grows past its body */
+}
+.cycle-io-label {
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted, #6b7686);
+    padding: 3px 8px;
+    background: var(--bg-secondary, #141821);
+    border-bottom: 1px solid var(--border-color, #232833);
+    user-select: none;
+}
+.cycle-io-pre {
+    margin: 0;
+    box-sizing: content-box;     /* the inline height = the TEXT area, padding sits outside it */
+    padding: 6px 8px;
+    background: transparent;
+    overflow: auto;              /* sidebar scroll inside the clipped box */
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 16px;           /* integer line box: 5 lines = 80px, 4 lines = 64px exactly */
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-primary, #e6edf3);
+}
+.cycle-io-pre[data-empty="1"] { color: var(--text-muted, #6b7686); }
+.cycle-io-pre::-webkit-scrollbar { width: 8px; }
+.cycle-io-pre::-webkit-scrollbar-thumb { background: var(--border-color, #2a2f3a); border-radius: 4px; }
+.cycle-io-pre::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- consent decision rows (the card itself is transient) ---- */
+.cycle-consent-line { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-secondary, #9aa4b2); }
+.cycle-row-consent[data-decision="allow"] .cycle-consent-line { color: var(--success, #2ecc71); }
+.cycle-row-consent[data-decision="deny"] .cycle-consent-line { color: var(--danger, #e5534b); }
+.cycle-row-consent[data-decision="explain"] .cycle-consent-line { color: var(--accent, #4f8cff); }
+.cycle-row-consent[data-decision="auto"] .cycle-consent-line { color: var(--success, #2ecc71); }
+.cycle-row-consent[data-decision="unanswered"] .cycle-consent-line { color: var(--warning, #f59e0b); }
+.cycle-consent-settled { opacity: 0.85; }
+.cycle-row-consent .exec-approval-card { margin: 4px 0 0; }
+
+/* ---- auto-allow grants ---- */
+.cycle-row-grant .cycle-row-meta { color: var(--success, #2ecc71); }
+
+/* NO steering rows here (2026-11-08 restore to the committed approach): a steering
+   message is a chat-level user bubble (.message.user.steering, styles in
+   04-chat-messages.css), never a row of the turn block. */
+
+/* ---- notices ---- */
+.cycle-notice-text { color: var(--text-secondary, #9aa4b2); white-space: pre-wrap; }
+.cycle-row-notice[data-level="error"] .cycle-notice-text { color: var(--danger, #e5534b); }
+
+/* ---- AI speech inside the block ---- */
+.cycle-speech-label { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted, #6b7686); }
+.cycle-speech-text { color: var(--text-primary, #e6edf3); }
+.cycle-speech-text p { margin: 0 0 6px; }
+.cycle-row-speech[data-speech-kind="thinking"] { opacity: 0.75; }
+.cycle-row-speech[data-speech-kind="thinking"] .cycle-speech-text {
+    font-size: 12px; color: var(--text-secondary, #9aa4b2);
+    max-height: 12em; overflow: auto;
+}
+
+/* ---- segment divider (REMOVED 2026-11-08, user request) ----
+   A steer used to paint a dashed horizontal line inside the AI response frame, which read
+   as a limiter/barrier. Nothing is painted any more and a steer no longer closes a segment
+   at all (steering is chat-level) - no .cycle-segment-break rule, no divider element. */
+
+/* ---- live strip: consent cards + last tool, visible while collapsed ---- */
+.cycle-live {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 14px 0;
+    border-top: 1px solid var(--border-color, #2a2f3a);
+}
+.cycle-live:empty { display: none; }
+.cycle-card-mount { display: flex; flex-direction: column; gap: 6px; }
+.cycle-card-mount:empty { display: none; }
+.cycle-card-mount .exec-approval-card, .cycle-card-mount .sp-card { margin: 0; }
+
+/* ---- last tool strip (visible while the loop runs) ----
+   The strip shows ONE info line (number + name + status + timer) and the io FRAMES: input
+   5 lines, output 4 lines, scrollable - the same frames the expanded body rows use. The
+   strip stays compact so it never pushes the AI answer out of view; the scrollbar inside
+   each frame reveals the rest of the text.
+   Status colors are three-state and honest: running = amber, ok = green, failed = red.
+   Green never appears for a failed call, and no state is guessed before the result. */
+.cycle-last {
+    padding: 8px 14px 10px;
+    border-top: 1px solid var(--border-color, #2a2f3a);
+    background: var(--bg-tertiary, #1b2029);
+}
+.cycle-last-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    white-space: nowrap;          /* ONE info line: number + name + status + timer */
+    min-width: 0;
+}
+.cycle-last-label {
+    font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-muted, #6b7686);
+    flex-shrink: 0;
+}
+.cycle-last-no {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-muted, #6b7686);
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
+.cycle-last-name {
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+    color: var(--accent, #4f8cff);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.cycle-last-status { color: var(--warning, #f59e0b); flex-shrink: 0; }   /* running */
+.cycle-last-timer {
+    margin-left: auto;
+    font-family: ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    color: var(--warning, #f59e0b);                              /* running */
+    flex-shrink: 0;
+}
+.cycle-last-io { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+/* The strip's own children (info line + the two io frames) need breathing room; the frames
+   are stacked directly inside .cycle-last-tool, so the gap lives here. */
+.cycle-last-tool { display: flex; flex-direction: column; gap: 6px; }
+/* Inside the last-tool strip the strip background is already bg-tertiary, so the frames get
+   the darker secondary tone to read as distinct windows against it. */
+.cycle-last .cycle-io { background: var(--bg-secondary, #141821); }
+.cycle-last .cycle-io-label { background: var(--bg-tertiary, #1b2029); }
+/* Settled states. data-ok is written by CycleShell.finishLastTool() only once the tool
+   result is known (never while running), so red/green always reflect a real outcome. */
+.cycle-last[data-ok="1"] .cycle-last-status,
+.cycle-last[data-ok="1"] .cycle-last-timer { color: var(--success, #2ecc71); }
+.cycle-last[data-ok="0"] .cycle-last-status,
+.cycle-last[data-ok="0"] .cycle-last-timer { color: var(--danger, #e5534b); }
+.cycle-last[data-ok="0"] .cycle-last-name { color: var(--danger, #e5534b); }
+.cycle-last[data-ok="0"] .cycle-io { border-color: var(--danger, #e5534b); }
+
+/* ---- AI response strip ---- */
+.cycle-ai {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-color, #2a2f3a);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.cycle-ai-empty { font-size: 12px; color: var(--text-muted, #6b7686); }
+.cycle-ai-thinking {
+    font-size: 12px;
+    color: var(--text-secondary, #9aa4b2);
+    max-height: 10em;
+    overflow: auto;
+    padding: 6px 8px;
+    border-left: 2px solid var(--border-color, #2a2f3a);
+    white-space: pre-wrap;
+}
+/* The AI answer strip is the frame the user reads - it must show the WHOLE answer.
+   No max-height anywhere in it: code blocks grow with their content (horizontal scroll
+   only, so a long line never wraps into a hidden tail). */
+.cycle-ai-answer { color: var(--text-primary, #e6edf3); }
+/* While the turn is RUNNING the answer is painted as plain streamed text (no markdown
+   re-parse per token), so newlines must survive - the live box is pre-wrap, never clipped. */
+.cycle-ai-answer.live { white-space: pre-wrap; word-break: break-word; }
+.cycle-ai-answer p { margin: 0 0 6px; }
+.cycle-ai-answer pre {
+    background: var(--bg-tertiary, #1b2029);
+    border: 1px solid var(--border-color, #232833);
+    border-radius: 6px;
+    padding: 8px;
+    overflow-x: auto;
+    font-size: 12px;
+}
+/* The final answer of the loop is the one that stays after the loop ends. */
+.cycle-ai-answer[data-step-no="0"] { font-weight: 500; }
+
+/* ---- AI strip Copy buttons (2026-11-08, restored to the REPO shape) ----
+   In the last repo version an AI answer was a .message-content bubble whose Copy chip
+   floated at the top-right and bottom-right edge and appeared only on hover
+   (css/04-chat-messages.css). A turn's answer now lives in this strip, so the strip is the
+   anchor: same base .copy-btn rules (absolute, opacity 0), same hover reveal, same
+   hover and green "Copied!" colours - all from 04-chat-messages.css, nothing overridden here.
+   cycle-block.js renders the two chips; message.js copyCycleAnswer() copies the strip's raw
+   answer text. */
+.cycle-ai { position: relative; }        /* the chips anchor to the answer strip */
+.cycle-ai:hover .copy-btn { opacity: 1; }
+/* No answer yet (turn still waiting): no chip, so nothing can copy an empty strip. */
+.cycle-ai[data-empty="1"] .copy-btn { display: none; }
+/* Same minimum as the prompt bubble (2026-11-08): a one-line answer would put the top Copy
+   chip on top of the bottom one. Only once the strip has an answer - an empty strip keeps
+   its compact height because it shows no chips. */
+.cycle-ai:not([data-empty="1"]) { min-height: 56px; }
+
+/* No steer chip and no steer_ack row here (2026-11-08 restore): steering is a chat-level
+   user bubble settled by the steer_received / steer_applied / steer_rejected frames, so the
+   block has no chip in its live strip and no acknowledgement row. */
+
+/* ---- plain user prompt (the only chat-level message the new UI keeps) ---- */
+.cycle-user {
+    width: 100%;
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    margin: 10px 0;
+    animation: fadeIn 0.3s ease;
+}
+/* MINIMUM SIZE (2026-11-08, user request: "when we add a message in UI we must have a
+   minimum length there just to fit those copy and edit buttons"). A one-word prompt like
+   "hi" made the bubble shrink to the text, so the two floating chips spilled past its edge
+   and the top chip overlapped the bottom one. The numbers come from the chip geometry in
+   css/04-chat-messages.css (11px text, 2px 6px padding, 1px border, 12px icon + 3px gap):
+     * chip height ~18px, anchored top:8px / bottom:8px -> they collide unless the bubble is
+       taller than 8+18+gap+18+8 = 52px, so min-height 56px (a 4px gap between the chips);
+     * Copy spans right 8..62, Edit spans right 68..119 -> min-width 132px keeps the pair
+       inside the bubble with ~13px of clearance on the left.
+   min-width/min-height never limit a longer prompt (max-width still caps it). */
+.cycle-user-bubble {
+    max-width: calc(100% - 50px);
+    min-width: 132px;            /* room for the Edit + Copy chip pair side by side */
+    min-height: 56px;            /* room for the top chip and the bottom chip, no overlap */
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: var(--accent, #4f8cff);
+    color: #fff;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.cycle-user-images { display: flex; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.cycle-user-images img { max-width: 300px; max-height: 200px; border-radius: 8px; cursor: pointer; }
+
+/* ---- COPY + EDIT ON THE USER PROMPT (2026-11-08, restored to the REPO shape) ----
+   In the last repo version a prompt was `.message.user .message-content`: Copy and Edit
+   floated at the bubble's top-right and bottom-right edge (css/04-chat-messages.css base
+   rules: position absolute, opacity 0) and appeared only while the bubble was hovered.
+   A prompt is now a .cycle-user-bubble, so that bubble must become the anchor again:
+   `position: relative` + the same hover reveal. The buttons keep the repo's dark chip
+   colour; on the accent-blue bubble it reads as a solid chip, exactly as before. */
+.cycle-user-bubble { position: relative; }
+.cycle-user-bubble:hover .copy-btn,
+.cycle-user-bubble:hover .edit-btn { opacity: 1; }
+/* While editing, the prompt text and the floating buttons go away - the bubble itself must
+   STAY, because startEditMessage() inserts the textarea INSIDE the bubble: hiding the bubble
+   hid the editor too. Mirrors the repo's `.message.editing` rules. */
+.cycle-user.editing .content-text { display: none; }
+.cycle-user.editing .copy-btn,
+.cycle-user.editing .edit-btn { opacity: 0 !important; pointer-events: none; }
+/* The repo let the edited bubble take the full chat width (`.message.editing .message-content`),
+   so the edit box is not squeezed into the bubble's own text width. */
+.cycle-user.editing .cycle-user-bubble {
+    flex: 1 1 auto;
+    width: auto;
+    max-width: none;
+    min-width: 0;
+}
+
+/* ---- generated image card (kept as a block-level artifact) ---- */
+.cycle-image {
+    width: 100%;
+    border: 1px solid var(--border-color, #2a2f3a);
+    border-radius: 10px;
+    background: var(--bg-secondary, #141821);
+    padding: 10px 14px;
+    margin: 10px 0;
+}
+.cycle-image img { max-width: 100%; max-height: 420px; border-radius: 8px; cursor: pointer; }
+.cycle-image-meta { font-size: 12px; color: var(--text-secondary, #9aa4b2); margin-top: 6px; }
+.cycle-image-setup { font-size: 11px; color: var(--text-muted, #6b7686); margin-top: 4px; font-family: ui-monospace, monospace; }
+
+/* ---- image inside the block body (thumbnail; the card below is the full one) ---- */
+.cycle-row-image { flex-direction: row; align-items: center; gap: 10px; }
+.cycle-image-thumb { max-width: 120px; max-height: 80px; border-radius: 6px; cursor: pointer; }
+
+/* ---- system notice at chat level (provider errors, recovery) ---- */
+.cycle-system {
+    width: 100%;
+    padding: 8px 14px;
+    margin: 8px 0;
+    border-left: 3px solid var(--warning, #f59e0b);
+    background: var(--bg-tertiary, #1b2029);
+    font-size: 13px;
+    color: var(--text-secondary, #9aa4b2);
+    white-space: pre-wrap;
+}
+.cycle-system.error { border-left-color: var(--danger, #e5534b); }
+
+/* Setup/Downloads card lives inside the last-tool strip while a tool runs. */
+.cycle-setup-slot .sp-card { margin: 6px 0 0; }
+
+@media (max-width: 900px) {
+    .cycle-summary { font-size: 12px; }
+    .cycle-image-thumb { max-width: 90px; }
+}

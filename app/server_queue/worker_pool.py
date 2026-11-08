@@ -211,9 +211,15 @@ class WorkerPool:
         # Routing safety (2026-10 fleet): never run a request on a node whose discovered
         # model group differs. The queue already filters by model, so this only fires if
         # a node was restarted with another model between two /props polls.
-        if req.model_key and backend.model_key and req.model_key != backend.model_key:
+        # (2026-11 strata) serves_model() also accepts an endpoint's alias ids, so a
+        # request named by /v1/models still passes this guard.
+        serves = getattr(backend, "serves_model", None)
+        mismatched = (not serves(req.model_key)) if callable(serves) \
+            else (req.model_key != backend.model_key)
+        if req.model_key and backend.model_key and mismatched:
             msg = (f"Backend {backend.label} serves '{backend.model_label}', not "
-                   f"'{req.model}'. Routing mismatch - restart that node with the model.")
+                   f"'{req.model}'. Routing mismatch - restart that {self._backend_noun()} "
+                   "with the model.")
             backend.bump_error(msg)
             logger.error("[WORKERS] %s", msg)
             await self._send(req.sink, {
@@ -273,7 +279,8 @@ class WorkerPool:
                     )
                     await self._send(req.sink, {
                         "type": "error",
-                        "message": (f"No llama node is serving '{req.model}' right now - "
+                        # Kind-aware wording (2026-11 strata): a Strata fleet is not a llama node.
+                        "message": (f"No {self._backend_noun()} is serving '{req.model}' right now - "
                                     f"please resend in a minute."),
                         "retryable": True,
                         "retry_after_sec": 60,
@@ -283,6 +290,11 @@ class WorkerPool:
                 raise
             except Exception as e:  # pragma: no cover - watchdog must never die
                 logger.error("[WATCHDOG] error: %s", e, exc_info=True)
+
+    def _backend_noun(self) -> str:
+        """Client-facing kind wording for the serving fleet ("llama node" / "Strata endpoint")."""
+        noun = getattr(self._registry, "backend_noun", None)
+        return noun() if callable(noun) else "llama node"
 
     @staticmethod
     async def _send(sink, frame: dict) -> None:

@@ -99,14 +99,21 @@ const ApprovalDialog = {
         return 'python';
     },
 
-    /** Render one consent card from the shared config table. Entry point for websocket.js. */
-    appendCard(data) {
-        const container = document.getElementById('chatContainer');
+    /** Render one consent card from the shared config table. Entry point for websocket.js.
+     *
+     * `mount` (2026-11-08 loop-history UI): when given, the card renders INSIDE that
+     * element - the live strip of the current cycle block - instead of the chat stream.
+     * The card is transient there: once answered, websocket.js receives `cycle_consent`
+     * and CycleBlock.settleCard() removes it, leaving a decision row in the block body.
+     * Dedupe is scoped to the mount, so two workspaces can never collide on a request_id.
+     */
+    appendCard(data, mount) {
+        const container = mount || document.getElementById('chatContainer');
         if (!container) return;
         const welcome = document.getElementById('welcome');
         if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
 
-        // Replay/duplicate safety: never render the same request twice.
+        // Replay/duplicate safety: never render the same request twice (in THIS mount).
         if (data.request_id && container.querySelector('.exec-approval-card[data-request-id="' + data.request_id + '"]')) {
             return;
         }
@@ -195,7 +202,8 @@ const ApprovalDialog = {
 
         let remaining = s;
         const tickTimer = setInterval(() => {
-            if (card.dataset.answered === '1') { clearInterval(tickTimer); return; }
+            // The card is gone (answered, auto-approved, or the block was cleared) - stop touching it.
+            if (card.dataset.answered === '1' || !card.isConnected) { clearInterval(tickTimer); return; }
             const allowBtn = card.querySelector('.exec-btn[data-decision="allow"]');
             // Any button click disables all buttons immediately - once that happens the user
             // has decided and the countdown must stop touching the dialog (no status overwrite).
@@ -208,6 +216,36 @@ const ApprovalDialog = {
                 this.submitDecision(data, allowBtn);   // identical to the user clicking Allow
             }
         }, 1000);
+        // A card removed some other way (backend decision frame, turn settle, workspace clear)
+        // must not leave a ticking timer behind - it would fire submitDecision on a dead node.
+        card._autoTimer = tickTimer;
+    },
+
+    /**
+     * Remove one answered card from the DOM (user rule 2026-11-08): a consent dialog must
+     * DISAPPEAR after ANY button click AND after the auto-approve timer fires. The card is
+     * transient by design - the decision survives as a row of the turn block (cycle_consent),
+     * so nothing is lost when the card goes away.
+     *
+     * Two shapes are handled, because a card lives either inside a block's live strip or, when
+     * no block owned the frame, as a plain chat bubble:
+     *   .cycle-card-mount > .message > .exec-approval-card   -> the whole mount goes
+     *   .message > .exec-approval-card                       -> the whole bubble goes (the
+     *     old removal only looked for mounts, so a chat-level card lingered forever)
+     */
+    dismissCard(card, decision) {
+        if (!card) return;
+        card.dataset.answered = '1';
+        card.dataset.decision = decision || 'answered';
+        card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
+        const mount = card.closest('.cycle-card-mount');
+        const target = mount || card.closest('.message') || card;
+        // The countdown is owned by the message WRAPPER (startAutoApproveCountdown receives it),
+        // so clear it on every element involved - wrapper, card and mount.
+        for (const el of [target, card, card.closest('.message')]) {
+            if (el && el._autoTimer) { clearInterval(el._autoTimer); el._autoTimer = null; }
+        }
+        target.remove();
     },
 
     /** Post one decision (allow / deny / allow_category_until_done / explain) for a card. */
@@ -217,11 +255,6 @@ const ApprovalDialog = {
         card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
         const statusEl = card.querySelector('.exec-approval-status');
         const decision = clickedBtn.dataset.decision;
-        const kind = this.resolveKind(data);
-        const cfg = APPROVAL_DIALOG_CONFIG[kind];
-
-        if (statusEl) { statusEl.className = 'exec-approval-status waiting'; statusEl.textContent = 'Sending decision...'; }
-
         const convId = data.conv_id || COOLEMS.currentConversation;
         fetch('/api/exec-approval/' + encodeURIComponent(convId) + '/' + encodeURIComponent(data.request_id), {
             method: 'POST',
@@ -232,12 +265,9 @@ const ApprovalDialog = {
             .then(({ ok, d }) => {
                 card.dataset.answered = '1';
                 if (!ok) throw new Error((d && d.message) || ('HTTP ' + (d && d.detail ? JSON.stringify(d.detail) : '')));
-                let msg;
-                if (decision === 'allow') msg = cfg.statusAllow;
-                else if (decision === 'allow_category_until_done') msg = cfg.statusRunAll || '\u26A1 Allow-until-task-done enabled: consent requests will be approved without asking until this task ends.';
-                else if (decision === 'explain') msg = '\uD83D\uDCAC Explaining to the AI - it will answer, then ask again with a fresh card.';
-                else msg = cfg.statusDeny;
-                if (statusEl) { statusEl.className = 'exec-approval-status done-' + decision; statusEl.textContent = msg; }
+                // The decision reached the backend - the dialog is done, so it disappears.
+                // (A failed POST keeps the card on screen with the error, so the user can retry.)
+                this.dismissCard(card, decision);
             })
             .catch(err => {
                 card.dataset.answered = '1';

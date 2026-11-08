@@ -122,6 +122,12 @@ class BaseModeConfig:
     # that do not support steering (normal mode, tests, direct API use).
     steer_source: Any = None
     on_steer_applied: Any = None
+
+    # (2026-11-08 loop history) This turn's app.cycle_recorder.CycleRecorder, created by the
+    # chat bus when the turn starts. Every step / tool / consent / steer / AI text of the run
+    # is recorded on it and streamed as `cycle_*` frames, so the UI renders ONE collapsed
+    # block per turn instead of a flat chat. None for callers without a bus (tests, CLI).
+    cycle: Any = None
     
 # (2026-10-11) FINAL TURN STATS HYGIENE: react_loop.py splices a "Loop stats:" line into the
 # persisted answer right above 'Agentic AI: TASK DONE' and the UI renders it from that text.
@@ -233,12 +239,22 @@ def strip_images_from_messages(messages: List[Dict]) -> int:
 
     Returns:
         Number of base64 image blobs removed.
+
+    The cached `_est_tokens` of each stripped message is dropped: estimate_message_tokens()
+    caches on the dict, so after `del msg["images"]` the budget math would keep charging
+    pixels that are no longer in the payload and the text-only retry would look bigger than
+    it really is.
     """
     removed = 0
     for msg in messages or []:
         if isinstance(msg, dict) and msg.get("images"):
             removed += len(msg["images"])
             del msg["images"]
+            try:
+                from utils.history_manager import invalidate_message_tokens
+                invalidate_message_tokens(msg)  # images gone -> cached count is stale
+            except Exception:
+                pass  # counting still works, just uncached for this message
     return removed
 
 

@@ -123,6 +123,10 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                 # (2026-10 fleet) "bad luck, dude" path: no node serves this model at all.
                 # Configured-but-down models are queued and handled by the worker watchdog.
                 reg = get_registry()
+                if reg is not None:
+                    # (2026-11 strata) A client may name the model by the alias id the
+                    # endpoint reports; re-key it into the queue its workers actually poll.
+                    req.model_key = reg.canonical_model_key(req.model_key) or req.model_key
                 if reg is not None and not reg.model_configured(req.model_key):
                     logger.warning(
                         "[SERVER] Chat request for model=%s (key=%s) has no configured node. "

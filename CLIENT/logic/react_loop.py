@@ -423,12 +423,13 @@ async def run_react_loop(
             logger.info("-" * 50)
 
             # Cycle history (2026-11): every provider call is ONE reasoning step of this
-            # turn. begin_step() is synchronous (returns the step number); the step is
-            # settled after the provider stats arrive, so the row carries real counters.
+            # turn. begin_step() flushes the PREVIOUS step's AI text first (so a step's
+            # speech never leaks into the next group) and returns the new step number; the
+            # step is settled after the provider stats arrive, so the row carries real counters.
             step_no = tool_iteration + 1
             if cycle is not None:
                 try:
-                    step_no = cycle.begin_step()
+                    step_no = await cycle.begin_step()
                 except Exception:
                     pass  # history is best-effort
 

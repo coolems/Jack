@@ -112,6 +112,10 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
     )
 
     _reg = get_registry()
+    if _reg is not None:
+        # (2026-11 strata) A client may name the model by the alias id the endpoint
+        # reports; re-key it into the queue its workers actually poll.
+        _req.model_key = _reg.canonical_model_key(_req.model_key) or _req.model_key
     if _reg is not None and not _reg.model_configured(_req.model_key):
         logger.warning(
             "[SERVER] Relayed request for model=%s (key=%s) has no configured node. Fleet: %s",

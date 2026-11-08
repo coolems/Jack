@@ -79,6 +79,16 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
             if b.healthy and b.local:
                 entry["loaded"] = True
 
+            # (2026-11 strata) An endpoint can advertise the SAME model under alias ids
+            # (/v1/models). Fold those entries into the served one so the picker shows ONE
+            # model with its real slots, and keep the alias names visible to the client.
+            aliases = set(entry.get("aliases") or [])
+            for ak in getattr(b, "model_aliases", ()) or ():
+                dup = by_key.pop(ak, None)
+                aliases.add(str(dup.get("name")) if dup is not None else ak)
+            if aliases:
+                entry["aliases"] = sorted(aliases)
+
     catalog = []
     for entry in by_key.values():
         served = entry.get("served_by") or []

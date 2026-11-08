@@ -199,66 +199,10 @@ function _fmtGB(bytes) {
     return Math.round(mb) + ' MB';
 }
 
-function appendGeneratedImage(data) {
-    const container = document.getElementById('chatContainer');
-    const welcome = document.getElementById('welcome');
-    if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
-
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message assistant';
-
-    // Always-visible setup/tier line (2026-10-04) - rendered for EVERY image, cached or not.
-    const setupLine = _formatSetupLine(data);
-
-    // (2026-11 review fix B9) data.file_path / data.filename come from the SERVER
-    // payload and were interpolated RAW into innerHTML and into an inline onclick
-    // string. A path containing quotes or markup (e.g. a model-generated filename
-    // like `a"><img onerror=...>.png`) injected HTML/JS into the chat. Both are now
-    // HTML-escaped, and the click handler is a real listener instead of an inline
-    // onclick built from a string - so no JS-string escaping is needed at all.
-    const filePath = data.file_path || '';
-    const safeFilePath = escapeHtml(filePath);
-    const safeFilename = escapeHtml(data.filename || 'Generated image');
-
-    const imageHtml = `
-        <div class="avatar">AI</div>
-        <div class="message-content">
-            <div class="generated-image-container">
-                <div class="generated-image-title">
-                    <span>🎨</span> Image Generated
-                </div>
-                <img src="data:image/png;base64,${data.image_base64}"
-                     class="generated-image"
-                     alt="${safeFilename}"
-                     title="Click to open file">
-                ${setupLine ? `<div class="generated-image-setup">${escapeHtml(setupLine)}</div>` : ''}
-                <div class="generated-image-meta">
-                    <span>📁 ${safeFilePath || 'Saved'}</span>
-                    ${data.width && data.height ? `<span>📐 ${escapeHtml(String(data.width))}×${escapeHtml(String(data.height))}</span>` : ''}
-                </div>
-                <button class="copy-btn copy-top" onclick="copyMessage(this)">📋 Copy</button>
-                <button class="copy-btn copy-bottom" onclick="copyMessage(this)">📋 Copy</button>
-            </div>
-        </div>
-    `;
-
-    messageDiv.innerHTML = imageHtml;
-    messageDiv.querySelector('.message-content').setAttribute('data-raw-content', `Generated image: ${filePath}`);
-    // Attribute assignment (not HTML parsing) keeps the raw path safe, and the
-    // listener reads it back verbatim for window.open().
-    const imgEl = messageDiv.querySelector('.generated-image');
-    if (imgEl && filePath) {
-        imgEl.setAttribute('data-file-path', filePath);
-        imgEl.addEventListener('click', () => {
-            window.open(imgEl.getAttribute('data-file-path'));
-        });
-    }
-    container.appendChild(messageDiv);
-
-    if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) {
-        scrollToBottom();
-    }
-}
+// (2026-11-08 loop-history UI) appendGeneratedImage() and appendRecoveryWarning() are
+// GONE: a generated image is a row of its turn block (CycleBlock.addImage) and a recovery
+// / provider error is a notice row (or a .cycle-system node when no block owns it).
+// The old flat bubble renderers were removed with the conversational UI.
 
 // (2026-08-23 session stats) format seconds as MM:SS (or H:MM:SS past one hour).
 function formatSessionTime(totalSec) {
@@ -362,44 +306,6 @@ function updateHistoryStatusBar(data) {
     console.log(`[TokenStats] Updated: prompt=${sentTokens}, gen=${generatedTokens}, speed=${speed}, remaining=${remaining}, window=${windowTokens}`);
 }
 
-/**
- * Append a recovery warning block to the chat.
- * This shows an orange warning when the server went down and recovered.
- */
-function appendRecoveryWarning(message, status) {
-    const container = document.getElementById('chatContainer');
-    const welcome = document.getElementById('welcome');
-    if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
-
-    const messageDiv = document.createElement('div');
-    messageDiv.className = 'message assistant';
-    messageDiv.dataset.messageIndex = container.querySelectorAll('.message').length;
-
-    let statusClass = '';
-    let headerText = 'System Warning';
-    if (status === 'success') {
-        statusClass = 'success';
-        headerText = 'System Recovery';
-    } else if (status === 'error') {
-        statusClass = 'error';
-        headerText = 'System Error';
-    }
-
-    messageDiv.innerHTML = '<div class="avatar">AI</div><div class="message-content">' +
-        '<div class="recovery-warning-block">' +
-            '<div class="recovery-warning-header">' + headerText + '</div>' +
-            '<div class="recovery-warning-content ' + statusClass + '">' + escapeHtml(message) + '</div>' +
-        '</div>' +
-        '<button class="copy-btn copy-top" onclick="copyMessage(this)">📋 Copy</button>' +
-        '<button class="copy-btn copy-bottom" onclick="copyMessage(this)">📋 Copy</button>' +
-    '</div>';
-
-    messageDiv.querySelector('.message-content').setAttribute('data-raw-content', message);
-    container.appendChild(messageDiv);
-
-    if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) { scrollToBottom(); }
-}
-
 // ===== PER-CONVERSATION STREAM STATE (2026-11-24 multi-chat mix fix) ====================
 // THE FIX for the cross-workspace content mix: streamingBuffer / _inReplay /
 // _baselineAssistant used to be ONE global set of variables shared by every workspace.
@@ -451,77 +357,46 @@ const ChatStreamState = {
     alias('_pendingTurnStatsLine', 'pendingTurnStatsLine');
 })();
 
-function _countRenderedAssistantBubbles() {
-    const c = document.getElementById('chatContainer');
-    return c ? c.querySelectorAll('.message.assistant').length : 0;
-}
-
-/**
- * True while replaying the buffered tail AND this chat has a live session.
- * (2026-11-24) ownerConvId is the conversation that OWNS the frame - its status and
- * baseline are consulted, not currentConversation's (the old code evaluated the wrong
- * chat during switch windows).
- */
-function _replayShouldRenderAssistantFrame(ownerConvId) {
+// ===== CYCLE-BLOCK REPLAY GUARD (2026-11-08 loop-history UI) =====================
+// The old bubble-count baseline guarded assistant bubbles. The new view renders ONE
+// collapsed block per agentic turn, so the guard is per TURN: a replayed frame whose
+// turn_id already has a block in this view is a duplicate and must be dropped, and a
+// replay of a turn that finished while we were away is dropped too (its history comes
+// from turn_log via conversation.js rebuild, not from frames).
+function _replayShouldRenderCycleFrame(ownerConvId, turnId) {
     const convId = ownerConvId || COOLEMS.currentConversation;
     const st0 = convId ? ChatStreamState.get(convId) : null;
-    if (!st0 || !st0.inReplay) return true;                   // live frame - always render
+    if (!st0 || !st0.inReplay) return true;                    // live frame - always render
     const st = (typeof ChatSocketPool !== 'undefined' && convId)
         ? (ChatSocketPool.statuses[convId] || 'idle') : 'idle';
-    if (st === 'idle') return false;                           // turn finished while away - answer is in the DB
-    const fresh = _countRenderedAssistantBubbles() > st0.baselineAssistant;
-    return !fresh;                                             // already rendered this turn's bubble once
+    if (st === 'idle') return false;                           // turn finished while away - DB rebuild owns it
+    if (typeof CycleBlock === 'undefined') return false;
+    if (turnId && CycleBlock.get(convId, turnId)) return false; // block already rendered live
+    return !CycleBlock.current(convId);                        // no open block yet -> first frame of the turn
 }
 
-// (2026-10-10) FINAL TURN STATS: splice the last loop-stats line directly above
-// 'Agentic AI: TASK DONE' in the final answer bubble. The backend splices the SAME line
-// into the persisted text, so live bubbles and DB-reloaded history look identical.
-// Idempotent + replay-safe: if the line is already present (DB-loaded bubble or a
-// replayed frame) nothing happens; if the bubble is not rendered yet the line is parked
-// in COOLEMS._pendingTurnStatsLine and applied on the 'done' frame.
-function applyTurnStatsLine(line, ownerConvId) {
+/** The block a frame belongs to: turn_id first, else the turn running in this workspace. */
+function _cycleTarget(convId, data) {
+    if (typeof CycleBlock === 'undefined' || !convId) return null;
+    const turnId = (data && data.turn_id) || '';
+    return turnId ? CycleBlock.target(convId, turnId) : CycleBlock.current(convId);
+}
+
+// (2026-11-08 loop-history UI) FINAL TURN STATS: the old code spliced a stats line into
+// the answer bubble. The new view shows turn facts on the block's collapsed head, so this
+// folds the same numbers into that head (generated tokens + tok/s) instead of editing text.
+// Idempotent + replay-safe, and per-conversation: only the block of the frame's OWN turn
+// is touched, so a background workspace's stats can never rewrite the visible block.
+function applyTurnStatsLine(line, ownerConvId, turnId) {
     if (!line || typeof line !== 'string') return;
     const convId = ownerConvId || COOLEMS.currentConversation;
-    const st0 = convId ? ChatStreamState.get(convId) : null;   // per-conv parking spot (2026-11-24 mix fix)
-    const container = document.getElementById('chatContainer');
-    if (!container) { if (st0) st0.pendingTurnStatsLine = line; return; }
-
-    // Last assistant bubble whose raw content carries the TASK DONE marker.
-    let target = null;
-    const bubbles = container.querySelectorAll('.message.assistant .message-content[data-raw-content]');
-    for (let i = bubbles.length - 1; i >= 0; i--) {
-        const raw = bubbles[i].getAttribute('data-raw-content') || '';
-        if (raw.indexOf('Agentic AI: TASK DONE') !== -1) { target = bubbles[i]; break; }
-    }
-    if (!target) {
-        if (st0) st0.pendingTurnStatsLine = line;   // bubble not rendered yet - apply on 'done'
-        return;
-    }
-
-    const raw = target.getAttribute('data-raw-content');
-    if (raw.indexOf(line) !== -1) return;       // already present - idempotent
-
-    // (2026-10-10 fix) Target ONLY the marker on its own line - same rule as the backend.
-    // The model can mention "Agentic AI: TASK DONE" mid-prose; splicing before such a
-    // meta-mention put the stats at the TOP of the answer (humanly wrong). Use the LAST
-    // standalone marker line; if none exists, append both lines cleanly at the very end.
-    // (2026-10-10 audit) lastIndexOf() could land on a LATER inline quote of the exact
-    // marker text instead of the real standalone line - walk the /gm matches and keep the
-    // LAST match's own start index so live bubbles byte-match the backend splice.
-    const _doneRe = /^[ \t]*Agentic AI: TASK DONE[ \t]*$/gm;
-    let lastStart = -1, _mm;
-    while ((_mm = _doneRe.exec(raw)) !== null) { lastStart = _mm.index; }
-    let newRaw;
-    if (lastStart >= 0) {
-        newRaw = raw.slice(0, lastStart) + line + '\n' + raw.slice(lastStart);
-    } else {
-        newRaw = raw.replace(/\n+$/, '') + '\n' + line + '\nAgentic AI: TASK DONE';
-    }
-    target.setAttribute('data-raw-content', newRaw);
-    const contentDiv = target.querySelector('.content-text');
-    if (contentDiv && typeof parseMarkdown === 'function') {
-        contentDiv.innerHTML = parseMarkdown(newRaw, false);
-    }
+    const block = _cycleTarget(convId, { turn_id: turnId });
+    if (!block) return;                       // no block on screen for this turn - nothing to fold
+    const gen = /([\d.]+)K gen/.exec(line);
+    if (gen) block.generated = Math.max(block.generated, parseFloat(gen[1]) * 1024);
+    const speed = /([\d.]+) tok\/s/.exec(line);
+    if (speed) block.speed = parseFloat(speed[1]);
+    CycleBlock._renderSummary(block);
 }
 function handleWebSocketMessage(data, ownerConvId) {
     // (2026-11-24 mix fix) every frame is handled against the state of the conversation that
@@ -556,178 +431,274 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
 
-    if (data.type === 'content') {
-        // Replay guard FIRST (before touching the buffer): skip assistant-streaming
-        // frames that would duplicate a DB-persisted answer. Per-conv state, per-conv status.
-        if (!_replayShouldRenderAssistantFrame(convId)) return;
-        st.streamingBuffer += data.content;
+    // ===== LOOP-HISTORY BLOCKS (2026-11-08) ===========================================
+    // An agentic turn is ONE collapsed block, not a stream of bubbles. Every frame below
+    // resolves its block through _cycleTarget(), which refuses a turn_id owned by another
+    // workspace - so frames of workspace A can never land in workspace B's block.
 
+    if (data.type === 'cycle_start') {
+        if (!_replayShouldRenderCycleFrame(convId, data.turn_id)) return;
+        CycleBlock.open(convId, data.turn_id, data, null, true);
+        return;
+    }
+
+    if (data.type === 'cycle_end') {
+        // The block settles BEFORE 'done' arrives (backend order). A replayed cycle_end whose
+        // block is gone (turn finished while we were away) rebuilds it from the payload.
+        const payload = data.payload || {};
+        const block = _cycleTarget(convId, data);
+        if (block) {
+            CycleBlock.settle(block, (payload.final && payload.final.text) || '',
+                              !!(payload.final && payload.final.stopped));
+        } else if (data.turn_id && payload.turn_id) {
+            CycleShell.rebuild(convId, { id: data.turn_id, payload: payload }, null);
+        }
+        return;
+    }
+
+    if (data.type === 'cycle_step') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addStep(block, data);
+        return;
+    }
+    if (data.type === 'cycle_speech') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addSpeech(block, data);
+        return;
+    }
+    if (data.type === 'cycle_tool') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addTool(block, data);
+        return;
+    }
+    if (data.type === 'cycle_consent_pending') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addCard(block, data);
+        return;
+    }
+    if (data.type === 'cycle_consent') {
+        // The card is transient: remove it, keep the decision as a row inside the block.
+        // (2026-11-08 user rule) a dialog must disappear on ANY decision or timer auto-allow,
+        // so a fold that finds no row still removes the card by request id (it may have been
+        // rendered as a plain chat bubble because no block owned the frame).
+        const block = _cycleTarget(convId, data);
+        if (!block || !CycleBlock.settleCard(block, data.request_id, data.decision)) {
+            CycleShell.removeCard(data.request_id);
+        }
+        return;
+    }
+    if (data.type === 'cycle_grant') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addGrant(block, data);
+        return;
+    }
+    if (data.type === 'cycle_feedback') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addNotice(block, data);
+        return;
+    }
+    if (data.type === 'cycle_final') {
+        // The answer row opened. The last-tool strip stays VISIBLE while the answer
+        // streams - it only goes away when the turn is settled (cycle_end / done / error).
+        return;
+    }
+
+    // ===== AI stream ============================================================
+    // Inside a block: chunks go to that turn's AI-response strip (visible while collapsed).
+    // Outside a block (a normal one-shot turn): the plain streaming answer bubble.
+
+    if (data.type === 'content' || data.type === 'thinking') {
+        const kind = data.type === 'thinking' ? 'thinking' : 'answer';
+        const block = _cycleTarget(convId, data);
+        if (block) {
+            if (!_replayShouldRenderCycleFrame(convId, data.turn_id)) return;
+            CycleBlock.addStreamChunk(block, kind, data.content || '');
+            if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) scrollToBottom();
+            else if (COOLEMS.userScrolledUp && COOLEMS.isStreaming) showScrollIndicator();
+            return;
+        }
+        if (data.type === 'thinking') return;   // no block -> no thinking surface in normal mode
+        if (!_replayShouldRenderCycleFrame(convId, data.turn_id)) return;
+        st.streamingBuffer += data.content;
         let lastMsg = chatContainer.lastElementChild;
         if (lastMsg && lastMsg.classList.contains('assistant') && lastMsg.dataset.streaming) {
             const contentDiv = lastMsg.querySelector('.content-text');
+            if (contentDiv) contentDiv.innerHTML = parseMarkdown(st.streamingBuffer, true);
             const messageContent = lastMsg.querySelector('.message-content');
-            const thinkingBlock = messageContent ? messageContent.querySelector('.thinking-block') : null;
-
-            contentDiv.innerHTML = parseMarkdown(st.streamingBuffer, true);
-
-            if (thinkingBlock && messageContent && !messageContent.querySelector('.thinking-block')) {
-                messageContent.insertBefore(thinkingBlock, contentDiv);
-            }
-
             if (messageContent) messageContent.setAttribute('data-raw-content', st.streamingBuffer);
         } else {
             st.streamingBuffer = data.content;
-            // SECURITY fix 2026-10-05: appendMessage is async - fire-and-forget in this sync handler (DOM mutation happens synchronously inside).
+            // SECURITY fix 2026-10-05: appendMessage is async - fire-and-forget in this sync handler.
             void appendMessage('assistant', st.streamingBuffer, true).catch(e => console.error('[WS] appendMessage failed:', e));
         }
+        if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) scrollToBottom();
+        else if (COOLEMS.userScrolledUp && COOLEMS.isStreaming) showScrollIndicator();
+        return;
+    }
 
-        if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) {
-            scrollToBottom();
-        } else if (COOLEMS.userScrolledUp && COOLEMS.isStreaming) {
-            showScrollIndicator();
-        }
-    } else if (data.type === 'thinking') {
-        // Replay guard (same rule as content frames) - evaluated against THIS frame's owner.
-        if (!_replayShouldRenderAssistantFrame(convId)) return;
+    if (data.type === 'tool_start') {
+        // Tool row + the always-visible last-tool strip (live timer, input 5 / output 4).
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addToolStart(block, data);
+        return;
+    }
 
-        let lastMsg = chatContainer.lastElementChild;
-        let thinkingBlock = null;
-        let messageContent = null;
+    if (data.type === 'tool_end') {
+        const block = _cycleTarget(convId, data);
+        if (block) {
+            const out = String(data.output || '');
+            // Same rule as logic/tool_executor.result_is_error(): only the HEAD marks a
+            // failure, so a report that merely mentions "error" stays honest as ok.
+            const head = out.trimStart().slice(0, 12).toLowerCase();
+            const failed = head.startsWith('error:') || head.startsWith('error ');
+            CycleBlock.addTool(block, {
+                step_no: block.counts.turns,
+                at_ts: data.finished_at || (Date.now() / 1000),
+                tool: {
+                    name: data.tool, ok: !failed,
+                    output: out, call_id: data.call_id || '',
+                    duration_ms: data.duration_ms, args: _asText(data.input),
+                },
+            });
+        }
+        return;
+    }
 
-        if (lastMsg && lastMsg.classList.contains('assistant')) {
-            messageContent = lastMsg.querySelector('.message-content');
-            if (messageContent) {
-                thinkingBlock = messageContent.querySelector('.thinking-block');
-                if (!thinkingBlock) {
-                    thinkingBlock = document.createElement('div');
-                    thinkingBlock.className = 'thinking-block';
-                    thinkingBlock.innerHTML = '<div class="thinking-header">Reasoning</div><div class="thinking-content"></div>';
-                    const contentDiv = messageContent.querySelector('.content-text');
-                    messageContent.insertBefore(thinkingBlock, contentDiv);
-                }
-            }
-        } else {
-            // (2026-10-23 live steering) a new assistant SEGMENT begins after a steering
-            // bubble / tool row / user message. Reset THIS conversation's accumulated content
-            // buffer so the next chunks render only this segment - not the previous answer again.
-            st.streamingBuffer = '';
-            void appendMessage('assistant', '', true).catch(e => console.error('[WS] appendMessage failed:', e));
-            lastMsg = chatContainer.lastElementChild;
-            messageContent = lastMsg.querySelector('.message-content');
-            thinkingBlock = document.createElement('div');
-            thinkingBlock.className = 'thinking-block';
-            thinkingBlock.innerHTML = '<div class="thinking-header">Reasoning</div><div class="thinking-content"></div>';
-            const contentDiv = messageContent.querySelector('.content-text');
-            messageContent.insertBefore(thinkingBlock, contentDiv);
-        }
+    if (data.type === 'image_generated') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addImage(block, data);
+        return;
+    }
 
-        if (thinkingBlock) {
-            const thinkingContent = thinkingBlock.querySelector('.thinking-content');
-            thinkingContent.textContent += data.content;
-            thinkingContent.scrollTop = thinkingContent.scrollHeight;
-        }
+    if (data.type === 'exec_approval_request') {
+        // Consent card. Inside a block it mounts in that block's live strip (answerable while
+        // collapsed) and disappears once answered; a card with no owning block falls back to
+        // the chat container so the user can still decide.
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addCard(block, data);
+        else ApprovalDialog.appendCard(data);
+        return;
+    }
 
-        if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) { scrollToBottom(); }
-    } else if (data.type === 'image_generated') {
-        appendGeneratedImage(data);
-    } else if (data.type === 'tool_start') {
-        const d = document.createElement('div'); d.className = 'tool-call';
-        d.innerHTML = `<span class="tool-name">🔧 Using ${data.tool}:</span> ${escapeHtml(JSON.stringify(data.input))}`;
-        chatContainer.appendChild(d);
-        // (2026-09-21) live Setup/Downloads section for self-unpacking tools: venv + pip
-        // packages + model files with size/speed/ETA, polled from /api/setup/status.
-        if (typeof SetupProgressUI !== 'undefined' && data.tool === 'generate_image') {
-            SetupProgressUI.start('generate_tool');
-        }
-        if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
-    } else if (data.type === 'tool_end') {
-        const d = document.createElement('div'); d.className = 'tool-call'; d.style.opacity = '0.7';
-        d.innerHTML = `<span class="tool-name">✓ Result:</span> ${escapeHtml(String(data.output))}`;
-        chatContainer.appendChild(d);
-        // (2026-09-21) settle the Setup/Downloads card: drop it immediately when no setup
-        // happened this turn, otherwise let its final state render and polling stop.
-        if (typeof SetupProgressUI !== 'undefined' && data.tool === 'generate_image') {
-            SetupProgressUI.settle('generate_tool');
-        }
-        if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
-    } else if (data.type === 'exec_approval_request') {
-        // python_exec user approval card: the AI wants to run code ON THIS machine.
-        ApprovalDialog.appendCard(data);   // (2026-07-18) unified consent dialog - one code path for all kinds
-    } else if (data.type === 'steer_received') {
+    // ===== LIVE STEERING (2026-10-23, the committed approach) =====================
+    // A steer is a standalone user bubble at the end of the chat (message.js). These three
+    // frames only settle its status line - nothing is folded into the turn block.
+    // The recorder's `cycle_steer` frame is deliberately NOT handled here: the steer is
+    // persisted in the turn_log payload as a fact of the turn, but it is never painted as a
+    // block row, because the user sees the bubble instead.
+    if (data.type === 'steer_received') {
         // (2026-10-23 live steering) the backend queued the message for the running loop.
         if (typeof markSteerBubble === 'function') markSteerBubble(data.steer_id, 'received', data);
-    } else if (data.type === 'steer_applied') {
+        return;
+    }
+    if (data.type === 'steer_applied') {
         // The ReAct loop actually injected it into its next provider call.
         if (typeof markSteerBubble === 'function') markSteerBubble(data.steer_id, 'applied', data);
-    } else if (data.type === 'steer_rejected') {
+        return;
+    }
+    if (data.type === 'steer_rejected') {
         // Too late / not an agentic turn / turn stopped before the next boundary.
         if (typeof markSteerBubble === 'function') markSteerBubble(data.steer_id, 'rejected', data);
-    } else if (data.type === 'system') {
+        return;
+    }
+
+    if (data.type === 'system') {
         showNotification(data.content, 'info');
-    } else if (data.type === 'turn_stats') {
-        // (2026-10-10) final loop-stats line for the finished agentic turn - splice it
-        // above 'Agentic AI: TASK DONE' in the answer bubble (idempotent, replay-safe).
-        applyTurnStatsLine(data.line, convId);
-    } else if (data.type === 'token_stats') {
+        return;
+    }
+
+    if (data.type === 'turn_stats') {
+        applyTurnStatsLine(data.line, convId, data.turn_id);
+        return;
+    }
+
+    if (data.type === 'token_stats') {
         // LIVE token stats pushed from server after every chat_stream() call.
         // (2026-11-24 mix fix) the status bar is a SINGLE view-level element: only frames
         // owned by the workspace on screen may write it - a background job's stats used to
         // overwrite the visible one ("stats jumping between workspaces").
-        if (!convId || convId === COOLEMS.currentConversation) updateHistoryStatusBar(data);
-    } else if (data.type === 'recovery_warning') {
-        // Server recovery warning - show orange warning block in chat
-        appendRecoveryWarning(data.message, data.status || 'warning');
-    } else if (data.type === 'model_switch_status') {
-        // Model switch progress updates pushed from server to all connected UI clients
-        handleModelSwitchStatus(data);
-    } else if (data.type === 'ollama_error' || data.type === 'provider_error') {
-        // (2026-08-23 fix) Render provider errors as a NORMAL assistant message bubble -
-        // exactly what the conversation history shows after a UI restart. The old
-        // formatOllamaError() div card ('Provider Error' + generic 'restart the
-        // provider' suggestions) looked like a broken widget and was useless for real
-        // errors such as 'vision is not available (no mmproj)'. Plain text bubble = clean.
-        void appendMessage('assistant', data.content, false).catch(e => console.error('[WS] appendMessage failed:', e));
-        // (2026-11-24 mix fix) reset only THIS conversation's streaming state; the shared
-        // send button reflects the view on screen - a background error must not clear it.
-        st.streamingBuffer = '';
         if (!convId || convId === COOLEMS.currentConversation) {
-            COOLEMS.isStreaming = false; setButtonState(false);
+            updateHistoryStatusBar(data);
+            const block = _cycleTarget(convId, data);
+            if (block) {
+                if (data.session_generated_tokens) block.generated = Math.max(block.generated, data.session_generated_tokens);
+                if (data.generation_speed) block.speed = data.generation_speed;
+                CycleBlock._renderSummary(block);
+            }
         }
-        updateConnectionStatus('error', 'Provider Error');
-    } else if (data.type === 'done') {
+        return;
+    }
+
+    if (data.type === 'recovery_warning' || data.type === 'provider_error' || data.type === 'ollama_error') {
+        // Loop-level facts land inside the block; with no block they read as a system notice.
+        const text = data.message || data.content || '';
+        const block = _cycleTarget(convId, data);
+        if (block) {
+            CycleBlock.addNotice(block, { text: text, at_ts: Date.now() / 1000, level: 'error' });
+        } else {
+            CycleShell.systemNotice(text, data.status === 'success' ? 'warning' : 'error');
+        }
+        if (data.type === 'provider_error' || data.type === 'ollama_error') {
+            st.streamingBuffer = '';
+            if (!convId || convId === COOLEMS.currentConversation) {
+                COOLEMS.isStreaming = false;
+                setButtonState(false);
+                updateConnectionStatus('error', 'Provider Error');
+            }
+        }
+        return;
+    }
+
+    if (data.type === 'model_switch_status') {
+        handleModelSwitchStatus(data);
+        return;
+    }
+
+    if (data.type === 'done') {
         // (2026-11-24 mix fix) 'done' settles the conversation that OWNS it. The send button,
         // file panel and scroll state belong to the view on screen - a background workspace's
         // completion must not clear them while another job is visibly running.
+        const block = CycleBlock.current(convId);
+        if (block) {
+            // Safety net: cycle_end normally settles first. settle() removes the last-tool
+            // strip (the turn is over) - the strip stayed visible the whole turn, including
+            // while the final answer streamed.
+            CycleBlock.settle(block, block.finalText || '', false);
+        }
         st.streamingBuffer = '';
         if (!convId || convId === COOLEMS.currentConversation) {
-            COOLEMS.isStreaming = false; setButtonState(false);
-        }
-        const lastMsg = chatContainer.lastElementChild;
-        if (lastMsg && (!convId || convId === COOLEMS.currentConversation)) {
-            delete lastMsg.dataset.streaming;
-            lastMsg.querySelectorAll('.streaming-code').forEach(el => el.classList.remove('streaming-code'));
-        }
-        // (2026-10-10) flush a parked final-stats line if the 'turn_stats' frame arrived
-        // before this turn's answer bubble existed (or during replay). Per-conv, idempotent.
-        if (st.pendingTurnStatsLine) {
-            const _pl = st.pendingTurnStatsLine;
-            st.pendingTurnStatsLine = '';
-            applyTurnStatsLine(_pl, convId);
-        }
-        if (!convId || convId === COOLEMS.currentConversation) {
+            COOLEMS.isStreaming = false;
+            setButtonState(false);
+            const lastMsg = chatContainer.lastElementChild;
+            if (lastMsg && lastMsg.dataset.streaming) {
+                delete lastMsg.dataset.streaming;
+                lastMsg.querySelectorAll('.streaming-code').forEach(el => el.classList.remove('streaming-code'));
+            }
             if (COOLEMS.filesPanelOpen && typeof loadWorkingRootFiles === 'function') loadWorkingRootFiles();
             COOLEMS.userScrolledUp = false;
             COOLEMS.autoScrollEnabled = true;
             hideScrollIndicator();
         }
-    } else if (data.type === 'search_web') {
+        return;
+    }
+
+    if (data.type === 'search_web') {
         const d = document.createElement('div'); d.className = 'search-web-link';
-        d.innerHTML = `<a href="#" onclick="triggerWebSearch('${escapeHtml(data.query)}'); return false;">🔍 Search same question on internet</a>`;
+        d.innerHTML = `<a href="#" onclick="triggerWebSearch('${escapeHtml(data.query)}'); return false;">\u{1F50D} Search same question on internet</a>`;
         chatContainer.appendChild(d);
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
-    } else if (data.type === 'error') {
+        return;
+    }
+
+    if (data.type === 'error') {
         logError('Server error:', data.content);
         showNotification(data.content, 'error');
+        const block = CycleBlock.current(convId);
+        if (block) {
+            CycleBlock.addNotice(block, { text: String(data.content || ''), at_ts: Date.now() / 1000, kind: 'error' });
+            // settle() drops the last-tool strip: the turn ended (error), so it is no longer live.
+            CycleBlock.settle(block, block.finalText || '', true);
+        }
         // (2026-11-24 mix fix) only the view on screen owns the button/steer state.
         if (!convId || convId === COOLEMS.currentConversation) {
             COOLEMS.isStreaming = false;
@@ -740,14 +711,13 @@ function handleWebSocketMessage(data, ownerConvId) {
     }
 }
 
-// ===== UNIFIED CONSENT DIALOG (2026-07-18) ===================================
-// All four consent card kinds (python / url / file / network) are now rendered by the
-// shared ApprovalDialog object in static/ui/approval-dialog.js - ONE code path, a
-// kind->config table (icon + short title + labels), an "Explain request" button on
-// every card and per-kind auto-approve timers from COOLEMS.runtimeSettings.approvals.
-// The old inline functions below are kept ONLY as compatibility shims.
+// ===== CONSENT CARDS (2026-07-18 unified dialog, 2026-11-08 block-mounted) ==========
+// ApprovalDialog (static/ui/approval-dialog.js) renders every card kind from one config
+// table. websocket.js now passes the owning block's live strip as the mount, so a card
+// lives inside its turn instead of the chat stream. These shims keep external callers
+// (index.html inline handlers) working.
 
-function appendExecApprovalCard(data) { ApprovalDialog.appendCard(data); }
+function appendExecApprovalCard(data, mount) { ApprovalDialog.appendCard(data, mount); }
 function submitExecApproval(data, btn) { ApprovalDialog.submitDecision(data, btn); }
 async function startExecAutoApproveCountdown(card, data) { return ApprovalDialog.startAutoApproveCountdown(card, data); }
 
@@ -821,12 +791,22 @@ function handleModelSwitchStatus(data) {
 }
 
 function triggerWebSearch(query) {
-    const messages = document.getElementById('chatContainer').querySelectorAll('.message');
+    // (2026-11-08) the last AI text is either the newest block's answer strip or the last
+    // plain assistant bubble - the flat transcript no longer exists.
+    const container = document.getElementById('chatContainer');
     let lastAiResponse = '';
-    for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].classList.contains('assistant')) {
-            lastAiResponse = messages[i].textContent;
-            break;
+    const blocks = container.querySelectorAll('.cycle-block');
+    for (let i = blocks.length - 1; i >= 0; i--) {
+        const answers = blocks[i].querySelectorAll('.cycle-ai-answer');
+        if (answers.length) { lastAiResponse = answers[answers.length - 1].textContent; break; }
+    }
+    if (!lastAiResponse) {
+        const messages = container.querySelectorAll('.message');
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].classList.contains('assistant')) {
+                lastAiResponse = messages[i].textContent;
+                break;
+            }
         }
     }
     COOLEMS.isStreaming = false;
