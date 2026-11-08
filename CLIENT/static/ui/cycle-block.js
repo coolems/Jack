@@ -117,8 +117,11 @@ const CycleBlock = {
             steerRows: {},       // steer_id -> {el, state} (ONE row per steering message)
             toolNoOf: {},        // call_id -> 1-based tool number (one row per call)
             toolEls: {},         // call_id -> row element
-            aiSeg: {},           // segment index -> {thinkingEl, answerEl}
-            aiSegIdx: 0,         // one segment per answer stream (a steer is NOT a segment)
+            // ONE segment per REASONING STEP (user request 2026-11-08): step_no -> {thinkingEl,
+            // answerEl}. Each step's answer is its own element, so answers of turn 5 and turn 6
+            // stack one UNDER another instead of running together in one box. A steer is not a
+            // step, so it never opens a new segment.
+            aiSeg: {},
             lastCallId: '', lastEl_: null, lastTimer: null, lastToolClosed: false,
             finalText: '', turnTimer: null,
         };
@@ -454,10 +457,11 @@ const CycleBlock = {
         return el;
     },
 
-    /** One AI text block of a step: the body row AND the visible AI strip. */
+    /** One AI text block of a step: the body row AND the visible AI strip. The strip gets
+     *  the step number, so each reasoning step's answer is its own block under the others. */
     addSpeech(block, d) {
         this.addRow(block, 'speech', d);
-        CycleShell.appendStream(block, d.kind, d.text, d.step_no);
+        CycleShell.appendStream(block, d.kind, d.text, d.step_no, !!d.final);
     },
 
     /** Live streamed chunk (content|thinking) - visible strip only; the row comes at settle. */

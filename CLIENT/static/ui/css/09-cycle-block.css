@@ -411,8 +411,36 @@
     overflow-x: auto;
     font-size: 12px;
 }
-/* The final answer of the loop is the one that stays after the loop ends. */
-.cycle-ai-answer[data-step-no="0"] { font-weight: 500; }
+/* ---- AI segments: ONE BOX PER REASONING STEP (user request 2026-11-08) ----
+   "in turn 5 the AI told something1 and in turn 6 something2, but in the AI response block
+   I see them one after another, not one under another". The strip used to be ONE element
+   for the whole turn, so the text of step 5 and step 6 was concatenated into one markdown
+   document and ran together. Now each reasoning step owns a .cycle-ai-seg box, stacked one
+   UNDER another by .cycle-ai's flex column, each with its own turn label and a divider.
+   NO height cap here either - every step's answer stays fully readable. */
+.cycle-ai-seg {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 8px;
+    border-left: 2px solid var(--border-color, #2a2f3a);
+    background: var(--bg-tertiary, #1b2029);
+    border-radius: 6px;
+}
+.cycle-ai-seg-label {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted, #6b7686);
+}
+/* The thinking box inside its step's segment keeps its own dim shape (see .cycle-ai-thinking). */
+.cycle-ai-seg .cycle-ai-thinking { border-left: none; padding: 0; }
+
+/* The final answer of the loop is the one that stays after the loop ends (the speech row
+   carries `final`, so the strip marks it - step 0 is never a real step number). */
+.cycle-ai-answer[data-final="1"] { font-weight: 500; }
+.cycle-ai-seg[data-final="1"] { border-left-color: var(--accent, #4f8cff); }
 
 /* ---- AI strip Copy buttons (2026-11-08, restored to the REPO shape) ----
    In the last repo version an AI answer was a .message-content bubble whose Copy chip

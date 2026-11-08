@@ -287,22 +287,30 @@ const CycleShell = {
     // ===== AI response strip =====
 
     /**
-     * The AI strip is ONE continuous stream per segment. A segment is closed only when the
-     * block settles - never by a reasoning step and never by a steering message (steering is
-     * chat-level, see message.js) - so the live chunks of the final answer and the settled
-     * speech row of that same answer land in the SAME element.
-     * Keying by step_no used to split them: the streamed text sat in one box and the
-     * flushed row painted the whole answer again in a second box, so the answer looked
-     * "not streamed" and was duplicated.
+     * ONE SEGMENT PER REASONING STEP (user request 2026-11-08: "in turn 5 the AI told
+     * something1 and in turn 6 something2, but in the AI response block I see them one
+     * after another instead of one under another").
+     *
+     * The strip used to be ONE element for the whole turn (aiSegIdx never moved), so the
+     * text of step 5 and step 6 was concatenated into a single markdown document - the two
+     * answers ran together on one line and were hard to read. Now each reasoning step owns
+     * its own answer/thinking element, and .cycle-ai (a flex column) stacks them one under
+     * another with a divider.
+     *
+     * THE DUPLICATION RULE still holds: a step's LIVE chunks and that step's settled
+     * speech row must land in the SAME element, never in two boxes. A live chunk therefore
+     * belongs to `counts.turns + 1` - the step that is streaming RIGHT NOW (cycle_step for
+     * step N only arrives after that step's chunks, so counts.turns is N-1 while step N
+     * streams). A settled row carries its own step_no, which resolves to the same element.
+     * A steering message is NOT a step boundary, so it never opens a new segment.
      */
-    _seg(block) {
-        const idx = block.aiSegIdx || 0;
+    _seg(block, stepNo) {
+        const idx = Number(stepNo || 0);
         let seg = block.aiSeg[idx];
         if (!seg) {
-            seg = {};
+            seg = { wrapEl: null, labelEl: null, answerEl: null, thinkingEl: null,
+                    hasAnswer: false, hasThinking: false };
             block.aiSeg[idx] = seg;
-            seg.answerEl = null;
-            seg.thinkingEl = null;
         }
         return seg;
     },
@@ -337,6 +345,49 @@ const CycleShell = {
         else if (have.includes(text)) return false;        // row is a subset already on screen
         else el.dataset.raw = have + text;
         return true;
+    },
+
+    /**
+     * Mount a segment's element in STEP ORDER (ascending step_no), so answers read top-down
+     * exactly as the loop produced them. Normally an element is created while its own step
+     * streams and the arrival order is already correct; this guard covers the case where a
+     * settled speech row of an older step arrives AFTER a newer step already opened its box
+     * (a dropped replay chunk, or a late flush) - the older answer must not land below it.
+     */
+    _mount(block, el, stepNo) {
+        const sn = Number(stepNo || 0);
+        const later = Array.from(block.aiEl.children)
+            .filter(c => Number(c.dataset.stepNo || 0) > sn);
+        if (later.length) block.aiEl.insertBefore(el, later[0]);
+        else block.aiEl.appendChild(el);
+        return el;
+    },
+
+    /** The per-step wrapper: ONE .cycle-ai-seg per reasoning step, carrying its own turn
+     *  label, so answers read one UNDER another instead of running together. Built on the
+     *  first text of that step, mounted in step order, then reused by every later frame of
+     *  the same step (live chunks AND the settled speech row) - never a second box. */
+    _segWrap(block, sn, kind) {
+        const seg = this._seg(block, sn);
+        if (!seg.wrapEl) {
+            const wrap = document.createElement('div');
+            wrap.className = 'cycle-ai-seg';
+            wrap.dataset.stepNo = String(sn);
+            const lab = document.createElement('div');
+            lab.className = 'cycle-ai-seg-label';
+            wrap.appendChild(lab);
+            seg.labelEl = lab;
+            seg.wrapEl = wrap;
+            this._mount(block, wrap, sn);
+        }
+        if (kind === 'answer') seg.hasAnswer = true;
+        if (kind === 'thinking') seg.hasThinking = true;
+        if (seg.labelEl) {
+            seg.labelEl.textContent = 'turn ' + sn + ' \u00b7 ' +
+                (seg.hasAnswer && seg.hasThinking ? 'thinking + AI'
+                    : (seg.hasAnswer ? 'AI' : 'thinking'));
+        }
+        return seg;
     },
 
     /**
@@ -421,8 +472,10 @@ const CycleShell = {
      * `stepNo === null` means a LIVE streamed chunk (websocket content/thinking frame);
      * anything else is a settled `cycle_speech` row (or a DB rebuild row). Live chunks append
      * and paint markdown (throttled, _paintLive); settled rows merge and paint markdown.
+     * `final` marks the delivered answer of the loop (the speech row carries it) - it is
+     * emphasised, the earlier steps' text stays normal weight.
      */
-    appendStream(block, kind, text, stepNo) {
+    appendStream(block, kind, text, stepNo, final) {
         if (!block || !text) return;
         // Protocol lines never enter the AI strip (see CycleRows/scrubAiText): a live chunk
         // that is only marker markup paints NOTHING, so the answer grows with real words only.
@@ -434,8 +487,13 @@ const CycleShell = {
         // data-empty="1", i.e. before the first answer chunk of this turn).
         block.aiEl.dataset.empty = '0';
         const live = stepNo == null;
-        const sn = live ? block.counts.turns : stepNo;
-        const seg = this._seg(block);
+        // WHICH STEP THIS TEXT BELONGS TO. cycle_step for step N only arrives AFTER that
+        // step's chunks (settle_step runs when the provider call is done), so while step N
+        // streams counts.turns is still N-1 - a live chunk belongs to N, the step streaming
+        // right now. That is what makes the settled speech row of step N merge into the SAME
+        // element the stream painted, instead of opening a second box.
+        const sn = live ? (Number(block.counts.turns || 0) + 1) : Number(stepNo || 0);
+        const seg = this._segWrap(block, sn, kind);
 
         if (kind === 'thinking') {
             if (!seg.thinkingEl) {
@@ -443,7 +501,7 @@ const CycleShell = {
                 seg.thinkingEl.className = 'cycle-ai-thinking';
                 seg.thinkingEl.dataset.stepNo = String(sn);
                 seg.thinkingEl.dataset.raw = '';
-                block.aiEl.appendChild(seg.thinkingEl);
+                seg.wrapEl.appendChild(seg.thinkingEl);
             }
             const changed = live ? this._appendLive(seg.thinkingEl, visible)
                                  : this._mergeRow(seg.thinkingEl, visible);
@@ -460,7 +518,13 @@ const CycleShell = {
             seg.answerEl.className = 'cycle-ai-answer';
             seg.answerEl.dataset.stepNo = String(sn);
             seg.answerEl.dataset.raw = '';
-            block.aiEl.appendChild(seg.answerEl);
+            seg.wrapEl.appendChild(seg.answerEl);
+        }
+        // The delivered answer of the loop is emphasised; the earlier steps' text stays
+        // normal weight, so the strip reads as a step-by-step log with one final answer.
+        if (final) {
+            seg.answerEl.dataset.final = '1';
+            seg.wrapEl.dataset.final = '1';
         }
         // The SCRUBBED chunk is what accumulates, so dataset.raw matches the scrubbed
         // speech row the backend flushes for this same text - _mergeRow can then recognise
@@ -555,8 +619,9 @@ const CycleShell = {
             block.bodyEl.appendChild(el);
             CycleRows.render(r.kind, el, r.d);
             block.rows.push({ kind: r.kind, step_no: r.d.step_no || 0, at_ts: Number(r.d.at_ts || 0), el });
-            // The AI strip is rebuilt from the same speech rows (there are no live chunks here).
-            if (r.kind === 'speech') this.appendStream(block, r.d.kind, r.d.text, r.d.step_no);
+            // The AI strip is rebuilt from the same speech rows (there are no live chunks
+            // here), one segment per reasoning step, mounted in step order.
+            if (r.kind === 'speech') this.appendStream(block, r.d.kind, r.d.text, r.d.step_no, !!r.d.final);
         }
 
         // NO last-tool strip here (user rule 2026-11-08, revised): a rebuilt turn is a
