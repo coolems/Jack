@@ -187,11 +187,14 @@ async def _apply_pending_steers(config: Any, messages: List[Dict]) -> SteerOutco
         applied += 1
         texts.append(text)
 
+        # turn_id rides on the ack so the UI can route it into the RUNNING turn's
+        # loop-history block (steering is never a chat-level message).
         if getattr(config, "websocket", None):
             try:
                 await config.websocket.send_text(json.dumps({
                     "type": "steer_applied",
                     "steer_id": steer_id,
+                    "turn_id": getattr(cycle, "turn_id", "") or "",
                     "content": text,
                     "at_ts": at_ts,
                 }))
@@ -200,7 +203,8 @@ async def _apply_pending_steers(config: Any, messages: List[Dict]) -> SteerOutco
 
         if cycle is not None:
             try:
-                await cycle.steer(text, seq=applied, at_ts=at_ts)
+                await cycle.steer(text, seq=applied, at_ts=at_ts,
+                                  steer_id=str(steer_id or ""))
             except Exception:
                 pass  # history is best-effort
 

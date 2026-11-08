@@ -439,6 +439,9 @@ function handleWebSocketMessage(data, ownerConvId) {
     if (data.type === 'cycle_start') {
         if (!_replayShouldRenderCycleFrame(convId, data.turn_id)) return;
         CycleBlock.open(convId, data.turn_id, data, null, true);
+        // A steering message typed in the first instants of the turn (or while this view
+        // was being rebuilt) had no block to land in - paint those rows now.
+        if (typeof paintPendingSteers === 'function') paintPendingSteers(convId, data.turn_id);
         return;
     }
 
@@ -447,6 +450,9 @@ function handleWebSocketMessage(data, ownerConvId) {
         // block is gone (turn finished while we were away) rebuilds it from the payload.
         const payload = data.payload || {};
         const block = _cycleTarget(convId, data);
+        // Paint any steer row of this turn that had no block yet (typed before cycle_start
+        // or while the view was away) BEFORE settling - a settled block accepts no rows.
+        if (block && typeof paintPendingSteers === 'function') paintPendingSteers(convId, data.turn_id);
         if (block) {
             CycleBlock.settle(block, (payload.final && payload.final.text) || '',
                               !!(payload.final && payload.final.stopped));
@@ -495,6 +501,12 @@ function handleWebSocketMessage(data, ownerConvId) {
     if (data.type === 'cycle_feedback') {
         const block = _cycleTarget(convId, data);
         if (block) CycleBlock.addNotice(block, data);
+        return;
+    }
+    if (data.type === 'cycle_steer') {
+        // The recorder's row for a steering message: a fact of the turn, painted INSIDE the
+        // block at the moment the user typed it. Never a chat-level message.
+        if (typeof handleSteerFrame === 'function') handleSteerFrame(data, convId);
         return;
     }
     if (data.type === 'cycle_final') {
@@ -580,25 +592,24 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
 
-    // ===== LIVE STEERING (2026-10-23, the committed approach) =====================
-    // A steer is a standalone user bubble at the end of the chat (message.js). These three
-    // frames only settle its status line - nothing is folded into the turn block.
-    // The recorder's `cycle_steer` frame is deliberately NOT handled here: the steer is
-    // persisted in the turn_log payload as a fact of the turn, but it is never painted as a
-    // block row, because the user sees the bubble instead.
+    // ===== LIVE STEERING (2026-10-23; block rows since 2026-11-08) ==================
+    // A steering message is LOOP WORK: it never paints as a chat-level user message.
+    // These three ack frames settle the ROW inside the running turn's block
+    // (cycle-block.js CycleBlock.setSteer), placed at the moment the user typed it.
+    // `cycle_steer` (handled above with the cycle_* frames) is the recorder's own row.
     if (data.type === 'steer_received') {
         // (2026-10-23 live steering) the backend queued the message for the running loop.
-        if (typeof markSteerBubble === 'function') markSteerBubble(data.steer_id, 'received', data);
+        if (typeof handleSteerFrame === 'function') handleSteerFrame(data, convId);
         return;
     }
     if (data.type === 'steer_applied') {
         // The ReAct loop actually injected it into its next provider call.
-        if (typeof markSteerBubble === 'function') markSteerBubble(data.steer_id, 'applied', data);
+        if (typeof handleSteerFrame === 'function') handleSteerFrame(data, convId);
         return;
     }
     if (data.type === 'steer_rejected') {
         // Too late / not an agentic turn / turn stopped before the next boundary.
-        if (typeof markSteerBubble === 'function') markSteerBubble(data.steer_id, 'rejected', data);
+        if (typeof handleSteerFrame === 'function') handleSteerFrame(data, convId);
         return;
     }
 
@@ -704,8 +715,8 @@ function handleWebSocketMessage(data, ownerConvId) {
             COOLEMS.isStreaming = false;
             COOLEMS.streamingAgentMode = false;
             setButtonState(false);
-            if (typeof settlePendingSteerBubbles === 'function') {
-                settlePendingSteerBubbles('the response failed before this could be applied.');
+            if (typeof settlePendingSteerRows === 'function') {
+                settlePendingSteerRows('the response failed before this could be applied.');
             }
         }
     }

@@ -174,104 +174,124 @@ function showNotification(message, type = 'info') {
 
 
 // ============================================================
-// LIVE STEERING (2026-10-23)
+// LIVE STEERING (2026-10-23, block rows since 2026-11-08)
 // While an agentic task is running, the prompt box keeps accepting text. Pressing
-// Enter sends it as a steer frame (never a new turn, never a stop). The bubble is
-// appended at the current end of the chat; the next assistant content chunk starts
-// a fresh bubble BELOW it, so the user sees both their steer and the new answer.
-// The status line settles as the backend acks.
+// Enter sends it as a steer frame (never a new turn, never a stop).
+//
+// THE UI CONTRACT THE USER ASKED FOR (2026-11-08): a steering message must NEVER appear
+// in the chat as a user message. It is loop work, so it enters the RUNNING turn's
+// loop-history block as a row at the moment it was typed (at_ts = received_at), and its
+// status line settles as the backend acks: sending -> queued -> applied / not applied.
+// The row lives inside CycleBlock; this module only owns the steer_id -> row registry so
+// a late ack can still settle a row whose block has already settled.
 // ============================================================
-const _steerBubbles = {};   // steer_id -> DOM node (works even inside a stashed view)
-const _STEER_STATE_RANK = { sending: 0, received: 1, applied: 2, rejected: 2 };
+const _steerRows = {};    // steer_id -> {el, convId, state, text, at_ts}
+const _STEER_RANK = window._STEER_STATE_RANK || { sending: 0, received: 1, applied: 2, rejected: 2 };
 
-function appendSteerMessage(text, steerId) {
-    const container = document.getElementById('chatContainer');
-    if (!container) return null;
-    const welcome = document.getElementById('welcome');
-    if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
+/** Paint (or settle) one steering row of a turn block. Never paints a chat bubble. */
+function markSteerRow(steerId, state, data) {
+    data = data || {};
+    if (!steerId) return false;
+    const convId = data.conv_id || COOLEMS.currentConversation;
+    const reason = data.message || data.reason || '';
+    const text = data.text || data.content || '';
+    const rec = _steerRows[steerId];
 
-    const div = document.createElement('div');
-    div.className = 'message user steering';
-    div.dataset.steerId = steerId || '';
-    div.dataset.steerState = 'sending';
-    div.dataset.steerText = text;   // kept so a rejection can restore the input
-    div.innerHTML =
-        '<div class="avatar">U</div>' +
-        '<div class="message-content">' +
-            '<div class="steer-label">&#10542; Steering the running task</div>' +
-            '<div class="content-text">' + escapeHtml(text).replace(/\n/g, '<br>') + '</div>' +
-            '<div class="steer-status sending">Sending to the running task…</div>' +
-        '</div>';
-
-    // Append at the END: the user sees the steering message where they sent it, and
-    // the next assistant content chunk starts a fresh bubble BELOW it (the content
-    // handler creates a new bubble when the last child is not a streaming assistant).
-    // The pre-steer answer stays above as its own segment; the persisted final answer
-    // still contains the whole transcript.
-    container.appendChild(div);
-
-    if (steerId) _steerBubbles[steerId] = div;
-    if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
-    return div;
+    if (rec) {
+        // A late ack must never downgrade a settled row (applied/rejected are final).
+        if ((_STEER_RANK[state] || 0) < (_STEER_RANK[rec.state] || 0)) return true;
+        rec.state = state;
+        if (text && !rec.text) rec.text = text;
+        if (rec.el) {
+            rec.el.dataset.steerState = state;
+            const status = rec.el.querySelector('.cycle-steer-status');
+            if (status && typeof _steerStatusLabel === 'function') {
+                status.textContent = _steerStatusLabel(state, reason);
+            }
+        }
+    } else if (typeof CycleBlock !== 'undefined') {
+        // First frame for this steer: create the row inside the turn's block.
+        const block = data.turn_id ? CycleBlock.target(convId, data.turn_id)
+                                   : CycleBlock.current(convId);
+        if (!block) return false;              // no block on screen for this turn yet
+        const el = CycleBlock.setSteer(block, {
+            steer_id: steerId, text, state, reason,
+            at_ts: data.at_ts, step_no: data.step_no,
+        });
+        _steerRows[steerId] = { el, convId, state, text, at_ts: data.at_ts };
+    }
+    return true;
 }
 
-/** Settle one steering bubble. Never downgrades (applied/rejected win over acks). */
-function markSteerBubble(steerId, state, data) {
-    data = data || {};
-    let bubble = steerId ? _steerBubbles[steerId] : null;
-    // A steer can also be sent from another tab: create its bubble on 'received'.
-    if (!bubble && state === 'received' && data.content) {
-        bubble = appendSteerMessage(data.content, steerId);
-    }
-    if (!bubble) return;
+/**
+ * One entry point for every steer frame: cycle_steer (recorder row at typed time),
+ * steer_received (queued), steer_applied (injected), steer_rejected (never applied).
+ */
+function handleSteerFrame(data, convId) {
+    const steerId = data.steer_id || '';
+    if (!steerId) return;
+    let state = 'received';
+    if (data.type === 'steer_applied') state = 'applied';
+    else if (data.type === 'steer_rejected') state = 'rejected';
+    else if (data.type === 'cycle_steer') state = data.applied ? 'applied' : 'received';
 
-    const current = bubble.dataset.steerState || 'sending';
-    if (current === 'applied' && state !== 'applied') return;   // applied is final
-    if ((_STEER_STATE_RANK[state] || 0) < (_STEER_STATE_RANK[current] || 0)) return;
+    const ok = markSteerRow(steerId, state, Object.assign({}, data, { conv_id: convId }));
 
-    bubble.dataset.steerState = state;
-    const statusEl = bubble.querySelector('.steer-status');
-    if (!statusEl) return;
-
-    if (state === 'received') {
-        statusEl.className = 'steer-status received';
-        statusEl.textContent = 'Delivered — the agent applies it at its next step.';
-    } else if (state === 'applied') {
-        statusEl.className = 'steer-status applied';
-        statusEl.textContent = '✓ Applied — the agent is following this now.';
-    } else if (state === 'rejected') {
-        statusEl.className = 'steer-status rejected';
+    if (state === 'rejected') {
         const reason = data.message || 'the task ended before it could be applied.';
-        statusEl.textContent = '⚠ Not applied — ' + reason;
         showNotification('Steering not applied: ' + reason, 'warning');
-        // Put the text back in the prompt box when the user has not typed anything
-        // new, so nothing they wrote is lost.
+        // Nothing the user wrote is lost: put the text back in the prompt box when they
+        // have not typed anything new.
         const input = document.getElementById('messageInput');
-        if (input && !input.value.trim() && data.content) {
-            input.value = data.content;
+        const text = data.content || data.text || (_steerRows[steerId] && _steerRows[steerId].text) || '';
+        if (input && !input.value.trim() && text) {
+            input.value = text;
             if (typeof autoResize === 'function') autoResize(input);
             input.focus();
         }
+        // A steer whose row could not be painted (no block yet) still needs a visible
+        // answer - say it plainly instead of leaving the user with no feedback.
+        if (!ok) showNotification('Steering message was not applied to this turn.', 'warning');
     }
 }
 
-/** Fallback on done/error: anything still waiting in THIS view can no longer run.
- *  Bubbles belonging to a stashed/background workspace are deliberately skipped -
- *  their own queued frames (or the backend's steer_rejected) settle them when the
- *  user returns, so another chat's completion can never mark them here. */
-function settlePendingSteerBubbles(message) {
-    const container = document.getElementById('chatContainer');
-    if (!container) return;
-    for (const id of Object.keys(_steerBubbles)) {
-        const bubble = _steerBubbles[id];
-        if (!bubble || !container.contains(bubble)) continue;
-        const st = bubble.dataset.steerState;
-        if (st === 'sending' || st === 'received') {
-            markSteerBubble(id, 'rejected', {
-                content: bubble.dataset.steerText || '',
+/** Paint steering rows that arrived before their block existed (typed in the first
+ *  instants of a turn, or while the workspace view was being rebuilt). */
+function paintPendingSteers(convId, turnId) {
+    if (typeof CycleBlock === 'undefined') return;
+    const block = turnId ? CycleBlock.target(convId, turnId) : CycleBlock.current(convId);
+    if (!block) return;
+    for (const id of Object.keys(_steerRows)) {
+        const rec = _steerRows[id];
+        if (rec.el || rec.convId !== convId) continue;
+        const el = CycleBlock.setSteer(block, {
+            steer_id: id, text: rec.text, state: rec.state,
+            at_ts: rec.at_ts, step_no: block.counts.turns,
+        });
+        if (el) rec.el = el;
+    }
+}
+
+/** Fallback on done/error: anything still waiting in THIS workspace can no longer run.
+ *  Rows belonging to a stashed/background workspace are deliberately skipped - their own
+ *  frames (or the backend's steer_rejected) settle them when the user returns. */
+function settlePendingSteerRows(message) {
+    for (const id of Object.keys(_steerRows)) {
+        const rec = _steerRows[id];
+        if (!rec || rec.convId !== COOLEMS.currentConversation) continue;
+        if (rec.state === 'sending' || rec.state === 'received') {
+            markSteerRow(id, 'rejected', {
+                conv_id: rec.convId, content: rec.text || '',
                 message: message || 'the task ended before this could be applied.',
             });
         }
+    }
+}
+
+/** Drop this workspace's steer rows (view dropped / workspace deleted). */
+function clearSteerRows(convId) {
+    for (const id of Object.keys(_steerRows)) {
+        if (_steerRows[id].convId === convId) delete _steerRows[id];
     }
 }
 
@@ -302,7 +322,9 @@ async function sendSteerMessage() {
     }
 
     const steerId = 'steer_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-    appendSteerMessage(message, steerId);
+    // The row goes into the RUNNING turn's block immediately (state 'sending'), so the
+    // user sees their interjection in the loop history, not as a chat message.
+    markSteerRow(steerId, 'sending', { conv_id: COOLEMS.currentConversation, content: message, at_ts: Date.now() / 1000 });
     input.value = '';
     input.style.height = 'auto';
     if (typeof autoResize === 'function') autoResize(input);
@@ -320,10 +342,11 @@ async function sendSteerMessage() {
             enable_thinking: COOLEMS.enableThinking
         }));
     } catch (e) {
-        markSteerBubble(steerId, 'rejected', {
-            content: message,
+        markSteerRow(steerId, 'rejected', {
+            conv_id: COOLEMS.currentConversation, content: message,
             message: 'the connection failed while sending.',
         });
+        showNotification('Steering not applied: the connection failed while sending.', 'warning');
     }
 }
 
@@ -527,9 +550,11 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
 
 // (2026-10-23 live steering) exposed explicitly so websocket.js / app.js can use
 // them regardless of classic-script load order.
-window.appendSteerMessage = appendSteerMessage;
-window.markSteerBubble = markSteerBubble;
-window.settlePendingSteerBubbles = settlePendingSteerBubbles;
+window.handleSteerFrame = handleSteerFrame;
+window.markSteerRow = markSteerRow;
+window.paintPendingSteers = paintPendingSteers;
+window.settlePendingSteerRows = settlePendingSteerRows;
+window.clearSteerRows = clearSteerRows;
 window.sendSteerMessage = sendSteerMessage;
 // (2026-11-08) cycle-block.js renders the AI strip's Copy chip with onclick="copyCycleAnswer(this)"
 // and is loaded BEFORE this file, so the handler must be an explicit global.

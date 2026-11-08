@@ -382,20 +382,48 @@ def create_websocket_handler(
                         await send_error(websocket, "Chat session service unavailable (internal error). Please retry.", code=500)
                         continue
                     ok, info, code = await bus.steer(conv_id, payload.message, payload.steer_id)
+                    # turn_id + at_ts ride on BOTH ack frames: the UI paints the steer as a
+                    # ROW of the turn's loop-history block (never a chat bubble), placed at
+                    # the moment the user typed it and settled by these acks.
+                    _ch = bus.channels.get(conv_id)
+                    _turn_id = str(getattr(_ch, "turn_id", "") or "") if _ch is not None else ""
+                    _at_ts = info.get("received_at") if isinstance(info, dict) else None
                     if ok:
                         frame = {
                             "type": "steer_received",
                             "steer_id": info.get("id"),
+                            "turn_id": _turn_id,
                             "content": payload.message,
-                            "pending": bus.channels[conv_id].pending_steer_count() if conv_id in bus.channels else 1,
+                            "at_ts": _at_ts,
+                            "pending": _ch.pending_steer_count() if _ch is not None else 1,
                         }
                         logger.info(f"[STEER] conv={conv_id} steering message received "
                                     f"(id={str(info.get('id'))[:12]})")
+                        # The row of the turn's loop-history block, at the moment the user
+                        # typed it. Sent through the CHANNEL (not this socket only), so a
+                        # workspace that is in the background gets the same entry.
+                        if _ch is not None:
+                            try:
+                                await _ch.emit_frame({
+                                    "type": "cycle_steer",
+                                    "conv_id": conv_id,
+                                    "turn_id": _turn_id,
+                                    "steer_id": info.get("id"),
+                                    "text": payload.message,
+                                    "applied": False,
+                                    "received": True,
+                                    "step_no": 0,
+                                    "at_ts": _at_ts,
+                                })
+                            except Exception:
+                                logger.debug("[STEER] cycle_steer row frame not delivered")
                     else:
                         frame = {
                             "type": "steer_rejected",
                             "steer_id": payload.steer_id,
+                            "turn_id": _turn_id,
                             "content": payload.message,
+                            "at_ts": _at_ts,
                             "code": code,
                             "message": info,
                         }

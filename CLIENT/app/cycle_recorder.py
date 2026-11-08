@@ -194,12 +194,16 @@ class CycleRecorder:
 
     # --- steers / notices -------------------------------------------------
 
-    async def steer(self, text: str, seq: int = 0, at_ts: Optional[float] = None) -> None:
+    async def steer(self, text: str, seq: int = 0, at_ts: Optional[float] = None,
+                    steer_id: str = "") -> None:
         """A steering message was injected. `at_ts` is WHEN THE USER TYPED it, not when
-        the loop injected it - the UI sorts rows inside a step group by that time."""
-        row = self.log.add_steer(self._step_no, text, seq, at_ts)
+        the loop injected it - the UI places the row in the block at that moment.
+        `steer_id` correlates this row with the steer_received/steer_applied ack frames,
+        so one steer is ONE row whose status line settles instead of duplicating."""
+        row = self.log.add_steer(self._step_no, text, seq, at_ts, steer_id=str(steer_id or ""))
         await self._send({"type": "cycle_steer", "conv_id": self.conv_id,
                           "text": row["text"], "seq": row["seq"],
+                          "steer_id": row["steer_id"], "applied": True,
                           "step_no": row["step_no"], "at_ts": row["at_ts"]})
 
     async def feedback(self, text: str) -> None:

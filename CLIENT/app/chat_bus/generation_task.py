@@ -62,25 +62,44 @@ def _is_user_cancelled(error) -> bool:
 async def _reject_pending_steers(channel, sink, message: str, code: str) -> int:
     """Settle any steering message the loop never reached (2026-10-23).
 
-    A steer that is still queued when the turn ends can never be applied. The UI bubble
-    for it must not stay stuck on "queued", so we drain the channel and tell attached
-    clients why. Best-effort: a dead channel must never break the turn teardown.
+    A steer that is still queued when the turn ends can never be applied. The turn's
+    loop-history row for it must not stay stuck on "queued", so we drain the channel and
+    tell attached clients why. Best-effort: a dead channel must never break the turn
+    teardown.
     """
     try:
         pending = channel.drain_steer()
     except Exception:
         pending = []
+    turn_id = str(getattr(channel, "turn_id", "") or "")
     for item in pending:
         try:
             await sink.send_text(json.dumps({
                 "type": "steer_rejected",
                 "steer_id": item.get("id") if isinstance(item, dict) else None,
+                # The steer is a fact of the turn that was running - the UI settles the
+                # row inside that turn's block (never a chat bubble).
+                "turn_id": turn_id,
                 "content": item.get("text", "") if isinstance(item, dict) else "",
                 # Placement time (when the user typed it) - the UI puts the rejected row
                 # inside the turn block at that moment, like the applied steers do.
                 "at_ts": item.get("received_at") if isinstance(item, dict) else None,
                 "code": code,
                 "message": message,
+            }))
+            # The block row too, so a steer that never ran still shows in the loop
+            # history as "not applied" instead of vanishing.
+            await sink.send_text(json.dumps({
+                "type": "cycle_steer",
+                "conv_id": getattr(channel, "conv_id", ""),
+                "turn_id": turn_id,
+                "steer_id": item.get("id") if isinstance(item, dict) else None,
+                "text": item.get("text", "") if isinstance(item, dict) else "",
+                "applied": False,
+                "rejected": True,
+                "reason": message,
+                "step_no": 0,
+                "at_ts": item.get("received_at") if isinstance(item, dict) else None,
             }))
         except Exception:
             pass  # UI gone - nothing to update
@@ -166,6 +185,10 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     # (2026-10-23 live steering) Only an agentic turn has a next step to inject into.
     # Normal one-shot completions are refused by ChatBus.steer() with a clear message.
     channel.agent_mode = bool(agent_mode)
+    # (2026-11-08) The turn id of the turn running NOW. Steering frames carry it, so the
+    # UI routes a steering message into THIS turn's loop-history block instead of painting
+    # a chat-level user bubble. Cleared in the finally-block when the turn ends.
+    channel.turn_id = ""
     # Any steering message queued for a PREVIOUS (superseded) turn can never run now.
     # Settle its UI bubble before this new turn starts streaming.
     try:
@@ -178,18 +201,21 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         logger.debug(f"[CHATBUS] stale-steer cleanup failed (non-fatal): {e}")
 
     async def _persist_applied_steer(item) -> None:
-        """Persist one applied steering message in the conversation history.
+        """Record one applied steering message in the conversation history.
 
         Called by logic.react_loop ONLY after the loop actually injected the text into the
-        provider message list. Raw text is stored (no injection header) so reloading the
-        conversation shows exactly what the user typed, in chronological order before the
-        final assistant answer.
+        provider message list. Raw text is stored (no injection header) and flagged
+        `is_steer`, so:
+          * the model still sees the correction when a LATER turn loads history,
+          * the UI never paints it as a chat-level user message - the user sees it as a row
+            of the turn's loop-history block (turn_log `steers`), which is where a steering
+            message belongs (user request 2026-11-08).
         """
         text = item.get("text", "") if isinstance(item, dict) else str(item or "")
         if not text.strip():
             return
         try:
-            save_user_message(db_path, conv_id, text, auto_title=False)
+            save_user_message(db_path, conv_id, text, auto_title=False, is_steer=True)
         except Exception as e:
             logger.error(f"[CHATBUS] Failed to persist steering message for conv={conv_id}: {e}")
 
@@ -219,6 +245,8 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     if agent_mode:
         cycle = CycleRecorder(sink, conv_id, turn_id=str(uuid.uuid4()),
                               turn_started_at=time.time(), last_turn_sec=last_session_sec)
+        # The id of the running turn is the identity steering frames must carry.
+        channel.turn_id = cycle.turn_id
         # The sink captures streamed AI text into the recorder (speech rows), so the block
         # shows everything the AI said during this loop, not just the final answer.
         sink.cycle = cycle
@@ -425,6 +453,13 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
             pass
 
     finally:
+        # (2026-11-08) This turn no longer owns the channel's steering identity. Clear it
+        # ONLY if it still holds THIS turn's id: bus.submit() can start a newer turn without
+        # awaiting this one's unwind, and wiping that newer id would send steering frames of
+        # the running turn to a block that no longer exists.
+        _own_turn_id = cycle.turn_id if cycle is not None else ""
+        if _own_turn_id and channel.turn_id == _own_turn_id:
+            channel.turn_id = ""
         # (2026-08-23 session stats) settle this turn's ACTIVE time on EVERY exit path
         # (done / cancel / error - the early 'return' after a user Stop included) and hand it
         # to the NEXT turn as 'last session'. Paused time (approval menus) is excluded.

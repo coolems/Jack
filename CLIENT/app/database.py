@@ -85,6 +85,7 @@ def init_db(db_path: str):
                     content TEXT,
                     media_urls TEXT,
                     file_contents TEXT,
+                    is_steer INTEGER DEFAULT 0,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (conversation_id) REFERENCES conversations (id)
                 )
@@ -97,6 +98,12 @@ def init_db(db_path: str):
             if "file_contents" not in cols:
                 cursor.execute("ALTER TABLE messages ADD COLUMN file_contents TEXT")
                 logger.info("Added file_contents column to messages")
+            # (2026-11-08, user request) steering messages are LOOP WORK, not chat messages.
+            # The flag is what lets the UI skip those rows on a reload and show them inside
+            # the turn's loop-history block instead. Legacy rows stay 0 (real prompts).
+            if "is_steer" not in cols:
+                cursor.execute("ALTER TABLE messages ADD COLUMN is_steer INTEGER DEFAULT 0")
+                logger.info("Added is_steer column to messages")
             cursor.execute("PRAGMA table_info(conversations)")
             conv_cols = [c[1] for c in cursor.fetchall()]
             # Legacy per-conversation agent mode was removed (2026-08-24): it is now a

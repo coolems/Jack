@@ -21,6 +21,16 @@
  * is REFUSED (open() and rebuild()), so one workspace's history can never merge into
  * another window's block - on a live push, a replayed background frame or a DB reload.
  *
+ * STEERING (2026-11-08, user request): a steering message is LOOP WORK, so it must NEVER
+ * appear in the chat as a user message. It is a fact of the turn that was running when the
+ * user typed it, so it enters THIS block as a row at the moment it was typed
+ * (at_ts = received_at) and its status line settles sending -> queued -> applied (or
+ * rejected). Blocks own their steers by steer_id, exactly like they own consent cards by
+ * request_id, so one steering message is ONE row whose status changes - never a duplicate.
+ * Nothing about a steer is painted as a chat-level message on reload either: the DB row is
+ * flagged `is_steer` and conversation.js skips it - the turn_log payload carries it in
+ * `steers`, which is where it belongs.
+ *
  * DOM rendering lives in cycle-shell.js (strips) and cycle-rows.js (rows); this file owns
  * identity, counters, timers and clearing. Blocks live per conversation (blocks[convId])
  * and are cleared when a workspace's view is dropped/deleted. clearAll() wipes owners too.
@@ -30,9 +40,6 @@ const CycleBlock = {
     blocks: {},    // convId -> Block[] (chronological, oldest first)
     owners: {},    // turnId -> convId  (one turn can never belong to two workspaces)
     timers: [],    // live tick intervals: turn timer + last-tool timer
-    // NO steer chips here (2026-11-08 restore to the committed approach): steering is a
-    // chat-level user bubble (static/ui/message.js appendSteerMessage), settled by the
-    // steer_received / steer_applied / steer_rejected frames. A turn block never owns a steer.
 
     // ===== identity =====
 
@@ -102,6 +109,7 @@ const CycleBlock = {
             generated: 0, speed: 0,
             rows: [],            // {kind, step_no, at_ts, el} kept in at_ts order
             consents: {},        // request_id -> row element
+            steerRows: {},       // steer_id -> {el, state} (ONE row per steering message)
             toolNoOf: {},        // call_id -> 1-based tool number (one row per call)
             toolEls: {},         // call_id -> row element
             aiSeg: {},           // segment index -> {thinkingEl, answerEl}
@@ -197,9 +205,13 @@ const CycleBlock = {
 
     // ===== rows =====
 
-    /** Insert one row at its real time position. */
-    addRow(block, kind, d) {
-        if (!block || !block.open) return null;
+    /** Insert one row at its real time position.
+     *  `allowClosed` = also accept a SETTLED block: a steering message that the loop never
+     *  reached is rejected AFTER the turn ended, and that rejection is still a fact of
+     *  THIS turn - it belongs in the turn's block, not in the chat. */
+    addRow(block, kind, d, allowClosed) {
+        if (!block) return null;
+        if (!block.open && !allowClosed) return null;
         const el = document.createElement('div');
         el.className = 'cycle-row cycle-row-' + kind;
         el.dataset.ownerConvId = block.convId;
@@ -236,9 +248,9 @@ const CycleBlock = {
         parts.push(`tools ${c.tools}`);
         if (c.consents) parts.push(`confirmations ${c.consents}`);
         if (c.grants) parts.push(`auto-allow ${c.grants}`);
-        // No `steers N` on the head (2026-11-08 restore): a steering message is a chat-level
-        // user bubble, not a row of this block, so counting it here would show a number with
-        // nothing behind it.
+        // Steering messages are rows of this block (2026-11-08 user request), so the head
+        // line counts them - the number always has rows behind it.
+        if (c.steers) parts.push(`steers ${c.steers}`);
         if (c.notices) parts.push(`notices ${c.notices}`);
         if (block.generated) parts.push(`${(block.generated / 1024).toFixed(1)}K gen`);
         if (block.speed) parts.push(`\u26A1 ${block.speed.toFixed(1)} tok/s`);
@@ -383,6 +395,53 @@ const CycleBlock = {
         const el = this.addRow(block, 'notice', d);
         if (el && d.level === 'error') el.dataset.level = 'error';
         this.bump(block, 'notices');
+        return el;
+    },
+
+    /**
+     * ONE steering message = ONE row of this block (2026-11-08 user request).
+     *
+     * `d.at_ts` is WHEN THE USER TYPED it, so addRow() places the row in the block's
+     * chronological body at that moment - between the tool rows of the step that was
+     * running, never at the end of the chat. `d.state` settles the row's status line
+     * (sending -> received/queued -> applied, or rejected with the reason).
+     *
+     * Called for every steer frame (cycle_steer from the recorder + the steer_received /
+     * steer_applied / steer_rejected acks). A steer is NEVER painted as a chat-level
+     * message, so there is no fallback bubble anywhere: a frame whose block is not on
+     * screen yet is held by message.js and painted when that block opens.
+     */
+    setSteer(block, d) {
+        if (!block) return null;
+        const steerId = d.steer_id || '';
+        const state = d.state || (d.applied ? 'applied'
+            : (d.rejected ? 'rejected' : (d.received ? 'received' : 'sending')));
+        // A steer the loop never reached is rejected AFTER the turn ended - that rejection
+        // is still a fact of THIS turn, so it may enter the settled block. A queued steer
+        // needs the turn still open.
+        const allowClosed = state === 'rejected' || state === 'applied';
+        if (!block.open && !allowClosed) return null;
+        const atTs = d.at_ts || (Date.now() / 1000);
+        const existing = steerId ? block.steerRows[steerId] : null;
+        if (existing) {
+            // Status only ever moves forward; a late ack must not undo an applied row.
+            const rank = (typeof _STEER_STATE_RANK === 'object')
+                ? _STEER_STATE_RANK : { sending: 0, received: 1, applied: 2, rejected: 2 };
+            if ((rank[state] || 0) >= (rank[existing.state] || 0)) {
+                existing.state = state;
+                existing.el.dataset.steerState = state;
+                const status = existing.el.querySelector('.cycle-steer-status');
+                if (status) status.textContent = _steerStatusLabel(state, d.reason);
+            }
+            return existing.el;
+        }
+        const el = this.addRow(block, 'steer', {
+            step_no: d.step_no || block.counts.turns, at_ts: atTs,
+            steer_id: steerId, text: d.text || d.content || '', state, reason: d.reason,
+        }, allowClosed);
+        if (!el) return null;
+        if (steerId) block.steerRows[steerId] = { el, state };
+        this.bump(block, 'steers');
         return el;
     },
 

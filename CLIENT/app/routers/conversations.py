@@ -124,7 +124,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             logger.info(f"Client {current_ip} viewing conversation {conv_id}")
 
             cursor.execute(
-                "SELECT id, role, content, media_urls, file_contents, timestamp FROM messages "
+                "SELECT id, role, content, media_urls, file_contents, timestamp, is_steer FROM messages "
                 "WHERE conversation_id = ? ORDER BY timestamp, rowid",
                 (conv_id,)
             )
@@ -144,7 +144,11 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 "content": row[2],
                 "media_urls": json.loads(row[3]) if row[3] else [],
                 "file_contents": json.loads(row[4]) if row[4] else [],
-                "timestamp": row[5]
+                "timestamp": row[5],
+                # (2026-11-08, user request) a steering message is LOOP WORK, not a chat
+                # message: the UI skips these rows and shows them inside the turn's
+                # loop-history block instead.
+                "is_steer": bool(row[6]) if len(row) > 6 else False,
             })
 
         return {

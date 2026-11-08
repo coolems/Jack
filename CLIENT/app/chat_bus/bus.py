@@ -284,16 +284,34 @@ class ChatBus:
         Best-effort: a dead channel must never break the stop path.
         """
         pending = ch.drain_steer()
+        turn_id = str(getattr(ch, "turn_id", "") or "")
         for item in pending:
             try:
                 await ch.emit_frame({
                     "type": "steer_rejected",
                     "steer_id": item.get("id"),
+                    # The steer belongs to the turn that was running when it was typed -
+                    # the UI settles that turn's block row, never a chat bubble.
+                    "turn_id": turn_id,
                     "content": item.get("text", ""),
                     # Placement time (when the user typed it), same as steer_applied.
                     "at_ts": item.get("received_at"),
                     "code": code,
                     "message": message,
+                })
+                # The loop-history row too, so a steer that never ran still reads in the
+                # turn's block as "not applied" instead of disappearing.
+                await ch.emit_frame({
+                    "type": "cycle_steer",
+                    "conv_id": ch.conv_id,
+                    "turn_id": turn_id,
+                    "steer_id": item.get("id"),
+                    "text": item.get("text", ""),
+                    "applied": False,
+                    "rejected": True,
+                    "reason": message,
+                    "step_no": 0,
+                    "at_ts": item.get("received_at"),
                 })
             except Exception:
                 pass  # UI gone - nothing to update

@@ -318,10 +318,16 @@ class TurnLog:
     # ===== steers / notices =====
 
     def add_steer(self, step_no: int, text: str, seq: int = 0,
-                  at_ts: Optional[float] = None) -> Dict:
-        """A steering message the loop actually injected."""
+                  at_ts: Optional[float] = None, steer_id: str = "") -> Dict:
+        """A steering message the loop actually injected.
+
+        `at_ts` is WHEN THE USER TYPED it (never the injection instant), so the UI places the
+        row inside the turn block at that moment - between the tool rows of that step.
+        `steer_id` correlates the row with the steer_received / steer_applied frames, so one
+        steer is ONE row and its status line settles instead of duplicating.
+        """
         row = {"step_no": int(step_no), "text": text or "", "seq": int(seq or 0),
-               "applied": True, "reason": "",
+               "applied": True, "reason": "", "steer_id": steer_id or "",
                "at_ts": at_ts if at_ts is not None else time.time()}
         self.steers.append(row)
         return row

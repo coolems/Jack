@@ -56,11 +56,17 @@ function _countAssistantBubbles() {
  * owned by another workspace, so a reload can never paint another workspace's history.
  */
 /**
- * (2026-10-23 live steering, the committed approach) An applied steer is persisted as a
- * PLAIN user message (raw text, no injection header), so a reload shows exactly what the
- * user typed, in chronological order, before the final assistant answer. No marker, no
- * folding: a steering message is a chat-level message like any other prompt.
+ * (2026-11-08, user request) A steering message is LOOP WORK, never a chat message.
+ * An applied steer is persisted as a `role=user` row flagged `is_steer` (the model must
+ * still see the correction in a later turn), but the UI does NOT paint it: the turn's
+ * loop-history block carries it as a row (turn_log `steers`), placed at the moment the
+ * user typed it. So these rows are skipped here - a reload shows the steering entries
+ * inside the block, exactly as the live turn showed them.
  */
+function _isSteerRow(msg) {
+    return !!(msg && (msg.is_steer || msg.is_steer === 1));
+}
+
 async function _renderHistory(convId, data) {
     const container = document.getElementById('chatContainer');
     const turnLogs = data.turn_logs || [];
@@ -71,6 +77,7 @@ async function _renderHistory(convId, data) {
 
     const items = [];
     for (const msg of (data.messages || [])) {
+        if (_isSteerRow(msg)) continue;              // steering lives in the turn block
         if (msg.role === 'assistant' && turnByMsg[msg.id]) {
             items.push({ t: msg.timestamp, kind: 'turn', row: turnByMsg[msg.id] });
             continue;

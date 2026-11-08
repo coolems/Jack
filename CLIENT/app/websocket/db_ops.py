@@ -110,6 +110,7 @@ def save_user_message(
     media_urls: Optional[List[str]] = None,
     file_contents: Optional[List[Dict]] = None,
     auto_title: bool = True,
+    is_steer: bool = False,
 ):
     """
     Save a user message to the database.
@@ -121,6 +122,10 @@ def save_user_message(
         media_urls: Optional list of media file URLs.
         file_contents: Optional list of file content dicts.
         auto_title: If True and workspace title is "New Workspace" (or legacy "New Chat"), update it.
+        is_steer: True for a LIVE STEERING message (typed while a turn was running). The row
+            is stored with the raw text so the model still sees the correction in a later
+            turn, but the flag tells the UI it is NOT a chat-level message - it is painted
+            as a row of that turn's loop-history block (app/turn_log `steers`).
     """
     msg_id = str(uuid.uuid4())
     conn = get_db_connection()
@@ -130,8 +135,8 @@ def save_user_message(
         # working_root sync below can never be a silent no-op UPDATE.
         _ensure_conversation_exists(cursor, conv_id)
         cursor.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents, is_steer) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 msg_id,
                 conv_id,
@@ -139,6 +144,7 @@ def save_user_message(
                 content,
                 json.dumps(media_urls) if media_urls else None,
                 json.dumps(file_contents) if file_contents else None,
+                1 if is_steer else 0,
             ),
         )
         cursor.execute(

@@ -2,11 +2,16 @@
  * cycle-rows.js - Row renderers for the loop-history block (2026-11-08).
  *
  * One row = one fact of one agentic turn: a reasoning step, a tool call, a consent
- * decision, a loop notice, an AI text block, a generated image. Rows live inside the
- * block's expanded body; the interactive consent card does NOT live here - it sits in the
- * block's visible strip so the user can still answer it while the block is collapsed.
- * Steering has no row at all (2026-11-08 restore to the committed approach): a steering
- * message is a chat-level user bubble, not a fact of the block.
+ * decision, a loop notice, an AI text block, a generated image, a steering message.
+ * Rows live inside the block's expanded body; the interactive consent card does NOT live
+ * here - it sits in the block's visible strip so the user can still answer it while the
+ * block is collapsed.
+ *
+ * STEERING IS A ROW OF THE BLOCK (2026-11-08, user request): a message typed while the
+ * task runs is NOT a chat message and must never paint as a user bubble - it is a fact of
+ * the RUNNING turn, so it lands here, placed at the moment the user typed it (at_ts =
+ * received_at), between the tool rows of that step. Its status line settles from the
+ * steer_received / steer_applied / steer_rejected frames (one row per steer_id).
  *
  * THE IO FRAME CONTRACT the user asked for (2026-11-08, revised):
  *   every tool block shows input and output inside a framed window:
@@ -172,6 +177,39 @@ const CycleRows = {
         el.appendChild(text);
     },
 
+    /**
+     * A steering message the user typed WHILE this turn was running.
+     * It is loop work, never a chat-level user message: the row sits inside the block at
+     * the moment the user typed it (at_ts = received_at), so it reads as "the user
+     * redirected the task here", between the tool rows of that step. The status line
+     * settles through CycleBlock.setSteer() (one row per steer_id).
+     */
+    steer(el, d) {
+        el.dataset.steerId = d.steer_id || '';
+        el.dataset.steerState = d.state || (d.applied ? 'applied'
+            : (d.rejected ? 'rejected' : (d.received ? 'received' : 'sending')));
+        const head = document.createElement('div');
+        head.className = 'cycle-steer-head';
+        const label = document.createElement('span');
+        label.className = 'cycle-steer-label';
+        label.textContent = '\u21B3 steering';
+        const time = document.createElement('span');
+        time.className = 'cycle-steer-time';
+        // WHEN the user typed it - the moment this entry was added to the loop history.
+        time.textContent = _fmtClock(d.at_ts);
+        const status = document.createElement('span');
+        status.className = 'cycle-steer-status';
+        status.textContent = _steerStatusLabel(el.dataset.steerState, d.reason);
+        head.appendChild(label);
+        head.appendChild(time);
+        head.appendChild(status);
+        el.appendChild(head);
+        const text = document.createElement('div');
+        text.className = 'cycle-steer-text';
+        text.textContent = d.text || '';
+        el.appendChild(text);
+    },
+
     /** One AI text block of one step: thinking (dim) or answer (markdown). */
     speech(el, d) {
         const kind = d.kind === 'thinking' ? 'thinking' : 'answer';
@@ -231,6 +269,37 @@ function _fmtMs(ms) {
     if (v < 60000) return (v / 1000).toFixed(1) + 's';
     return _fmtSec(v / 1000);
 }
+
+/** Clock time of an event (epoch seconds -> HH:MM:SS, local). A steering row shows WHEN
+ *  the user typed it, so the loop history reads as a timeline, not a wall of text. */
+function _fmtClock(epochSec) {
+    const v = Number(epochSec || 0);
+    if (!v) return '';
+    const d = new Date(v * 1000);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+window._fmtClock = _fmtClock;
+
+/**
+ * The steer row's status line. ONE source of truth: CycleBlock.setSteer() paints a LIVE row
+ * with it and CycleRows.steer() paints a rebuilt row with it, so a live turn and a reload
+ * can never show different wording for the same steering message.
+ */
+function _steerStatusLabel(state, reason) {
+    switch (state) {
+        case 'sending': return '\u23F3 sending to the running task\u2026';
+        case 'received': return '\u21B3 queued \u2014 applied at the loop\u2019s next step';
+        case 'applied': return '\u2713 applied \u2014 the agent is following this now';
+        case 'rejected': return '\u26A0 not applied \u2014 ' + (reason || 'the turn ended before it could be applied.');
+        default: return '\u2713 ' + (state || 'recorded');
+    }
+}
+window._steerStatusLabel = _steerStatusLabel;
+
+/** Status order for one steering row: a late ack must never downgrade a settled row. */
+const _STEER_STATE_RANK = { sending: 0, received: 1, applied: 2, rejected: 2 };
+window._STEER_STATE_RANK = _STEER_STATE_RANK;
 
 window.CycleRows = CycleRows;
 window._fmtMs = _fmtMs;

@@ -544,11 +544,16 @@ const CycleShell = {
         block.node.classList.add('settled');
         if (p.final && p.final.stopped) block.node.classList.add('stopped');
 
-        // Rows in real time order. Steering is NOT one of them (2026-11-08 restore to the
-        // committed approach): a steer is a chat-level user bubble, never a row of the block.
+        // Rows in real time order. A steering message IS one of them (2026-11-08 user
+        // request): it is loop work, so a reload shows it as a row of this block at the
+        // moment it was typed - never as a chat-level user bubble.
         const rows = [];
         (p.steps || []).forEach(s => rows.push({ kind: 'step', d: { step_no: s.step_no, step: s, at_ts: s.at_ts } }));
         (p.tools || []).forEach(t => rows.push({ kind: 'tool', d: { step_no: t.step_no, tool: t, at_ts: t.at_ts } }));
+        (p.steers || []).forEach(s => rows.push({ kind: 'steer', d: {
+            step_no: s.step_no, steer_id: s.steer_id || '', text: s.text,
+            state: s.applied ? 'applied' : 'received', reason: s.reason || '', at_ts: s.at_ts,
+        } }));
         (p.consents || []).forEach(c => rows.push({ kind: 'consent', d: { step_no: c.step_no, kind: c.kind, decision: c.decision, payload: c.payload, at_ts: c.at_ts } }));
         (p.grants || []).forEach(g => rows.push({ kind: 'grant', d: { step_no: g.step_no, kind: g.kind, at_ts: g.at_ts } }));
         (p.feedback || []).forEach(f => rows.push({ kind: 'notice', d: { step_no: f.step_no, text: f.text, at_ts: f.at_ts } }));

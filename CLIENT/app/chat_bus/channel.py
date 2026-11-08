@@ -50,6 +50,11 @@ class ChatChannel:
         # Steering is only meaningful there (a normal one-shot completion has no next step to
         # inject into). Set by run_generation_turn at turn start.
         self.agent_mode: bool = False
+        # (2026-11-08) id of the turn running NOW. A steering message is a fact of that turn,
+        # so its frames must carry this id - the UI routes them into the turn's loop-history
+        # block (static/ui/cycle-block.js keys blocks by (conv_id, turn_id)). "" when no turn
+        # is running or the turn has no cycle history (normal one-shot mode).
+        self.turn_id: str = ""
         # Messages typed by the user DURING a run. Drained by the ReAct loop at its next safe
         # boundary (before a provider call / before pending tool calls), never as a new turn.
         self._steer_queue: deque[dict] = deque(maxlen=max(1, CHAT_STEER_QUEUE_MAX))

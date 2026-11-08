@@ -177,9 +177,53 @@
 /* ---- auto-allow grants ---- */
 .cycle-row-grant .cycle-row-meta { color: var(--success, #2ecc71); }
 
-/* NO steering rows here (2026-11-08 restore to the committed approach): a steering
-   message is a chat-level user bubble (.message.user.steering, styles in
-   04-chat-messages.css), never a row of the turn block. */
+/* ---- steering rows (2026-11-08, user request) ----
+   A message typed WHILE the turn runs is LOOP WORK, never a chat-level user message: it is
+   a row of THIS block, placed at the moment the user typed it (at_ts = received_at), so it
+   reads as "the user redirected the task here" between the tool rows of that step.
+   Amber marks it as the user's own interjection (the AI's own rows stay neutral); the
+   status line carries the real state, never a guess. */
+.cycle-row-steer {
+    border-left: 2px solid var(--warning, #f59e0b);
+    padding-left: 8px;
+    background: rgba(245, 158, 11, 0.06);
+}
+.cycle-steer-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+}
+.cycle-steer-label {
+    color: var(--warning, #f59e0b);
+    font-weight: 600;
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+/* WHEN the entry was added to the loop history (the moment the user typed it). */
+.cycle-steer-time {
+    color: var(--text-muted, #6b7686);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+.cycle-steer-status {
+    margin-left: auto;
+    color: var(--text-secondary, #9aa4b2);
+    flex-shrink: 0;
+}
+.cycle-row-steer[data-steer-state="sending"] .cycle-steer-status { color: var(--text-muted, #6b7686); }
+.cycle-row-steer[data-steer-state="received"] .cycle-steer-status { color: #93c5fd; }
+.cycle-row-steer[data-steer-state="applied"] .cycle-steer-status { color: var(--success, #2ecc71); }
+.cycle-row-steer[data-steer-state="rejected"] .cycle-steer-status { color: var(--danger, #e5534b); }
+.cycle-row-steer[data-steer-state="rejected"] { border-left-color: var(--danger, #e5534b); }
+.cycle-steer-text {
+    color: var(--text-primary, #e6edf3);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+}
 
 /* ---- notices ---- */
 .cycle-notice-text { color: var(--text-secondary, #9aa4b2); white-space: pre-wrap; }
@@ -197,8 +241,9 @@
 
 /* ---- segment divider (REMOVED 2026-11-08, user request) ----
    A steer used to paint a dashed horizontal line inside the AI response frame, which read
-   as a limiter/barrier. Nothing is painted any more and a steer no longer closes a segment
-   at all (steering is chat-level) - no .cycle-segment-break rule, no divider element. */
+   as a limiter/barrier. Nothing is painted any more and a steer never closes a segment: it
+   is a ROW of the block body (see .cycle-row-steer above), while the AI answer strip stays
+   ONE continuous stream - no .cycle-segment-break rule, no divider element. */
 
 /* ---- live strip: consent cards + last tool, visible while collapsed ---- */
 .cycle-live {
@@ -334,9 +379,10 @@
    its compact height because it shows no chips. */
 .cycle-ai:not([data-empty="1"]) { min-height: 56px; }
 
-/* No steer chip and no steer_ack row here (2026-11-08 restore): steering is a chat-level
-   user bubble settled by the steer_received / steer_applied / steer_rejected frames, so the
-   block has no chip in its live strip and no acknowledgement row. */
+/* No steer chip and no steer_ack row here (2026-11-08): the interactive card lives in the
+   live strip, a steering message lives in the expanded BODY (.cycle-row-steer) and its
+   status settles through the steer_received / steer_applied / steer_rejected frames - so
+   the live strip carries no chip and no second acknowledgement row. */
 
 /* ---- plain user prompt (the only chat-level message the new UI keeps) ---- */
 .cycle-user {
