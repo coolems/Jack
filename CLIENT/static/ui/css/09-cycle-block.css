@@ -1,17 +1,27 @@
 /* =====================================================================
    09-cycle-block.css - The loop-history UI (2026-11-08).
 
-   One collapsed line per agentic turn, plus two always-visible strips under it:
-     .cycle-live  -> consent cards, the newest tool (live timer)
+   One collapsed line per agentic turn, plus two strips under it:
+     .cycle-live  -> consent cards
+     .cycle-last  -> the newest tool WHILE it runs (live timer) - removed once the final
+                     answer starts being delivered (cycle_final / settle)
      .cycle-ai    -> everything the AI said during this turn (thinking + answers)
 
-   Two size contracts, both from the user:
+   Three contracts, all from the user:
+     * ONE ROW = ONE LINE (2026-11-08): clicking a collapsed turn reveals EVERY entry of that
+       turn, but each entry shows only its first row - turn · kind · name · time · speed · text.
+       The rest of an entry (io frames, full text, consent payload, image thumb) lives in
+       .cycle-row-detail and opens only when THAT ROW's own line is clicked (data-open="1").
+     * NO TOKEN COUNTERS IN THE BLOCK (2026-11-08): "N tok out" and "X.XK sent" are gone from
+       step rows, "X.XK gen" is gone from the head line. Speed stays. The chat-level token bar
+       in the header still carries the counters.
      * IO FRAMES (2026-11-08, revised): input and output are shown inside a framed window in
        EVERY tool block AND in the last-tool strip - input 5 visible lines, output 4 visible
        lines, scrollable. The DOM keeps the full text; only the frame is clipped, so nothing
        is lost.
      * LAST-TOOL strip -> ONE info line (tool number + name + status + live timer; no call
-       id, no start time, no second stats row), visible the WHOLE time the turn runs. The AI
+       id, no start time, no second stats row), visible while a tool of the turn runs and
+       REMOVED the moment the final AI answer starts being delivered. The AI
        ANSWER strip has no cap either: the whole answer is readable, streamed live, inside
        the scrolling chat.
    ===================================================================== */
@@ -70,6 +80,9 @@
 }
 .cycle-block.expanded .cycle-body { display: block; }
 
+/* ONE ROW = ONE LINE (user request 2026-11-08). The row itself is a column: the first
+   line is always visible, the entry's rest stays closed in .cycle-row-detail until the
+   row's own line is clicked. */
 .cycle-row {
     display: flex;
     flex-direction: column;
@@ -80,33 +93,74 @@
 }
 .cycle-row:last-child { border-bottom: none; }
 
-.cycle-row-key {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-muted, #6b7686);
-}
-.cycle-row-meta { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-secondary, #9aa4b2); }
-
-/* ---- step rows ---- */
-.cycle-row-step .cycle-row-meta { color: var(--text-primary, #e6edf3); }
-.cycle-row-step .cycle-row-key { color: var(--accent, #4f8cff); }
-
-/* ---- tool rows: name + live timer, input (5 lines), output (4 lines) ---- */
-.cycle-tool-head { display: flex; align-items: center; gap: 8px; }
-.cycle-tool-name { font-family: ui-monospace, monospace; font-weight: 600; color: var(--accent, #4f8cff); }
-.cycle-tool-status { font-size: 12px; color: var(--success, #2ecc71); }
-.cycle-row-tool[data-ok="0"] .cycle-tool-status { color: var(--danger, #e5534b); }
-.cycle-row-tool[data-ok="0"] .cycle-tool-name { color: var(--danger, #e5534b); }
-.cycle-tool-timer {
-    margin-left: auto;
-    font-family: ui-monospace, monospace;
+/* The first row of an entry: turn · kind · name · time · speed · text - ONE line, so a
+   revealed turn reads as a list, not as a wall of tool output. */
+.cycle-row-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    white-space: nowrap;          /* ONE row line: the text preview carries the ellipsis */
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
-    color: var(--text-muted, #6b7686);
+    color: var(--text-secondary, #9aa4b2);
+}
+.cycle-row-toggle { cursor: pointer; }
+.cycle-row-toggle:hover { color: var(--text-primary, #e6edf3); }
+.cycle-row-toggle:focus-visible { outline: 1px solid var(--accent, #4f8cff); outline-offset: 2px; }
+
+.cycle-row-turn {
+    color: var(--accent, #4f8cff);
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
     font-variant-numeric: tabular-nums;
 }
-.cycle-row-tool[data-running="1"] .cycle-tool-timer { color: var(--success, #2ecc71); }
+.cycle-row-kind {
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted, #6b7686);
+    flex-shrink: 0;
+}
+.cycle-row-name {
+    font-weight: 600;
+    color: var(--text-primary, #e6edf3);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.cycle-row-time {
+    color: var(--text-muted, #6b7686);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+.cycle-row-speed {
+    color: var(--text-muted, #6b7686);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+/* The text preview (steer / AI / notice / image filename). Truncated by _oneLine() in
+   cycle-rows.js, so it never wraps into a second row line. */
+.cycle-row-text {
+    color: var(--text-primary, #e6edf3);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+/* The entry's rest: closed until the row's own line is clicked. */
+.cycle-row-detail { display: none; }
+.cycle-row[data-open="1"] .cycle-row-detail { display: block; }
+
+/* ---- tool rows: name + ok/failed + duration on the line; io frames in the detail ---- */
+.cycle-tool-name { font-family: ui-monospace, monospace; font-weight: 600; color: var(--accent, #4f8cff); }
+.cycle-tool-status { font-size: 12px; color: var(--success, #2ecc71); flex-shrink: 0; }
+.cycle-row-tool[data-ok="0"] .cycle-tool-status { color: var(--danger, #e5534b); }
+.cycle-row-tool[data-ok="0"] .cycle-tool-name { color: var(--danger, #e5534b); }
 
 /* ---- io frames: a real window for input/output (user request 2026-11-08) ----
    Every tool block AND the always-visible last-tool strip renders input and output inside
@@ -175,7 +229,7 @@
 .cycle-row-consent .exec-approval-card { margin: 4px 0 0; }
 
 /* ---- auto-allow grants ---- */
-.cycle-row-grant .cycle-row-meta { color: var(--success, #2ecc71); }
+.cycle-row-grant .cycle-consent-line { color: var(--success, #2ecc71); }
 
 /* ---- steering rows (2026-11-08, user request) ----
    A message typed WHILE the turn runs is LOOP WORK, never a chat-level user message: it is
@@ -188,18 +242,14 @@
     padding-left: 8px;
     background: rgba(245, 158, 11, 0.06);
 }
-.cycle-steer-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-}
+/* The steer sits on the ONE row line: label · time · status · text preview.
+   (the old .cycle-steer-head wrapper is gone - the row line is the flex container) */
 .cycle-steer-label {
     color: var(--warning, #f59e0b);
     font-weight: 600;
     text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
     flex-shrink: 0;
 }
 /* WHEN the entry was added to the loop history (the moment the user typed it). */
@@ -209,10 +259,12 @@
     flex-shrink: 0;
 }
 .cycle-steer-status {
-    margin-left: auto;
     color: var(--text-secondary, #9aa4b2);
     flex-shrink: 0;
+    white-space: nowrap;
 }
+/* Full steer text lives in the row's detail (the line shows the preview only). */
+.cycle-row-steer .cycle-row-text { color: var(--text-primary, #e6edf3); }
 .cycle-row-steer[data-steer-state="sending"] .cycle-steer-status { color: var(--text-muted, #6b7686); }
 .cycle-row-steer[data-steer-state="received"] .cycle-steer-status { color: #93c5fd; }
 .cycle-row-steer[data-steer-state="applied"] .cycle-steer-status { color: var(--success, #2ecc71); }
@@ -456,8 +508,10 @@
 .cycle-image-meta { font-size: 12px; color: var(--text-secondary, #9aa4b2); margin-top: 6px; }
 .cycle-image-setup { font-size: 11px; color: var(--text-muted, #6b7686); margin-top: 4px; font-family: ui-monospace, monospace; }
 
-/* ---- image inside the block body (thumbnail; the card below is the full one) ---- */
-.cycle-row-image { flex-direction: row; align-items: center; gap: 10px; }
+/* ---- image inside the block body ----
+   ONE ROW = ONE LINE: the filename sits on the row line; the thumbnail + the setup line
+   open in the row's detail (the card below is the full artifact). */
+.cycle-row-image .cycle-row-detail { margin-top: 4px; }
 .cycle-image-thumb { max-width: 120px; max-height: 80px; border-radius: 6px; cursor: pointer; }
 
 /* ---- system notice at chat level (provider errors, recovery) ---- */

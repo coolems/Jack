@@ -1,11 +1,17 @@
 /**
  * cycle-rows.js - Row renderers for the loop-history block (2026-11-08).
  *
- * One row = one fact of one agentic turn: a reasoning step, a tool call, a consent
- * decision, a loop notice, an AI text block, a generated image, a steering message.
- * Rows live inside the block's expanded body; the interactive consent card does NOT live
- * here - it sits in the block's visible strip so the user can still answer it while the
- * block is collapsed.
+ * ONE ROW = ONE LINE (user request 2026-11-08): clicking a collapsed turn block reveals
+ * EVERY entry of that turn, but each entry shows only its FIRST row:
+ *   turn N · kind · name · time · speed · text (a steer or an AI block)
+ * The rest of an entry (tool input/output frames, the full steer/AI/notice text, the
+ * consent payload, the image thumb) stays in the DOM inside .cycle-row-detail and is
+ * revealed by clicking THAT ROW's own line - the list stays readable, nothing is lost.
+ *
+ * NO TOKEN COUNTERS IN THE BLOCK (user request 2026-11-08): "N tok out" and "X.XK sent"
+ * are gone from the step rows, and "X.XK gen" is gone from the head line. Speed stays -
+ * the user asked for it on the row line. The chat-level token bar (websocket.js
+ * updateHistoryStatusBar) still carries the counters; only the turn block stopped showing them.
  *
  * STEERING IS A ROW OF THE BLOCK (2026-11-08, user request): a message typed while the
  * task runs is NOT a chat message and must never paint as a user bubble - it is a fact of
@@ -13,13 +19,11 @@
  * received_at), between the tool rows of that step. Its status line settles from the
  * steer_received / steer_applied / steer_rejected frames (one row per steer_id).
  *
- * THE IO FRAME CONTRACT the user asked for (2026-11-08, revised):
- *   every tool block shows input and output inside a framed window:
- *     tool INPUT frame  -> 5 visible lines, scrollable
- *     tool OUTPUT frame -> 4 visible lines, scrollable
- *   The DOM keeps the full (already clipped by TurnLog) text; only the frame is capped, so
- *   nothing is lost - the scrollbar reveals the rest. The same numbers are used by the
- *   always-visible last-tool strip (cycle-shell.js).
+ * THE IO FRAME CONTRACT (2026-11-08, revised): every tool entry still carries input and
+ * output inside a framed window - input 5 visible lines, output 4, scrollable. The frames
+ * now live in the row's detail instead of being always open, so the DOM keeps the full
+ * (already clipped by TurnLog) text and the frame caps stay exactly 5 / 4. The same
+ * numbers are used by the live last-tool strip (cycle-shell.js).
  */
 
 /** Shown inside an io frame when there is nothing to show yet (a running tool has no output).
@@ -79,6 +83,14 @@ function _hasAiNoise(text) {
 }
 window._hasAiNoise = _hasAiNoise;
 
+/** Preview text for a collapsed row line: one line, whitespace collapsed, hard cap so the
+ *  DOM stays light. The FULL text lives in the row's detail, never here. */
+function _oneLine(text) {
+    const flat = String(text || '').replace(/\s+/g, ' ').trim();
+    return flat.length > 240 ? flat.slice(0, 240) + '\u2026' : flat;
+}
+window._oneLine = _oneLine;
+
 const CycleRows = {
     /** Line budget: .cycle-io-pre has an INTEGER line box of 16px (font 12px, line-height 16px),
      *  so height = lines * 16px shows EXACTLY that many lines. An em multiplier of the unitless
@@ -86,6 +98,7 @@ const CycleRows = {
     LINE_PX: 16,
     INPUT_LINES: 5,
     OUTPUT_LINES: 4,
+
     /**
      * One framed io window: title bar + a scrollable <pre> whose HEIGHT is the line budget.
      * `height` (not `max-height`) because .cycle-io-pre is content-box (see 09-cycle-block.css):
@@ -109,126 +122,218 @@ const CycleRows = {
         return wrap;
     },
 
-    /** Reasoning step: token counters + speed + duration of that provider call. */
-    step(el, d) {
-        const s = d.step || {};
-        const meta = document.createElement('div');
-        meta.className = 'cycle-row-meta';
-        const parts = [`step ${d.step_no}`];
-        if (s.generated_tokens) parts.push(`${s.generated_tokens} tok out`);
-        if (s.speed_tps) parts.push(`\u26A1 ${s.speed_tps} tok/s`);
-        if (s.duration_sec) parts.push(`${s.duration_sec}s`);
-        if (s.prompt_tokens) parts.push(`${(s.prompt_tokens / 1024).toFixed(1)}K sent`);
-        meta.textContent = parts.join(' \u00b7 ');
-        el.appendChild(meta);
+    /** THE FIRST ROW of an entry - the only thing a collapsed row shows.
+     *  Order is exactly what the user asked for: turn · kind · name · time · speed · text.
+     *  `nameEl` / `extra` / `timeEl` let a row keep its own classes (tool name, steer label,
+     *  consent decision) inside the same line shape; `extra` sits after the time, so the
+     *  requested order never moves. */
+    _line(el, d, o) {
+        const opts = o || {};
+        const line = document.createElement('div');
+        line.className = 'cycle-row-line';
+        line.dataset.rowKind = el.dataset.kind || '';
+
+        const turn = document.createElement('span');
+        turn.className = 'cycle-row-turn';
+        turn.textContent = 'turn ' + (Number(d.step_no || 0) || 0);
+        line.appendChild(turn);
+
+        if (opts.kind) {
+            const k = document.createElement('span');
+            k.className = 'cycle-row-kind';
+            k.textContent = opts.kind;
+            line.appendChild(k);
+        }
+
+        if (opts.nameEl) line.appendChild(opts.nameEl);
+        else if (opts.name) {
+            const n = document.createElement('span');
+            n.className = 'cycle-row-name';
+            n.textContent = opts.name;
+            line.appendChild(n);
+        }
+
+        if (opts.timeEl) line.appendChild(opts.timeEl);
+        else {
+            const t = document.createElement('span');
+            t.className = 'cycle-row-time';
+            t.textContent = _fmtClock(d.at_ts);
+            line.appendChild(t);
+        }
+
+        if (opts.extra) line.appendChild(opts.extra);
+
+        // Only printed when the entry actually has a speed/duration - an empty span would
+        // just add a gap in the line.
+        if (opts.speed) {
+            const speed = document.createElement('span');
+            speed.className = 'cycle-row-speed';
+            speed.textContent = opts.speed;
+            line.appendChild(speed);
+        }
+
+        if (opts.text) {
+            const txt = document.createElement('span');
+            txt.className = 'cycle-row-text';
+            txt.textContent = _oneLine(opts.text);
+            line.appendChild(txt);
+        }
+
+        el.appendChild(line);
+        return line;
     },
 
-    /** Tool call: name + status + timer, then input (5 lines) and output (4 lines). */
+    /** The hidden part of an entry (io frames, full text, payload, thumb). CSS keeps it
+     *  closed until the row's own line is clicked (data-open="1"). */
+    _detail(el) {
+        const box = document.createElement('div');
+        box.className = 'cycle-row-detail';
+        el.appendChild(box);
+        return box;
+    },
+
+    /** Open/close one entry's detail. Independent of the block-level toggle: the head line
+     *  opens the turn, a row line opens that entry only. */
+    _openRow(el) {
+        el.dataset.open = el.dataset.open === '1' ? '0' : '1';
+    },
+
+    /** A row with a detail is clickable; a row with none (a step, a grant) is not. */
+    _wire(el) {
+        const line = el.querySelector('.cycle-row-line');
+        if (!line || !el.querySelector('.cycle-row-detail')) return;
+        line.classList.add('cycle-row-toggle');
+        line.setAttribute('role', 'button');
+        line.tabIndex = 0;
+        line.addEventListener('click', (ev) => {
+            if (ev.target.closest('button, a, img')) return;   // an image thumb opens the file
+            this._openRow(el);
+        });
+        line.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); this._openRow(el); }
+        });
+    },
+
+    /** Reasoning step: one line - turn · step · time · speed (+ duration). NO token counters. */
+    step(el, d) {
+        const s = d.step || {};
+        const bits = [];
+        if (s.speed_tps) bits.push(`\u26A1 ${s.speed_tps} tok/s`);
+        if (s.duration_sec) bits.push(`${s.duration_sec}s`);
+        this._line(el, d, { kind: 'step', speed: bits.join(' \u00b7 ') });
+    },
+
+    /** Tool call: one line - turn · tool · name · ok/failed · time · duration.
+     *  The input (5 lines) and output (4 lines) frames open on the row's own click. */
     tool(el, d) {
         const t = d.tool || {};
         el.dataset.ok = t.ok ? '1' : '0';
         el.dataset.callId = t.call_id || '';
 
-        const head = document.createElement('div');
-        head.className = 'cycle-tool-head';
         const name = document.createElement('span');
         name.className = 'cycle-tool-name';
         name.textContent = t.name || 'tool';
         const status = document.createElement('span');
         status.className = 'cycle-tool-status';
         status.textContent = t.ok ? '\u2713 ok' : '\u2716 failed';
-        const timer = document.createElement('span');
-        timer.className = 'cycle-tool-timer';
-        timer.dataset.callId = t.call_id || '';
-        timer.textContent = t.duration_ms != null ? _fmtMs(t.duration_ms) : '0.0s';
-        head.appendChild(name);
-        head.appendChild(status);
-        head.appendChild(timer);
-        el.appendChild(head);
 
-        el.appendChild(this._pre(t.args || '', this.INPUT_LINES, 'input'));
-        el.appendChild(this._pre(t.output || '', this.OUTPUT_LINES, 'output'));
+        this._line(el, d, {
+            kind: 'tool', nameEl: name, extra: status,
+            speed: t.duration_ms != null ? _fmtMs(t.duration_ms) : '0.0s',
+        });
+
+        const detail = this._detail(el);
+        detail.appendChild(this._pre(t.args || '', this.INPUT_LINES, 'input'));
+        detail.appendChild(this._pre(t.output || '', this.OUTPUT_LINES, 'output'));
     },
 
-    /** Consent decision line (the interactive card itself is transient). */
+    /** Consent decision line (the interactive card itself is transient). Payload in the detail. */
     consent(el, d) {
         const line = document.createElement('div');
         line.className = 'cycle-consent-line';
         line.textContent = _consentLabel(d.decision || 'pending', d.kind || 'python');
-        el.appendChild(line);
+        this._line(el, d, { kind: 'consent', extra: line });
         if (d.payload) {
-            el.appendChild(this._pre(String(d.payload), 3, 'what was asked'));
+            this._detail(el).appendChild(this._pre(String(d.payload), 3, 'what was asked'));
         }
     },
 
-    /** A per-kind auto-allow unlock (timer / "allow until task done"). */
+    /** A per-kind auto-allow unlock (timer / "allow until task done"). One line, no detail. */
     grant(el, d) {
         const line = document.createElement('div');
         line.className = 'cycle-consent-line';
         line.textContent = `\u26A1 Auto-allowed \u2014 ${d.kind || 'python'} (no card shown)`;
-        el.appendChild(line);
+        this._line(el, d, { kind: 'grant', extra: line });
     },
 
-    /** A loop notice (guardian, interjection resume, truncation resume...). */
+    /** A loop notice: text preview on the line, full text in the detail. */
     notice(el, d) {
+        this._line(el, d, { kind: 'notice', text: d.text || '' });
         const text = document.createElement('div');
         text.className = 'cycle-notice-text';
         text.textContent = d.text || '';
-        el.appendChild(text);
+        this._detail(el).appendChild(text);
     },
 
     /**
      * A steering message the user typed WHILE this turn was running.
      * It is loop work, never a chat-level user message: the row sits inside the block at
      * the moment the user typed it (at_ts = received_at), so it reads as "the user
-     * redirected the task here", between the tool rows of that step. The status line
-     * settles through CycleBlock.setSteer() (one row per steer_id).
+     * redirected the task here", between the tool rows of that step. The line carries the
+     * label, the typed time, the status and the text preview; the full text is in the detail.
+     * The status line settles through CycleBlock.setSteer() (one row per steer_id).
      */
     steer(el, d) {
         el.dataset.steerId = d.steer_id || '';
         el.dataset.steerState = d.state || (d.applied ? 'applied'
             : (d.rejected ? 'rejected' : (d.received ? 'received' : 'sending')));
-        const head = document.createElement('div');
-        head.className = 'cycle-steer-head';
+
         const label = document.createElement('span');
         label.className = 'cycle-steer-label';
         label.textContent = '\u21B3 steering';
+
+        // WHEN the user typed it - the moment this entry was added to the loop history.
         const time = document.createElement('span');
         time.className = 'cycle-steer-time';
-        // WHEN the user typed it - the moment this entry was added to the loop history.
         time.textContent = _fmtClock(d.at_ts);
+
         const status = document.createElement('span');
         status.className = 'cycle-steer-status';
         status.textContent = _steerStatusLabel(el.dataset.steerState, d.reason);
-        head.appendChild(label);
-        head.appendChild(time);
-        head.appendChild(status);
-        el.appendChild(head);
+
+        this._line(el, d, { nameEl: label, extra: status, timeEl: time, text: d.text || '' });
+
         const text = document.createElement('div');
         text.className = 'cycle-steer-text';
         text.textContent = d.text || '';
-        el.appendChild(text);
+        this._detail(el).appendChild(text);
     },
 
-    /** One AI text block of one step: thinking (dim) or answer (markdown). */
+    /** One AI text block of one step: thinking (dim) or answer (markdown).
+     *  Line = turn · AI/thinking · time · preview; the whole text opens in the detail. */
     speech(el, d) {
         const kind = d.kind === 'thinking' ? 'thinking' : 'answer';
         el.dataset.speechKind = kind;
+        if (d.final) el.dataset.finalSpeech = '1';
+        this._line(el, d, { kind: kind === 'thinking' ? 'thinking' : 'AI', text: d.text || '' });
+
+        const detail = this._detail(el);
         const lab = document.createElement('div');
         lab.className = 'cycle-speech-label';
         lab.textContent = kind === 'thinking' ? 'thinking' : 'AI';
-        el.appendChild(lab);
+        detail.appendChild(lab);
         const body = document.createElement('div');
         body.className = 'cycle-speech-text';
         if (kind === 'thinking') body.textContent = d.text || '';
         else if (typeof parseMarkdown === 'function') body.innerHTML = parseMarkdown(d.text || '', false);
         else body.textContent = d.text || '';
-        el.appendChild(body);
-        if (d.final) el.dataset.finalSpeech = '1';
+        detail.appendChild(body);
     },
 
-    /** A generated image (artifact of a tool call). */
+    /** A generated image: filename on the line, thumb + setup line in the detail. */
     image(el, d) {
+        this._line(el, d, { kind: 'image', text: d.filename || 'generated image' });
+        const detail = this._detail(el);
         const img = document.createElement('img');
         img.className = 'cycle-image-thumb';
         img.src = 'data:image/png;base64,' + d.image_base64;
@@ -238,7 +343,7 @@ const CycleRows = {
             img.dataset.filePath = d.file_path;
             img.addEventListener('click', () => window.open(img.dataset.filePath));
         }
-        el.appendChild(img);
+        detail.appendChild(img);
         const meta = document.createElement('div');
         meta.className = 'cycle-image-meta';
         const bits = [];
@@ -249,7 +354,7 @@ const CycleRows = {
             if (setup) bits.push(setup);
         }
         meta.textContent = bits.join(' \u00b7 ');
-        el.appendChild(meta);
+        detail.appendChild(meta);
     },
 
     render(kind, el, d) {
@@ -259,6 +364,7 @@ const CycleRows = {
             el.textContent = String((d && d.text) || '');
             console.error('[CYCLE-ROWS] render failed for', kind, e);
         }
+        this._wire(el);
         return el;
     },
 };
@@ -270,8 +376,8 @@ function _fmtMs(ms) {
     return _fmtSec(v / 1000);
 }
 
-/** Clock time of an event (epoch seconds -> HH:MM:SS, local). A steering row shows WHEN
- *  the user typed it, so the loop history reads as a timeline, not a wall of text. */
+/** Clock time of an event (epoch seconds -> HH:MM:SS, local). Every row line shows WHEN
+ *  the entry happened, so the loop history reads as a timeline, not a wall of text. */
 function _fmtClock(epochSec) {
     const v = Number(epochSec || 0);
     if (!v) return '';

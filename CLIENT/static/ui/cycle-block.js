@@ -4,11 +4,16 @@
  * ONE collapsed line per agentic turn, replacing the old flat chat view:
  *
  *   [turns 4 · tools 7 · confirmations 2 · ⏱ 1:24 · ⚡ 21 tok/s]   collapsed
- *   ├ expanded body : chronological rows - steps, tools, consent decisions, notices, speech
- *   ├ last-tool strip: ONE info line (#number · name · status · live timer) + FULL input/output,
- *   │                 visible the WHOLE time - while running, after the answer, and after a
- *   │                 reload (settle() only FREEZES the timer; rebuild() re-shows it). Only a
- *   │                 dropped workspace view clears it.
+ *   ├ expanded body : chronological rows - steps, tools, consent decisions, notices, speech.
+ *   │                 ONE ROW = ONE LINE (user request 2026-11-08): turn · kind · name ·
+ *   │                 time · speed · text. Everything else of that entry (io frames, full
+ *   │                 text, payload, thumb) opens only when the ROW's own line is clicked.
+ *   ├ last-tool strip: ONE info line (#number · name · status · live timer) + FULL input/output.
+ *   │                 It appears with the FIRST tool_start of the turn and is REMOVED the
+ *   │                 moment the final answer starts being delivered (cycle_final), and by
+ *   │                 settle() for a turn that ends without that frame (done / error / stop).
+ *   │                 It is LIVE-WORK only: a settled turn - and a turn rebuilt from the DB -
+ *   │                 shows no strip; its tools stay as rows of the expanded body.
  *   ├ live strip    : the transient consent card (answerable while collapsed)
  *   └ AI strip      : everything the AI said during this turn, streamed live (thinking + answers)
  *
@@ -114,7 +119,7 @@ const CycleBlock = {
             toolEls: {},         // call_id -> row element
             aiSeg: {},           // segment index -> {thinkingEl, answerEl}
             aiSegIdx: 0,         // one segment per answer stream (a steer is NOT a segment)
-            lastCallId: '', lastEl_: null, lastTimer: null,
+            lastCallId: '', lastEl_: null, lastTimer: null, lastToolClosed: false,
             finalText: '', turnTimer: null,
         };
         block.head = node.querySelector('.cycle-head');
@@ -181,9 +186,10 @@ const CycleBlock = {
     },
 
     /** Close a turn: stop timers, fold pending cards/chips, freeze the timer line.
-     *  The last-tool strip stays VISIBLE after the turn ends (user's rule 2026-11-08: it
-     *  kept disappearing). Only its timer freezes here; the strip itself is dropped when a
-     *  workspace's view is cleared, never mid-turn or at settle.
+     *  The last-tool strip is REMOVED here (user's rule 2026-11-08, revised): it is a live
+     *  work surface - it shows the tool that is RUNNING. Once the turn is over (and normally
+     *  already at cycle_final, when the answer starts being delivered) it must not stay on
+     *  screen. Its history is not lost: every call is a row of the expanded body.
      *  The streamed answer also gets its markdown render here (CycleShell.settleStream),
      *  so the live plain-text stream becomes the formatted final answer. */
     settle(block, finalText, stopped) {
@@ -192,7 +198,7 @@ const CycleBlock = {
         block.open = false;
         block.finalText = finalText || '';
         this._stopTurnTimer(block);
-        CycleShell.freezeLastTool(block);
+        CycleShell.clearLastTool(block);
         CycleShell.settleStream(block);
         for (const rid of Object.keys(block.consents)) {
             const el = block.consents[rid];
@@ -243,7 +249,7 @@ const CycleBlock = {
         const parts = [`turns ${c.turns}`];
         // ONE tool count only (user request 2026-11-08): the old "(N ok)" suffix was
         // rendered here and was wrong/doubled, so it is gone. Per-call ok/failed still
-        // reads on the tool rows and on the always-visible last-tool strip. addTool()
+        // reads on the tool rows and on the live last-tool strip. addTool()
         // counts a call_id exactly once (tool_end and cycle_tool describe the SAME call).
         parts.push(`tools ${c.tools}`);
         if (c.consents) parts.push(`confirmations ${c.consents}`);
@@ -252,7 +258,10 @@ const CycleBlock = {
         // line counts them - the number always has rows behind it.
         if (c.steers) parts.push(`steers ${c.steers}`);
         if (c.notices) parts.push(`notices ${c.notices}`);
-        if (block.generated) parts.push(`${(block.generated / 1024).toFixed(1)}K gen`);
+        // NO TOKEN COUNTERS ON THE HEAD LINE (user request 2026-11-08): "X.XK gen" is gone.
+        // block.generated is still tracked (token_stats / turn_stats fold it in) because the
+        // chat-level token bar reads it; only the block stopped printing it. Speed stays -
+        // the user asked for speed on the row lines and on this head line.
         if (block.speed) parts.push(`\u26A1 ${block.speed.toFixed(1)} tok/s`);
         if (block.settled && block.lastTurnSec) parts.push(`\u21A9 ${_fmtSec(block.lastTurnSec)} last`);
         block.summaryEl.textContent = parts.join(' \u00b7 ');
@@ -455,9 +464,11 @@ const CycleBlock = {
     addStreamChunk(block, kind, text) { CycleShell.appendStream(block, kind, text, null); },
 
     /**
-     * Drop the last-tool strip. Used ONLY when a workspace's view is destroyed
-     * (clear()/delete) - never on cycle_final, never on settle, never on 'done'.
-     * The user's rule (2026-11-08): the last-tool block is visible ALL the time.
+     * Drop the last-tool strip. Called when the final answer starts being delivered
+     * (cycle_final, websocket.js) and by settle() for a turn that ends without that frame
+     * (done / error / stop / cycle_end), so the strip never outlives the answer.
+     * The user's rule (2026-11-08, revised): visible while a tool runs, gone once the
+     * final AI response is delivered.
      */
     clearLastTool(block) { CycleShell.clearLastTool(block); },
 

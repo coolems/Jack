@@ -7,7 +7,7 @@
  *                    and the rebuild of a settled turn from its persisted turn_log row.
  *
  * THE IO FRAME CONTRACT the user asked for (2026-11-08, revised):
- *   * EVERY tool block AND the always-visible LAST-TOOL strip shows input and output
+ *   * EVERY tool block AND the LIVE LAST-TOOL strip shows input and output
  *     inside a framed window (border + title bar + scrollable body).
  *   * input frame = 5 visible lines, output frame = 4 visible lines, scrollable.
  *   * The DOM keeps the full text; only the frame is clipped, so nothing is lost.
@@ -126,6 +126,10 @@ const CycleShell = {
 
     /** tool_start: fresh strip + live timer ticking from the call's own start time. */
     showRunningTool(block, data) {
+        if (!block) return;
+        // A tool is RUNNING now, so the strip must be visible again - the flag only keeps
+        // it gone for finished-tool frames after the answer started being delivered.
+        block.lastToolClosed = false;
         // The tool number = this call's position in the turn (1-based). It matches the
         // `tools N` on the head line, because addTool() counts each call exactly once.
         const wrap = this.buildLastTool(block, { tool: {
@@ -145,8 +149,9 @@ const CycleShell = {
      * The info line stays ONE line - only the status word and the timer change.
      *
      * A finished tool with NO strip yet (silent start, background replay, a frame that
-     * arrived while the view was away) still builds the strip, so the always-visible
-     * last-tool block never ends up empty - it always shows the newest tool.
+     * arrived while the view was away) still builds the strip, so the live last-tool block
+     * never ends up empty - it always shows the newest tool. Once the strip has been closed
+     * (the final answer is being delivered - lastToolClosed) no tool frame re-opens it.
      *
      * `data-ok` is set on BOTH the strip container (.cycle-last) and the tool wrap, so the
      * CSS red rule (.cycle-last[data-ok="0"] ...) actually matches. Without it a failed
@@ -154,6 +159,7 @@ const CycleShell = {
      */
     finishLastTool(block, d) {
         if (!block) return;
+        if (block.lastToolClosed) return;   // the answer is being delivered - strip stays gone
         if (!block.lastEl_) {
             block.toolNo = (block.toolNo || 0) + 1;
             const fresh = this.buildLastTool(block, { tool: Object.assign(
@@ -183,41 +189,20 @@ const CycleShell = {
     },
 
     /**
-     * The turn is OVER. The strip stays VISIBLE (user's rule 2026-11-08: "last tool block
-     * must be visible all the time - it disappears from time to time"), but its timer is
-     * frozen and no live setup card is kept. Only a workspace whose view is dropped loses it.
+     * Drop the strip completely: the final answer is being delivered (cycle_final) or the
+     * turn settled without that frame (done / error / stop / cycle_end), and also when a
+     * workspace's view is destroyed.
+     *
+     * THE RULE (2026-11-08, revised by the user): the strip is a LIVE work surface - it
+     * appears with the first tool_start of the turn and must be GONE once the final AI
+     * response starts being delivered. Nothing is lost: every tool call is still a row of
+     * the expanded body, and a rebuilt (settled) turn therefore shows no strip at all.
      */
-    freezeLastTool(block) {
-        if (!block) return;
-        CycleBlock.stopToolTimer(block);
-        if (block.lastEl_) {
-            const timer = block.lastEl_.querySelector('.cycle-last-timer');
-            if (timer && block.lastTool_ && block.lastTool_.duration_ms != null) {
-                timer.textContent = _fmtMs(block.lastTool_.duration_ms);
-            }
-        }
-        if (typeof SetupProgressUI !== 'undefined') SetupProgressUI.stop('generate_tool', false);
-    },
-
-    /**
-     * Rebuild the strip of a SETTLED turn from its persisted payload: the newest tool row,
-     * with its number, name, real ok flag, frozen duration and FULL input/output. Without
-     * this a reloaded workspace showed no last tool at all (the "disappearing" complaint).
-     */
-    showLastToolFromPayload(block, p) {
-        const tools = (p && p.tools) || [];
-        if (!tools.length) return null;
-        const t = Object.assign({}, tools[tools.length - 1], { no: tools.length });
-        const wrap = this.buildLastTool(block, { tool: t });
-        if (!wrap) return null;
-        this.finishLastTool(block, { tool: t, ok: !!t.ok, no: tools.length });
-        return wrap;
-    },
-
-    /** Drop the strip completely (workspace view deleted / container wiped). */
     clearLastTool(block) {
         if (!block) return;
+        if (block.lastToolClosed) return;   // already gone - answer chunks must not re-clear it
         CycleBlock.stopToolTimer(block);
+        block.lastToolClosed = true;   // the answer is delivered/settled - no tool frame re-opens it
         block.lastEl.style.display = 'none';
         block.lastEl.innerHTML = '';
         delete block.lastEl.dataset.ok;
@@ -574,9 +559,9 @@ const CycleShell = {
             if (r.kind === 'speech') this.appendStream(block, r.d.kind, r.d.text, r.d.step_no);
         }
 
-        // The last-tool strip is rebuilt from the newest tool row, so a reload shows the
-        // same strip the live turn showed (it must never "disappear" after a reload).
-        this.showLastToolFromPayload(block, p);
+        // NO last-tool strip here (user rule 2026-11-08, revised): a rebuilt turn is a
+        // SETTLED turn - its answer was already delivered, so the live strip must not come
+        // back. The tool rows above carry the same information in the expanded body.
         block.timerEl.textContent = _fmtSec(Number(p.elapsed_sec || 0));
         CycleBlock._renderSummary(block);
         return block;

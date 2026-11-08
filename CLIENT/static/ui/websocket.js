@@ -510,8 +510,12 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
     if (data.type === 'cycle_final') {
-        // The answer row opened. The last-tool strip stays VISIBLE while the answer
-        // streams - it only goes away when the turn is settled (cycle_end / done / error).
+        // The answer row opened - the final AI response is being delivered. The last-tool
+        // strip is live-work only, so it is REMOVED here (user rule 2026-11-08, revised:
+        // visible while a tool runs, gone once the answer starts being delivered).
+        // settle() drops it too, for turns that end without this frame.
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.clearLastTool(block);
         return;
     }
 
@@ -524,6 +528,12 @@ function handleWebSocketMessage(data, ownerConvId) {
         const block = _cycleTarget(convId, data);
         if (block) {
             if (!_replayShouldRenderCycleFrame(convId, data.turn_id)) return;
+            // An ANSWER chunk means the AI is delivering its response. The last-tool strip
+            // is live work-in-progress, so it goes away HERE (user rule 2026-11-08: visible
+            // while a tool runs, gone once the answer starts being delivered). Thinking
+            // chunks are reasoning, not the delivered answer, so they leave the strip up.
+            // A later tool_start re-opens it - a tool is running again.
+            if (kind === 'answer') CycleBlock.clearLastTool(block);
             CycleBlock.addStreamChunk(block, kind, data.content || '');
             if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) scrollToBottom();
             else if (COOLEMS.userScrolledUp && COOLEMS.isStreaming) showScrollIndicator();
@@ -549,7 +559,9 @@ function handleWebSocketMessage(data, ownerConvId) {
     }
 
     if (data.type === 'tool_start') {
-        // Tool row + the always-visible last-tool strip (live timer, input 5 / output 4).
+        // Tool row + the live last-tool strip (live timer, input 5 / output 4). The strip
+        // appears with the FIRST running tool of the turn and is removed once the final
+        // answer starts being delivered (cycle_final / settle).
         const block = _cycleTarget(convId, data);
         if (block) CycleBlock.addToolStart(block, data);
         return;
@@ -672,8 +684,8 @@ function handleWebSocketMessage(data, ownerConvId) {
         const block = CycleBlock.current(convId);
         if (block) {
             // Safety net: cycle_end normally settles first. settle() removes the last-tool
-            // strip (the turn is over) - the strip stayed visible the whole turn, including
-            // while the final answer streamed.
+            // strip - it is live work-in-progress only, so it never outlives the answer
+            // (normally it is already gone at the first answer chunk / cycle_final).
             CycleBlock.settle(block, block.finalText || '', false);
         }
         st.streamingBuffer = '';
