@@ -19,11 +19,17 @@
  * received_at), between the tool rows of that step. Its status line settles from the
  * steer_received / steer_applied / steer_rejected frames (one row per steer_id).
  *
- * THE IO FRAME CONTRACT (2026-11-08, revised): every tool entry still carries input and
- * output inside a framed window - input 5 visible lines, output 4, scrollable. The frames
- * now live in the row's detail instead of being always open, so the DOM keeps the full
- * (already clipped by TurnLog) text and the frame caps stay exactly 5 / 4. The same
- * numbers are used by the live last-tool strip (cycle-shell.js).
+ * THE IO FRAME CONTRACT (2026-11-08, revised twice): every tool entry still carries input and
+ * output inside a framed window - caps of 5 / 4 lines, scrollable. The frames live in the
+ * row's detail instead of being always open, so the DOM keeps the full (already clipped by
+ * TurnLog) text. The same numbers are used by the live last-tool strip (cycle-shell.js).
+ *
+ * TWO REVISIONS THE USER ASKED FOR (2026-11-08):
+ *   * NO 'input' / 'output' TITLE BAR - that line was pure chrome and cost a row per frame,
+ *     in every tool block AND in the last-tool strip. The frame's border is what separates
+ *     the two windows now; the row line already says which tool they belong to.
+ *   * SHRINK TO THE CONTENT - a frame is capped at its line budget, but it is no longer a
+ *     FIXED window: with less information the frame is exactly as tall as that information.
  */
 
 /** Shown inside an io frame when there is nothing to show yet (a running tool has no output).
@@ -93,31 +99,41 @@ window._oneLine = _oneLine;
 
 const CycleRows = {
     /** Line budget: .cycle-io-pre has an INTEGER line box of 16px (font 12px, line-height 16px),
-     *  so height = lines * 16px shows EXACTLY that many lines. An em multiplier of the unitless
-     *  1.35 line-height rounded to 16.5px in Chrome and sliced the last line (measured 2026-11-08). */
+     *  so the cap = lines * 16px shows EXACTLY that many lines and never more. An em multiplier
+     *  of the unitless 1.35 line-height rounded to 16.5px in Chrome and sliced the last line
+     *  (measured 2026-11-08). */
     LINE_PX: 16,
     INPUT_LINES: 5,
     OUTPUT_LINES: 4,
 
     /**
-     * One framed io window: title bar + a scrollable <pre> whose HEIGHT is the line budget.
-     * `height` (not `max-height`) because .cycle-io-pre is content-box (see 09-cycle-block.css):
-     * the inline value is the text area, so 5 lines really show 5 lines and a short value still
-     * reads as a fixed window instead of collapsing.
+     * One framed io window: a scrollable <pre> whose HEIGHT CAP is the line budget.
+     * `max-height` (not `height`) is the user's 2026-11-08 revision: a frame is capped at
+     * its budget but never taller than its own text, so a short input or a short output is
+     * exactly as tall as that information instead of a fixed window.
+     *
+     * NO TITLE BAR for input/output (user request 2026-11-08): the 'input' / 'output' label
+     * line was pure chrome and cost a row per frame, in every tool block AND in the last-tool
+     * strip. The frame's own border separates the two windows; the row line already names the
+     * tool, and the strip always puts input first, output second. `label` stays OPTIONAL - the
+     * consent payload frame keeps its 'what was asked' caption, because that frame is not a
+     * tool io frame and the caption is the only thing saying what the text is.
      */
     _pre(text, lines, label) {
         const box = document.createElement('pre');
         box.className = 'cycle-io-pre';
-        box.style.height = (lines * this.LINE_PX) + 'px';
+        box.style.maxHeight = (lines * this.LINE_PX) + 'px';
         box.textContent = text || EMPTY_IO;
         box.dataset.empty = text ? '0' : '1';
         const wrap = document.createElement('div');
         wrap.className = 'cycle-io';
         wrap.dataset.lines = String(lines);
-        const lab = document.createElement('div');
-        lab.className = 'cycle-io-label';
-        lab.textContent = label;
-        wrap.appendChild(lab);
+        if (label) {
+            const lab = document.createElement('div');
+            lab.className = 'cycle-io-label';
+            lab.textContent = label;
+            wrap.appendChild(lab);
+        }
         wrap.appendChild(box);
         return wrap;
     },
@@ -243,8 +259,8 @@ const CycleRows = {
         });
 
         const detail = this._detail(el);
-        detail.appendChild(this._pre(t.args || '', this.INPUT_LINES, 'input'));
-        detail.appendChild(this._pre(t.output || '', this.OUTPUT_LINES, 'output'));
+        detail.appendChild(this._pre(t.args || '', this.INPUT_LINES));
+        detail.appendChild(this._pre(t.output || '', this.OUTPUT_LINES));
     },
 
     /** Consent decision line (the interactive card itself is transient). Payload in the detail. */

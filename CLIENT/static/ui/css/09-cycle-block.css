@@ -15,10 +15,11 @@
      * NO TOKEN COUNTERS IN THE BLOCK (2026-11-08): "N tok out" and "X.XK sent" are gone from
        step rows, "X.XK gen" is gone from the head line. Speed stays. The chat-level token bar
        in the header still carries the counters.
-     * IO FRAMES (2026-11-08, revised): input and output are shown inside a framed window in
-       EVERY tool block AND in the last-tool strip - input 5 visible lines, output 4 visible
-       lines, scrollable. The DOM keeps the full text; only the frame is clipped, so nothing
-       is lost.
+     * IO FRAMES (2026-11-08, revised twice): input and output are shown inside a framed
+       window in EVERY tool block AND in the last-tool strip - caps of 5 / 4 visible lines,
+       scrollable. The DOM keeps the full text; only the cap clips it, so nothing is lost.
+       The 'input' / 'output' TITLE BAR is gone (it ate a row per frame), and a frame is now
+       as small as its information: `max-height`, so short content renders a short frame.
      * LAST-TOOL strip -> ONE info line (tool number + name + status + live timer; no call
        id, no start time, no second stats row), visible while a tool of the turn runs and
        REMOVED the moment the final AI answer starts being delivered. The AI
@@ -162,25 +163,32 @@
 .cycle-row-tool[data-ok="0"] .cycle-tool-status { color: var(--danger, #e5534b); }
 .cycle-row-tool[data-ok="0"] .cycle-tool-name { color: var(--danger, #e5534b); }
 
-/* ---- io frames: a real window for input/output (user request 2026-11-08) ----
-   Every tool block AND the always-visible last-tool strip renders input and output inside
-   this frame: a title bar (input / output) over a scrollable body clipped to a fixed
-   number of lines - input 5, output 4. The <pre> keeps the FULL text, so the scrollbar
-   reveals whatever the frame clips. The height is set inline by cycle-rows.js /
-   cycle-shell.js (one source of truth for the numbers); `overflow: auto` scrolls inside it.
+/* ---- io frames: a real window for input/output (user request 2026-11-08, revised twice) ----
+   Every tool block AND the last-tool strip renders input and output inside this frame: a
+   scrollable body capped to a fixed number of lines - input 5, output 4. The <pre> keeps the
+   FULL text, so the scrollbar reveals whatever the cap clips. The cap is set inline by
+   cycle-rows.js / cycle-shell.js (one source of truth for the numbers); `overflow: auto`
+   scrolls inside it.
 
-   THE GEOMETRY FIX (2026-11-08): the inline cap is the box's HEIGHT. The global
-   `* { box-sizing: border-box }` folds this box's own 6px padding into that height, so a
-   5-line budget showed ~4.25 lines and a 4-line budget ~3.25 - fewer lines than the contract.
-   `.cycle-io-pre` is therefore `box-sizing: content-box`: the inline height IS the scroll
-   viewport (padding sits outside it). `height` (not max-height) makes it a FIXED window, so a
-   short value - or an empty frame - still occupies the whole window instead of collapsing.
+   NO TITLE BAR (user request 2026-11-08): the 'input' / 'output' caption line was pure chrome
+   and cost a row per frame, in every tool block and in the last-tool strip. The frame's own
+   border is the separator now - the row line already names the tool, and the strip always
+   stacks input first, output second. `.cycle-io-label` survives ONLY for the consent payload
+   frame ('what was asked'), which is not a tool io frame and needs a caption.
+
+   SHRINK TO THE CONTENT (user request 2026-11-08): the inline value is `max-height`, not
+   `height` - a frame is capped at its budget but never taller than its own text, so a short
+   input or a short output occupies exactly as much space as that information needs.
+
+   THE GEOMETRY: the global `* { box-sizing: border-box }` would fold this box's own 6px
+   padding into the cap, so a 5-line budget showed ~4.25 lines. `.cycle-io-pre` is therefore
+   `box-sizing: content-box`: the inline cap IS the scroll viewport (padding sits outside it).
 
    SECOND FIX (2026-11-08, measured in a real browser): `line-height: 1.35` is UNITLESS, so the
-   line box is 1.35 x the resolved font metrics - Chrome rounded it to 16.5px, so a 5-line budget
-   (6.75em = 81px) showed only 4.94 lines: the 5th line was sliced off. The line box is now an
-   INTEGER 16px, so 5 x 16 = 80px shows exactly 5 lines and 4 x 16 = 64px exactly 4. The JS uses
-   LINE_PX = 16 (the same number) instead of an em multiplier. */
+   line box is 1.35 x the resolved font metrics - Chrome rounded it to 16.5px, so a 5-line
+   budget (6.75em = 81px) showed only 4.94 lines: the 5th line was sliced off. The line box is
+   now an INTEGER 16px, so a 5-line cap = 80px shows exactly 5 lines and a 4-line cap = 64px
+   exactly 4. The JS uses LINE_PX = 16 (the same number) instead of an em multiplier. */
 .cycle-io {
     display: flex;
     flex-direction: column;
@@ -190,6 +198,8 @@
     background: var(--bg-tertiary, #1b2029);
     overflow: hidden;              /* the frame itself never grows past its body */
 }
+/* Only the consent payload frame carries a caption (see the note above); tool io frames and
+   the last-tool strip's input/output frames render no label element at all. */
 .cycle-io-label {
     font-size: 10px;
     letter-spacing: 0.06em;
@@ -202,13 +212,13 @@
 }
 .cycle-io-pre {
     margin: 0;
-    box-sizing: content-box;     /* the inline height = the TEXT area, padding sits outside it */
+    box-sizing: content-box;     /* the inline cap = the TEXT area, padding sits outside it */
     padding: 6px 8px;
     background: transparent;
     overflow: auto;              /* sidebar scroll inside the clipped box */
     font-family: ui-monospace, monospace;
     font-size: 12px;
-    line-height: 16px;           /* integer line box: 5 lines = 80px, 4 lines = 64px exactly */
+    line-height: 16px;           /* integer line box: cap 5 lines = 80px, cap 4 lines = 64px */
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--text-primary, #e6edf3);
@@ -311,10 +321,11 @@
 .cycle-card-mount .exec-approval-card, .cycle-card-mount .sp-card { margin: 0; }
 
 /* ---- last tool strip (visible while the loop runs) ----
-   The strip shows ONE info line (number + name + status + timer) and the io FRAMES: input
-   5 lines, output 4 lines, scrollable - the same frames the expanded body rows use. The
-   strip stays compact so it never pushes the AI answer out of view; the scrollbar inside
-   each frame reveals the rest of the text.
+   The strip shows ONE info line (number + name + status + timer) and the io frames: input
+   capped at 5 lines, output at 4, scrollable - the same frames the expanded body rows use,
+   and with NO 'input' / 'output' caption line (user request 2026-11-08). The strip stays
+   compact so it never pushes the AI answer out of view; the scrollbar inside each frame
+   reveals the rest of the text, and a short value renders a short frame.
    Status colors are three-state and honest: running = amber, ok = green, failed = red.
    Green never appears for a failed call, and no state is guessed before the result. */
 .cycle-last {
@@ -358,14 +369,11 @@
     color: var(--warning, #f59e0b);                              /* running */
     flex-shrink: 0;
 }
-.cycle-last-io { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
-/* The strip's own children (info line + the two io frames) need breathing room; the frames
-   are stacked directly inside .cycle-last-tool, so the gap lives here. */
+/* The two io frames stack directly inside .cycle-last-tool; the gap lives here. */
 .cycle-last-tool { display: flex; flex-direction: column; gap: 6px; }
 /* Inside the last-tool strip the strip background is already bg-tertiary, so the frames get
    the darker secondary tone to read as distinct windows against it. */
 .cycle-last .cycle-io { background: var(--bg-secondary, #141821); }
-.cycle-last .cycle-io-label { background: var(--bg-tertiary, #1b2029); }
 /* Settled states. data-ok is written by CycleShell.finishLastTool() only once the tool
    result is known (never while running), so red/green always reflect a real outcome. */
 .cycle-last[data-ok="1"] .cycle-last-status,

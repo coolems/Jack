@@ -6,11 +6,15 @@
  *   cycle-shell.js = the visible strips (last tool, live consent cards, AI response)
  *                    and the rebuild of a settled turn from its persisted turn_log row.
  *
- * THE IO FRAME CONTRACT the user asked for (2026-11-08, revised):
+ * THE IO FRAME CONTRACT the user asked for (2026-11-08, revised twice):
  *   * EVERY tool block AND the LIVE LAST-TOOL strip shows input and output
- *     inside a framed window (border + title bar + scrollable body).
- *   * input frame = 5 visible lines, output frame = 4 visible lines, scrollable.
- *   * The DOM keeps the full text; only the frame is clipped, so nothing is lost.
+ *     inside a framed window (border + scrollable body).
+ *   * input frame cap = 5 visible lines, output frame cap = 4 lines, scrollable.
+ *   * The DOM keeps the full text; only the cap clips it, so nothing is lost.
+ *   * NO 'input' / 'output' TITLE BAR (2026-11-08): that line ate a row per frame in every
+ *     tool block and in the last-tool strip - the frame's border is the separator now.
+ *   * A frame is as small as its information (2026-11-08): `max-height`, so short content
+ *     renders a short frame instead of a fixed-size window.
  *   * The LAST-TOOL strip's info line stays ONE line (tool number + name + status + timer;
  *     no call id, no start time, no extra stats row). The AI answer strip shows the whole
  *     answer, streamed live - it is not an io frame and has no cap.
@@ -44,29 +48,28 @@ const CycleShell = {
     },
 
     /**
-     * A framed io window: title bar + a scrollable <pre> clipped to `lines` visible lines.
-     * `lines` > 0 is the frame budget (input 5 / output 4 - the same numbers in
-     * cycle-rows.js, so both shapes agree). The <pre> still holds the FULL text, so the
-     * scrollbar reveals everything the clip hides. An empty value shows a placeholder
-     * instead of a blank frame.
+     * A framed io window: a scrollable <pre> capped at `lines` visible lines (input 5 /
+     * output 4 - the same numbers in cycle-rows.js, so both shapes agree). The <pre> still
+     * holds the FULL text, so the scrollbar reveals everything the cap hides. An empty value
+     * shows a placeholder instead of a blank frame.
      *
-     * `height` (not `max-height`): .cycle-io-pre is content-box, so this value is the TEXT
-     * area - the frame really shows 5 input lines / 4 output lines, and a short value still
-     * occupies the whole window instead of collapsing it (user rule 2026-11-08).
+     * TWO REVISIONS THE USER ASKED FOR (2026-11-08):
+     *   * NO 'input' / 'output' TITLE BAR - that line was pure chrome and cost a row per
+     *     frame here too. The frame's border separates the two windows; the strip's info line
+     *     already names the tool, and input is always the first frame, output the second.
+     *   * SHRINK TO THE CONTENT - `max-height`, not `height`: the frame is capped at its
+     *     budget but never taller than its own text, so a short input or a short output is as
+     *     little as that information is.
      */
-    pre(text, lines, label) {
+    pre(text, lines) {
         const box = document.createElement('pre');
         box.className = 'cycle-io-pre';
-        box.style.height = (lines * this.LINE_PX) + 'px';
+        box.style.maxHeight = (lines * this.LINE_PX) + 'px';
         box.textContent = text || window.EMPTY_IO;
         box.dataset.empty = text ? '0' : '1';
         const wrap = document.createElement('div');
         wrap.className = 'cycle-io';
         wrap.dataset.lines = String(lines);
-        const lab = document.createElement('div');
-        lab.className = 'cycle-io-label';
-        lab.textContent = label;
-        wrap.appendChild(lab);
         wrap.appendChild(box);
         return wrap;
     },
@@ -113,8 +116,8 @@ const CycleShell = {
         head.appendChild(this._span('cycle-last-status', '\u23F3 running'));
         head.appendChild(this._span('cycle-last-timer', '0.0ms'));
         wrap.appendChild(head);
-        wrap.appendChild(this.pre(t.args || '', this.INPUT_LINES, 'input'));
-        const out = this.pre(t.output || '', this.OUTPUT_LINES, 'output');
+        wrap.appendChild(this.pre(t.args || '', this.INPUT_LINES));
+        const out = this.pre(t.output || '', this.OUTPUT_LINES);
         out.classList.add('cycle-last-out');
         wrap.appendChild(out);
         block.lastEl.innerHTML = '';
