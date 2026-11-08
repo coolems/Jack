@@ -30,6 +30,13 @@
  *     the two windows now; the row line already says which tool they belong to.
  *   * SHRINK TO THE CONTENT - a frame is capped at its line budget, but it is no longer a
  *     FIXED window: with less information the frame is exactly as tall as that information.
+ *
+ * A THIRD REVISION (2026-11-08): the input frame of a CONTENT tool (edit_file / write_file /
+ * python_exec) used to read as "all lines one after another with just a line-breaker printed"
+ * - json.dumps escaped every newline of a string value, so a whole file became one wrapped
+ *   line with literal \n in it. The backend now sends that payload as REAL lines with its
+ *   indentation (app.turn_log.format_args), and the file identity moved OUT of the frame onto
+ *   the tool's own line, next to the tool name (t.target -> .cycle-tool-target).
  */
 
 /** Shown inside an io frame when there is nothing to show yet (a running tool has no output).
@@ -239,8 +246,13 @@ const CycleRows = {
         this._line(el, d, { kind: 'step', speed: bits.join(' \u00b7 ') });
     },
 
-    /** Tool call: one line - turn · tool · name · ok/failed · time · duration.
-     *  The input (5 lines) and output (4 lines) frames open on the row's own click. */
+    /** Tool call: one line - turn · tool · name · FILE · ok/failed · time · duration.
+     *  The input (5 lines) and output (4 lines) frames open on the row's own click.
+     *
+     *  THE FILE MOVES TO THE ROW LINE (user request 2026-11-08): "i want filename moved in
+     *  tool line where the name of the tool is". So edit_file / write_file print their file
+     *  identity next to the tool name (path folded in: config/config.py) and their input
+     *  frame carries ONLY the content, as real lines with the original indentation. */
     tool(el, d) {
         const t = d.tool || {};
         el.dataset.ok = t.ok ? '1' : '0';
@@ -249,6 +261,12 @@ const CycleRows = {
         const name = document.createElement('span');
         name.className = 'cycle-tool-name';
         name.textContent = t.name || 'tool';
+        if (t.target) {
+            const target = document.createElement('span');
+            target.className = 'cycle-tool-target';
+            target.textContent = t.target;
+            name.appendChild(target);
+        }
         const status = document.createElement('span');
         status.className = 'cycle-tool-status';
         status.textContent = t.ok ? '\u2713 ok' : '\u2716 failed';

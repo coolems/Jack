@@ -74,6 +74,71 @@ def scrub_ai_text(text: str) -> str:
 TOOL_INPUT_KEEP = 2000
 TOOL_OUTPUT_KEEP = 8000
 
+# ===== THE INPUT FRAME TEXT (2026-11-08, user request) =====
+# "in edit_file I see the input block in a very bad way to read: all lines are one after
+#  another and there is just a line-breaker printed". The cause was `json.dumps(args)`: a
+# newline inside a string VALUE is escaped to the two characters `\` + `n`, so a whole file
+# or a whole code block rendered as ONE wrapped line with literal \n markers in it.
+#
+# The three tools whose payload IS multi-line text print their content as REAL lines with
+# the original indentation (a <pre> keeps them). Everything else keeps the compact JSON it
+# always had - nothing else changed.
+_ARG_TEXT_FIELDS = {
+    "edit_file": ("old_string", "new_string"),
+    "write_file": ("content",),
+    "python_exec": ("code",),
+}
+
+#: The file identity that moves to the tool's ROW LINE (next to the tool name) instead of
+#: sitting inside the input frame - the frame is for the content now.
+_ARG_TARGET_FIELD = {
+    "edit_file": "filename",
+    "write_file": "filename",
+}
+
+
+def format_args(name: str, args: Any) -> str:
+    """Readable text for a tool's INPUT frame.
+
+    Content tools (edit_file / write_file / python_exec) print their payload as real lines,
+    so indentation survives and the frame reads like a file instead of one glued line.
+    A tool with several content fields (edit_file) gets one short label line per field -
+    that is information (which block is old, which is new), not chrome.
+    Any other tool keeps the previous compact JSON.
+    """
+    fields = _ARG_TEXT_FIELDS.get(name)
+    if fields and isinstance(args, dict):
+        parts: List[str] = []
+        for field in fields:
+            value = args.get(field)
+            if value is None or value == "":
+                continue
+            text = value if isinstance(value, str) else str(value)
+            parts.append(f"{field}:\n{text}" if len(fields) > 1 else text)
+        if parts:
+            return "\n\n".join(parts)
+    if isinstance(args, (dict, list)):
+        return json.dumps(args, ensure_ascii=False)
+    return "" if args is None else str(args)
+
+
+def tool_target(name: str, args: Any) -> str:
+    """The file a tool call acts on, shown on the tool's row line ("" when it has none).
+
+    `path` is folded in so a file in a subfolder reads as `config/config.py`, not a bare
+    name that could match a file anywhere in the workspace.
+    """
+    field = _ARG_TARGET_FIELD.get(name)
+    if field is None or not isinstance(args, dict):
+        return ""
+    filename = str(args.get(field) or "").strip()
+    if not filename:
+        return ""
+    path = str(args.get("path") or "").strip()
+    if path and path not in (".", "root"):
+        return f"{path}/{filename}"
+    return filename
+
 # Marker for a consent card that is on screen but not answered yet.
 PENDING_DECISION = "pending"
 
@@ -132,11 +197,41 @@ def _normalize_legacy_grant_lines(data: Dict) -> Dict:
     return data
 
 
+def _normalize_legacy_tool_rows(data: Dict) -> Dict:
+    """Rebuild the input frame of rows written BEFORE the 2026-11-08 input formatter.
+
+    Those rows store `args` as `json.dumps(...)`, so a multi-line payload (edit_file /
+    write_file / python_exec) reads as ONE glued line with literal `\n` printed in it, and
+    they carry no `target`, so the tool's row line shows no file. That is why the user saw
+    "no changes": a settled turn is rebuilt from its persisted row, not from live frames.
+
+    Only the three content tools are rebuilt (every other tool already printed the same
+    compact JSON). A row that already has `target` is a new-build row - untouched. A legacy
+    args string clipped by `_clip()` is not valid JSON: it stays exactly as stored rather
+    than being guessed at.
+    """
+    for row in data.get("tools") or []:
+        if "target" in row or not isinstance(row.get("args"), str):
+            continue
+        name = str(row.get("name") or "")
+        if name not in _ARG_TEXT_FIELDS:
+            continue
+        try:
+            parsed = json.loads(row["args"])
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        row["target"] = tool_target(name, parsed)
+        row["args"] = _clip(format_args(name, parsed), TOOL_INPUT_KEEP)
+    return data
+
+
 def parse_payload(raw: Any) -> Optional[Dict]:
     """Parse a stored payload. Never raises - bad/empty data means 'no history'.
 
-    Legacy rows (grant message lines, repeated notices, missing speech) are normalized
-    here, so the UI reader sees the same shape for old rows and new ones.
+    Legacy rows (grant message lines, repeated notices, missing speech, pre-formatter tool
+    rows) are normalized here, so the UI reader sees the same shape for old rows and new ones.
     """
     if not raw:
         return None
@@ -147,6 +242,7 @@ def parse_payload(raw: Any) -> Optional[Dict]:
     if not isinstance(data, dict):
         return None
     data = _normalize_legacy_grant_lines(data)
+    data = _normalize_legacy_tool_rows(data)
     data["counts"] = counts_of(data)
     return data
 
@@ -234,15 +330,15 @@ class TurnLog:
                  output: Any, duration_ms: float, at_ts: Optional[float] = None,
                  call_id: str = "") -> Dict:
         ts = at_ts if at_ts is not None else time.time()
-        if isinstance(args, (dict, list)):
-            args_text = json.dumps(args, ensure_ascii=False)
-        else:
-            args_text = "" if args is None else str(args)
+        # The input frame text is formatted per tool (see `format_args`), so a multi-line
+        # payload keeps its real lines and indentation instead of an escaped one-liner.
+        # `target` is the file identity that belongs on the ROW LINE, next to the tool name.
         row = {
             "step_no": int(step_no),
             "call_id": call_id or "",
             "name": name,
-            "args": _clip(args_text, TOOL_INPUT_KEEP),
+            "target": tool_target(name, args),
+            "args": _clip(format_args(name, args), TOOL_INPUT_KEEP),
             "ok": bool(ok),
             "output": _clip("" if output is None else str(output), TOOL_OUTPUT_KEEP),
             "duration_ms": round(float(duration_ms or 0.0), 1),

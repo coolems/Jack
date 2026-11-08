@@ -15,9 +15,10 @@
  *     tool block and in the last-tool strip - the frame's border is the separator now.
  *   * A frame is as small as its information (2026-11-08): `max-height`, so short content
  *     renders a short frame instead of a fixed-size window.
- *   * The LAST-TOOL strip's info line stays ONE line (tool number + name + status + timer;
- *     no call id, no start time, no extra stats row). The AI answer strip shows the whole
- *     answer, streamed live - it is not an io frame and has no cap.
+ *   * The LAST-TOOL strip's info line stays ONE line (tool number + name + FILE + status +
+ *     timer; no call id, no start time, no extra stats row). The FILE sits next to the tool
+ *     name (2026-11-08 user request) - edit_file / write_file no longer print it inside the
+ *     input frame, and a content tool's input frame is real lines with real indentation.
  * Status colour is honest: amber while running, green only for a real ok, red for a real
  * failure.
  */
@@ -78,9 +79,11 @@ const CycleShell = {
 
     /**
      * Build the newest-tool strip. The info line is ONE line, as the user asked:
-     *   last tool · #N · name · status · timer
+     *   last tool · #N · name · FILE · status · timer
      * No call id, no start time, no step line, no separate stats row - everything that
-     * identifies the call fits on that single line.
+     * identifies the call fits on that single line. The FILE (user request 2026-11-08) sits
+     * next to the tool name here too, like the tool row in the expanded body, so the input
+     * frame below carries only the content.
      *
      * The io boxes are FRAMED and CAPPED here, exactly like the expanded body rows:
      * input 5 lines, output 4 lines, scrollable (the user's rule 2026-11-08 - every tool
@@ -113,6 +116,10 @@ const CycleShell = {
         head.appendChild(this._span('cycle-last-label', 'last tool'));
         head.appendChild(this._span('cycle-last-no', '#' + (Number(t.no || block.counts.tools || 0) || 1)));
         head.appendChild(this._span('cycle-last-name', t.name || 'tool'));
+        // THE FILE MOVES TO THE INFO LINE (user request 2026-11-08), exactly like the tool
+        // row in the expanded body: the name of the tool carries the file it acts on, so the
+        // input frame below is pure content.
+        if (t.target) head.appendChild(this._span('cycle-last-target', t.target));
         head.appendChild(this._span('cycle-last-status', '\u23F3 running'));
         head.appendChild(this._span('cycle-last-timer', '0.0ms'));
         wrap.appendChild(head);
@@ -136,7 +143,8 @@ const CycleShell = {
         // The tool number = this call's position in the turn (1-based). It matches the
         // `tools N` on the head line, because addTool() counts each call exactly once.
         const wrap = this.buildLastTool(block, { tool: {
-            name: data.tool, args: _asText(data.input), ok: false, call_id: data.call_id || '',
+            name: data.tool, args: _asText(data.input), target: data.target || '',
+            ok: false, call_id: data.call_id || '',
             step_no: block.counts.turns, no: (block.counts.tools || 0) + 1, started_at: data.started_at,
         } });
         if (!wrap) return;
@@ -636,7 +644,8 @@ const CycleShell = {
     },
 };
 
-/** tool_start carries the args as a stringified dict; keep it readable. */
+/** tool_start/tool_end carry the input as formatted text (app.turn_log.format_args); a
+ *  string passes through untouched, anything else is stringified for safety. */
 function _asText(v) {
     if (v == null) return '';
     if (typeof v === 'string') return v;

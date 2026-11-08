@@ -157,8 +157,26 @@
 .cycle-row-detail { display: none; }
 .cycle-row[data-open="1"] .cycle-row-detail { display: block; }
 
-/* ---- tool rows: name + ok/failed + duration on the line; io frames in the detail ---- */
-.cycle-tool-name { font-family: ui-monospace, monospace; font-weight: 600; color: var(--accent, #4f8cff); }
+/* ---- tool rows: name + FILE + ok/failed + duration on the line; io frames in the detail ----
+   THE FILE MOVES TO THE ROW LINE (user request 2026-11-08): "i want filename moved in tool
+   line where the name of the tool is, but in the input block to have that content presented
+   in a normal way with lines and indentation". So edit_file / write_file show their file
+   identity right after the tool name, and the input frame carries ONLY the content - real
+   lines, original indentation (the <pre> keeps both). */
+.cycle-tool-name {
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+    color: var(--accent, #4f8cff);
+    min-width: 0;                /* a long path must not push ok/failed off the row line */
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.cycle-tool-target {
+    font-family: ui-monospace, monospace;
+    font-weight: 400;
+    color: var(--text-secondary, #9aa4b2);
+    margin-left: 6px;
+}
 .cycle-tool-status { font-size: 12px; color: var(--success, #2ecc71); flex-shrink: 0; }
 .cycle-row-tool[data-ok="0"] .cycle-tool-status { color: var(--danger, #e5534b); }
 .cycle-row-tool[data-ok="0"] .cycle-tool-name { color: var(--danger, #e5534b); }
@@ -357,6 +375,15 @@
     font-family: ui-monospace, monospace;
     font-weight: 600;
     color: var(--accent, #4f8cff);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* The file on the strip's info line (user request 2026-11-08) - same shape as the tool row's
+   .cycle-tool-target, so the live strip and the expanded row read identically. */
+.cycle-last-target {
+    font-family: ui-monospace, monospace;
+    color: var(--text-secondary, #9aa4b2);
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

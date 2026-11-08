@@ -582,6 +582,9 @@ function handleWebSocketMessage(data, ownerConvId) {
                     name: data.tool, ok: !failed,
                     output: out, call_id: data.call_id || '',
                     duration_ms: data.duration_ms, args: _asText(data.input),
+                    // The file identity belongs on the info line, next to the tool name
+                    // (user request 2026-11-08); the input frame is the content only.
+                    target: data.target || '',
                 },
             });
         }

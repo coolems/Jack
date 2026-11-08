@@ -21,6 +21,11 @@ from typing import Dict, Any, Tuple
 
 from config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS
 from app.providers import BaseProvider
+# The loop-history frames format a tool's input for the UI (app.turn_log.format_args) and
+# carry the file identity for the tool's row line (tool_target). Imported at module level:
+# the tool_end frame on the ERROR path is sent even in silent mode, where the tool_start
+# block that used to import it never runs.
+from app.turn_log import format_args as _fmt_args, tool_target as _fmt_target
 
 
 logger = logging.getLogger("COOLEMS.Logic.ToolExecutor")
@@ -532,10 +537,16 @@ class ToolExecutor:
         # Send tool start notification (skip if silent mode)
         if not silent:
             logger.debug(f"[AGENTIC.DEBUG] ToolExecutor.execute() - Sending tool_start notification for '{tool_name}'")
+            # The input text is formatted per tool (app.turn_log.format_args), so the LIVE
+            # last-tool strip shows the SAME readable lines the recorded row will show: a
+            # multi-line payload (edit_file / write_file / python_exec) keeps its real lines
+            # and indentation instead of str(dict) - one glued line with literal \n in it.
+            # `target` is the file identity for the strip's info line ("" for other tools).
             await websocket.send_text(json.dumps({
                 "type": "tool_start",
                 "tool": tool_name,
-                "input": str(tool_args),
+                "input": _fmt_args(tool_name, tool_args),
+                "target": _fmt_target(tool_name, tool_args),
                 "call_id": call_id,
                 # Wall-clock start of THIS call - the UI ticks the per-tool timer from it,
                 # so the duration shown is the real execution time, not a frame arrival time.
@@ -625,6 +636,11 @@ class ToolExecutor:
                 "type": "tool_end",
                 "tool": tool_name,
                 "output": result_str[:AGENTIC_TOOL_OUTPUT_MAX_CHARS],
+                # The row UI builds from this frame needs the input text too (it is created
+                # here, before the recorder's cycle_tool frame arrives) - same formatted
+                # text as tool_start, so the input frame shows real lines, not an empty frame.
+                "input": _fmt_args(tool_name, tool_args),
+                "target": _fmt_target(tool_name, tool_args),
                 "call_id": call_id,
                 "duration_ms": round((time.time() - exec_start) * 1000.0, 1),
                 "conv_id": conversation_id or "",
@@ -641,6 +657,10 @@ class ToolExecutor:
                 "type": "tool_end",
                 "tool": tool_name,
                 "output": result_str[:AGENTIC_TOOL_OUTPUT_MAX_CHARS],
+                # Same as above: the UI builds the tool row from THIS frame, so the input
+                # frame gets the formatted text (real lines + indentation) here too.
+                "input": _fmt_args(tool_name, tool_args),
+                "target": _fmt_target(tool_name, tool_args),
                 "call_id": call_id,
                 "duration_ms": round((time.time() - exec_start) * 1000.0, 1),
                 "conv_id": conversation_id or "",
