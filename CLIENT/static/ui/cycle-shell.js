@@ -26,6 +26,13 @@ const CycleShell = {
     INPUT_LINES: 5,
     OUTPUT_LINES: 4,
 
+    /** Live repaint budget (2026-11-08, user request: "while streaming the text is
+     *  unformatted and without colours, and only after the stream ends it becomes the look
+     *  I like"). The streamed answer now renders markdown WHILE the turn runs, throttled to
+     *  one full parseMarkdown pass per this many ms - the buffer grows every chunk, so a
+     *  per-token re-parse of the whole answer would be O(n^2) work for nothing. */
+    LIVE_PAINT_MS: 120,
+
     hideWelcome() {
         const welcome = document.getElementById('welcome');
         if (welcome && welcome.style.display !== 'none') welcome.style.display = 'none';
@@ -348,9 +355,8 @@ const CycleShell = {
     },
 
     /**
-     * Paint a segment. While the turn is RUNNING the text is written as plain text (fast -
-     * one token at a time, no markdown re-parse per chunk) and marked `.live`, so the user
-     * watches the answer grow. A settled row (or the end of the turn) renders markdown.
+     * Paint a SETTLED segment (a speech row, the end of the turn, or a DB rebuild): markdown,
+     * with the `.live` class dropped. The live streaming path is _paintLive() below.
      *
      * THE MARKER SCRUB (2026-11-08): a protocol marker can be SPLIT across two streamed
      * chunks ('... Agentic AI' + ': TASK DONE'), so per-chunk scrubbing alone lets the first
@@ -378,13 +384,58 @@ const CycleShell = {
     },
 
     /**
+     * THE LIVE-FORMATTING FIX (2026-11-08, user report: "while streaming, the text is
+     * unformatted and without colours; only after the stream ends it becomes the look I like").
+     *
+     * The old live path painted `textContent` (plain text) and left markdown for settle(), so
+     * bold/em, code frames, inline code and links appeared only once the turn finished.
+     * A live chunk now renders the SAME markdown as the settled answer, but throttled: one
+     * full parseMarkdown pass per LIVE_PAINT_MS. The buffer grows with every chunk, so
+     * re-parsing on every token would re-read the whole answer each time (O(n^2) DOM work)
+     * for no visual gain - a repaint every ~120ms is already faster than the eye reads.
+     * A trailing timer guarantees the LAST chunks land even when the stream stops mid-budget.
+     * parseMarkdown reads COOLEMS.isStreaming (true while a turn runs), so an UNCLOSED ```
+     * fence renders as a code frame while the code block is still being streamed - the same
+     * behavior the plain (non-block) answer bubble already had.
+     */
+    _paintLive(el) {
+        el.dataset.raw = el.dataset.raw || '';
+        if (typeof scrubAiText === 'function' && _hasAiNoise(el.dataset.raw)) {
+            el.dataset.raw = scrubAiText(el.dataset.raw);
+        }
+        if (typeof parseMarkdown !== 'function') {
+            // No markdown renderer loaded: plain text still needs newlines preserved.
+            el.classList.add('live');
+            el.textContent = el.dataset.raw;
+            return;
+        }
+        // Markdown paints <p> + <br>, so the live pre-wrap class must go - keeping it would
+        // render literal newlines around a streamed code fence as extra blank lines.
+        el.classList.remove('live');
+        const now = Date.now();
+        if (!el._lastPaint || now - el._lastPaint >= this.LIVE_PAINT_MS) {
+            if (el._paintTimer) { clearTimeout(el._paintTimer); el._paintTimer = null; }
+            el._lastPaint = now;
+            el.innerHTML = parseMarkdown(el.dataset.raw, true);
+            return;
+        }
+        if (!el._paintTimer) {
+            el._paintTimer = setTimeout(() => {
+                el._paintTimer = null;
+                el._lastPaint = Date.now();
+                el.innerHTML = parseMarkdown(el.dataset.raw, true);
+            }, this.LIVE_PAINT_MS - (now - el._lastPaint));
+        }
+    },
+
+    /**
      * Live chunk (content|thinking) or one settled speech row, appended to the visible AI
      * strip. The strip is ALWAYS visible (collapsed or expanded) and grows with the text -
      * no max-height on the answer, so the whole answer is readable.
      *
      * `stepNo === null` means a LIVE streamed chunk (websocket content/thinking frame);
-     * anything else is a settled `cycle_speech` row (or a DB rebuild row). Live chunks
-     * append and paint as plain text; settled rows merge and paint as markdown.
+     * anything else is a settled `cycle_speech` row (or a DB rebuild row). Live chunks append
+     * and paint markdown (throttled, _paintLive); settled rows merge and paint markdown.
      */
     appendStream(block, kind, text, stepNo) {
         if (!block || !text) return;
@@ -432,9 +483,11 @@ const CycleShell = {
         const changed = live ? this._appendLive(seg.answerEl, visible)
                              : this._mergeRow(seg.answerEl, visible);
         if (!changed) return;
-        // A live chunk grows the answer as plain text; a settled row (or a rebuild) renders
-        // markdown. The strip has NO height cap, so the whole answer stays visible.
-        this._paint(seg.answerEl, !live);
+        // A live chunk renders markdown too (throttled) so the answer looks formatted WHILE it
+        // streams; a settled row (or a rebuild) paints the final markdown. The strip has NO
+        // height cap, so the whole answer stays visible.
+        if (live) this._paintLive(seg.answerEl);
+        else this._paint(seg.answerEl, true);
         this.scrollIfNeeded();
     },
 
@@ -445,6 +498,12 @@ const CycleShell = {
     settleStream(block) {
         if (!block) return;
         for (const seg of Object.values(block.aiSeg || {})) {
+            // Drop any pending throttled repaint: the settled pass below is the final one,
+            // and a trailing timer would re-paint with isStreaming=true after the turn ended.
+            if (seg.answerEl && seg.answerEl._paintTimer) {
+                clearTimeout(seg.answerEl._paintTimer);
+                seg.answerEl._paintTimer = null;
+            }
             if (seg.answerEl) this._paint(seg.answerEl, true);
         }
     },

@@ -300,8 +300,10 @@
    No max-height anywhere in it: code blocks grow with their content (horizontal scroll
    only, so a long line never wraps into a hidden tail). */
 .cycle-ai-answer { color: var(--text-primary, #e6edf3); }
-/* While the turn is RUNNING the answer is painted as plain streamed text (no markdown
-   re-parse per token), so newlines must survive - the live box is pre-wrap, never clipped. */
+/* Fallback shape only (2026-11-08): while the turn is RUNNING the answer now renders
+   markdown too (cycle-shell.js _paintLive, throttled), so `.live` is no longer set on the
+   markdown path. It stays for the no-renderer fallback (parseMarkdown missing), where the
+   answer is plain text and newlines must survive - pre-wrap, never clipped. */
 .cycle-ai-answer.live { white-space: pre-wrap; word-break: break-word; }
 .cycle-ai-answer p { margin: 0 0 6px; }
 .cycle-ai-answer pre {

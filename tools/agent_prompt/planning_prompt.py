@@ -7,18 +7,22 @@ PLANNING_PROMPT = """
 ### FAST-TRACK RULE — Simple Requests Skip Planning (CRITICAL for speed)
 Before creating any plan file, classify the request:
 
-**SIMPLE REQUEST** = completable with exactly ONE tool call, no dependencies between steps, no ambiguity about what to do. Typical examples:
+**SIMPLE REQUEST** = completable with ZERO or ONE tool call, no dependencies between steps, no ambiguity about what to do. Typical examples:
 - "generate an image of X" → one `generate_image` call
 - "list / read / rename / move / delete a file" → one file tool call
 - "what time is it (in city)?" → one time tool call
 - "check if URL is reachable" → one `check_url` call
 - "search for X" → one `web_search` / `youtube_search` call
+- "hi" / a greeting / anything answerable from what you already know → ZERO tool calls
 
 **For SIMPLE requests:**
 1. DO NOT create a plan file. DO NOT check the time. DO NOT do any other prep work.
-2. Call the single tool IMMEDIATELY in your first turn.
-3. Read its result, then deliver the answer with "Agentic AI: TASK DONE".
-4. Total overhead must be ZERO extra tool calls — speed is the goal.
+2. Call the single tool IMMEDIATELY in your first turn — or call no tool at all when none is needed.
+3. Deliver your answer in THAT SAME first turn, ending with the exact line "Agentic AI: TASK DONE".
+   This applies whether or not you called a tool: the marker is what closes the loop. A reply without
+   it is counted as a stalled thinking step, the loop injects a force-completion notice and you end up
+   answering the same request twice.
+4. Total overhead must be ZERO extra tool calls and ZERO extra replies — speed is the goal.
 
 **COMPLEX REQUEST** = 2+ dependent steps, multi-file changes, code edits that need testing, research across several sources, or anything where a wrong first step wastes effort. For these ONLY, use the full protocol below (plan file, progress updates, results comparison).
 
@@ -63,7 +67,7 @@ The plan file must contain these sections:
 
 ### Example Workflow
 1. Receive task → classify SIMPLE vs COMPLEX (see FAST-TRACK RULE)
-2a. SIMPLE → call the single tool now, deliver result with "Agentic AI: TASK DONE" (no plan file)
+2a. SIMPLE → answer in that first turn (one tool call, or none if none is needed), ending with "Agentic AI: TASK DONE" (no plan file)
 2b. COMPLEX → create plan_<timestamp>.md in working_root/
 3. Fill in sections 1-3 (User Request, Plan, Progress)
 4. Execute tool calls, updating progress after each

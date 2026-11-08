@@ -664,7 +664,7 @@ AGENTIC_MAX_TOOL_ITERATIONS: int = 2000             # Max total tool iterations 
 #: of the context window with ~133K tokens still free. The user read that as a context-guardian
 #: stop because the notice named no cause and earlier guardian notices sat in history.
 #: 3 = a genuine stall (three marker-free replies with no tool work) still ends the run.
-AGENTIC_MAX_THINKING_ITERATIONS: int = 3
+AGENTIC_MAX_THINKING_ITERATIONS: int = 2
 AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.95     # Fraction of the MESSAGE-LIST budget (max_history_tokens) where the console/UI "trimming is about to engage" warning fires
 #: (2026-11-07) Fraction of the FULL context window (CONTEXT_WINDOW_TOKENS, the number the UI
 #: status bar shows as "N K ctx") at which the context-guardian [SYSTEM NOTICE] is injected.
