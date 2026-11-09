@@ -381,6 +381,15 @@ class CoolemsClientProvider(BaseProvider):
 
 
 
+    def turn_chat_session(self):
+        """Create a sequential chat session that authenticates once for an agentic turn."""
+
+        from ..chat_session import ChatSession
+
+        return ChatSession(self)
+
+
+
     # --- Health check (delegate) ---
 
 

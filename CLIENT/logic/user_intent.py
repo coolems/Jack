@@ -17,16 +17,16 @@ from typing import List, Tuple
 STEER_INTERJECTION_HEADER = (
     "[USER MESSAGE WHILE YOU WERE WORKING - this is NOT a stop request. "
     "Answer or consider it now, then CONTINUE the original task from where you left it. "
-    "Do NOT end the task, do NOT restart it from scratch, and do NOT write the completion "
-    "marker just because you answered this message. End with 'Agentic AI: TASK DONE' only "
-    "when the ORIGINAL task (as now specified) is genuinely finished.]"
+    "Do NOT restart it from scratch. A text-only reply ends the turn, so after answering "
+    "this message keep working with tool calls until the ORIGINAL task (as now specified) "
+    "is genuinely finished; only then give the final text answer.]"
 )
 
 #: Injected before an explicit stop: the user asked to end the work.
 STEER_STOP_HEADER = (
     "[USER STOP REQUEST - the user explicitly asked to STOP the current task. "
     "STOP the work now: do not call further tools, summarize what you completed and what "
-    "remains, and end your response with 'Agentic AI: TASK DONE'.]"
+    "remains, and give your final text answer.]"
 )
 
 #: Verbs that mean "end this run" when they are not negated.
@@ -116,6 +116,6 @@ def interjection_resume_notice(applied: int, total: int) -> str:
     """
     return (
         f"Answered {int(applied)}/{int(total)} mid-run message(s) - that was not a stop "
-        "request, so the task stayed open. Continue the original task now; Do NOT stop "
-        "or write the completion marker until the original task is finished."
+        "request, so the task stayed open. Continue the original task now; do not give a "
+        "final text-only answer until the original task is finished."
     )

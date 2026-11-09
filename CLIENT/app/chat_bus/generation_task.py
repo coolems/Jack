@@ -7,8 +7,9 @@ the UI socket can come and go while this task streams through its ChannelWebSock
 channel (live push or bounded background buffer).
 
 The flow mirrors the pre-refactor handler exactly:
-  build dispatch closure (agentic | normal) → retry_with_backoff (20 min budget) →
-  cancel handling / error frames / assistant persistence / search suggestion / done.
+  build dispatch closure (agentic | normal) → agentic runs once with provider-call retry;
+  normal mode keeps retry_with_backoff → cancel handling / error frames / assistant
+  persistence / search suggestion / done.
 """
 
 import asyncio
@@ -40,7 +41,7 @@ from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_
 from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
 from logic.normal import get_ollama_status_message
 import app.prompts as _app_prompts
-from utils.retry import retry_with_backoff
+from utils.retry import UserCancelled, retry_with_backoff
 
 logger = logging.getLogger("COOLEMS.ChatBus")
 
@@ -335,14 +336,30 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
             return await normal_mode(normal_config, conversation_history, enhanced_message, media_files)
 
         try:
-            final_response, succeeded = await retry_with_backoff(
-                func=_dispatch_ai_request,
-                websocket=sink,
-                stop_event=stop_event,
-                provider_name=provider.name,
-                auto_restart_provider=provider,
-                recovery_callback=send_recovery_warning,
-            )
+            if agent_mode:
+                # A late transport failure must not replay an agent turn that already ran
+                # tools. Provider calls have their own bounded retry inside the loop.
+                try:
+                    final_response = await _dispatch_ai_request()
+                    if stop_event and stop_event.is_set():
+                        raise UserCancelled("User cancelled generation.")
+                    succeeded = True
+                except Exception as e:
+                    if stop_event and stop_event.is_set():
+                        final_response = UserCancelled("User cancelled generation.")
+                    else:
+                        final_response = e
+                        logger.error(f"[CHATBUS] Agent turn failed without whole-turn replay for conv={conv_id}: {e}")
+                    succeeded = False
+            else:
+                final_response, succeeded = await retry_with_backoff(
+                    func=_dispatch_ai_request,
+                    websocket=sink,
+                    stop_event=stop_event,
+                    provider_name=provider.name,
+                    auto_restart_provider=provider,
+                    recovery_callback=send_recovery_warning,
+                )
 
             # --- user cancellation: graceful stop (same behaviour as the old handler) ---
             if _is_user_cancelled(final_response):

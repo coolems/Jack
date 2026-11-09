@@ -61,6 +61,9 @@ class AgenticModeConfig(BaseModeConfig):
     # API key for role-based permission checking
     api_key: str = None
 
+    # Per-turn sequential chat transport; None keeps the one-shot provider path.
+    chat_session: Any = None
+
 
 async def agentic_mode(
     config: AgenticModeConfig,
@@ -94,7 +97,7 @@ async def agentic_mode(
       about to engage"). At AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION of the FULL context
       window a context-guardian [SYSTEM NOTICE] tells the AI to finish its current work step,
       write a plan_<...>_continue.md file (in .temp/plans/) with what is done / remaining so we can resume in
-      the next work loop, and end with TASK DONE. One notice per crossing; a trim that brings
+      the next work loop, then give a final text answer. One notice per crossing; a trim that brings
       usage back under the threshold re-arms it. The notice quotes sent/left against the same
       window the UI status bar shows, so guardian and UI can never disagree.
     - Per-message token lengths are cached on the message dicts (`_est_tokens`)
@@ -196,6 +199,10 @@ RULES:
         logger.warning(f"[AGENTIC.DEBUG] Per-turn working root resolution failed (tools use fallback): {e}")
 
     # Run the ReAct loop
+    turn_chat_session = None
+    if config.chat_session is None and hasattr(config.provider, "turn_chat_session"):
+        turn_chat_session = config.provider.turn_chat_session()
+        config.chat_session = turn_chat_session
     try:
         return await run_react_loop(
             config, messages, tool_executor, conversation_history,
@@ -219,6 +226,12 @@ RULES:
         logger.error(f"[AGENTIC.DEBUG] agentic_mode() - UNEXPECTED ERROR: {type(e).__name__}: {e}")
         raise
     finally:
+        if turn_chat_session is not None:
+            try:
+                await turn_chat_session.close()
+            except Exception:
+                logger.debug("[AGENTIC.DEBUG] Chat session close failed", exc_info=True)
+            config.chat_session = None
         # (2026-10-09) Clear the per-turn working root so a stale folder can never leak
         # into the NEXT turn's tool execution.
         try:

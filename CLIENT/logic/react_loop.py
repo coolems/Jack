@@ -25,7 +25,6 @@ from typing import List, Dict, Any, Tuple
 
 from config import (
     AGENTIC_MAX_TOOL_ITERATIONS,
-    AGENTIC_MAX_THINKING_ITERATIONS,
     AGENTIC_TOKEN_WARNING_THRESHOLD,
     AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION,
     AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
@@ -77,9 +76,9 @@ logger = logging.getLogger("COOLEMS.Logic.ReactLoop")
 # The header is chosen by intent (logic.user_intent):
 #   * interjection ("tell me the current time")  -> answer it, then CONTINUE the task
 #   * explicit stop ("stop the review")          -> end the task
-# A mid-run question must never close the job, so a completion marker written right after
-# answering one is DEFERRED (see _interjection_pending handling below) unless the same batch
-# also asked for a stop.
+# A mid-run question must never close the job. A text-only reply ends the turn, so the
+# FIRST text-only reply after an interjection is DEFERRED (see _interjection_pending
+# handling below) unless the same batch also asked for a stop.
 # ============================================================
 from .user_intent import (
     STEER_INTERJECTION_HEADER,
@@ -95,6 +94,10 @@ TOOL_SKIPPED_FOR_STEER = (
     "re-planned before running. Read the newest user instruction above and decide whether this "
     "call is still needed."
 )
+
+# A reply with neither text nor tool calls is a provider hiccup, not a thinking step:
+# ask again up to this many times, then deliver an honest fallback instead of spinning.
+MAX_EMPTY_REPLIES = 2
 
 
 def _loop_boundary(messages: List[Dict]) -> int:
@@ -334,8 +337,9 @@ async def run_react_loop(
             logger.debug(f"[AGENTIC.DEBUG] react_loop - cycle recorder failed: {e}")
 
     # (2026-11 interjection rule) True while a mid-run QUESTION (not a stop request) was
-    # injected and its answer has not been settled yet. A completion marker written while
-    # this is set is DEFERRED: the job stays open until the original task is finished.
+    # injected and its answer has not been settled yet. A text-only reply ends the turn, so
+    # the first one written while this is set is DEFERRED: the job stays open until the
+    # original task is finished.
     interjection_pending = False
 
     final_response = ""
@@ -347,13 +351,12 @@ async def run_react_loop(
     agent_lessons = "" if not _LESSONS_INJECTION_ENABLED else None
 
 
-    # TEMP THINKING ARRAY - accumulates AI reasoning responses between tool calls
-    # When TASK DONE is encountered, ALL thinking steps are saved to history together
+    # TEMP THINKING ARRAY - holds partial answers (truncation resumes) until the final
+    # text-only reply; ALL parts are then saved to history together.
     temp_thinking: List[str] = []
 
-
-    # CONSECUTIVE THINKING COUNTER - tracks thinking-only iterations without tool use
-    consecutive_thinking_count = 0
+    # Consecutive replies with neither text nor tool calls (bounded by MAX_EMPTY_REPLIES).
+    empty_replies = 0
 
     # REACT LOOP STATS - for UI display
     loop_tools = 0         # Total loop calls in this agentic run
@@ -477,23 +480,21 @@ async def run_react_loop(
 
             # ---- LIVE STEERING (2026-10-23): drain queued user messages FIRST ----
             # A steer that arrived while the previous provider call / tool batch was
-            # running becomes the newest user turn for THIS provider call. Reset the
-            # thinking counter: fresh user input is not the model "stalling".
+            # running becomes the newest user turn for THIS provider call.
             _steers_applied = await _apply_pending_steers(config, messages)
             if _steers_applied:
-                consecutive_thinking_count = 0
                 logger.info(f"[AGENTIC.DEBUG] react_loop - injected {_steers_applied} live "
                             f"steering message(s) before provider call")
                 # INTERJECTION RULE (2026-11): a pure mid-run QUESTION does not end the job.
-                # Tell the model plainly (in-context) that the task stayed open, so a later
-                # 'TASK DONE' cannot be justified by having answered only the question. A
-                # batch that also contains an explicit stop is NOT treated this way.
+                # Tell the model plainly (in-context) that the task stayed open: a text-only
+                # reply ends the turn, so it must not finish by answering only the question.
+                # A batch that also contains an explicit stop is NOT treated this way.
                 if _steers_applied.interjection and not _steers_applied.stop:
                     interjection_pending = True
                     messages.append({"role": "user", "content": interjection_resume_notice(
                         int(_steers_applied), int(_steers_applied))})
-                    logger.info("[AGENTIC.DEBUG] react_loop - interjection recorded: completion "
-                                "marker is DEFERRED until the original task finishes")
+                    logger.info("[AGENTIC.DEBUG] react_loop - interjection recorded: the final "
+                                "answer is DEFERRED until the original task finishes")
 
             # Increment total loop call counter
             loop_tools += 1
@@ -732,7 +733,7 @@ async def run_react_loop(
                             "Write a plan file (plan_<YYYYMMDD_HHMM>_continue.md - write_file with path='' puts it in .temp/plans/) that captures: "
                             "(1) what is already DONE, (2) the exact remaining steps to finish the task, and "
                             "(3) any context/decisions needed to continue in the next work loop. "
-                            "Then end your response with 'Agentic AI: TASK DONE' so we can resume from that plan later."
+                            "Then give your final answer as plain text so we can resume from that plan later."
                         )
                     }
                     messages.append(context_guardian_msg)
@@ -940,9 +941,10 @@ async def run_react_loop(
                 logger.debug(f"[AGENTIC.DEBUG] react_loop - Tool execution detected, clearing {len(temp_thinking)} accumulated thinking step(s)")
                 temp_thinking = []
 
-
-                # Reset consecutive thinking counter on tool use
-                consecutive_thinking_count = 0
+                # Tool work is REAL continued work on the original task, so the
+                # interjection deferral window closes here.
+                interjection_pending = False
+                empty_replies = 0
 
 
                 # Reset loop_no_tools counter on tool use (for UI stats)
@@ -1028,232 +1030,175 @@ async def run_react_loop(
                         # The streamed answer stays in `messages` (the model must see what it
                         # already wrote) but is NOT accumulated into temp_thinking: it was a
                         # premature completion, superseded by the steering message. Keeping it
-                        # would persist a stale "TASK DONE" answer ahead of the revised one.
+                        # would persist a stale final answer ahead of the revised one.
                         logger.warning(
                             f"[AGENTIC.DEBUG] react_loop - completion deferred: injected "
                             f"{_steers_applied} steering message(s) during the final answer"
                         )
-                        consecutive_thinking_count = 0
+                        # Same interjection rule as the loop-head boundary: a pure question
+                        # must not end the job when the model answers it with text only.
+                        if _steers_applied.interjection and not _steers_applied.stop:
+                            interjection_pending = True
+                            messages.append({"role": "user", "content": interjection_resume_notice(
+                                int(_steers_applied), int(_steers_applied))})
                         loop_no_tools = 0
                         tool_iteration += 1
                         continue
 
-                if "Agentic AI: TASK DONE" in ai_response:
-                    # INTERJECTION RULE (2026-11): a mid-run QUESTION was answered but the
-                    # ORIGINAL task is not finished, so this marker is a premature completion.
-                    # Keep the answer in context (the model must see what it wrote), push the
-                    # job back with an explicit continue instruction, and do NOT persist it as
-                    # done. A batch that also asked to stop is honoured above (interjection is
-                    # only set for pure questions).
-                    if interjection_pending:
-                        interjection_pending = False
-                        if messages and messages[-1].get("role") == "assistant":
-                            messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
-                            invalidate_message_tokens(messages[-1])
-                        else:
-                            messages.append({"role": "assistant", "content": ai_response})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "[SYSTEM NOTICE] You answered the mid-run message, but that was NOT a stop "
-                                "request. Do NOT end the task here - continue the ORIGINAL task from where "
-                                "you left it and only write 'Agentic AI: TASK DONE' when that task is "
-                                "genuinely finished."
-                            ),
-                        })
+                # TRUNCATION FIX (2026-09-10): the server reports finish_reason == "length" via
+                # stats.truncated. A cut-off answer must be resumed, not accepted as final -
+                # otherwise the user gets half an answer. Bounded by MAX_TRUNCATION_RESUMES;
+                # after the budget is spent we accept the best partial instead of looping.
+                if stats and getattr(stats, "truncated", False):
+                    if truncation_resumes < MAX_TRUNCATION_RESUMES:
+                        truncation_resumes += 1
                         logger.warning(
-                            "[AGENTIC.DEBUG] react_loop - completion DEFERRED: the task stayed open after "
-                            "a mid-run question (not a stop request)"
+                            f"[AGENTIC.DEBUG] react_loop - TRUNCATED RESPONSE {truncation_resumes}/{MAX_TRUNCATION_RESUMES}: "
+                            f"provider hit its output limit ({stats.generated_tokens} tokens) mid-answer. Asking for a resume."
                         )
-                        consecutive_thinking_count = 0
-                        loop_no_tools = 0
                         if config.websocket:
                             try:
                                 await config.websocket.send_text(json.dumps({
                                     "type": "system",
-                                    "content": interjection_resume_notice(1, 1),
+                                    "content": ("Response was cut off at the output limit - "
+                                                 f"asking the model to resume ({truncation_resumes}/{MAX_TRUNCATION_RESUMES})..."),
                                 }))
                             except Exception:
-                                pass  # UI gone - the deferral still happened
-                        await _rec(cycle.feedback(interjection_resume_notice(1, 1)) if cycle else None)
-                        tool_iteration += 1
-                        continue
-
-                    # TASK COMPLETE - build final response from ALL accumulated thinking + this last message
-                    temp_thinking.append(ai_response)
-
-                    # Cycle history: open the answer row. The UI needs this signal because a
-                    # reply to a steer and the real answer are identical content frames.
-                    await _rec(cycle.announce_final(step_no) if cycle else None)
-
-
-                    if len(temp_thinking) > 1:
-                        logger.info(f"[AGENTIC.DEBUG] react_loop - TASK DONE with {len(temp_thinking)} accumulated thinking step(s)")
-                    else:
-                        logger.debug("[AGENTIC.DEBUG] react_loop - TASK DONE (single response)")
-
-
-                    # Concatenate all thinking steps into final_response for history preservation
-                    separator = "\n\n" + "=" * 50 + "\n\n"
-                    final_response = separator.join(temp_thinking)
-                    break
-                else:
-                    # TRUNCATION FIX (2026-09-10): the server now reports finish_reason == "length" via
-                    # stats.truncated. A cut-off answer must NOT be treated as a normal thinking step -
-                    # that is what caused the infinite 'Max thinking iterations' re-ask loop.
-                    if stats and getattr(stats, "truncated", False):
-                        if truncation_resumes < MAX_TRUNCATION_RESUMES:
-                            truncation_resumes += 1
-                            logger.warning(
-                                f"[AGENTIC.DEBUG] react_loop - TRUNCATED RESPONSE {truncation_resumes}/{MAX_TRUNCATION_RESUMES}: "
-                                f"provider hit its output limit ({stats.generated_tokens} tokens) mid-answer. Asking for a resume."
-                            )
-                            if config.websocket:
-                                try:
-                                    await config.websocket.send_text(json.dumps({
-                                        "type": "system",
-                                        "content": ("Response was cut off at the output limit - "
-                                                     f"asking the model to resume ({truncation_resumes}/{MAX_TRUNCATION_RESUMES})..."),
-                                    }))
-                                except Exception:
-                                    pass  # UI socket may already be closed
-                            # The model can only resume if it SEES what it already wrote - add the partial
-                            # answer to the message list first (same merge rule as the normal thinking path).
-                            if messages and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
-                                messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
-                                invalidate_message_tokens(messages[-1])  # content mutated in place -> refresh cached token count
-                            else:
-                                messages.append({"role": "assistant", "content": ai_response})
-
-                            resume_msg = {
-                                "role": "user",
-                                "content": (
-                                    "[SYSTEM NOTICE] Your previous response was CUT OFF mid-sentence by the output token limit. "
-                                    "Continue EXACTLY where you stopped - do NOT repeat or re-describe anything already written, "
-                                    "and finish the answer now. End your response with 'Agentic AI: TASK DONE'."
-                                ),
-                            }
-                            messages.append(resume_msg)
-
-                            # Keep the partial in temp_thinking: at TASK DONE time final_response is built from
-                            # ALL accumulated steps, so both halves of the split answer end up in history.
-                            # (This does NOT count as a thinking iteration for the max-thinking counter.)
-                            temp_thinking.append(ai_response)
-
-                            tool_iteration += 1
-                            continue
+                                pass  # UI socket may already be closed
+                        # The model can only resume if it SEES what it already wrote - add the partial
+                        # answer to the message list first. None-safe: a pure tool-call assistant
+                        # message carries content=None, so use the (content or "") merge rule.
+                        if messages and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
+                            messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
+                            invalidate_message_tokens(messages[-1])  # content mutated in place -> refresh cached token count
                         else:
-                            # Resume budget spent: accept the best partial answer instead of looping forever.
-                            logger.warning(
-                                f"[AGENTIC.DEBUG] react_loop - TRUNCATION RESUME BUDGET SPENT ({MAX_TRUNCATION_RESUMES}): "
-                                f"accepting partial answer as final instead of looping."
-                            )
-                            if config.websocket:
-                                try:
-                                    await config.websocket.send_text(json.dumps({
-                                        "type": "system",
-                                        "content": ("Model kept hitting the output limit - delivering the best partial answer. "
-                                                     "The response may be incomplete."),
-                                    }))
-                                except Exception:
-                                    pass
-                            temp_thinking.append(ai_response)
-                            separator = "\n\n" + "=" * 50 + "\n\n"
-                            final_response = separator.join(temp_thinking) if len(temp_thinking) > 1 else ai_response
-                            # Keep the history contract: final answers end with the TASK DONE marker.
-                            if "Agentic AI: TASK DONE" not in final_response:
-                                final_response += "\n\nAgentic AI: TASK DONE"
-                            # The answer row still opens - this IS the delivered answer.
-                            await _rec(cycle.announce_final(step_no) if cycle else None)
-                            break
+                            messages.append({"role": "assistant", "content": ai_response})
 
-                    # Increment consecutive thinking counter
-                    consecutive_thinking_count += 1
-
-                    # INTERJECTION RULE (2026-11): a marker-free turn after a mid-run question
-                    # is REAL continued work, so the deferral window closes - the next
-                    # 'TASK DONE' is a genuine completion of the original task.
-                    if interjection_pending:
-                        interjection_pending = False
-                        logger.debug("[AGENTIC.DEBUG] react_loop - interjection settled: the model "
-                                     "continued the original task (marker-free turn)")
-
-
-                    # Increment loop_no_tools counter (for UI stats)
-                    loop_no_tools += 1
-                    logger.debug(f"[AGENTIC.DEBUG] react_loop - Consecutive thinking count: {consecutive_thinking_count}")
-
-
-                    logger.debug("[AGENTIC.DEBUG] react_loop - No 'Agentic AI: TASK DONE' marker, accumulating thinking")
-
-
-                    # Accumulate this thinking step in temp array
-                    temp_thinking.append(ai_response)
-                    logger.debug(f"[AGENTIC.DEBUG] react_loop - Thinking step {len(temp_thinking)} accumulated (total chars: {sum(len(t) for t in temp_thinking)})")
-
-
-                    # Add to internal messages for context (merged with previous assistant if consecutive).
-                    # None-safe: a pure tool-call assistant message carries content=None (OpenAI format),
-                    # so `+=` would raise TypeError when one sits at messages[-1] - use the same
-                    # `(content or "") + ...` merge rule as the truncation-resume path above.
-                    # ORDER (2026-11-07 fix): the reply is appended BEFORE the max-thinking check below.
-                    # The old order injected the force-completion notice and `continue`d without ever
-                    # appending this reply, so the model never saw what it had already written (and the
-                    # turn's own text vanished from history).
-                    if messages and messages[-1].get("role") == "assistant":
-                        messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
-                        invalidate_message_tokens(messages[-1])  # content mutated in place -> refresh cached token count
-                    else:
-                        assistant_msg = {
-                            "role": "assistant",
-                            "content": ai_response
-                        }
-                        messages.append(assistant_msg)
-
-                    # Check if we have exceeded max thinking iterations without tool use
-                    if consecutive_thinking_count >= AGENTIC_MAX_THINKING_ITERATIONS:
-                        # The notice must name its OWN cause and state the context state, so a
-                        # reader (and the model) can never mistake this for a context-guardian
-                        # stop. (2026-11-07) With the limit at 1 this fired after a single prose
-                        # turn between two tool batches and ended runs that still had ~133K
-                        # tokens free - reported by the user as "context guardian stopped me".
-                        logger.warning(
-                            f"[AGENTIC.DEBUG] react_loop - Max thinking iterations ({AGENTIC_MAX_THINKING_ITERATIONS}) "
-                            f"reached! Injecting completion message to AI. "
-                            f"context={current_tokens}/{window_tokens} ({round(100.0 * current_tokens / window_tokens) if window_tokens else 0}% of window, "
-                            f"{max(0, window_tokens - current_tokens)} left) - this is a THINKING-STALL limit, "
-                            f"NOT a context limit (guardian fired {context_guardian_injections} time(s) this run)."
-                        )
-
-                        pct_now = round(100.0 * current_tokens / window_tokens) if window_tokens else 0
-                        # Send a message forcing the AI to complete with TASK DONE marker
-                        force_completion_msg = {
+                        resume_msg = {
                             "role": "user",
                             "content": (
-                                f"[SYSTEM NOTICE] You sent {consecutive_thinking_count} replies in a row with no tool "
-                                f"call and no completion marker, so this run is treated as stalled. This is NOT a "
-                                f"context limit - the window is at {pct_now}% ({current_tokens} of {window_tokens} tokens, "
-                                f"{max(0, window_tokens - current_tokens)} still free). "
-                                "If the task is finished: provide your final answer and end with "
-                                "'Agentic AI: TASK DONE'. If it is NOT finished: do NOT claim completion - write a "
-                                "plan file (plan_<YYYYMMDD_HHMM>_continue.md - write_file with path='' puts it in .temp/plans/) naming what is "
-                                "done and the exact remaining steps, then end with 'Agentic AI: TASK DONE' so the "
-                                "next run can resume from that plan."
-                            )
+                                "[SYSTEM NOTICE] Your previous response was CUT OFF mid-sentence by the output token limit. "
+                                "Continue EXACTLY where you stopped - do NOT repeat or re-describe anything already written, "
+                                "and finish the answer now as plain text."
+                            ),
                         }
-                        messages.append(force_completion_msg)
+                        messages.append(resume_msg)
 
+                        # Keep the partial in temp_thinking: final_response is built from ALL
+                        # parts, so both halves of the split answer end up in history.
+                        temp_thinking.append(ai_response)
 
-                        # Reset counter so we do not keep injecting on next iteration
-                        consecutive_thinking_count = 0
-
-
-                        # Continue loop - let provider process the force message
                         tool_iteration += 1
                         continue
+                    else:
+                        # Resume budget spent: accept the best partial answer instead of looping forever.
+                        logger.warning(
+                            f"[AGENTIC.DEBUG] react_loop - TRUNCATION RESUME BUDGET SPENT ({MAX_TRUNCATION_RESUMES}): "
+                            f"accepting partial answer as final instead of looping."
+                        )
+                        if config.websocket:
+                            try:
+                                await config.websocket.send_text(json.dumps({
+                                    "type": "system",
+                                    "content": ("Model kept hitting the output limit - delivering the best partial answer. "
+                                                 "The response may be incomplete."),
+                                }))
+                            except Exception:
+                                pass
+                        temp_thinking.append(ai_response)
+                        separator = "\n\n" + "=" * 50 + "\n\n"
+                        final_response = separator.join(temp_thinking) if len(temp_thinking) > 1 else ai_response
+                        # Keep the history contract: final answers end with the TASK DONE marker.
+                        if "Agentic AI: TASK DONE" not in final_response:
+                            final_response += "\n\nAgentic AI: TASK DONE"
+                        # The answer row still opens - this IS the delivered answer.
+                        await _rec(cycle.announce_final(step_no) if cycle else None)
+                        break
 
+                if not ai_response.strip():
+                    # Neither text nor tool calls: a provider hiccup. Ask again a bounded
+                    # number of times, then deliver an honest fallback instead of spinning.
+                    empty_replies += 1
+                    if empty_replies <= MAX_EMPTY_REPLIES:
+                        logger.warning(
+                            f"[AGENTIC.DEBUG] react_loop - EMPTY RESPONSE {empty_replies}/{MAX_EMPTY_REPLIES}: "
+                            "provider returned neither text nor tool calls; asking again."
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[SYSTEM NOTICE] Your previous response was empty (no text and no tool "
+                                "calls). If the task is finished, give your final answer as plain text "
+                                "now; otherwise call the next tool."
+                            ),
+                        })
+                        tool_iteration += 1
+                        continue
+                    logger.warning(
+                        f"[AGENTIC.DEBUG] react_loop - EMPTY RESPONSE BUDGET SPENT ({MAX_EMPTY_REPLIES}): "
+                        "delivering fallback answer."
+                    )
+                    ai_response = "The model returned an empty response and could not continue this task."
+
+                # INTERJECTION RULE (2026-11): a mid-run QUESTION was injected but the
+                # ORIGINAL task is not finished, so this text-only reply (the answer to the
+                # question) is a premature completion. Keep the answer in context (the model
+                # must see what it wrote), push the job back with an explicit continue
+                # instruction, and do NOT persist it as done. A batch that also asked to stop
+                # is honoured above (interjection is only set for pure questions).
+                if interjection_pending:
+                    interjection_pending = False
+                    if messages and messages[-1].get("role") == "assistant":
+                        messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
+                        invalidate_message_tokens(messages[-1])
+                    else:
+                        messages.append({"role": "assistant", "content": ai_response})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM NOTICE] You answered the mid-run message, but that was NOT a stop "
+                            "request. Do NOT end the task here - continue the ORIGINAL task from where "
+                            "you left it with tool calls, and give your final text answer only when "
+                            "that task is genuinely finished."
+                        ),
+                    })
+                    logger.warning(
+                        "[AGENTIC.DEBUG] react_loop - final answer DEFERRED: the task stayed open after "
+                        "a mid-run question (not a stop request)"
+                    )
+                    loop_no_tools = 0
+                    if config.websocket:
+                        try:
+                            await config.websocket.send_text(json.dumps({
+                                "type": "system",
+                                "content": interjection_resume_notice(1, 1),
+                            }))
+                        except Exception:
+                            pass  # UI gone - the deferral still happened
+                    await _rec(cycle.feedback(interjection_resume_notice(1, 1)) if cycle else None)
                     tool_iteration += 1
                     continue
+
+                # NATIVE COMPLETION (2026-11-09): a text-only reply IS the final answer -
+                # no marker required from the model. Tool-call replies continue the loop;
+                # anything else ends the turn here.
+                temp_thinking.append(ai_response)
+
+                # Cycle history: open the answer row. The UI needs this signal because a
+                # reply to a steer and the real answer are identical content frames.
+                await _rec(cycle.announce_final(step_no) if cycle else None)
+
+                logger.info(f"[AGENTIC.DEBUG] react_loop - Final text answer accepted ({len(temp_thinking)} part(s))")
+
+                # Concatenate all parts into final_response for history preservation
+                separator = "\n\n" + "=" * 50 + "\n\n"
+                final_response = separator.join(temp_thinking)
+                # UI/history continuity: the backend appends the legacy marker itself so the
+                # stats splice, the visible answer and old history stay exactly as before -
+                # the model no longer has to generate it.
+                if "Agentic AI: TASK DONE" not in final_response:
+                    final_response = final_response.rstrip("\n") + "\n\nAgentic AI: TASK DONE"
+                break
 
 
         # (2026-10-10) FINAL TURN STATS: splice the last loop-stats line directly above

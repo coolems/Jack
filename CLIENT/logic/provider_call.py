@@ -32,7 +32,9 @@ async def call_provider_with_retry(config: Any, messages: List[Dict]) -> Tuple[A
         try:
             provider_call_start = time.time()
 
-            result, stats = await config.provider.chat_stream(
+            chat_session = getattr(config, "chat_session", None)
+            chat_stream = chat_session.chat_stream if chat_session is not None else config.provider.chat_stream
+            result, stats = await chat_stream(
                 config.model,
                 messages,
                 config.websocket,
