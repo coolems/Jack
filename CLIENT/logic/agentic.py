@@ -80,8 +80,13 @@ async def agentic_mode(
     - The system prompt is NEVER removed.
     - The CURRENT USER PROMPT is NEVER removed (tagged `_protect` by build_messages,
       passed to the loop as a protected id) - it must remain at all times.
-    - No minimum-message floor: in a long run only [system + current user prompt]
-      may remain, and that is fine.
+    - THE CURRENT LOOP IS NEVER REMOVED (2026-11-08): everything the running loop appends
+      after build_messages() - its assistant replies, tool_calls, tool results and mid-run
+      steering - is the AI's working context. Trimming eats only the PREVIOUS turns of the
+      session. When the loop alone cannot fit, the trim is a no-op and the guardian fires
+      (continue plan + stop), so the next loop resumes from user input + AI output + plan.
+    - No minimum-message floor for the removable part: in a long run only
+      [system + current user prompt + current loop] may remain, and that is fine.
     - Usage is measured in SERVER units: the real prompt_tokens llama.cpp reported for the
       last request, kept as an OVERHEAD on top of our chars/4 estimate, so the figure tracks
       new messages AND trims instead of going stale (2026-11-07 fix).

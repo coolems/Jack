@@ -106,12 +106,17 @@ def protected_breakdown(messages: List[Dict]) -> str:
     """The block the trimmer can NEVER remove - the usual cause of a stuck limit.
 
     Index 0 (system prompt), any `_protect` message (current user prompt), and any
-    index the caller passed in `protected_ids` are unremovable. When these alone
-    exceed the budget, safe_trim_history() removes nothing and the guardian keeps
-    firing - this line is what proves that.
+    index the caller passed in `protected_ids` are unremovable. Since 2026-11-08 the
+    CURRENT LOOP (everything appended after the protected prompt) is unremovable too -
+    it is the AI's working context. When these alone exceed the budget,
+    safe_trim_history() removes nothing and the guardian fires - this block is what proves it.
     """
     lines = []
     total = 0
+    loop_start = None
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("_protect") is True:
+            loop_start = i + 1
     for i, m in enumerate(messages):
         if not isinstance(m, dict):
             continue
@@ -122,6 +127,11 @@ def protected_breakdown(messages: List[Dict]) -> str:
         total += t
         tag = "system" if i == 0 else "protected user prompt"
         lines.append(f"  idx {i} [{tag}] {t} tok, {len(_preview(m.get('content'), 60))} chars: {_preview(m.get('content'), 60)}")
+    if loop_start is not None and len(messages) > loop_start:
+        loop_tokens = sum(_msg_tokens(m) for m in messages[loop_start:])
+        total += loop_tokens
+        lines.append(f"  idx {loop_start}..{len(messages) - 1} [CURRENT LOOP] "
+                    f"{len(messages) - loop_start} msgs / {loop_tokens} tok - never trimmed")
     head = f"  unremovable total = {total} tok"
     return head + ("\n" + "\n".join(lines) if lines else "  (none found)")
 
@@ -134,10 +144,20 @@ def top_contributors(messages: List[Dict], n: int = _TOP_N) -> str:
             continue
         rows.append((_msg_tokens(m), i, m))
     rows.sort(key=lambda r: -r[0])
+    # Everything after the protected prompt is the CURRENT LOOP - never trimmable (2026-11-08).
+    loop_start = None
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("_protect") is True:
+            loop_start = i + 1
     out = []
     for t, i, m in rows[:n]:
         note = _tool_names(m)
-        flag = " [UNREMOVABLE]" if (i == 0 or m.get("_protect") is True) else ""
+        if i == 0 or m.get("_protect") is True:
+            flag = " [UNREMOVABLE]"
+        elif loop_start is not None and i >= loop_start:
+            flag = " [CURRENT LOOP - never trimmed]"
+        else:
+            flag = ""
         out.append(f"  #{i} {m.get('role','?')}: {t} tok, {_msg_chars(m)} chars"
                    + (f" ({note})" if note else "") + flag
                    + f" :: {_preview(m.get('content'))}")

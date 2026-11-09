@@ -676,6 +676,12 @@ AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.95     # Fraction of the MESSAGE-LIST
 #: moment the history budget is reached, which is exactly when trimming starts.
 AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION: float = 0.90
 AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS: int = 3  # Max times per run the near-limit guardian may be injected - bounded so a pathological prompt cannot loop forever
+#: (2026-11-09) The old AGENTIC_CONTEXT_GUT_FRACTION ("a trim pass that removed >= 50% of the
+#: context is a GUT") was REMOVED: it gated nothing. With the LOOP RULE (utils/history_trimmer
+#: safe_trim_history loop_start) a big pass can only eat PREVIOUS turns of the session, which is
+#: legitimate trimming - never a reason to stop the run. The guardian fires on TRIM NO-OP
+#: (stuck_at_limit) instead; the trim log still shows "before -> after" + removed=N tok, so a
+#: large discard stays visible without a second threshold to maintain.
 AGENTIC_ITERATION_TIMEOUT_SEC: int = 180          # Timeout per single provider call iteration (3 minutes)
 # UI frame budget for the `tool_end` notification only (the chat's last-tool strip shows the
 # real result). The ReAct history is NOT trimmed here - it keeps what the tool returned
