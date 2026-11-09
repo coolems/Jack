@@ -1,8 +1,8 @@
 """Certificate pinning for TLS client links (SHA-256 fingerprint of peer cert).
 
 (2026-09-01 S3) Shared between SERVER and CLIENT -- the two copies MUST stay
-byte-identical (same pattern as provider_manager.py; see tests/test_protocol_sync_20260820.py
-for that parity convention).
+byte-identical (same pattern as provider_manager.py; enforced by
+tools/test_tools/test_shared_copies_identical.py).
 
 TLS still provides encryption in transit, but trust is decided by an EXACT SHA-256
 fingerprint of the peer certificate instead of a CA chain. This is the right tool for a

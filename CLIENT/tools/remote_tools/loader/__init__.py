@@ -46,7 +46,7 @@ __all__ = [
     "ALLOWED_TOOL_IMPORTS",
     "SandboxedASTChecker",
     "validate_source_code",
-    # Integrity scheme (pinned by tests/test_protocol_sync_20260820.py)
+    # Integrity scheme (fail-closed in code; scheme documented in integrity.py)
     "IntegrityCheckResult",
     "hash_in_allowlist",
     "sha_prefix",

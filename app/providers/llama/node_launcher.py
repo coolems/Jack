@@ -642,10 +642,12 @@ def _print_summary(cfg: dict, model_path: str, log_path: str) -> None:
 
 
 async def _stop_by_port(port: int) -> None:
-    from .process_mgmt import _get_process_commandline, _find_pid_on_port, _kill_llama_server_by_port
+    from .process_mgmt import _get_process_commandline, _pids_listening_on_port, _kill_llama_server_by_port
 
-    pid = await asyncio.to_thread(_find_pid_on_port, port)
-    if pid:
+    # (2026-11-02 review fix): verify EVERY owner of the port, not just the first -
+    # _kill_llama_server_by_port() kills the same owner set this lookup returns, so a
+    # non-llama listener sharing the port must block the kill instead of being skipped.
+    for pid in await asyncio.to_thread(_pids_listening_on_port, port):
         cmdline = await asyncio.to_thread(_get_process_commandline, pid)
         if cmdline is not None and "llama" not in cmdline.lower():
             raise RuntimeError(f"port {port} is PID {pid} ({cmdline[:80]}...) - not a llama-server; refusing to kill it")

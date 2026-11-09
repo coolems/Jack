@@ -52,7 +52,9 @@ COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_serve
 # silent misbehavior. Bump when adding/removing message types or changing field semantics.
 # (2026-09-08) v3: additive optional frame types queue_status / queue_start (SERVER -> CLIENT,
 # multi-chat request queue). Old clients simply ignore unknown frame types; both ends must
-# still agree on the version number itself (parity enforced by tests/test_protocol_sync_20260820.py).
+# still agree on the version number itself (parity enforced by the WS handshake - ws_auth.py closes
+# the socket on a mismatch, CLIENT raises ConnectionError; tripwire:
+# tools/test_tools/test_shared_copies_identical.py).
 # (2026-09-23) v4: relays forward each client's API key + email in 'client_connected' so the BRAIN
 # authenticates every relayed client against its OWN config/.api_keys.json (same logic as direct
 # mode - a client never sends a role). auth_ok frames echo protocol_version on all paths.

@@ -186,28 +186,57 @@ def _kill_orphaned_process(key=None) -> None:
         _terminate_process(proc)
 
 
-def _find_pid_on_port(port: int) -> Optional[int]:
-    """Return the PID of the process LISTENING on *port* (None when nobody is).
+def _pids_listening_on_port(port: int) -> list[int]:
+    """PIDs of the processes LISTENING on exactly *port* (netstat -ano, field-anchored).
 
     (2026-10-31 verified attach): netstat parse extracted from
     _kill_llama_server_by_port() so start_server() can identify a foreign
-    llama-server before deciding to reuse or kill it. Never raises."""
+    llama-server before deciding to reuse or kill it. Never raises.
+
+    (2026-11-02 review fix): the filter used to be a raw substring test
+    (f":{port}" in line), so a listener whose port merely CONTAINS the target
+    (5040 vs 50407, 80 vs 8080/8000, 1850 vs 18500) was reported as the owner,
+    and _kill_llama_server_by_port() force-killed an unrelated process. The port
+    is now compared as a FIELD: the digits after the LAST ':' of the local
+    address, which also covers the bracketed IPv6 form Windows prints
+    ("[::]:135" -> "135"), with TCP/TCP6 protocol and LISTENING state checked
+    explicitly. IPv4 + IPv6 listeners on the same port are deduplicated."""
+    target = str(port)
+    pids: list[int] = []
     try:
         result = subprocess.run(
             ["netstat", "-ano"],
             capture_output=True, text=True, timeout=5
         )
-        for line in result.stdout.split("\n"):
-            if f":{port}" in line and "LISTENING" in line:
-                parts = line.split()
-                if len(parts) >= 5:
-                    try:
-                        return int(parts[-1])
-                    except ValueError:
-                        continue
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            # Length check FIRST - blank/short lines have no parts[0].
+            # TCP = IPv4 listener, TCP6 = IPv6 listener (netstat -ano on Windows).
+            if len(parts) < 5 or parts[0] not in ("TCP", "TCP6"):
+                continue
+            if parts[1].rpartition(":")[2] != target:
+                continue
+            if parts[3] != "LISTENING":
+                continue
+            try:
+                pid = int(parts[-1])
+            except ValueError:
+                continue
+            if pid > 0 and pid not in pids:
+                pids.append(pid)
     except Exception as e:
         logger.debug(f"[ATTACH] netstat lookup for port {port} failed: {e}")
-    return None
+    return pids
+
+
+def _find_pid_on_port(port: int) -> Optional[int]:
+    """Return the PID of the process LISTENING on *port* (None when nobody is).
+
+    Single source of truth: delegates to _pids_listening_on_port(). Callers
+    (server.py attach, node_launcher status/stop) treat the first owner as the
+    port owner; a second PID only appears when two sockets share the port."""
+    pids = _pids_listening_on_port(port)
+    return pids[0] if pids else None
 
 
 def _get_process_commandline(pid: int) -> Optional[str]:
@@ -251,28 +280,24 @@ def _get_process_commandline(pid: int) -> Optional[str]:
 
 
 def _kill_llama_server_by_port(port: int) -> None:
-    """Kill any process listening on the llama server port (fallback for untracked processes)."""
-    try:
-        result = subprocess.run(
-            ["netstat", "-ano"],
-            capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.split("\n"):
-            if f":{port}" in line and "LISTENING" in line:
-                parts = line.split()
-                if len(parts) >= 5:
-                    pid = parts[-1]
-                    try:
-                        pid = int(pid)
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid), "/F"],
-                            capture_output=True, timeout=5
-                        )
-                        logger.info(f"[RELOAD] Killed process {pid} on port {port}")
-                    except (ValueError, subprocess.TimeoutExpired):
-                            logger.debug("Llama reload: skipped invalid PID during port cleanup")
-    except Exception as e:
-        logger.warning(f"[RELOAD] Could not kill process by port {port}: {e}")
+    """Kill the process(es) LISTENING on exactly *port* (fallback for untracked processes).
+
+    (2026-11-02 review fix): shares _pids_listening_on_port() with
+    _find_pid_on_port() instead of re-parsing netstat with its own substring
+    filter. Same owner set as the attach/status lookups, so node_launcher's
+    "is it a llama-server?" guard now inspects exactly the PIDs this kill can
+    reach - a prefix-port listener (:80800 when we want :8080) is never killed."""
+    for pid in _pids_listening_on_port(port):
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                capture_output=True, timeout=5
+            )
+            logger.info(f"[RELOAD] Killed process {pid} on port {port}")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            # taskkill missing / denied / timed out - keep the old never-raises
+            # behaviour so a failed kill cannot abort start_server()/reload.
+            logger.debug(f"Llama reload: taskkill failed for PID {pid} on port {port}: {e}")
 
 
 async def wait_for_port_free_async(port: int) -> bool:

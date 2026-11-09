@@ -41,25 +41,43 @@ def ensure_port_free(port, max_retries=3):
             return True
 
     def get_pids_on_port():
-        """Get PIDs listening on the specific port using netstat."""
+        """Get PIDs listening on the exact port using netstat.
+
+        The port is matched as a FIELD, never as a substring. The old filter
+        `f":{port}" in line` (2026-11-06 code-review finding #4) matched
+        ":8080" inside "0.0.0.0:80800", so every listener whose port merely
+        CONTAINED the target became a taskkill /F target - with CLIENT_UI_PORT
+        set to 80 it force-killed unrelated processes (including the CLIENT on
+        8000). netstat -ano line shape: TCP <local> <foreign> <state> <pid>.
+        """
         try:
             netstat_result = subprocess.run(
                 ["netstat", "-ano"], capture_output=True, text=True, timeout=5
             )
-            result_lines = [l for l in netstat_result.stdout.split("\n") if f":{port}" in l]
-            pids = []
-            for line in result_lines:
-                parts = line.split()
-                if len(parts) >= 5 and "LISTENING" in line:
-                    try:
-                        pid = int(parts[-1])
-                        pids.append(pid)
-                    except ValueError:
-                        continue
-            return pids
         except Exception as e:
             logger.warning(f"[PORT] netstat failed: {e}")
             return []
+
+        target = str(port)
+        pids = []
+        for line in netstat_result.stdout.splitlines():
+            parts = line.split()
+            # Length check FIRST - blank/short lines have no parts[0].
+            # TCP = IPv4 listener, TCP6 = IPv6 listener (netstat -ano on Windows).
+            if len(parts) < 5 or parts[0] not in ("TCP", "TCP6"):
+                continue
+            # Port = digits after the LAST ':' of the local address, so the
+            # bracketed IPv6 form Windows prints ("[::]:135" -> "135") is covered
+            # and a prefix port ("80" vs "80800") can never match.
+            if parts[1].rpartition(":")[2] != target:
+                continue
+            if parts[3] != "LISTENING":
+                continue
+            try:
+                pids.append(int(parts[-1]))
+            except ValueError:
+                continue
+        return pids
 
     for attempt in range(max_retries):
         if not is_port_in_use():

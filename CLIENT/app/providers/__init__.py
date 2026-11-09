@@ -25,7 +25,7 @@ truth for the provider contract, same as it already is for tools/DNA/prompts.
 
 app.provider_manager intentionally keeps its local disk copy (chicken-and-egg: it is
 imported at boot before any WS exists) and stays byte-identical with the SERVER's --
-enforced by tests/test_protocol_sync_20260820.py.
+enforced by tools/test_tools/test_shared_copies_identical.py.
 """
 
 import logging

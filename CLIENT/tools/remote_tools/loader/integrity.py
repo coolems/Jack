@@ -12,8 +12,9 @@ it alongside every shared module ('shared_hashes') and tool source
     logged with 'REFUSING' so tests/guards can detect the enforcement path);
   * no promised hash (legacy server)   => tolerated and installed.
 
-tests/test_protocol_sync_20260820.py pins this scheme end-to-end on both sides,
-so changing the digest or its length here would break that guard on purpose.
+Changing the digest or its length here breaks the wire contract: the SERVER computes
+the same prefix in app/providers/coolems/tool_scanner/sha_prefix.py, so both sides must
+be changed together.
 """
 
 import hashlib

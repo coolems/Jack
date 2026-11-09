@@ -21,11 +21,10 @@ Behavior is identical to the original implementation (same methods, same message
 same fail-closed semantics). New code should import from ``tools.remote_tools.loader``.
 
 ===============================================================================
-PROTOCOL CONTRACT -- source-scanned by tests/test_protocol_sync_20260820.py
+PROTOCOL CONTRACT -- fail-closed integrity semantics kept verbatim here
 ===============================================================================
-test_hash_enforcement_present() reads THIS file's text and asserts the fail-closed
-integrity contract is still present. The real implementations live in the loader
-package; these lines are kept verbatim here as the documented contract:
+The real implementations live in the loader package; these lines are the documented
+contract that the shim must preserve:
 
   def install_shared_modules(self, sources: Dict[str, str], expected_hashes: Optional[Dict[str, str]] = None) -> bool
       # shared-module path: a promised hash mismatch is logged with
@@ -35,7 +34,8 @@ package; these lines are kept verbatim here as the documented contract:
       # tool-source path: a promised source_hash mismatch raises ToolCompilationError after logging
       # 'REFUSING to compile (fail-closed)' (integrity.verify_tool_hash).
 
-Do not delete this file (or these contract lines) without updating that test.
+Do not delete this file (or these contract lines) without checking every import path
+that still reaches for the shim.
 ===============================================================================
 """
 

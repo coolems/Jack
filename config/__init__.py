@@ -27,7 +27,8 @@ from .config import (
     COOLEMS_SERVER_HOST,
 
     # Coolems Web Relay / Direct WS Configuration (shared with CLIENT + relay)
-    PROTOCOL_VERSION,   # WS protocol version -- echoed in auth_ok; enforced by tests/test_protocol_sync_20260820.py
+    PROTOCOL_VERSION,   # WS protocol version -- echoed in auth_ok; enforced by the WS handshake,
+                        # parity tripwire: tools/test_tools/test_shared_copies_identical.py
     USE_WEB_SERVER,
     WEB_RELAY_MAX_MESSAGE_SIZE,
     WEB_RELAY_HEARTBEAT_INTERVAL,
