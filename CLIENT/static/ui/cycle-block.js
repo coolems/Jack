@@ -15,7 +15,17 @@
  *   │                 It is LIVE-WORK only: a settled turn - and a turn rebuilt from the DB -
  *   │                 shows no strip; its tools stay as rows of the expanded body.
  *   ├ live strip    : the transient consent card (answerable while collapsed)
- *   └ AI strip      : everything the AI said during this turn, streamed live (thinking + answers)
+ *   └ AI strip      : the LAST AI message of THIS loop, streamed live (thinking + answers)
+ *                 ONE AI MESSAGE PER LOOP (user request 2026-11-09: "in each history loop
+ *                 block we need to see this last ai message ... my message, then the turns
+ *                 loop block, then the last AI message for that loop"). refreshAiVisibility()
+ *                 marks each block's strip from ITS OWN text: a loop that said something keeps
+ *                 its strip, a loop that said nothing shows no strip at all (no placeholder, no
+ *                 Copy chips, no border). INSIDE a strip only the NEWEST message is shown
+ *                 (CycleShell.showLastSegment) - every reasoning step of a loop is a message,
+ *                 so message N overwrites message N-1 instead of stacking under it.
+ *                 Nothing is deleted: the earlier messages stay in dataset.raw (Copy reads the
+ *                 whole turn), as speech rows of the expanded body and in the turn_log payload.
  *
  * THE ROUTING CONTRACT (the part the user called out as critical): every frame resolves
  * its block through CycleBlock.target(convId, turnId), which requires ALL of:
@@ -52,10 +62,16 @@ const CycleBlock = {
      *  last repo version an answer was a .message-content bubble with a Copy chip floating
      *  at its top-right AND bottom-right, revealed on hover. A turn's answer now lives in
      *  this strip, so the strip gets the same two floating chips (.copy-top / .copy-bottom)
-     *  and the same hover reveal; copyCycleAnswer(this) reads the strip's raw answer text. */
+     *  and the same hover reveal; copyCycleAnswer(this) reads the strip's raw answer text.
+     *
+     *  data-visible="0" (2026-11-09, user request "the AI response block shows every turn's
+     *  response, I only need the last one"): a fresh strip starts hidden, because a loop's
+     *  strip becomes visible only when that loop produces a real AI message - see
+     *  refreshAiVisibilityBlock(). Nothing about the answer is lost: the turn's speech rows are
+     *  still built in the expanded body and persisted in the turn_log payload. */
     _aiStripHtml() {
         const copyIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg> Copy';
-        return '<div class="cycle-ai" data-empty="1">' +
+        return '<div class="cycle-ai" data-empty="1" data-visible="0">' +
             '<button class="copy-btn copy-top" onclick="copyCycleAnswer(this)">' + copyIcon + '</button>' +
             '<div class="cycle-ai-empty">Waiting for the AI\u2026</div>' +
             '<button class="copy-btn copy-bottom" onclick="copyCycleAnswer(this)">' + copyIcon + '</button></div>';
@@ -132,6 +148,10 @@ const CycleBlock = {
         block.lastEl = node.querySelector('.cycle-last');
         block.liveEl = node.querySelector('.cycle-live');
         block.aiEl = node.querySelector('.cycle-ai');
+        // THE ONE-MESSAGE-PER-LOOP RULE (2026-11-09, user request): a fresh block starts
+        // hidden. It owns a visible AI strip only when its own AI text arrives, which
+        // refreshAiVisibilityBlock() decides. The markup already carries data-visible="0".
+        block.aiVisible = false;
         block.head.addEventListener('click', () => this.toggle(block));
         block.head.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.toggle(block); }
@@ -175,6 +195,9 @@ const CycleBlock = {
         (this.blocks[convId] = this.blocks[convId] || []).push(block);
         this._renderSummary(block);
         this._startTurnTimer(block);
+        // A new turn has no text yet, so its strip stays hidden - the previous loop's last
+        // message remains on screen until this one produces its own.
+        this.refreshAiVisibilityBlock(block);
         CycleShell.scrollIfNeeded();
         return block;
     },
@@ -203,6 +226,9 @@ const CycleBlock = {
         this._stopTurnTimer(block);
         CycleShell.clearLastTool(block);
         CycleShell.settleStream(block);
+        // The turn is over: it keeps its strip only if it actually produced a message, and
+        // that strip collapses to its newest message (no stack of steps left on screen).
+        this.refreshAiVisibilityBlock(block);
         for (const rid of Object.keys(block.consents)) {
             const el = block.consents[rid];
             if (el && el.dataset.decision === 'pending') this.settleCard(block, rid, 'unanswered');
@@ -268,6 +294,70 @@ const CycleBlock = {
         if (block.speed) parts.push(`\u26A1 ${block.speed.toFixed(1)} tok/s`);
         if (block.settled && block.lastTurnSec) parts.push(`\u21A9 ${_fmtSec(block.lastTurnSec)} last`);
         block.summaryEl.textContent = parts.join(' \u00b7 ');
+    },
+
+    // ===== AI strip visibility (ONE message per agentic loop) =====
+
+    /** Does this loop have a real AI message? The "Waiting for the AI..." placeholder and the
+     *  two Copy chips are not text, so only a painted answer/thinking segment counts - a turn
+     *  that said nothing shows no AI strip at all (user rule 2026-11-09: one message per loop,
+     *  no empty chrome). */
+    _hasAiText(block) {
+        if (!block || !block.aiEl) return false;
+        return !!CycleShell.lastSegmentOf(block);
+    },
+
+    /**
+     * THE LAST-MESSAGE-PER-LOOP RULE (2026-11-09, user's wording: "when a new ai message from
+     * another turn arrives it must overwrite that old message in UI ... and in each history
+     * loop block we need to see this last ai message").
+     *
+     * Visibility is decided PER BLOCK, not per workspace:
+     *   * a turn whose AI text exists keeps its strip visible - one AI message per loop, so a
+     *     reload reads: my message, that loop's turns block, that loop's last AI message;
+     *   * inside that strip only the NEWEST message is shown (CycleShell.showLastSegment), so
+     *     while a loop runs message N replaces message N-1 instead of stacking under it;
+     *   * a turn with no AI text shows NO strip - no "Waiting for the AI..." chrome, no Copy
+     *     chips, no empty border.
+     *
+     * HIDDEN, never deleted: the earlier messages of a loop stay in each segment's
+     * dataset.raw (Copy still copies the whole turn), as speech rows of the expanded body and
+     * in the turn_log payload. Blocks of another workspace are untouched - a background
+     * workspace's frames can never rewrite the visible one.
+     */
+    refreshAiVisibilityBlock(block) {
+        if (!block || !block.aiEl) return false;
+        const show = this._hasAiText(block) ? '1' : '0';
+        if (block.aiEl.dataset.visible !== show) block.aiEl.dataset.visible = show;
+        block.aiVisible = show === '1';
+        // Collapse this loop's strip to its newest message (the overwrite the user asked
+        // for); a hidden strip needs no segment flags.
+        if (show === '1') CycleShell.showLastSegment(block);
+        return block.aiVisible;
+    },
+
+    /**
+     * The same rule applied to every loop of one workspace (view open, reload rebuild,
+     *  workspace switch). Blocks of another workspace are never touched.
+     *
+     * `owner` = the NEWEST loop that has a real AI message: that is the strip the user is
+     *  watching while a turn runs, so a new AI message overwrites the previous one there.
+     *  Every other loop that has a message keeps its own strip and collapses it to its own
+     *  newest message, so the chat reads: my message, that loop's turns block, that loop's
+     *  last AI message - for every loop.
+     */
+    refreshAiVisibility(convId) {
+        const list = this.blocks[convId] || [];
+        let owner = null;
+        for (const b of list) {
+            const show = this._hasAiText(b) ? '1' : '0';
+            b.aiEl.dataset.visible = show;
+            b.aiVisible = show === '1';
+            if (this._hasAiText(b)) owner = b;   // the NEWEST loop with text owns the live strip
+        }
+        if (owner) CycleShell.showLastSegment(owner);
+        for (const b of list) if (b.aiVisible && b !== owner) CycleShell.showLastSegment(b);
+        return list.filter(b => b.aiVisible);
     },
 
     // ===== live timers =====
@@ -458,14 +548,20 @@ const CycleBlock = {
     },
 
     /** One AI text block of a step: the body row AND the visible AI strip. The strip gets
-     *  the step number, so each reasoning step's answer is its own block under the others. */
+     *  the step number, so each reasoning step's answer is its own block under the others.
+     *  The new message overwrites the previous one of this loop (2026-11-09 rule), so only
+     *  this block needs re-marking - no walk over the other loops. */
     addSpeech(block, d) {
         this.addRow(block, 'speech', d);
         CycleShell.appendStream(block, d.kind, d.text, d.step_no, !!d.final);
+        this.refreshAiVisibilityBlock(block);
     },
 
     /** Live streamed chunk (content|thinking) - visible strip only; the row comes at settle. */
-    addStreamChunk(block, kind, text) { CycleShell.appendStream(block, kind, text, null); },
+    addStreamChunk(block, kind, text) {
+        CycleShell.appendStream(block, kind, text, null);
+        this.refreshAiVisibilityBlock(block);
+    },
 
     /**
      * Drop the last-tool strip. Called when the final answer starts being delivered

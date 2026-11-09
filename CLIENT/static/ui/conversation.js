@@ -101,6 +101,10 @@ async function _renderHistory(convId, data) {
         const appended = container ? container.lastElementChild : null;
         if (appended && it.msg.id) appended.dataset.msgId = it.msg.id;
     }
+    // The whole view is assembled: apply the ONE-MESSAGE-PER-LOOP rule to every rebuilt loop
+    // (2026-11-09) so a reload shows, per loop: my message, the turns block, that loop's LAST
+    // AI message - not the whole run.
+    if (blocks) CycleBlock.refreshAiVisibility(convId);
     return { messages: (data.messages || []).length, blocks };
 }
 

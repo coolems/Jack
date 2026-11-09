@@ -418,6 +418,14 @@
     flex-direction: column;
     gap: 8px;
 }
+/* ONE AI MESSAGE PER AGENTIC LOOP (user request 2026-11-09: "when a new ai message from
+   another turn arrives it must overwrite that old message in UI ... and in each history loop
+   block we need to see this last ai message"). CycleBlock.refreshAiVisibilityBlock() marks
+   each loop's strip from ITS OWN text: a loop that produced a message keeps
+   data-visible="1", a loop that said nothing is display:none - no placeholder, no border, no
+   Copy chips. The DOM text stays intact: the earlier messages are still readable as speech
+   rows of that turn's expanded body and in the DB. */
+.cycle-ai[data-visible="0"] { display: none; }
 .cycle-ai-empty { font-size: 12px; color: var(--text-muted, #6b7686); }
 .cycle-ai-thinking {
     font-size: 12px;
@@ -462,6 +470,14 @@
     background: var(--bg-tertiary, #1b2029);
     border-radius: 6px;
 }
+/* ONE AI MESSAGE ON SCREEN, INSIDE THE LOOP (user report 2026-11-09: "I asked you to say
+   something in each turn and I see all turns one below another"). ONE agentic loop is not
+   ONE message - each reasoning step owns its own .cycle-ai-seg box, so a multi-step loop
+   stacked 5 boxes in the strip you are looking at. CycleShell.showLastSegment() marks the
+   newest box of that loop with data-visible="1"; the older boxes are display:none. Their text
+   is not deleted - it stays in dataset.raw (Copy still copies the whole loop), as a speech
+   row of the expanded body, and in the turn_log payload. */
+.cycle-ai-seg[data-visible="0"] { display: none; }
 .cycle-ai-seg-label {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 10px;

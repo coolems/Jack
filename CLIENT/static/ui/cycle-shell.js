@@ -476,9 +476,12 @@ const CycleShell = {
     },
 
     /**
-     * Live chunk (content|thinking) or one settled speech row, appended to the visible AI
-     * strip. The strip is ALWAYS visible (collapsed or expanded) and grows with the text -
-     * no max-height on the answer, so the whole answer is readable.
+     * Live chunk (content|thinking) or one settled speech row, appended to the AI strip of
+     * THIS loop. The strip is ALWAYS built (collapsed or expanded) and grows with the text -
+     * no max-height on the answer, so the whole message is readable. WHICH strip the user
+     * sees is decided by CycleBlock.refreshAiVisibilityBlock() (2026-11-09): a loop shows a
+     * strip only once it has a real message, and that strip collapses to its NEWEST message
+     * (showLastSegment), so the chat is one message per loop, not the whole run.
      *
      * `stepNo === null` means a LIVE streamed chunk (websocket content/thinking frame);
      * anything else is a settled `cycle_speech` row (or a DB rebuild row). Live chunks append
@@ -549,6 +552,64 @@ const CycleShell = {
         if (live) this._paintLive(seg.answerEl);
         else this._paint(seg.answerEl, true);
         this.scrollIfNeeded();
+    },
+
+    /**
+     * The NEWEST AI message of THIS loop - the one box the user should see.
+     *
+     * A reasoning step owns its own .cycle-ai-seg box, so one agentic loop is a sequence of
+     * messages, not one long one. "Newest" is read from the strip's DOM ORDER (which _mount()
+     * keeps ascending by step), NOT from step_no: a live chunk of step N lands while
+     * counts.turns is still N-1, so the box the stream is painting right now is the message
+     * currently being delivered. A settled speech row of an older step that arrives late (a
+     * replay flush) stays mounted in step order but stays hidden.
+     */
+    lastSegmentOf(block) {
+        if (!block || !block.aiEl) return null;
+        let newest = null;
+        for (const wrap of Array.from(block.aiEl.children)) {
+            if (!wrap.classList || !wrap.classList.contains('cycle-ai-seg')) continue;
+            const seg = block.aiSeg ? block.aiSeg[wrap.dataset.stepNo] : null;
+            if (!seg) continue;
+            const hasText = (seg.answerEl && (seg.answerEl.dataset.raw || '').trim())
+                || (seg.thinkingEl && (seg.thinkingEl.dataset.raw || '').trim());
+            if (hasText) newest = seg;            // last box with real text wins
+        }
+        return newest;
+    },
+
+    /**
+     * ONE AI MESSAGE PER AGENTIC LOOP (user report 2026-11-09: "i asked you to say something
+     * in each turn and i see all turns one below another ... i wanted to see this last ai
+     * message for each agentic loop").
+     *
+     * Inside a loop's strip only the newest message stays shown; every older message of that
+     * same loop gets data-visible="0" (display:none), so message N OVERWRITES message N-1 on
+     * screen instead of stacking under it.
+     *
+     * Hidden, never deleted: each message's text stays in dataset.raw (Copy still copies the
+     * whole turn), as a speech row of the expanded body, and in the turn_log payload.
+     *
+     * `data-empty` is re-derived here, not only on the first chunk: once a strip has text, an
+     * empty placeholder must not sit next to the visible message, and a strip whose segments
+     * all lost their text must show the placeholder again instead of an empty box.
+     */
+    showLastSegment(block) {
+        if (!block) return null;
+        const newest = this.lastSegmentOf(block);
+        for (const seg of Object.values(block.aiSeg || {})) {
+            if (seg && seg.wrapEl) seg.wrapEl.dataset.visible = (seg === newest) ? '1' : '0';
+        }
+        block.aiEl.dataset.empty = newest ? '0' : '1';
+        if (!newest) {
+            if (!block.aiEl.querySelector('.cycle-ai-empty')) {
+                const ph = document.createElement('div');
+                ph.className = 'cycle-ai-empty';
+                ph.textContent = 'Waiting for the AI\u2026';
+                block.aiEl.appendChild(ph);
+            }
+        }
+        return newest;
     },
 
     /**
@@ -640,6 +701,11 @@ const CycleShell = {
         // back. The tool rows above carry the same information in the expanded body.
         block.timerEl.textContent = _fmtSec(Number(p.elapsed_sec || 0));
         CycleBlock._renderSummary(block);
+        // A rebuilt turn is SETTLED: each loop keeps ONLY its own last message (2026-11-09
+        // rule), so a reload of a long run reads: my message, the turns block, that loop's
+        // last AI message - for every loop, not the whole history. Rebuilt oldest-first, so
+        // the newest loop with a message owns the live strip.
+        CycleBlock.refreshAiVisibility(convId);
         return block;
     },
 };
