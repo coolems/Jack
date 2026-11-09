@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "browser_screenshot",
-        "description": "Screenshot the Chrome window only (debug-mode browser, connected via CDP). Saves a PNG in working_root, draws a red circle on the cursor, and returns the window title, its screen position, the mouse position and the image data.",
+        "description": "Screenshot the Chrome window only (debug-mode browser, connected via CDP). Saves a PNG in .temp/screenshots/ of working_root (scratch policy: screenshots never land in the repo root), draws a red circle on the cursor, and returns the window title, its screen position, the mouse position and the image data.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -22,7 +22,7 @@ import base64
 import ctypes
 from ctypes import wintypes
 
-from ..utils import get_working_root, validate_filename
+from ..utils import get_working_root, validate_filename, SCRATCH_SCREENSHOTS_DIR
 
 logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 
@@ -189,8 +189,11 @@ async def browser_screenshot(filename: str = None) -> dict:
             filename += '.png'
 
         working_dir = get_working_root()
-        os.makedirs(working_dir, exist_ok=True)
-        filepath = os.path.normpath(os.path.join(working_dir, filename))
+        # SCRATCH POLICY (2026-11-09, user request): screenshots are scratch artifacts, so
+        # they land in <working_root>/.temp/screenshots/ - never in the working_root root.
+        shot_dir = os.path.normpath(os.path.join(working_dir, SCRATCH_SCREENSHOTS_DIR))
+        os.makedirs(shot_dir, exist_ok=True)
+        filepath = os.path.normpath(os.path.join(shot_dir, filename))
 
         # Final containment check -- belt and braces (realpath resolves symlinks/..)
         from ..utils import guard_path_inside_working_root

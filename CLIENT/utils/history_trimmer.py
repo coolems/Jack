@@ -23,7 +23,7 @@ NEW RULES:
        mid-run — is the AI's working context. Trimming may only eat history that
        sits BEFORE the loop boundary (the previous turns of the session). When the
        loop alone cannot fit, trimming reports "nothing removable" and the
-       context-guardian fires: the AI writes plan_<...>_continue.md and stops, and
+       context-guardian fires: the AI writes plan_<...>_continue.md (in .temp/plans/) and stops, and
        the NEXT loop starts from user input + AI output + that plan. Only after the
        guardian has spoken may a caller pass `allow_loop_trim=True` to shrink the
        loop (so the wrap-up answer itself has room).

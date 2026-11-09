@@ -8,8 +8,9 @@ UPDATED (2026-08-26):
     CURRENT chat turn, its in-memory base64 is used directly (the exact same bytes
     that ride on the user message for vision) instead of re-reading from disk.
   - Auto-save: when transcribing pixels that do not exist as a file yet (direct
-    base64 with no saved name), the image is saved into working_root under a clear
-    name and that name is reported in the result, so it can be referenced later.
+    base64 with no saved name), the image is saved into .temp/images/ under a clear
+    name and that name is reported in the result, so it can be referenced later
+    (scratch policy 2026-11-09: images never land in the working_root root).
 """
 
 __tool_description__ = {
@@ -26,7 +27,7 @@ __tool_description__ = {
                 },
                 "image_base64": {
                     "type": "string",
-                    "description": "Optional: raw base64-encoded image bytes (no data-URL prefix). When provided, these pixels are transcribed directly and no file is read from disk. If the image has no saved filename yet it is auto-saved into working_root and its name is reported in the result."
+                    "description": "Optional: raw base64-encoded image bytes (no data-URL prefix). When provided, these pixels are transcribed directly and no file is read from disk. If the image has no saved filename yet it is auto-saved into .temp/images/ and its name is reported in the result."
                 }
             },
             "required": []
@@ -38,7 +39,7 @@ import logging
 
 from config import OCR_TIMEOUT
 import base64
-from ..utils import find_file, is_image_file
+from ..utils import find_file, is_image_file, SCRATCH_IMAGES_DIR, locate_scratch_image
 
 logger = logging.getLogger("COOLEMS.Tools.Vision")
 
@@ -56,16 +57,22 @@ def _looks_like_base64(data: str) -> bool:
 
 
 def _auto_save_name() -> str:
-    """Build a unique auto-save filename for pixels that have no saved name yet."""
+    """Build a unique auto-save filename for pixels that have no saved name yet.
+
+    SCRATCH POLICY (2026-11-09, user request): the auto-save lands in
+    <working_root>/.temp/images/, never in the working_root root.
+    """
     import os
     from datetime import datetime
+    from ..utils import SCRATCH_IMAGES_DIR
 
     root = get_working_root_safe()
+    img_dir = os.path.normpath(os.path.join(root, SCRATCH_IMAGES_DIR))
     base_name = "transcribed_image_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".png"
-    candidate = os.path.join(root, base_name)
+    candidate = os.path.join(img_dir, base_name)
     counter = 1
     while os.path.exists(candidate):
-        candidate = os.path.join(root, f"{base_name[:-4]}_{counter}.png")
+        candidate = os.path.join(img_dir, f"{base_name[:-4]}_{counter}.png")
         counter += 1
     return os.path.basename(candidate)
 
@@ -114,6 +121,10 @@ def transcribe_image(filename: str = "", image_base64: str = "") -> str:
                     filepath = find_file(filename)
                 except Exception as e:
                     return f"Error: Could not search for '{filename}': {e}"
+                if not filepath:
+                    # SCRATCH FALLBACK (2026-11-09): a bare image name usually lives in
+                    # .temp/images or .temp/screenshots now, not at the working_root root.
+                    filepath = locate_scratch_image(filename)
                 if not filepath or not is_image_file(filepath):
                     return f"Error: Image file not found (direct pixels were provided for an unknown name): {filename}"
 
@@ -124,11 +135,14 @@ def transcribe_image(filename: str = "", image_base64: str = "") -> str:
                 except Exception as e:
                     return f"Error: Cannot determine working_root to save the image: {e}"
                 saved_filename = _auto_save_name()
-                target_path = os.path.join(root, saved_filename)
+                # SCRATCH POLICY (2026-11-09): auto-saved OCR images go to .temp/images/.
+                img_dir = os.path.normpath(os.path.join(root, SCRATCH_IMAGES_DIR))
+                os.makedirs(img_dir, exist_ok=True)
+                target_path = os.path.join(img_dir, saved_filename)
                 with open(target_path, "wb") as f:
                     f.write(base64.b64decode(image_base64))
-                source_note = (f"[Image auto-saved to working_root as '{saved_filename}' - use this exact name to refer to it later.]\n\n")
-                logger.info(f"[OCR] Auto-saved direct-base64 image as {saved_filename}")
+                source_note = (f"[Image auto-saved to '{SCRATCH_IMAGES_DIR}/{saved_filename}' - use this exact name to refer to it later.]\n\n")
+                logger.info(f"[OCR] Auto-saved direct-base64 image as {target_path}")
 
         else:
             # ---- FILE PATH: resolve the image inside working_root ----
@@ -136,6 +150,11 @@ def transcribe_image(filename: str = "", image_base64: str = "") -> str:
                 filepath = find_file(filename)
             except Exception as e:
                 return f"Error: Could not search for '{filename}': {e}"
+
+            if not filepath:
+                # SCRATCH FALLBACK (2026-11-09): a bare image name usually lives in
+                # .temp/images or .temp/screenshots now, not at the working_root root.
+                filepath = locate_scratch_image(filename)
 
             if not filepath:
                 # (2026-08-26 per-turn bridge): the file may be an image attached to

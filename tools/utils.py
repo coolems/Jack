@@ -241,6 +241,119 @@ def set_working_root(path) -> None:
     set_current_working_root(resolved)
 
 # ---------------------------------------------------------------------------
+# SCRATCH-FILE POLICY (2026-11-09, user request)
+#
+# The working_root TOP level is repo content. Nothing temporary may land there:
+#   * plan files            -> <working_root>/.temp/plans/
+#   * scratch/diagnostic    -> <working_root>/.temp/            (tmp_, temp_, scratch_, *.tmp)
+#   * generated images      -> <working_root>/.temp/images/
+#   * desktop/browser shots -> <working_root>/.temp/screenshots/
+#   * capped tool output    -> <working_root>/.temp/spill/      (search_tools/_search_core)
+#   * python_exec temp/logs -> <working_root>/.temp/            (exec_tools pins TEMP/TMPDIR)
+#
+# This section is the SINGLE SOURCE OF TRUTH for that classification. write_file
+# redirects a scratch/plan name written at the root; the readers/editors fall back
+# to the same home so a bare name ('plan_x.md') still resolves. Explicit `path`
+# arguments always win - the redirect only applies to root-level writes.
+# ---------------------------------------------------------------------------
+
+TEMP_DIR_NAME: str = ".temp"
+PLANS_DIR_NAME: str = "plans"
+SCRATCH_IMAGES_DIR: str = ".temp/images"
+SCRATCH_SCREENSHOTS_DIR: str = ".temp/screenshots"
+
+PLAN_PREFIX: str = "plan_"
+SCRATCH_PREFIXES: tuple = ("tmp_", "temp_", "scratch_")
+SCRATCH_SUFFIXES: tuple = (".tmp",)
+
+
+def _bare_name(filename) -> str:
+    """Bare basename of *filename* (''), tolerant of None / a path being passed."""
+    return os.path.basename(str(filename or "").strip())
+
+
+def is_plan_filename(filename) -> bool:
+    """True for a plan file name: 'plan_<stamp>.md' or 'plan_<stamp>_continue.md'.
+
+    Only .md counts - 'plan_notes.txt' is a normal file, and a plan name nested in a
+    path is matched on its basename.
+    """
+    name = _bare_name(filename)
+    return name.startswith(PLAN_PREFIX) and name.lower().endswith(".md")
+
+
+def is_scratch_filename(filename) -> bool:
+    """True for a temporary/scratch name: tmp_, temp_, scratch_ prefixes or .tmp suffix.
+
+    Deliberately narrow so real repo files are never redirected: 'temp.py' is a module,
+    'temp_out.json' is scratch.
+    """
+    name = _bare_name(filename).lower()
+    if not name:
+        return False
+    if name.endswith(SCRATCH_SUFFIXES):
+        return True
+    return name.startswith(SCRATCH_PREFIXES)
+
+
+def temp_dir(working_root: Optional[str] = None) -> str:
+    """<working_root>/.temp - the scratch home (created on demand by callers).
+
+    The root is used as given (get_working_root() already returns a normalized
+    absolute path); no abspath() here so a caller-supplied root never gets
+    re-rooted against the process CWD.
+    """
+    root = working_root or get_working_root()
+    return os.path.join(root, TEMP_DIR_NAME)
+
+
+def plans_dir(working_root: Optional[str] = None) -> str:
+    """<working_root>/.temp/plans - where every plan file belongs."""
+    return os.path.join(temp_dir(working_root), PLANS_DIR_NAME)
+
+
+def scratch_dir_for(filename, working_root: Optional[str] = None) -> Optional[str]:
+    """Directory a scratch file belongs in, or None when it is ordinary repo content."""
+    if is_plan_filename(filename):
+        return plans_dir(working_root)
+    if is_scratch_filename(filename):
+        return temp_dir(working_root)
+    return None
+
+
+def locate_scratch_file(filename, working_root: Optional[str] = None) -> Optional[str]:
+    """Find a bare plan/scratch name inside its .temp home, or None.
+
+    Lets read_file/edit_file/delete_file resolve 'plan_x.md' after write_file
+    redirected it. Never returns a path outside working_root.
+    """
+    home = scratch_dir_for(filename, working_root)
+    if not home:
+        return None
+    candidate = os.path.normpath(os.path.join(home, _bare_name(filename)))
+    return candidate if os.path.isfile(candidate) else None
+
+
+def locate_scratch_image(filename, working_root: Optional[str] = None) -> Optional[str]:
+    """Find a bare image name in .temp/images then .temp/screenshots, or None."""
+    root = working_root or get_working_root()
+    name = _bare_name(filename)
+    if not name:
+        return None
+    for sub in (SCRATCH_IMAGES_DIR, SCRATCH_SCREENSHOTS_DIR):
+        candidate = os.path.normpath(os.path.join(root, sub, name))
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def is_root_level_path(path: str) -> bool:
+    """True when *path* means the working_root itself ('' / '.' / 'root')."""
+    cleaned = (path or "").strip()
+    return not cleaned or cleaned == "." or cleaned.lower() == "root"
+
+
+# ---------------------------------------------------------------------------
 # User role store (ContextVar + legacy global)
 #
 # FIX (2026-05-28): Added to resolve admin role correctly in python_exec tool.

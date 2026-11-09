@@ -312,7 +312,7 @@ async def run_react_loop(
           ever removed, oldest first. An assistant message with `tool_calls` can
           therefore never be separated from its tool results.
         - When the loop alone cannot fit the budget, the trim is a no-op and the
-          context guardian fires: the AI writes plan_<...>_continue.md and stops, so
+          context guardian fires: the AI writes plan_<...>_continue.md (in .temp/plans/) and stops, so
           the NEXT loop resumes from user input + AI output + that plan. Only after
           the guardian has spoken may a trim shrink the loop (allow_loop_trim=True),
           to give the wrap-up answer room. Per-message token counts are cached on the
@@ -681,7 +681,7 @@ async def run_react_loop(
             # described - the budget is held by UNREMOVABLE material (system prompt + protected
             # current user prompt + the CURRENT LOOP, which is the AI's working context and is
             # never trimmed). The only correct response is a continuation plan: finish the work
-            # step, write plan_<...>_continue.md, stop; the NEXT loop resumes from user input +
+            # step, write plan_<...>_continue.md (in .temp/plans/), stop; the NEXT loop resumes from user input +
             # AI output + that plan.
             # A trim that discards half the context is NOT a stop condition: with the LOOP RULE
             # it can only eat PREVIOUS turns, which is legitimate trimming - the trim log already
@@ -729,7 +729,7 @@ async def run_react_loop(
                             f"[SYSTEM NOTICE] The context window is at {pct}% ({current_tokens} tokens sent, "
                             f"{left} left of {window_tokens}) and {reason}. "
                             "You MUST now finish the current work step and STOP calling tools. "
-                            "Write a plan file (plan_<YYYYMMDD_HHMM>_continue.md in the working folder) that captures: "
+                            "Write a plan file (plan_<YYYYMMDD_HHMM>_continue.md - write_file with path='' puts it in .temp/plans/) that captures: "
                             "(1) what is already DONE, (2) the exact remaining steps to finish the task, and "
                             "(3) any context/decisions needed to continue in the next work loop. "
                             "Then end your response with 'Agentic AI: TASK DONE' so we can resume from that plan later."
@@ -1236,7 +1236,7 @@ async def run_react_loop(
                                 f"{max(0, window_tokens - current_tokens)} still free). "
                                 "If the task is finished: provide your final answer and end with "
                                 "'Agentic AI: TASK DONE'. If it is NOT finished: do NOT claim completion - write a "
-                                "plan file (plan_<YYYYMMDD_HHMM>_continue.md in the working folder) naming what is "
+                                "plan file (plan_<YYYYMMDD_HHMM>_continue.md - write_file with path='' puts it in .temp/plans/) naming what is "
                                 "done and the exact remaining steps, then end with 'Agentic AI: TASK DONE' so the "
                                 "next run can resume from that plan."
                             )

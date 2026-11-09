@@ -21,7 +21,7 @@ __tool_description__ = {
 import logging
 import base64
 
-from ..utils import find_file, is_image_file
+from ..utils import find_file, is_image_file, locate_scratch_image
 
 logger = logging.getLogger("COOLEMS.Tools.Vision")
 
@@ -38,6 +38,10 @@ def view_image(filename: str) -> dict:
     logger.info(f"[VISION] Loading image: {filename}")
     
     filepath = find_file(filename)
+    if not filepath:
+        # SCRATCH FALLBACK (2026-11-09): a bare image name usually lives in
+        # .temp/images or .temp/screenshots now, not at the working_root root.
+        filepath = locate_scratch_image(filename)
     if not filepath:
         return {"status": "error",
             "message": f"Image file not found: {filename}"}

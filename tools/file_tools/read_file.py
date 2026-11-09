@@ -2,7 +2,8 @@
 
 import os
 
-from tools.utils import get_working_root, resolve_path_to_dir, validate_filename, guard_path_inside_working_root
+from tools.utils import (get_working_root, resolve_path_to_dir, validate_filename,
+                         guard_path_inside_working_root, locate_scratch_file)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -61,7 +62,14 @@ def read_file(filename: str, path: str = "") -> str:
         guard_path_inside_working_root(filepath, effective_working, label="Resolved file path")
 
         if not os.path.isfile(filepath):
-            return f"Error: File not found: {filepath}"
+            # SCRATCH FALLBACK (2026-11-09): write_file redirects a bare plan/scratch name
+            # out of the working_root top level, so a bare read of that name must find it
+            # in its .temp home (.temp/plans/ for plans, .temp/ for scratch).
+            scratch = locate_scratch_file(filename, effective_working)
+            if scratch:
+                filepath = scratch
+            else:
+                return f"Error: File not found: {filepath}"
 
         # BINARY read (2026-09-22 byte-exact fix): text mode converts CRLF -> \n and
         # would change the bytes returned to the model. Decode once at the edge;

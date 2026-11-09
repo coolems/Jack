@@ -93,7 +93,7 @@ async def agentic_mode(
     - At 95% of the history budget a console/UI warning fires once per run ("trimming is
       about to engage"). At AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION of the FULL context
       window a context-guardian [SYSTEM NOTICE] tells the AI to finish its current work step,
-      write a plan_<...>_continue.md file with what is done / remaining so we can resume in
+      write a plan_<...>_continue.md file (in .temp/plans/) with what is done / remaining so we can resume in
       the next work loop, and end with TASK DONE. One notice per crossing; a trim that brings
       usage back under the threshold re-arms it. The notice quotes sent/left against the same
       window the UI status bar shows, so guardian and UI can never disagree.

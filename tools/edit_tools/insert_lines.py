@@ -52,6 +52,7 @@ from ..utils import (
     normalize_line_endings,
     resolve_path_to_dir,
     validate_filename,
+    locate_scratch_file,
 )
 from ._edit_core import changed_region, copy_backup, count_lines, insert_text
 
@@ -106,8 +107,14 @@ def insert_lines(filename: str, after_line: int, text: str, path: str = "") -> s
         guard_path_inside_working_root(filepath, effective_working, label="Resolved file path")
 
         if not os.path.isfile(filepath):
-            return (f"Error: File not found: {filepath} - use write_file to create it, "
-                    f"or list_files to confirm the path.")
+            # SCRATCH FALLBACK (2026-11-09): a bare plan/scratch name lives in its .temp
+            # home (write_file redirects it out of the working_root top level).
+            scratch = locate_scratch_file(filename, effective_working)
+            if scratch:
+                filepath = scratch
+            else:
+                return (f"Error: File not found: {filepath} - use write_file to create it, "
+                        f"or list_files to confirm the path.")
         if os.path.getsize(filepath) > MAX_FILE_SIZE:
             return f"Error: File too large to edit ({os.path.getsize(filepath)} bytes)."
 

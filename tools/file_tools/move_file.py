@@ -36,7 +36,8 @@ import logging
 import os
 import shutil
 
-from ..utils import get_working_root, resolve_path_to_dir, validate_filename, guard_path_inside_working_root
+from ..utils import (get_working_root, resolve_path_to_dir, validate_filename,
+                     guard_path_inside_working_root, locate_scratch_file)
 
 logger = logging.getLogger("COOLEMS.Tools.Files")
 
@@ -84,7 +85,13 @@ def move_file(source_filename: str, destination_path: str, source_path: str = ""
         guard_path_inside_working_root(source_full, effective_working, label="Resolved source file path")
 
         if not os.path.exists(source_full):
-            return f"Error: Source file not found: {source_full}"
+            # SCRATCH FALLBACK (2026-11-09): a bare plan/scratch name lives in its .temp
+            # home (write_file redirects it out of the working_root top level).
+            scratch = locate_scratch_file(source_filename, effective_working)
+            if scratch:
+                source_full = scratch
+            else:
+                return f"Error: Source file not found: {source_full}"
 
         # Use the secure path resolver for DESTINATION - locks inside working_root
         dest_dir = resolve_path_to_dir(effective_working, destination_path)

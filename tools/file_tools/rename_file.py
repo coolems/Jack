@@ -30,7 +30,8 @@ __tool_description__ = {
 import logging
 import os
 
-from ..utils import get_working_root, resolve_path_to_dir, validate_filename, guard_path_inside_working_root
+from ..utils import (get_working_root, resolve_path_to_dir, validate_filename,
+                     guard_path_inside_working_root, locate_scratch_file)
 
 logger = logging.getLogger("COOLEMS.Tools.Files")
 
@@ -75,7 +76,15 @@ def rename_file(old_filename: str, new_filename: str, path: str = "") -> str:
         guard_path_inside_working_root(old_full, effective_working, label="Resolved old file path")
 
         if not os.path.exists(old_full):
-            return f"Error: File not found: {old_full}"
+            # SCRATCH FALLBACK (2026-11-09): a bare plan/scratch name lives in its .temp
+            # home (write_file redirects it out of the working_root top level), so rename
+            # it inside that home rather than at the working_root root.
+            scratch = locate_scratch_file(old_filename, effective_working)
+            if scratch:
+                directory = os.path.dirname(scratch)
+                old_full = scratch
+            else:
+                return f"Error: File not found: {old_full}"
 
         # Build new full path
         new_full = os.path.normpath(os.path.join(directory, new_filename))

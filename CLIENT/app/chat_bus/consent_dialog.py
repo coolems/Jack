@@ -112,7 +112,7 @@ def explain_instruction(kind: str, title: str) -> str:
         "USER ASKED FOR AN EXPLANATION of this pending consent request ("
         f"{title}; kind: {kind}). Nothing was allowed or denied - the action did NOT happen.\n"
         "Do exactly this, in order:\n"
-        "1. Create/update a continuation plan file (plan_<UTC timestamp>.md) covering what has been done so far and what remains (planning protocol).\n"
+        "1. Create/update a continuation plan file (plan_<UTC timestamp>.md - write_file with path='' puts it in .temp/plans/) covering what has been done so far and what remains (planning protocol).\n"
         "2. Reply to the user in EXACTLY two parts:\n"
         "   - UPPER part: one short paragraph - what this request is and why allowing it matters for finishing the task.\n"
         "   - LOWER line, exactly formatted: `for continue plan <plan_name> — just say continue`\n"

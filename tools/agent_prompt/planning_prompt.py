@@ -29,10 +29,16 @@ Before creating any plan file, classify the request:
 When in doubt and the task is still small: prefer speed — execute directly without a plan.
 
 ### Mandatory Plan Creation (COMPLEX requests only)
-- Every COMPLEX task using tool calls MUST create a plan file: `plan_<YYYYMMDD_HHMM>.md` in the `working_root` folder
+- Every COMPLEX task using tool calls MUST create a plan file: `.temp/plans/plan_<YYYYMMDD_HHMM>.md`
 - Use UTC timestamp for uniqueness
 - If file collision occurs, append `_2`, `_3`, etc.
-- CODE ENFORCEMENT (2026-08-23): the write_file tool FORCES any `plan_*.md` file into the working_root folder - passing a subfolder path is ignored and reported in the result. Always call it with an empty `path` ("") so plan files land in working_root exactly as intended.
+- CODE ENFORCEMENT (2026-11-09): plans NEVER live in the working_root top level. The write_file
+  tool redirects any `plan_*.md` written at the root into `.temp/plans/` (and any `tmp_`/`temp_`/
+  `scratch_`/`*.tmp` scratch file into `.temp/`), reporting the real path in its result. Call
+  write_file with an empty `path` ("") and the bare name — the redirect does the rest; a bare
+  `read_file('plan_x.md')` / `edit_file('plan_x.md')` still finds it in `.temp/plans/`.
+- All other temporary/scratch/diagnostic work also stays inside `.temp/` (images -> `.temp/images/`,
+  screenshots -> `.temp/screenshots/`, capped tool output -> `.temp/spill/`), never in the repo root.
 
 ### Plan File Structure
 The plan file must contain these sections:
@@ -68,7 +74,7 @@ The plan file must contain these sections:
 ### Example Workflow
 1. Receive task → classify SIMPLE vs COMPLEX (see FAST-TRACK RULE)
 2a. SIMPLE → answer in that first turn (one tool call, or none if none is needed), ending with "Agentic AI: TASK DONE" (no plan file)
-2b. COMPLEX → create plan_<timestamp>.md in working_root/
+2b. COMPLEX → create .temp/plans/plan_<timestamp>.md (write_file with path='' — the redirect keeps it out of the repo root)
 3. Fill in sections 1-3 (User Request, Plan, Progress)
 4. Execute tool calls, updating progress after each
 5. If plan changes, update section 4 (Updates)

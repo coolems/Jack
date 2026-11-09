@@ -100,7 +100,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "generate_image",
-        "description": "Generate an image from a text prompt with the GPU-tier diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Saves a PNG in working_root and returns the image data. width/height default to the user's Settings > Runtime resolution (600x400), snap to tier-safe multiples and are clamped to the tier's pixel budget - an oversized request renders at the clamped size and is LANCZOS-upscaled to the exact dimensions, so 4K works on every tier.",
+        "description": "Generate an image from a text prompt with the GPU-tier diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Saves a PNG in .temp/images/ of working_root (scratch policy: generated images never land in the repo root) and returns the image data. width/height default to the user's Settings > Runtime resolution (600x400), snap to tier-safe multiples and are clamped to the tier's pixel budget - an oversized request renders at the clamped size and is LANCZOS-upscaled to the exact dimensions, so 4K works on every tier.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -476,11 +476,17 @@ def _maybe_upscale(task, image):
 
 
 def _save_and_encode(task, image):
-    """Save *image* inside working_root and return the ok-result dict."""
+    """Save *image* in the scratch image folder and return the ok-result dict.
+
+    SCRATCH POLICY (2026-11-09, user request): generated images are scratch artifacts,
+    so they land in <working_root>/.temp/images/ - never in the working_root top level.
+    The path stays inside working_root (containment check below still applies).
+    """
     working_dir = _get_working_dir(task)
     safe_name = _validate_filename(task.get("output_filename", "generated_image"))
-    os.makedirs(working_dir, exist_ok=True)
-    filepath = os.path.normpath(os.path.join(working_dir, f"{safe_name}.png"))
+    output_dir = os.path.join(working_dir, ".temp", "images")
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.normpath(os.path.join(output_dir, f"{safe_name}.png"))
 
     # SECURITY (2026-07-15): final containment check -- the output file must
     # stay inside working_root (realpath resolves symlinks/..).
@@ -2591,7 +2597,7 @@ def generate_image(
     Returns dict with status/filename/file_path/image_base64/width/height/message.
     """
     try:
-        from ..utils import get_working_root, is_image_file, validate_filename
+        from ..utils import get_working_root, is_image_file, validate_filename, locate_scratch_image
         from ..path_guard import validate_file_access
         # Generic self-unpacking bootstrap (shared module tools.tool_bootstrap):
         # rewritten by the loader to 'ensure_tool_runtime = tool_bootstrap.ensure_tool_runtime'.
@@ -2765,23 +2771,28 @@ def generate_image(
 
         # Determine mode - SECURE: validate reference_image inside working_root before use.
         if reference_image:
+            # SCRATCH FALLBACK (2026-11-09): a bare image name is usually one we generated
+            # or captured, which now lives in .temp/images or .temp/screenshots.
             try:
                 validated_ref = validate_file_access(
                     reference_image,
                     effective_working,
                     label="Reference image"
                 )
-                if not is_image_file(validated_ref):
-                    logger.warning(f"  Reference path is not a valid image: {validated_ref}")
-                    mode = "text2img"
-                else:
-                    mode = "img2img"
-                    task["reference_image"] = validated_ref
-                    task["strength"] = strength
-                    logger.info(f"  Mode: image-to-image with reference: {validated_ref}")
             except (ValueError, FileNotFoundError) as e:
-                logger.warning(f"  Reference image rejected by path guard: {e}")
+                validated_ref = locate_scratch_image(reference_image, effective_working)
+                if validated_ref:
+                    logger.info(f"  Reference image found in the scratch folder: {validated_ref}")
+                else:
+                    logger.warning(f"  Reference image rejected by path guard: {e}")
+            if not validated_ref or not is_image_file(validated_ref):
+                logger.warning(f"  Reference path is not a valid image: {validated_ref}")
                 mode = "text2img"
+            else:
+                mode = "img2img"
+                task["reference_image"] = validated_ref
+                task["strength"] = strength
+                logger.info(f"  Mode: image-to-image with reference: {validated_ref}")
         else:
             mode = "text2img"
 
