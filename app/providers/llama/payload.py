@@ -17,6 +17,70 @@ from config import (
 )
 
 
+def _message_text_of(m: Dict) -> str:
+    """Best-effort plain-text view of a message's content (str or vision parts list)."""
+    content = m.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(str(part.get("text", "")))
+        return "".join(parts)
+    return str(content or "")
+
+
+def _coalesce_system_messages(messages: List[Dict]) -> List[Dict]:
+    """Merge ALL system-role messages into ONE leading block (template-safe shape).
+
+    Strict chat templates baked into GGUF files (Qwen3.x, Llama 3/4, Gemma 3) raise
+    when a system message is not at position 0 or appears more than once. The client
+    sends [system(persona), system(turn-boundary marker), user(...)] which Qwen3.6
+    tolerates but Qwen3.5 rejects with 'System message must be at the beginning' -
+    every request, even a bare "hi", fails at template render time (HTTP 500).
+
+    A single leading system block is valid for EVERY template: lenient ones
+    (Qwen2.x, Mistral) accept it identically. So this runs unconditionally with no
+    per-model branching. Text content is preserved verbatim - only the container
+    changes. Non-system messages keep their exact order and keys.
+
+    Returns the original list unchanged when there is exactly one system message at
+    index 0 (the canonical shape - even if blank) or when no non-blank system text
+    exists to merge. Blank entries are only dropped on the merge path, where keeping
+    them would create a second system message.
+    """
+    if not messages:
+        return messages
+
+    def _is_system(m) -> bool:
+        return isinstance(m, dict) and str(m.get("role", "")).lower() == "system"
+
+    system_msgs = [m for m in messages if _is_system(m)]
+
+    # Already canonical: exactly one system message, sitting at index 0 - even a blank
+    # one is still ONE leading system, valid for every template.
+    if len(system_msgs) == 1 and messages[0] is system_msgs[0]:
+        return messages
+
+    system_texts = []
+    rest = []
+    for m in messages:
+        if _is_system(m):
+            text = _message_text_of(m)
+            if text.strip():
+                system_texts.append(text)
+            # Empty/whitespace-only system messages are dropped - no template can render them.
+        else:
+            rest.append(m)
+
+    if not system_texts:
+        return messages  # only empty system entries existed - leave the list untouched
+
+    merged = "\n\n".join(system_texts)
+    return [{"role": "system", "content": merged}] + rest
+
+
 def build_llama_payload(
     model: str,
     messages: List[Dict],
@@ -65,6 +129,12 @@ def build_llama_payload(
         {k: v for k, v in m.items() if k not in _INTERNAL_KEYS} if isinstance(m, dict) else m
         for m in (messages or [])
     ]
+
+    # TEMPLATE-SAFE SHAPE (2026-11): merge every system message into ONE leading block.
+    # Strict GGUF templates (Qwen3.x, Llama 3/4, Gemma 3) raise 'System message must be
+    # at the beginning' on our [system(persona), system(turn-boundary), user(...)] list;
+    # a single leading system block is valid for every template, so this is unconditional.
+    messages = _coalesce_system_messages(messages)
 
     payload: Dict = {
         "model": model,
