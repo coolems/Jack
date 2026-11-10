@@ -94,10 +94,23 @@
         // window (live running/pending rows always count).
         const STALE_DONE_MS = 90 * 1000;
 
-        function _rowIsFresh(stage, updatedAtMs) {
+        function _rowIsFresh(stage, updatedAtMs, generation) {
             if (!stage || !stage.status) return false;
             if (stage.status === 'running' || stage.status === 'pending') return true; // live work - always shown
-            const age = updatedAtMs ? Math.max(0, Date.now() - Number(updatedAtMs)) : Infinity;
+            // (2026-11-10) Per-row ownership. The old rule aged a terminal row by the FILE's
+            // updated_at, so while a live model download stamps the file every 0.5 s a row
+            // left by an EARLIER run looked fresh - a previous attempt's 'model: error'
+            // rendered as this run's status ('Setup / Downloads — generate_tool: failed'
+            // next to numbers that were actually progressing), and a pip row from an earlier
+            // invocation showed as 'packages installed' on a run that installed nothing.
+            // Rows now carry '_gen' = the setup generation that wrote them. ONE tool
+            // invocation bumps the generation twice (venv/pip bootstrap, then the tool's own
+            // model pre-flight), so rows from generation-1 are this run's too; anything older
+            // belongs to a previous invocation. Rows without '_gen' keep the file-age rule.
+            if (typeof stage._gen === 'number' && generation > 0) return stage._gen >= generation - 1;
+            const rowAt = Number(stage._at);
+            const refMs = rowAt > 0 ? rowAt * 1000 : updatedAtMs;
+            const age = refMs ? Math.max(0, Date.now() - refMs) : Infinity;
             return age <= STALE_DONE_MS;
         }
 
@@ -109,9 +122,10 @@
 
         function _freshStages(stages, data) {
             const updatedAtMs = _updatedMs(data);
+            const generation = data ? Number(data.generation) || 0 : 0;
             const out = {};
             Object.keys(stages || {}).forEach(k => {
-                if (_rowIsFresh((stages || {})[k], updatedAtMs)) out[k] = stages[k];
+                if (_rowIsFresh((stages || {})[k], updatedAtMs, generation)) out[k] = stages[k];
             });
             return out;
         }

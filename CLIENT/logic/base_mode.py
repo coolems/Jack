@@ -19,6 +19,7 @@ import time
 
 from config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE
 from app.providers import BaseProvider
+from .turn_boundary import boundary_message, mark_consumed_events
 
 
 logger = logging.getLogger("COOLEMS.Logic.Base")
@@ -128,6 +129,16 @@ class BaseModeConfig:
     # is recorded on it and streamed as `cycle_*` frames, so the UI renders ONE collapsed
     # block per turn instead of a flat chat. None for callers without a bus (tests, CLI).
     cycle: Any = None
+
+    # (2026-12 runtime notice lane) Per-turn source of RUNTIME notices: a delegated
+    # subagent settling, a background job settling, or the user answering a question the
+    # AI asked. `notice_source` is a ChatChannel-like object exposing
+    # has_unapplied_notice() / drain_notice(); `on_notice_applied` is an async callback
+    # that persists a notice only after the loop actually injected it. Both are None for
+    # callers without a bus. Deliberately separate from steer_source: a notice is runtime
+    # information, never user speech, and it never defers a completion.
+    notice_source: Any = None
+    on_notice_applied: Any = None
     
 # (2026-10-11) FINAL TURN STATS HYGIENE: react_loop.py splices a "Loop stats:" line into the
 # persisted answer right above 'Agentic AI: TASK DONE' and the UI renders it from that text.
@@ -205,12 +216,24 @@ def build_messages(
         remove it - see utils/history_trimmer.safe_trim_history().
     """
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(conversation_history[:-1])  # Exclude last user message from history
+    # (2026-11-30) SHALLOW COPY, not extend. The old `extend` put the caller's OWN dicts in
+    # the assembled list, so any prompt-assembly edit (stats strip, consumed-event annotation)
+    # mutated the stored history rows - the next turn would then read its own rewritten text
+    # as the original. Copies keep the list independent; the dicts' token cache rides along.
+    messages.extend({**m} if isinstance(m, dict) else m for m in conversation_history[:-1])
 
     # (2026-10-11) Keep past turns' spliced "Loop stats:" lines out of the model's view -
     # see strip_turn_stats_from_messages(). Without this the model copies an old line into
     # its new answer and a bubble ends up with two stats lines.
     strip_turn_stats_from_messages(messages)
+
+    # (2026-11-30) OLD INSTRUCTIONS ARE NOISE. A mid-run steer or stop request is persisted
+    # WITH its header, so the next turn's prompt still carries "STOP the work now" or
+    # "CONTINUE the original task" from a turn that already ended - and the model acts on it
+    # as if it were the current job. Replace those headers with a consumed note: the user's
+    # own words stay as background (with provenance), the imperative instruction is gone.
+    # History rows are never mutated - this edits the assembled list only.
+    mark_consumed_events(messages)
 
     current_message = {"role": "user", "content": user_message_content}
     # `_protect` marks the CURRENT USER PROMPT for the atomic history trimmer:
@@ -219,6 +242,11 @@ def build_messages(
     current_message["_protect"] = True
     if image_data:
         current_message["images"] = image_data
+    # The boundary line sits immediately BEFORE the current prompt, every turn, so the
+    # model always knows where background ends and the task begins. System role: it is
+    # the runtime speaking, not user speech. Also `_protect` (a trim must not drop it)
+    # and `_loop_marker` (so _loop_boundary still keys on the user prompt, not this line).
+    messages.append(boundary_message())
     messages.append(current_message)
 
     return messages

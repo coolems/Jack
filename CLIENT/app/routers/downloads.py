@@ -54,8 +54,15 @@ def _public_stage(stage: dict) -> dict:
     (`_repo`, `_upd`, `_seen`, `_seq`, `_repo_t0`, ...). They are not needed by the
     browser and would ship several KB of noise per poll - drop every key beginning with
     an underscore, at stage level and inside each file row.
+
+    EXCEPT the two ownership markers (2026-11-10): `_gen` (which setup run wrote this
+    row) and `_at` (when it wrote it). The UI needs them to tell a terminal row from an
+    EARLIER run apart from this run's - otherwise a previous attempt's 'model: error'
+    renders as 'failed' while a live download is progressing.
     """
-    pub = {k: v for k, v in stage.items() if not str(k).startswith("_")}
+    keep = {"_gen", "_at"}
+    pub = {k: v for k, v in stage.items()
+           if not str(k).startswith("_") or k in keep}
     files = pub.get("files")
     if isinstance(files, dict):
         pub["files"] = {

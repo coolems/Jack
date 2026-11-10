@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "MCP (Model Context Protocol) servers the CLIENT may expose as tools.",
+    "Copy this file to mcp_servers.json and edit it - mcp_servers.json is seeded from",
+    "this template at startup if missing and is NEVER overwritten.",
+    "",
+    "NOTHING IS ENABLED BY DEFAULT. An MCP server is an external process or a remote",
+    "endpoint the AI can drive, so 'enabled' is a human decision made in this file, and",
+    "the first use still asks a consent card (stdio -> subprocess consent, http -> url consent).",
+    "",
+    "Entry fields:",
+    "  name        tool-name namespace: tools appear as mcp__<name>__<tool>. Letters/digits/_/.-",
+    "  enabled     false = never started, never in the schema.",
+    "  transport   'stdio' (command + args on this machine) or 'http' (url).",
+    "  command/args  program + arguments for stdio.",
+    "  env         extra environment variables (merged over the process env).",
+    "  cwd         working directory for the server process (optional).",
+    "  url         endpoint for http transport.",
+    "  roles       which CLIENT roles may use this server. '*' = any. An unknown role adds nothing.",
+    "  timeout_sec per-request wall clock (default 30, clamped 1..300)."
+  ],
+  "servers": [
+    {
+      "name": "example-stdio",
+      "enabled": false,
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Change\\Me\\folder"],
+      "env": {},
+      "cwd": "",
+      "roles": ["*"],
+      "timeout_sec": 30
+    },
+    {
+      "name": "example-http",
+      "enabled": false,
+      "transport": "http",
+      "url": "http://127.0.0.1:3000/mcp",
+      "roles": ["admin"],
+      "timeout_sec": 30
+    }
+  ]
+}

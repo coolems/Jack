@@ -613,3 +613,66 @@
     .cycle-summary { font-size: 12px; }
     .cycle-image-thumb { max-width: 90px; }
 }
+
+/* ---- runtime entities (2026-12 subagents / background jobs / questions) ----
+   A delegated child and a background job are rows of the turn block, like tools. They had
+   no rules at all, so their name/status/meta rendered as unstyled text and the child's
+   streamed output looked like part of the answer. Kept visually quieter than tool rows:
+   delegated work is context, not the turn's own actions. */
+.cycle-child-name, .cycle-job-name {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--text-secondary, #9aa4b2);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.cycle-child-label, .cycle-runtime-label {
+    font-family: inherit;
+    font-weight: 400;
+    color: var(--text-muted, #7d8797);
+    margin-left: 6px;
+}
+.cycle-child-status, .cycle-job-status {
+    font-size: 12px;
+    color: var(--accent, #4f8cff);
+    flex-shrink: 0;
+}
+.cycle-row-child[data-child-status="settled"] .cycle-child-status,
+.cycle-row-child[data-child-status="completed"] .cycle-child-status,
+.cycle-row-job[data-job-status="settled"] .cycle-job-status,
+.cycle-row-job[data-job-status="done"] .cycle-job-status { color: var(--success, #2ecc71); }
+.cycle-row-child[data-child-status="aborted"] .cycle-child-status,
+.cycle-row-child[data-child-status="error"] .cycle-child-status,
+.cycle-row-job[data-job-status="killed"] .cycle-job-status,
+.cycle-row-job[data-job-status="failed"] .cycle-job-status { color: var(--danger, #e5534b); }
+
+.cycle-runtime-meta {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-muted, #7d8797);
+    margin-top: 4px;
+}
+.cycle-runtime-text {
+    font-size: 12px;
+    color: var(--text-secondary, #9aa4b2);
+    white-space: pre-wrap;
+    margin-top: 4px;
+}
+
+/* The child's own streamed lines (cycle_child_output). They belong to the CHILD's row,
+   never to the parent's answer strip - so they are visibly quieter than answer text. */
+.cycle-child-output, .cycle-job-output {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-secondary, #9aa4b2);
+    margin-top: 4px;
+    max-height: 160px;
+    overflow: auto;
+    border-left: 2px solid var(--border, #2b3240);
+    padding-left: 8px;
+}
+.cycle-child-line, .cycle-job-line { white-space: pre-wrap; }
+.cycle-child-line.thinking { color: var(--text-muted, #7d8797); font-style: italic; }
+.cycle-job-line.stderr { color: var(--danger, #e5534b); }

@@ -38,7 +38,7 @@ PROVIDER: str = "coolems_server"                        # Relay mode for server
 #   "strata" -> Strata's own OpenAI-compatible endpoint on STRATA_SERVER_PORT
 #               (config/strata_servers.json). The brain NEVER spawns or kills Strata - it
 #               attaches to whatever Strata already runs and authenticates with STRATA_API_KEY.
-SERVER_BACKEND: str = "strata"                           # Local LLM engine ("llama" | "strata")
+SERVER_BACKEND: str = "llama"                           # Local LLM engine ("llama" | "strata")
 
 # --- Coolems Distributed Provider Configuration ---
 COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_server listener (0.0.0.0 = all interfaces including localhost)

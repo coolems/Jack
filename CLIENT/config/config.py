@@ -459,7 +459,11 @@ IMAGE_GEN_SIZE_MIN, IMAGE_GEN_SIZE_MAX = 32, 4096
 #: handle, listing running apps, capturing a window, or sending input. It is the only
 #: kind whose payload is an APP identity rather than code/URL/path/socket, because the
 #: thing being approved is "may this AI drive that application?".
-CONSENT_KINDS = ("python", "url", "file", "network", "subprocess", "desktop")  # (2026-10-24) subprocess; (2026-11-07) desktop
+#: 'question' (2026-12) is the ask_user_question card: a QUESTION + options, answered with
+#: free text. It is listed here so every kind-driven loop stays complete, but it has NO
+#: UI row in Settings > Runtime and its pair is pinned to 'manual' - auto-answering a
+#: question would invent an answer the user never gave.
+CONSENT_KINDS = ("python", "url", "file", "network", "subprocess", "desktop", "question")  # (2026-10-24) subprocess; (2026-11-07) desktop; (2026-12) question
 #: settings.json key names per kind (python keeps its historical python_exec_* keys).
 CONSENT_SETTING_KEYS = {
     "python":  ("python_exec_auto_approve",        "python_exec_auto_approve_seconds"),
@@ -468,7 +472,10 @@ CONSENT_SETTING_KEYS = {
     "network": ("network_consent_auto_approve",    "network_consent_auto_approve_seconds"),
     "subprocess": ("subprocess_consent_auto_approve", "subprocess_consent_auto_approve_seconds"),  # (2026-10-24)
     "desktop": ("desktop_consent_auto_approve",    "desktop_consent_auto_approve_seconds"),  # (2026-11-07)
+    "question": ("question_consent_auto_approve",  "question_consent_auto_approve_seconds"),  # (2026-12) pinned manual
 }
+#: Kinds that can NEVER be auto-answered, whatever settings.json says (fail-closed).
+CONSENT_NEVER_AUTO_KINDS = frozenset({"question"})
 CONSENT_AUTO_APPROVE_DEFAULT = "manual"
 CONSENT_AUTO_APPROVE_SECONDS_DEFAULT = 5
 
@@ -521,6 +528,10 @@ def get_runtime_settings() -> dict:
         _mode = str(settings.get(_mode_key) or "").strip().lower()
         if _mode not in ("manual", "auto"):
             _mode = _def_mode
+        # (2026-12) 'question' is pinned manual no matter what settings.json says: an
+        # auto-answered question would invent an answer the user never gave.
+        if _kind in CONSENT_NEVER_AUTO_KINDS:
+            _mode = "manual"
         try:
             _sec = int(str(settings.get(_sec_key) or "").strip())
         except (TypeError, ValueError):
@@ -644,6 +655,72 @@ CLIENT_MAX_OPEN_CHAT_WS: int = 6          # UI LRU cap on simultaneously open pe
 # safe step (never as a new turn, never stopping the current task). Bounded so a stuck
 # keyboard cannot grow memory without limit; oldest entries are dropped first.
 CHAT_STEER_QUEUE_MAX: int = 32
+
+# --- Runtime notice lane (2026-12 subagents + background jobs + questions) ---
+# The runtime's own queue beside the steer queue: a subagent settling, a background job
+# settling, or the user answering a question the AI asked. Injected at the SAME safe
+# boundaries as steering, but with a different header and a different persistence flag
+# (messages.is_notice), and it NEVER defers a completion.
+NOTICE_QUEUE_MAX: int = 32                # unapplied notices kept per chat (oldest dropped)
+NOTICE_MAX_CONSECUTIVE_WAKES: int = 3     # notice-driven follow-up turns with no user input
+NOTICE_QUIET_WAKE: bool = False           # True = notices queue for the next user turn only
+                                          # (no follow-up turn is started when the chat is idle)
+NOTICE_INLINE_BYTES: int = 2048           # payload a settlement notice may carry inline
+
+# --- Subagents (2026-12) ---
+# A delegated child agent runs on its own runner; the tool returns the child id
+# IMMEDIATELY and the result arrives later as a notice. Depth 1 = children may not
+# delegate, so the recursion budget stays with the parent.
+SUBAGENT_MAX_DEPTH: int = 1
+SUBAGENT_MAX_CONCURRENT_PER_CONV: int = 2
+SUBAGENT_NOTICE_INLINE_BYTES: int = 2048  # report bytes a settlement notice may carry
+SUBAGENT_TIMEOUT_SEC: int = 900           # per-child wall clock; 0 = no cap
+
+# --- Background jobs (2026-12) ---
+# One kind-independent job registry. The output ring keeps ABSOLUTE byte offsets that
+# never move: the model consumes through a registry-kept cursor, UI observers read at
+# absolute offsets, neither disturbs the other. Live retention is generous, settled
+# retention small (the terminal notice already carries what fits).
+JOB_LIVE_RETAIN_BYTES: int = 262144
+JOB_SETTLED_RETAIN_BYTES: int = 16384
+JOB_MAX_CONCURRENT_PER_CONV: int = 10
+JOB_WAIT_TIMEOUT_SEC: int = 30            # job_output(wait=true) default wait
+JOB_MAX_WAIT_TIMEOUT_SEC: int = 600       # clamp for an explicit timeout_ms
+JOB_INLINE_OUTPUT_BYTES: int = 2048       # unread output a settlement notice may carry
+JOB_PUMP_POLL_MS: int = 150               # pull-source pump cadence
+JOB_SPILL_KEEP_FILES: int = 20            # .temp/jobs/*.log kept for complete streams
+
+# --- Parallel tool dispatch (2026-12) ---
+# Screen/browser tools stay sequential under the singleton tool_lock; everything else
+# (files, search, web, python, subagents, jobs) runs concurrently inside one batch.
+# Results are appended in the model's ORIGINAL call order, one role="tool" message per
+# tool_call id - always, even for calls a stop or a steer skipped.
+#
+# (2026-12 speed pass) 4 -> 8. The cap only bounds how many calls may be IN FLIGHT at
+# once; a batch of 8 independent calls now launches in one wave instead of two, which is
+# what makes "start several jobs/tests and keep working" actually start them at once.
+# Screen/browser tools are unaffected - they are order barriers under tool_lock and never
+# join the concurrent tier. Subagents still self-limit to SUBAGENT_MAX_CONCURRENT_PER_CONV
+# (2), so raising this cannot fan out model slots.
+TOOL_MAX_PARALLEL: int = 8
+
+# --- MCP servers (2026-12) ---
+# MCP servers are declared in CLIENT/config/mcp_servers.json and are DISABLED by default:
+# an MCP server is an external process or remote endpoint, so enabling it is a human edit,
+# and its first tool call still asks a consent card ('subprocess' for stdio, 'url' for http).
+# These constants bound what reaches the context window, not whether a server is allowed.
+MCP_TEXT_PREVIEW_CHARS: int = 4000   # payload preview handed to the model (rest spills)
+MCP_INSTRUCTIONS_MAX_CHARS: int = 1200  # server instructions as untrusted data in the prompt
+MCP_TIMEOUT_DEFAULT_SEC: int = 30    # per-request wall clock when an entry sets none
+MCP_TIMEOUT_MAX_SEC: int = 300       # clamp for an entry's timeout_sec
+MCP_SPILL_KEEP_FILES: int = 20       # .temp/mcp/* payloads kept for full results
+
+# --- ask_user_question (2026-12) ---
+# 'blocking' waits for the user with no time limit (SessionTimer pauses, exactly like a
+# consent card). 'timed' releases the model after the timeout with a PENDING notice - the
+# question stays answerable, so a late answer arrives as a notice / follow-up turn.
+QUESTION_TIMEOUT_DEFAULT_SEC: int = 120
+QUESTION_MAX_OPTIONS: int = 6
     
 # --- Model (fetched from SERVER at runtime) ---
 MODEL_NAME: str = ""  # Auto-detected from SERVER loaded models at runtime do not hardcode here

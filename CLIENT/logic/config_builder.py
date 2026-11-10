@@ -105,6 +105,8 @@ def build_agentic_config(
     steer_source: Any = None,       # (2026-10-23) live mid-run steering queue (ChatChannel)
     on_steer_applied: Any = None,   # async callback: persist one applied steering message
     cycle: Any = None,              # (2026-11-08) this turn's app.cycle_recorder.CycleRecorder
+    notice_source: Any = None,      # (2026-12) runtime notice queue (ChatChannel)
+    on_notice_applied: Any = None,  # async callback: persist one applied runtime notice
 ) -> "AgenticModeConfig":
     """
     Build an AgenticModeConfig with defaults from config.py.
@@ -130,6 +132,11 @@ def build_agentic_config(
         on_steer_applied: (2026-10-23) async callback persisting each applied steering message.
         cycle: (2026-11-08) this turn's CycleRecorder - the loop-history recorder the UI
             builds its collapsed turn block from. None = no history (legacy callers).
+        notice_source: (2026-12) the chat channel's RUNTIME notice queue (subagent / job /
+            question settlements). Separate from steer_source on purpose: a notice is
+            runtime information and never defers a completion.
+        on_notice_applied: (2026-12) async callback persisting each applied notice
+            (messages.is_notice = 1, header kept so a later turn knows who said it).
 
     Returns:
         Fully constructed AgenticModeConfig instance.
@@ -158,4 +165,6 @@ def build_agentic_config(
         steer_source=steer_source,
         on_steer_applied=on_steer_applied,
         cycle=cycle,
+        notice_source=notice_source,
+        on_notice_applied=on_notice_applied,
     )

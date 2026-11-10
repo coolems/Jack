@@ -126,13 +126,20 @@ const CycleBlock = {
             convId, turnId, node, open: true, settled: false,
             startedAt: startedAtMs,
             lastTurnSec: lastTurnSec || 0,
-            counts: { turns: 0, tools: 0, tools_ok: 0, consents: 0, grants: 0, steers: 0, notices: 0 },
+            counts: { turns: 0, tools: 0, tools_ok: 0, consents: 0, grants: 0, steers: 0, notices: 0, children: 0, jobs: 0 },
             generated: 0, speed: 0,
             rows: [],            // {kind, step_no, at_ts, el} kept in at_ts order
             consents: {},        // request_id -> row element
             steerRows: {},       // steer_id -> {el, state} (ONE row per steering message)
+            // (2026-12 runtime) ONE row per notice / child / job, settled from its frames —
+            // the same discipline as steerRows and toolNoOf: a late frame never duplicates.
+            noticeRows: {},      // notice_id -> {el, state}
+            childRows: {},       // child_id -> row element
+            jobRows: {},         // job_id -> row element
+            questionRows: {},    // request_id -> row element (the card itself is transient)
             toolNoOf: {},        // call_id -> 1-based tool number (one row per call)
             toolEls: {},         // call_id -> row element
+            imageRows: {},       // call_id -> row element (2026-12: one row per generated image)
             // ONE segment per REASONING STEP (user request 2026-11-08): step_no -> {thinkingEl,
             // answerEl}. Each step's answer is its own element, so answers of turn 5 and turn 6
             // stack one UNDER another instead of running together in one box. A steer is not a
@@ -287,6 +294,10 @@ const CycleBlock = {
         // line counts them - the number always has rows behind it.
         if (c.steers) parts.push(`steers ${c.steers}`);
         if (c.notices) parts.push(`notices ${c.notices}`);
+        // (2026-12 runtime) delegated children and background jobs of THIS turn, so the
+        // head line shows work that is still running when the turn is open.
+        if (c.children) parts.push(`subagents ${c.children}`);
+        if (c.jobs) parts.push(`jobs ${c.jobs}`);
         // NO TOKEN COUNTERS ON THE HEAD LINE (user request 2026-11-08): "X.XK gen" is gone.
         // block.generated is still tracked (token_stats / turn_stats fold it in) because the
         // chat-level token bar reads it; only the block stopped printing it. Speed stays -
@@ -447,11 +458,28 @@ const CycleBlock = {
     },
 
     addImage(block, d) {
-        this.addRow(block, 'image', d);
+        // (2026-12) ONE row per call: the live 'image_generated' frame and the recorder's
+        // persisted 'cycle_image' identity frame describe the SAME image - a repeat by
+        // call_id must not print a second row. Rows without a call_id always paint.
+        const imgId = d.call_id || '';
+        if (imgId && block.imageRows && block.imageRows[imgId]) return block.imageRows[imgId];
+        const el = this.addRow(block, 'image', d);
+        if (!el) return null;
+        if (imgId) {
+            block.imageRows = block.imageRows || {};
+            block.imageRows[imgId] = el;
+        }
+        // Thumb in the last-tool strip while it is on screen. Same two sources as the row:
+        // inline base64 when the live frame carries pixels, otherwise the HTTP download URL.
         if (block.lastEl_) {
             const img = document.createElement('img');
             img.className = 'cycle-image-thumb';
-            img.src = 'data:image/png;base64,' + d.image_base64;
+            if (d.image_base64) {
+                img.src = 'data:image/png;base64,' + d.image_base64;
+            } else if (d.rel_path || d.filename) {
+                const rel = String(d.rel_path || d.filename).replace(/\\/g, '/');
+                img.src = '/api/download?path=' + encodeURIComponent(rel) + '&inline=true';
+            }
             img.alt = d.filename || 'Generated image';
             if (d.file_path) {
                 img.dataset.filePath = d.file_path;
@@ -459,12 +487,22 @@ const CycleBlock = {
             }
             block.lastEl.appendChild(img);
         }
+        return el;
     },
 
     /** A consent card appeared: a pending row inside the block + the card in the live strip. */
     addCard(block, data) {
         if (!block || !block.open) return null;
         if (data.request_id && block.consents[data.request_id]) return block.consents[data.request_id];
+        // (2026-12 ask_user_question) A question card gets NO consent row — its durable fact
+        // is the 'question' row created by cycle_question_pending (setQuestion), so adding a
+        // consent row here would print the same card twice. Only the card is mounted.
+        if ((data.kind || '') === 'question') {
+            if (data.request_id) block.questionCards = block.questionCards || {};
+            if (data.request_id) block.questionCards[data.request_id] = true;
+            CycleShell.mountCard(block, data);
+            return null;
+        }
         const el = this.addRow(block, 'consent', {
             step_no: block.counts.turns, at_ts: Date.now() / 1000,
             kind: data.kind || 'python', decision: 'pending', payload: data.code || '',
@@ -544,6 +582,151 @@ const CycleBlock = {
         if (!el) return null;
         if (steerId) block.steerRows[steerId] = { el, state };
         this.bump(block, 'steers');
+        return el;
+    },
+
+    // ===== RUNTIME lane (2026-12 subagents / background jobs / questions) =====
+    //
+    // A runtime notice is NOT user speech and NOT loop guidance, so it gets its own row
+    // kind ('runtime') instead of reusing 'notice'. One row per notice_id, with a status
+    // line that only moves forward (queued -> applied, or deferred) — the same discipline
+    // as setSteer(), so a late frame never rewrites a settled row.
+
+    /** notice_queued / notice_applied / notice_deferred / cycle_notice -> ONE row. */
+    setNotice(block, d) {
+        if (!block) return null;
+        const noticeId = d.notice_id || '';
+        const state = d.state || (d.applied ? 'applied'
+            : (d.deferred ? 'deferred' : (d.queued ? 'queued' : 'arrived')));
+        // An applied notice is a fact of the turn even after it settled; a queued one
+        // needs the turn still open.
+        const allowClosed = state === 'applied' || state === 'deferred';
+        if (!block.open && !allowClosed) return null;
+
+        const rank = (typeof _RUNTIME_STATE_RANK === 'object')
+            ? _RUNTIME_STATE_RANK : { arrived: 0, queued: 1, deferred: 2, applied: 3 };
+        const existing = noticeId ? block.noticeRows[noticeId] : null;
+        if (existing) {
+            if ((rank[state] || 0) >= (rank[existing.state] || 0)) {
+                existing.state = state;
+                existing.el.dataset.noticeState = state;
+                const status = existing.el.querySelector('.cycle-runtime-status');
+                if (status) status.textContent = _runtimeStatusLabel(state, d.reason);
+            }
+            return existing.el;
+        }
+        const el = this.addRow(block, 'runtime', {
+            step_no: d.step_no || block.counts.turns,
+            at_ts: d.at_ts || (Date.now() / 1000),
+            notice_id: noticeId, source: d.source || 'runtime',
+            text: d.text || d.content || '', state, reason: d.reason,
+        }, allowClosed);
+        if (!el) return null;
+        if (noticeId) block.noticeRows[noticeId] = { el, state };
+        this.bump(block, 'notices');
+        return el;
+    },
+
+    /** cycle_child: one row per delegated child, its status line settling as it runs. */
+    setChild(block, d) {
+        if (!block) return null;
+        const childId = d.child_id || '';
+        if (!childId) return null;
+        const existing = block.childRows[childId];
+        if (existing) {
+            // Refresh the status line in place; a settled frame must not add a second row.
+            existing.dataset.childStatus = d.status || existing.dataset.childStatus;
+            const status = existing.querySelector('.cycle-child-status');
+            if (status) status.textContent = _runtimeEntityLabel(d.status, d.stop_reason || d.detail);
+            if (d.output) CycleRows.appendChildOutput(existing, d.output, 'answer');
+            return existing;
+        }
+        const el = this.addRow(block, 'child', {
+            step_no: block.counts.turns, at_ts: d.at_ts || (Date.now() / 1000),
+            child_id: childId, label: d.label || '', mode: d.mode || 'spawn',
+            depth: d.depth, status: d.status || 'running',
+            stop_reason: d.stop_reason || '', output: d.output || '',
+            turns: d.turns, steps: d.steps, tool_calls: d.tool_calls,
+        }, true);
+        if (!el) return null;
+        block.childRows[childId] = el;
+        this.bump(block, 'children');
+        return el;
+    },
+
+    /** cycle_job: one row per background job. */
+    setJob(block, d) {
+        if (!block) return null;
+        const jobId = d.job_id || '';
+        if (!jobId) return null;
+        const existing = block.jobRows[jobId];
+        if (existing) {
+            existing.dataset.jobStatus = d.status || existing.dataset.jobStatus;
+            const status = existing.querySelector('.cycle-job-status');
+            if (status) status.textContent = _runtimeEntityLabel(d.status, d.detail || '');
+            const meta = existing.querySelector('.cycle-runtime-meta');
+            if (meta && d.progress) meta.textContent = 'progress: ' + d.progress;
+            return existing;
+        }
+        const el = this.addRow(block, 'job', {
+            step_no: block.counts.turns, at_ts: d.at_ts || (Date.now() / 1000),
+            job_id: jobId, label: d.label || '', kind: d.kind || 'job',
+            status: d.status || 'running', detail: d.detail || '',
+            progress: d.progress || '', output: d.output || '',
+            spill_path: d.spill_path || '',
+        }, true);
+        if (!el) return null;
+        block.jobRows[jobId] = el;
+        this.bump(block, 'jobs');
+        return el;
+    },
+
+    /** cycle_child_output: one streamed chunk of a delegated child, painted in THAT
+     *  child's row. Observers only — the parent gets the report through the settlement
+     *  notice, so painting here never steals anything. */
+    appendChildOutput(block, d) {
+        if (!block || !d.child_id) return null;
+        let el = block.childRows[d.child_id];
+        if (!el) el = this.setChild(block, d);
+        if (el && d.text) CycleRows.appendChildOutput(el, d.text, d.channel || 'answer');
+        return el;
+    },
+
+    /** cycle_job_output: live output appended to that job's row. Observers only — the
+     *  model reads the ring through job_output, so painting here never steals its bytes. */
+    appendJobOutput(block, d) {
+        if (!block || !d.job_id) return null;
+        let el = block.jobRows[d.job_id];
+        if (!el) el = this.setJob(block, d);
+        if (el && d.text) CycleRows.appendJobOutput(el, d.text, d.channel || 'stdout');
+        return el;
+    },
+
+    /** cycle_question_pending / cycle_question: the durable row for a question card. The
+     *  card itself is transient (like a consent card) — this row is the fact. */
+    setQuestion(block, d) {
+        if (!block) return null;
+        const requestId = d.request_id || '';
+        if (!requestId) return null;
+        const existing = block.questionRows[requestId];
+        if (existing) {
+            if (d.decision) {
+                existing.dataset.decision = d.decision;
+                existing.dataset.pending = '0';
+                const line = existing.querySelector('.cycle-consent-line');
+                if (line) line.textContent = _questionLabel(d.decision, false);
+            }
+            return existing;
+        }
+        const el = this.addRow(block, 'question', {
+            step_no: block.counts.turns, at_ts: d.at_ts || (Date.now() / 1000),
+            request_id: requestId, question: d.question || '',
+            options: d.options || [], decision: d.decision || '',
+            pending: d.pending !== false && !d.decision,
+        }, true);
+        if (!el) return null;
+        block.questionRows[requestId] = el;
+        this.bump(block, 'consents');
         return el;
     },
 

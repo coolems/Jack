@@ -87,6 +87,23 @@ const APPROVAL_DIALOG_CONFIG = {
         statusAllow: '\u2705 Allowed - the AI may read/drive that app now (nothing is launched, activated or closed).',
         statusRunAll: '\u26A1 Allow-until-task-done enabled: desktop access requests will be approved without asking until this task ends.',
         statusDeny: '\u274C Blocked - that app was not read or touched, and the AI was told not to work around it.'
+    },
+    /**
+     * (2026-12 ask_user_question) NOT a permission gate - the payload is a QUESTION plus
+     * options, and the answer is free text. Rendered by renderQuestionCard() below, so
+     * only its header/status wording lives here. No auto-approve countdown EVER: the
+     * backend pins this kind to 'manual' (config.CONSENT_NEVER_AUTO_KINDS) because an
+     * auto-answered question would invent an answer the user never gave.
+     */
+    question: {
+        icon: '\u{1F4AC}',                    // 💬 (the AI asking the human)
+        title: 'Question from the AI',
+        allowLabel: '&#10003; Answer',
+        denyLabel: '&times; Skip - AI decides',
+        runAllLabel: '&#9889; You decide - no more questions',
+        statusAllow: '\u2705 Answered - the AI has your answer.',
+        statusRunAll: '\u26A1 The AI may decide questions of this kind itself for the rest of this task.',
+        statusDeny: '\u274C Skipped - the AI was told to state the assumption it is making.'
     }
 };
 
@@ -130,7 +147,6 @@ const ApprovalDialog = {
             ? '<div class="exec-approval-desc">' + escapeHtml(descText) + '</div>'
             : '';
 
-        const codeHtml = escapeHtml(String(data.code || ''));
         const card = document.createElement('div');
         card.className = 'message assistant';
 
@@ -142,6 +158,23 @@ const ApprovalDialog = {
         body.className = 'message-content exec-approval-card';
         if (data.request_id) body.setAttribute('data-request-id', data.request_id);
         body.dataset.kind = kind;
+
+        // (2026-12 ask_user_question) A QUESTION card is NOT a permission gate: the payload
+        // is {question, options, context} JSON and the user answers with an option or free
+        // text. No auto-approve countdown ever runs for this kind - the backend pins it to
+        // 'manual' (config.CONSENT_NEVER_AUTO_KINDS), because auto-answering would invent an
+        // answer the user never gave.
+        if (kind === 'question') {
+            body.innerHTML = this._questionCardBody(data, headerHtml, descHtml);
+            card.appendChild(inner);
+            card.appendChild(body);
+            container.appendChild(card);
+            this._wireQuestionCard(card, data);
+            if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
+            return;
+        }
+
+        const codeHtml = escapeHtml(String(data.code || ''));
         body.innerHTML =
             '<div class="exec-approval-header">' + headerHtml + '</div>' +
             descHtml +
@@ -170,8 +203,104 @@ const ApprovalDialog = {
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
     },
 
+    /** (2026-12) Body of an ask_user_question card: question text, option buttons, free
+     *  answer, and the two "the AI decides" buttons. The payload is JSON from the tool. */
+    _questionCardBody(data, headerHtml, descHtml) {
+        let q = { question: String(data.code || ''), options: [], context: '' };
+        try {
+            const parsed = JSON.parse(String(data.code || ''));
+            if (parsed && typeof parsed === 'object') {
+                q = {
+                    question: String(parsed.question || ''),
+                    options: Array.isArray(parsed.options) ? parsed.options.map(String) : [],
+                    context: String(parsed.context || ''),
+                };
+            }
+        } catch (e) { /* payload was plain text - use it as the question */ }
+
+        const contextHtml = q.context
+            ? '<div class="exec-approval-desc">' + escapeHtml(q.context) + '</div>'
+            : (descHtml || '');
+        const optionHtml = q.options.map(function (opt) {
+            return '<button type="button" class="exec-btn exec-btn-allow exec-btn-option" '
+                 + 'data-answer="' + escapeHtml(opt) + '">' + escapeHtml(opt) + '</button>';
+        }).join('');
+
+        return '<div class="exec-approval-header">' + headerHtml + '</div>' +
+            contextHtml +
+            '<div class="exec-approval-question">' + escapeHtml(q.question) + '</div>' +
+            '<div class="exec-approval-answer-row">' +
+                '<input type="text" class="exec-approval-answer-input" placeholder="Type your answer\u2026" />' +
+                '<button type="button" class="exec-btn exec-btn-allow exec-btn-free-answer">&#10003; Send answer</button>' +
+            '</div>' +
+            '<span class="exec-approval-status pending">Waiting for your answer (no time limit - answer whenever you are ready)</span>' +
+            '<div class="exec-approval-actions">' +
+                optionHtml +
+                '<button type="button" class="exec-btn exec-btn-deny" data-decision="deny">&times; Skip - AI decides</button>' +
+                '<button type="button" class="exec-btn exec-btn-runall" data-decision="allow_category_until_done">&#9889; You decide - no more questions</button>' +
+            '</div>';
+    },
+
+    /** Wire one question card: option buttons + free-text answer post to /api/question. */
+    _wireQuestionCard(card, data) {
+        const body = card.querySelector('.exec-approval-card');
+        const input = card.querySelector('.exec-approval-answer-input');
+        card.querySelectorAll('.exec-btn-option').forEach(btn => {
+            btn.addEventListener('click', () => this.submitAnswer(data, btn.dataset.answer, btn));
+        });
+        const freeBtn = card.querySelector('.exec-btn-free-answer');
+        if (freeBtn) {
+            freeBtn.addEventListener('click', () => {
+                const text = (input && input.value) ? input.value.trim() : '';
+                if (!text) { if (input) input.focus(); return; }
+                this.submitAnswer(data, text, freeBtn);
+            });
+        }
+        if (input) {
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const text = input.value.trim();
+                    if (text) this.submitAnswer(data, text, freeBtn || input);
+                }
+            });
+        }
+        // Skip / "You decide" reuse the decision path (deny / allow_category_until_done).
+        card.querySelectorAll('.exec-btn-deny, .exec-btn-runall').forEach(btn => {
+            btn.addEventListener('click', () => this.submitDecision(data, btn));
+        });
+        if (input) input.focus();
+    },
+
+    /** Post a free-text or option ANSWER for one question card. */
+    submitAnswer(data, answer, clickedBtn) {
+        const card = clickedBtn.closest('.exec-approval-card');
+        if (!card || card.dataset.answered === '1') return;
+        card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
+        const statusEl = card.querySelector('.exec-approval-status');
+        const convId = data.conv_id || COOLEMS.currentConversation;
+        fetch('/api/question/' + encodeURIComponent(convId) + '/' + encodeURIComponent(data.request_id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ answer: answer })
+        })
+            .then(response => response.json().catch(() => ({})).then(d => ({ ok: response.ok, d })))
+            .then(({ ok, d }) => {
+                card.dataset.answered = '1';
+                if (!ok) throw new Error((d && d.message) || ('HTTP ' + (d && d.detail ? JSON.stringify(d.detail) : '')));
+                this.dismissCard(card, 'answered');
+            })
+            .catch(err => {
+                card.dataset.answered = '1';
+                if (statusEl) { statusEl.className = 'exec-approval-status done-error'; statusEl.textContent = '\u26A0 ' + err.message; }
+            });
+    },
+
     /** Generic per-kind auto-approve timer - reads THAT kind's saved mode/seconds. */
     async startAutoApproveCountdown(card, data) {
+        // (2026-12) A question card is never auto-answered - an invented answer is worse
+        // than a waiting card. Belt and braces with the backend's manual pin.
+        if (this.resolveKind(data) === 'question') return;
         // Saved settings first (one /api/settings sync per page session; instant afterwards).
         if (typeof ensureRuntimeSettingsLoaded === 'function') {
             try { await ensureRuntimeSettingsLoaded(); } catch (e) { /* keep current values */ }

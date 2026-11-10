@@ -41,6 +41,47 @@ def _create_turn_log_table(cursor) -> None:
     )
 
 
+RUNTIME_SCHEMA = """
+                CREATE TABLE IF NOT EXISTS runtime_state (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,            -- 'child' | 'job'
+                    status TEXT NOT NULL,
+                    label TEXT DEFAULT '',
+                    mode TEXT DEFAULT '',          -- child: 'spawn' | 'fork'; job: kind
+                    depth INTEGER DEFAULT 0,       -- child lineage depth
+                    detail TEXT DEFAULT '',
+                    result TEXT DEFAULT '',
+                    started_at TIMESTAMP,
+                    finished_at TIMESTAMP DEFAULT NULL,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations (id)
+                )
+            """
+
+
+def _create_runtime_table(cursor) -> None:
+    """Create the durable subagent/job ledger and its lookup index (idempotent).
+
+    Same child-first rule as turn_log: runtime_state.conversation_id references
+    conversations(id) and db_manager enforces foreign keys on every connection, so a
+    workspace delete must clear these rows BEFORE the conversation row (see
+    app/websocket/turn_ops.delete_conversation_rows()).
+
+    WHAT THIS TABLE IS: the durable ledger of delegated children and background jobs —
+    identity, owner, status, terminal detail. The live output ring and the child's
+    conversation are PROCESS-LOCAL by design (a restart cannot resume a stream that died
+    with its process), so a row whose settlement never arrived stays finished_at NULL:
+    'incomplete', never an invented finish time.
+    """
+    cursor.execute(RUNTIME_SCHEMA)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runtime_conversation ON runtime_state (conversation_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_runtime_kind ON runtime_state (conversation_id, kind)"
+    )
+
+
 def _safe_sql_literal(value: str) -> str:
     """Escape a string for safe use in SQL literal (handles quotes, slashes, colons)."""
     return "'" + value.replace("'", "''") + "'"
@@ -86,11 +127,13 @@ def init_db(db_path: str):
                     media_urls TEXT,
                     file_contents TEXT,
                     is_steer INTEGER DEFAULT 0,
+                    is_notice INTEGER DEFAULT 0,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (conversation_id) REFERENCES conversations (id)
                 )
             """)
             _create_turn_log_table(cursor)
+            _create_runtime_table(cursor)
             logger.info("Created fresh database tables")
         else:
             cursor.execute("PRAGMA table_info(messages)")
@@ -104,6 +147,12 @@ def init_db(db_path: str):
             if "is_steer" not in cols:
                 cursor.execute("ALTER TABLE messages ADD COLUMN is_steer INTEGER DEFAULT 0")
                 logger.info("Added is_steer column to messages")
+            # (2026-12 runtime notice lane) notices are RUNTIME WORK, not user speech: the
+            # row keeps its header so a later turn can still tell a child settled rather
+            # than the user asked something. The flag keeps them out of chat bubbles.
+            if "is_notice" not in cols:
+                cursor.execute("ALTER TABLE messages ADD COLUMN is_notice INTEGER DEFAULT 0")
+                logger.info("Added is_notice column to messages")
             cursor.execute("PRAGMA table_info(conversations)")
             conv_cols = [c[1] for c in cursor.fetchall()]
             # Legacy per-conversation agent mode was removed (2026-08-24): it is now a
@@ -121,6 +170,12 @@ def init_db(db_path: str):
                 logger.info("Added working_root column to conversations")
             # Cycle history for pre-existing databases (added 2026-12-04).
             _create_turn_log_table(cursor)
+            # (2026-12) The subagent/job ledger for pre-existing databases too. It was
+            # created ONLY in the fresh-DB branch, so every existing workspace hit
+            # "no such table: runtime_state" and the durable ledger silently never
+            # existed (observed live: three save_runtime_row warnings in coolems.log).
+            # Idempotent (CREATE TABLE IF NOT EXISTS), so this is safe on every start.
+            _create_runtime_table(cursor)
         conn.commit()
         logger.info("Database initialized successfully")
     except Exception as e:

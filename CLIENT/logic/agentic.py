@@ -122,6 +122,21 @@ async def agentic_mode(
 {config.generic_tool_prompt}
 """
 
+    # (2026-12 MCP) Server-supplied instructions join the prompt as DATA, never as policy:
+    # an MCP server is an external process, so its text may describe its tools but must not
+    # override Jack's rules. Built per turn so a server that connected (or died) mid-session
+    # is reflected in the next turn instead of being silently carried forever.
+    try:
+        from app.keys import get_key_role
+        from tools.local_registry import mcp_instructions
+        _mcp_role = get_key_role(config.api_key) if config.api_key else None
+        _mcp_notes = mcp_instructions(_mcp_role)
+        if _mcp_notes:
+            agent_system += _mcp_notes
+            logger.info(f"[AGENTIC.DEBUG] +MCP server notes ({len(_mcp_notes)} chars, role={_mcp_role})")
+    except Exception as e:
+        logger.debug(f"[AGENTIC.DEBUG] MCP instructions unavailable (non-fatal): {e}")
+
     # Add image context if images are present (2026-08-23 fix: VISION-FIRST policy).
     # The uploaded pixels ride on THIS message as base64 (see build_messages below),
     # so the model can SEE them directly. transcribe_image is ONLY for explicit OCR asks -
@@ -181,6 +196,14 @@ RULES:
             api_key=config.api_key,
             session_timer=getattr(config, "session_timer", None),  # (2026-08-23) pause clock while user menus are open
             cycle=getattr(config, "cycle", None),  # (2026-11-08) loop history: tools + consent cards land in this turn's block
+            # (2026-12 runtime) CLIENT-LOCAL tools (subagent / job / ask_user_question)
+            # need THIS turn's channel (notice lane, pending questions, consent cards) and
+            # THIS turn's schema + prompt (a child must run with the same tool promise).
+            channel=getattr(config, "notice_source", None) or getattr(config, "steer_source", None),
+            ollama_tools=config.ollama_tools,
+            generic_tool_prompt=config.generic_tool_prompt,
+            enable_thinking=config.enable_thinking,
+            temperature=config.temperature,
         )
 
     # (2026-10-09) Per-workspace working root: resolve THIS conversation's folder from

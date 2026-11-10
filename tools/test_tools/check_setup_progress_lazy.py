@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -267,6 +268,82 @@ def main() -> int:
             again = json.load(f)
         check("C7 begin_run is a no-op when no row is running",
               again.get("updated_at") == before_ts, f"{before_ts} -> {again.get('updated_at')}")
+
+        # ------------------- D) stale ERROR row vs a live download (2026-11-10 field fix)
+        # Real client state: an interrupted pre-flight left model.status='error' with the
+        # huggingface_hub symlink-advisory tail. The UI's freshness filter judges a terminal
+        # row by the FILE's updated_at, so while a later download stamps the file every 0.5 s
+        # that old row looked fresh: the card read 'Setup / Downloads — generate_tool: failed'
+        # with '  warnings.warn(message)' next to numbers that were actually progressing.
+        stale_err = {
+            "tool": "generate_tool", "updated_at": time.time(), "generation": 11,
+            "stages": {
+                "pip": {"status": "done", "packages": {"torch": {"name": "torch", "status": "done"}}},
+                "model": {"status": "error", "detail": "  warnings.warn(message)",
+                          "current_file": "1:transformer/x.safetensors",
+                          "speed_bps": 9_500_000, "eta_sec": 442.0,
+                          "files": {"1:transformer/x.safetensors":
+                                    {"filename": "transformer/x.safetensors",
+                                     "size": 1000, "downloaded": 600, "_seen": True, "_repo": 1}}},
+            },
+        }
+        with open(prog_path, "w", encoding="utf-8") as f:
+            json.dump(stale_err, f)
+        sp3 = sp_mod.SetupProgress(rt_dir)
+        sp3.begin_run()
+        with open(prog_path, encoding="utf-8") as f:
+            after2 = json.load(f)
+        st2 = after2.get("stages") or {}
+        m2 = st2.get("model") or {}
+        check("D1 dead attempt's 'error' row retired (UI cannot say 'failed')",
+              "status" not in m2, str(m2.get("status")))
+        check("D2 stale failure detail cleared (no 'warnings.warn(message)' line left)",
+              "detail" not in m2, str(m2.get("detail")))
+        check("D3 stale live pointers cleared",
+              "current_file" not in m2 and "speed_bps" not in m2 and "eta_sec" not in m2)
+        check("D4 error row's file rows survive for resume",
+              (m2.get("files") or {}).get("1:transformer/x.safetensors", {}).get("downloaded") == 600)
+        check("D5 finished pip row kept on an error retirement",
+              (st2.get("pip") or {}).get("status") == "done")
+
+        # D6) per-row ownership markers (2026-11-10): every row must record WHICH run wrote
+        # it ('_gen') and WHEN ('_at'), so the UI can tell this run's rows from a previous
+        # invocation's instead of ageing them by the whole file.
+        sp3.set_stage("model", status="done", total_size=1000, downloaded=1000)
+        with open(prog_path, encoding="utf-8") as f:
+            after3 = json.load(f)
+        m3 = (after3.get("stages") or {}).get("model") or {}
+        row_at = m3.get("_at")
+        check("D6 terminal row carries its own '_at' timestamp",
+              isinstance(row_at, (int, float)) and row_at > 0, str(row_at))
+        check("D7 '_at' is this write's time (not the file's older stamp)",
+              abs(time.time() - float(row_at)) < 5.0, str(row_at))
+        check("D8 terminal row carries the writer's '_gen'",
+              m3.get("_gen") == sp3.generation, f"{m3.get('_gen')} vs {sp3.generation}")
+        check("D9 file generation equals the live writer's generation",
+              int(after3.get("generation") or 0) == sp3.generation, str(after3.get("generation")))
+
+        # ------------------- E) failure tail ignores the symlink advisory (2026-11-10)
+        noise = [
+            "MODEL_NOT_READY: Cannot load model Qwen/Qwen-Image: cache incomplete",
+            "`huggingface_hub` cache-system uses symlinks by default to efficiently store "
+            "duplicated files but your machine does not support them in C:\\hf_cache.",
+            "To support symlinks on Windows, you either need to activate Developer Mode or to "
+            "run Python as an administrator.",
+            "  warnings.warn(message)",
+        ]
+        check("E1 tail reports the real failure, not the advisory source line",
+              gi._failure_tail(noise).startswith("MODEL_NOT_READY"), gi._failure_tail(noise))
+        check("E2 tail with only advisory noise falls back to a real line",
+              gi._failure_tail(["Downloading bytes 12%", "  warnings.warn(message)"])
+              == "Downloading bytes 12%")
+        check("E3 tail of empty output is empty (caller uses exit code)",
+              gi._failure_tail([]) == "")
+        env = gi._tool_env({"runtime_dir": rt_dir})
+        check("E4 tool env suppresses the Windows symlink advisory",
+              env.get("HF_HUB_DISABLE_SYMLINKS_WARNING") == "1", str(env.get("HF_HUB_DISABLE_SYMLINKS_WARNING")))
+        check("E5 tool env still points HF_HOME inside the runtime",
+              env["HF_HOME"] == os.path.join(rt_dir, "hf_cache"), env["HF_HOME"])
 
         print()
         if failures:

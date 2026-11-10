@@ -285,6 +285,12 @@ class RemoteToolOrchestrator:
             [{"type": "function", "function": {"name": "...", ...}}]
 
         TRIGGERS LAZY INITIALIZATION on first call if tools haven't been fetched yet.
+
+        CLIENT-LOCAL tools (2026-12 subagents / background jobs / ask_user_question) are
+        merged in HERE, not delivered by the SERVER: their handlers own asyncio tasks,
+        chat channels and consent cards on this machine, which a sandboxed worker-thread
+        tool cannot do. Role filtering is applied by local_registry on the CLIENT side
+        because the SERVER never sees these names.
         """
         # Lazy init — fetch from SERVER on demand
         await self._ensure_initialized()
@@ -293,16 +299,46 @@ class RemoteToolOrchestrator:
 
         if not defs:
             logger.warning("get_ollama_tools called but no definitions cached — SERVER may be unavailable")
-            return []
 
         # Extract ONLY the definition field of each cached entry
         tool_defs = [d["definition"] if "definition" in d else d for d in defs]
-        logger.info(f"get_ollama_tools: returning {len(tool_defs)} remote tool definitions")
+
+        try:
+            from tools.local_registry import definitions as _local_definitions, is_local_tool
+            from app.keys import get_key_role
+            role = get_key_role(api_key) if api_key else None
+            local = [d for d in _local_definitions(role)]
+            # A SERVER-delivered tool with the same name would shadow the local handler,
+            # so local names win: the registry is the dispatcher, the schema is the promise.
+            remote_names = {t.get("function", {}).get("name") for t in tool_defs}
+            local = [d for d in local if d.get("function", {}).get("name") not in remote_names]
+            tool_defs.extend(local)
+            if local:
+                logger.info(f"get_ollama_tools: +{len(local)} CLIENT-local tool(s) "
+                            f"({sorted(d.get('function', {}).get('name', '') for d in local)})")
+            _ = is_local_tool  # referenced so the import is not dead weight in a debug path
+        except Exception as e:
+            logger.debug(f"[LOCAL-TOOLS] definitions unavailable ({e}) - remote schema only")
+
+        logger.info(f"get_ollama_tools: returning {len(tool_defs)} tool definitions")
         return tool_defs
 
     async def is_tool_allowed(self, tool_name: str, api_key: str = None) -> bool:
-        """Check if a tool name exists in our registry."""
+        """Check if a tool name exists in our registry.
+
+        CLIENT-local tools (2026-12) count as allowed only when the role gate passes —
+        the SERVER's allowlist never contains them.
+        """
         await self._ensure_initialized()  # Ensure tools are loaded first
+
+        try:
+            from tools.local_registry import is_local_tool, allowed_for_role
+            from app.keys import get_key_role
+            if is_local_tool(tool_name):
+                role = get_key_role(api_key) if api_key else None
+                return allowed_for_role(tool_name, role)
+        except Exception:
+            pass
 
         allowed = self._cache.get_allowed_tools()
         if allowed and tool_name not in allowed:
@@ -313,10 +349,19 @@ class RemoteToolOrchestrator:
         )
 
     async def get_tool_names(self, api_key: str = None) -> list:
-        """Get all known tool names."""
+        """Get all known tool names (remote + CLIENT-local)."""
         await self._ensure_initialized()  # Ensure tools are loaded first
-        return sorted(d.get("function", {}).get("name", "")
-                      for d in self._cache.get_definitions())
+        names = sorted(d.get("function", {}).get("name", "")
+                       for d in self._cache.get_definitions())
+        try:
+            from tools.local_registry import definitions as _local_definitions
+            from app.keys import get_key_role
+            role = get_key_role(api_key) if api_key else None
+            names.extend(sorted(d.get("function", {}).get("name", "")
+                                for d in _local_definitions(role)))
+        except Exception:
+            pass
+        return names
 
     async def get_tool_count(self, api_key: str = None) -> int:
         """Get the number of known tools."""
@@ -427,7 +472,7 @@ class RemoteToolOrchestrator:
 
     @staticmethod
     def _call_pyexec_with_context(func, arguments, websocket=None, conversation_id: str = None,
-                                  loop=None, cycle=None):
+                                  loop=None, cycle=None, job_starter=None):
         """Run a python_exec tool call with the chat's relay context registered.
 
         tools.exec_tools.python_exec reads this context (threading.local on a
@@ -442,6 +487,12 @@ class RemoteToolOrchestrator:
         *cycle* (2026-11-07) is this turn's app.cycle_recorder.CycleRecorder. The relay
         needs it so the file / network / subprocess cards it shows are recorded as rows
         of THIS turn's history instead of vanishing when the user answers them.
+
+        *job_starter* (2026-12 background jobs) is the CLIENT job registry's starter
+        (JobRegistry.starter()). python_exec uses it for run_in_background=True: the tool
+        cannot import CLIENT modules from inside the loader sandbox, so the registry is
+        handed to it as ONE callable. None = the feature is unavailable in this process
+        and python_exec says so honestly instead of pretending the job exists.
 
         AUDIT FIX 2026-11-24b: this method was originally inserted one indent level too
         deep (8 spaces), which silently nested it INSIDE ensure_tool_loaded() as a local
@@ -462,7 +513,8 @@ class RemoteToolOrchestrator:
             local.context = {"websocket": websocket,
                              "conversation_id": conversation_id,
                              "loop": loop,
-                             "cycle": cycle}
+                             "cycle": cycle,
+                             "job_starter": job_starter}
         else:
             local.context = None
         try:
@@ -506,12 +558,20 @@ class RemoteToolOrchestrator:
     api_key: str = None,
     websocket=None,
     conversation_id: str = None,
-    cycle=None
+    cycle=None,
+    local_context: Dict[str, Any] = None
     ) -> Any:
         """Execute a tool by name with the given arguments. Fetches if needed.
 
         Signature matches old ToolOrchestrator for drop-in compatibility.
         Extra kwargs (conversation_history, api_key) are accepted but not used.
+
+        local_context (2026-12 runtime): the CLIENT-side seam. When the name is a
+        CLIENT-LOCAL tool (subagent / job / question) it is dispatched on the event-loop
+        thread through tools.local_registry BEFORE any SERVER fetch or compile - those
+        handlers own asyncio tasks, chat channels and consent cards on this machine, which
+        a sandboxed worker-thread tool cannot do. The context carries the channel, loop,
+        websocket, conversation id, the turn's tool schema and prompt.
 
         NOTE: ToolCompilationError exceptions propagate through here and are
               NOT caught — they bubble up to react_loop which treats them as
@@ -527,6 +587,34 @@ class RemoteToolOrchestrator:
               'tools._consent' channel so the Computer Use tools can verify the user's
               per-app grant themselves (fail-closed without a channel).
         """
+        # CLIENT-LOCAL tools (2026-12 subagents / background jobs / ask_user_question)
+        # are dispatched HERE, on the event-loop thread, before any SERVER fetch or
+        # compile. They must not run in asyncio.to_thread: a worker thread cannot own the
+        # child's asyncio task, hold this chat's channel, or await a consent card.
+        try:
+            from tools.local_registry import is_local_tool, call as _local_call
+        except Exception:
+            is_local_tool = None
+            _local_call = None
+
+        if is_local_tool is not None and is_local_tool(tool_name):
+            ctx = dict(local_context or {})
+            if ctx.get("loop") is None:
+                ctx["loop"] = asyncio.get_running_loop()
+            if ctx.get("websocket") is None:
+                ctx["websocket"] = websocket
+            if ctx.get("conversation_id") is None:
+                ctx["conversation_id"] = conversation_id
+            if ctx.get("parent_history") is None:
+                ctx["parent_history"] = conversation_history
+            if ctx.get("role") is None:
+                try:
+                    from app.keys import get_key_role
+                    ctx["role"] = get_key_role(api_key) if api_key else None
+                except Exception:
+                    ctx["role"] = None
+            return await _local_call(tool_name, dict(arguments or {}), **ctx)
+
         # Ensure tool is loaded (may raise ToolCompilationError)
         await self.ensure_tool_loaded(tool_name)
 
@@ -567,9 +655,18 @@ class RemoteToolOrchestrator:
                 # Capture the running loop HERE (on the event-loop thread): the
                 # helper itself runs in a worker thread and cannot see it.
                 _net_loop = asyncio.get_running_loop()
+                # (2026-12 background jobs) the CLIENT job registry's starter, handed to
+                # the tool as one callable — the sandbox cannot import CLIENT modules.
+                # None when the runtime is not wired in this process.
+                try:
+                    from app.runtime.jobs import get_job_registry
+                    _jobs = get_job_registry()
+                    _job_starter = _jobs.starter() if _jobs is not None else None
+                except Exception:
+                    _job_starter = None
                 result = await asyncio.to_thread(
                     self._call_pyexec_with_context, func, arguments,
-                    websocket, conversation_id, _net_loop, cycle)
+                    websocket, conversation_id, _net_loop, cycle, _job_starter)
             elif tool_name.startswith("cua_"):
                 # COMPUTER USE (2026-11-07): the per-app grant lives on the
                 # tools._consent channel, keyed by conversation id. Set it for the

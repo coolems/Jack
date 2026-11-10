@@ -32,6 +32,10 @@
 // (2026-11-07) 'desktop' added: the Computer Use gate (tools/computer_use/*) asks for
 // permission to READ or DRIVE an application on this machine. Manual by default - the
 // safest kind, since it moves the user's real pointer/keyboard.
+// (2026-12) 'question' is deliberately NOT in this list: ask_user_question is not a
+// permission gate, and an auto-answered question would invent an answer the user never
+// gave. The backend pins it to manual (config.CONSENT_NEVER_AUTO_KINDS), so there is no
+// row for it here and no key is ever posted for it.
 const CONSENT_KINDS = ['python', 'url', 'file', 'network', 'subprocess', 'desktop'];
 COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess; (2026-11-07) desktop
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session

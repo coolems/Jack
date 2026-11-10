@@ -154,6 +154,25 @@ class CycleRecorder:
                           "call_id": row["call_id"], "duration_ms": row["duration_ms"],
                           "tool": row})
 
+    # --- generated images (2026-12) ---------------------------------------------------
+
+    async def image(self, call_id: str, file_path: str = "", filename: str = "",
+                    rel_path: str = "", width: int = 0, height: int = 0, pipeline: str = "",
+                    model_id: str = "", dtype: str = "", setup: Any = None) -> None:
+        """Record + announce one generated image of this turn.
+
+        The frame carries the FILE IDENTITY only (never base64 pixels - a 600x400 PNG is
+        ~300 KB and would bloat every persisted row); the UI renders it over HTTP from
+        rel_path, so a live push and a DB reload show the same image. ONE frame per call
+        id: TurnLog.add_image dedupes by call_id, exactly like tool calls.
+        """
+        if not call_id:
+            return
+        row = self.log.add_image(call_id, file_path=file_path, filename=filename,
+                                 rel_path=rel_path, width=width, height=height,
+                                 pipeline=pipeline, model_id=model_id, dtype=dtype, setup=setup)
+        await self._send({"type": "cycle_image", **row})
+
     # --- consent dialogs --------------------------------------------------
 
     async def consent_pending(self, kind: str, request_id: str, payload: Any = "",
@@ -215,6 +234,80 @@ class CycleRecorder:
         self._feedback_seen.add(text)
         row = self.log.add_feedback(self._step_no, text)
         await self._send({"type": "cycle_feedback", "text": row["text"],
+                          "step_no": row["step_no"], "at_ts": row["at_ts"]})
+
+    async def notice(self, text: str, source: str = "runtime", seq: int = 0,
+                     at_ts: Optional[float] = None, notice_id: str = "") -> None:
+        """One RUNTIME notice the loop injected (2026-12): a subagent settled, a
+        background job settled, or the user answered a question the AI asked.
+
+        Distinct from `feedback` (the LOOP speaking): this row carries its source and the
+        notice id, so the UI correlates it with the notice_queued / notice_applied frames
+        and keeps ONE row per settlement. Dedupe is inside TurnLog.add_notice.
+        """
+        if not text:
+            return
+        row = self.log.add_notice(self._step_no, text, source=source, seq=seq,
+                                  at_ts=at_ts, notice_id=str(notice_id or ""))
+        await self._send({"type": "cycle_notice", "conv_id": self.conv_id,
+                          "turn_id": self.turn_id, "source": row["source"],
+                          "notice_id": row["notice_id"], "text": row["text"],
+                          "seq": row["seq"], "step_no": row["step_no"],
+                          "at_ts": row["at_ts"]})
+
+    # --- runtime entities (2026-12 subagents / background jobs / questions) ---
+
+    async def child(self, child_id: str, *, label: str = "", mode: str = "spawn",
+                    depth: int = 1, status: str = "running", stop_reason: str = "",
+                    output: str = "", turns: int = 0, tool_calls: int = 0,
+                    steps: int = 0, at_ts: Optional[float] = None) -> None:
+        """One delegated subagent of THIS turn. Frames from app.runtime (start + settle)
+        update the SAME row, so a child is one line, not two."""
+        if not child_id:
+            return
+        row = self.log.add_child(child_id, label=label, mode=mode, depth=depth,
+                                 status=status, stop_reason=stop_reason, output=output,
+                                 turns=turns, tool_calls=tool_calls, steps=steps, at_ts=at_ts)
+        await self._send({"type": "cycle_child", "conv_id": self.conv_id,
+                          "turn_id": self.turn_id, "child_id": child_id,
+                          "label": row["label"], "mode": row["mode"], "depth": row["depth"],
+                          "status": row["status"], "stop_reason": row["stop_reason"],
+                          "output": row["output"], "turns": row["turns"],
+                          "steps": row["steps"], "tool_calls": row["tool_calls"],
+                          "step_no": row["step_no"], "at_ts": row["at_ts"]})
+
+    async def job(self, job_id: str, *, label: str = "", kind: str = "job",
+                  status: str = "running", detail: str = "", progress: str = "",
+                  output: str = "", spill_path: str = "", result: str = "",
+                  at_ts: Optional[float] = None) -> None:
+        """One background job of THIS turn (start / progress / settlement frames)."""
+        if not job_id:
+            return
+        row = self.log.add_job(job_id, label=label, kind=kind, status=status,
+                               detail=detail, progress=progress, output=output,
+                               spill_path=spill_path, result=result, at_ts=at_ts)
+        await self._send({"type": "cycle_job", "conv_id": self.conv_id,
+                          "turn_id": self.turn_id, "job_id": job_id,
+                          "label": row["label"], "kind": row["kind"],
+                          "status": row["status"], "detail": row["detail"],
+                          "progress": row["progress"], "output": row["output"],
+                          "result": row["result"], "spill_path": row["spill_path"],
+                          "step_no": row["step_no"], "at_ts": row["at_ts"]})
+
+    async def question(self, request_id: str, *, question: str = "",
+                       options: Optional[list] = None, decision: str = "",
+                       pending: bool = True) -> None:
+        """One ask_user_question card. The card is transient (like a consent card); this
+        row is the durable fact, and the answer folds into the SAME row."""
+        if not request_id:
+            return
+        row = self.log.add_question(request_id, question=question,
+                                    options=list(options or []), decision=decision,
+                                    pending=pending)
+        await self._send({"type": "cycle_question", "conv_id": self.conv_id,
+                          "turn_id": self.turn_id, "request_id": request_id,
+                          "question": row["question"], "options": row["options"],
+                          "decision": row["decision"], "pending": row["pending"],
                           "step_no": row["step_no"], "at_ts": row["at_ts"]})
 
     async def announce_final(self, step_no: int) -> None:

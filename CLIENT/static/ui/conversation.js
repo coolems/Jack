@@ -67,6 +67,18 @@ function _isSteerRow(msg) {
     return !!(msg && (msg.is_steer || msg.is_steer === 1));
 }
 
+/**
+ * (2026-12 runtime notice lane) Same rule as steering, for the runtime's own lane.
+ * A notice (a subagent settled, a background job settled, the user answered a question
+ * the AI asked) is persisted as a `role=user` row flagged `is_notice` so the model still
+ * sees it in a later turn - but it is NOT the user speaking, so the UI never paints it as
+ * a chat bubble. The turn's loop-history block carries it as a notice row (turn_log
+ * `notices`), correlated by notice id with the queued/applied/deferred frames.
+ */
+function _isNoticeRow(msg) {
+    return !!(msg && (msg.is_notice || msg.is_notice === 1));
+}
+
 async function _renderHistory(convId, data) {
     const container = document.getElementById('chatContainer');
     const turnLogs = data.turn_logs || [];
@@ -78,6 +90,7 @@ async function _renderHistory(convId, data) {
     const items = [];
     for (const msg of (data.messages || [])) {
         if (_isSteerRow(msg)) continue;              // steering lives in the turn block
+        if (_isNoticeRow(msg)) continue;             // runtime notices live in the turn block
         if (msg.role === 'assistant' && turnByMsg[msg.id]) {
             items.push({ t: msg.timestamp, kind: 'turn', row: turnByMsg[msg.id] });
             continue;
@@ -105,6 +118,17 @@ async function _renderHistory(convId, data) {
     // (2026-11-09) so a reload shows, per loop: my message, the turns block, that loop's LAST
     // AI message - not the whole run.
     if (blocks) CycleBlock.refreshAiVisibility(convId);
+    // (2026-12 ask_user_question) An UNANSWERED question is a live fact, not history: the
+    // tool call is still waiting on it (blocking) or the timed wait returned PENDING and the
+    // answer still arrives as a notice. Re-render those cards so a reload never hides a
+    // question the user can still answer. Best-effort: a failed probe just shows no cards.
+    try {
+        const rt = await fetch(`/api/runtime/${convId}`);
+        if (rt.ok) {
+            const body = await rt.json();
+            CycleShell.restoreOpenCards(convId, body.pending_questions || []);
+        }
+    } catch (e) { /* no runtime probe - the live frames still carry the card */ }
     return { messages: (data.messages || []).length, blocks };
 }
 

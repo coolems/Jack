@@ -57,9 +57,10 @@ def build_llama_payload(
 
     # Strip internal metadata keys before the messages leave the process. The client
     # caches per-message token counts on the dicts (`_est_tokens`), tags the current
-    # user prompt with `_protect`, and re-attaches `_image_paths` / `_file_contents`;
-    # none of that belongs in the llama.cpp payload.
-    _INTERNAL_KEYS = ("_est_tokens", "_protect", "_image_paths", "_file_contents")
+    # user prompt with `_protect`, marks the turn-boundary line with `_loop_marker`, and
+    # re-attaches `_image_paths` / `_file_contents`; none of that belongs in the payload.
+    _INTERNAL_KEYS = ("_est_tokens", "_protect", "_loop_marker",
+                      "_image_paths", "_file_contents")
     messages = [
         {k: v for k, v in m.items() if k not in _INTERNAL_KEYS} if isinstance(m, dict) else m
         for m in (messages or [])

@@ -509,6 +509,73 @@ function handleWebSocketMessage(data, ownerConvId) {
         if (typeof handleSteerFrame === 'function') handleSteerFrame(data, convId);
         return;
     }
+
+    // ===== RUNTIME lane (2026-12 subagents / background jobs / questions) ============
+    // A notice is the RUNTIME speaking (a child settled, a job settled, the user answered
+    // a question the AI asked). It is never a chat-level message: it is a row of the turn's
+    // block, correlated by notice_id, exactly like steering. Children/jobs are rows too, so
+    // the user can see delegated work while it runs.
+
+    if (data.type === 'cycle_notice') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setNotice(block, Object.assign({ state: 'applied' }, data));
+        return;
+    }
+    if (data.type === 'notice_queued') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setNotice(block, Object.assign({ state: 'queued' }, data));
+        return;
+    }
+    if (data.type === 'notice_applied') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setNotice(block, Object.assign({ state: 'applied' }, data));
+        return;
+    }
+    if (data.type === 'notice_deferred') {
+        // No wake budget left (or quiet-wake mode): the notice waits for the user's next
+        // message. With no block on screen it must still be visible as a system notice.
+        const block = _cycleTarget(convId, data);
+        if (block) {
+            CycleBlock.setNotice(block, Object.assign({ state: 'deferred' }, data));
+        } else {
+            showNotification('A background result is waiting: ' + _oneLine(data.content || ''), 'info');
+        }
+        return;
+    }
+    if (data.type === 'cycle_child') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setChild(block, data);
+        return;
+    }
+    if (data.type === 'cycle_child_output') {
+        // (2026-11-30) A delegated child's streamed text. It paints in THAT child's row,
+        // never in the parent's answer strip: a child's words are not the parent's answer,
+        // and forwarding them as `content` frames used to write them into the parent's
+        // bubble (and its `done` frame used to settle the parent's block mid-turn).
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.appendChildOutput(block, data);
+        return;
+    }
+    if (data.type === 'cycle_job') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setJob(block, data);
+        return;
+    }
+    if (data.type === 'cycle_job_output') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.appendJobOutput(block, data);
+        return;
+    }
+    if (data.type === 'cycle_question_pending') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setQuestion(block, Object.assign({ pending: true }, data));
+        return;
+    }
+    if (data.type === 'cycle_question') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setQuestion(block, data);
+        return;
+    }
     if (data.type === 'cycle_final') {
         // The answer row opened - the final AI response is being delivered. The last-tool
         // strip is live-work only, so it is REMOVED here (user rule 2026-11-08, revised:
@@ -592,6 +659,16 @@ function handleWebSocketMessage(data, ownerConvId) {
     }
 
     if (data.type === 'image_generated') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.addImage(block, data);
+        return;
+    }
+
+    // (2026-12) the recorder's persisted identity row for a generated image. The live
+    // 'image_generated' frame already painted the pixels for THIS call - addImage() dedupes
+    // by call_id, so this only paints when the live frame missed the block (replay / late
+    // attach). A reload never sees frames: it rebuilds from the payload instead.
+    if (data.type === 'cycle_image') {
         const block = _cycleTarget(convId, data);
         if (block) CycleBlock.addImage(block, data);
         return;

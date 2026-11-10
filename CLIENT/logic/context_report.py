@@ -29,7 +29,21 @@ logger = logging.getLogger("COOLEMS.ContextReport")
 
 #: Notices the loop injects itself - counted separately so "user messages" does not
 #: hide the guardian/resume/force-completion text that grew the context.
-_NOTICE_MARKERS = ("[SYSTEM NOTICE]", "[USER STEERING MESSAGE", "[USER MESSAGE WHILE YOU WERE WORKING")
+#: (2026-12) the RUNTIME NOTICE lane is added here too: a settled subagent report or a
+#: background job's output is loop-injected text, not user speech, so it must show up in
+#: the budget report as loop work - otherwise a long child report looks like a user turn.
+#: Markers come from logic/runtime_notice.py so the header text and its accounting live
+#: in one module (imported lazily: context_report is imported by paths that may not have
+#: the notice module on the path in root-context runs).
+_NOTICE_MARKERS = (
+    "[SYSTEM NOTICE]",
+    "[USER STEERING MESSAGE",
+    "[USER MESSAGE WHILE YOU WERE WORKING",
+    "[RUNTIME NOTICE - SUBAGENT SETTLED",
+    "[RUNTIME NOTICE - BACKGROUND JOB SETTLED",
+    "[RUNTIME NOTICE - THE USER ANSWERED YOUR QUESTION",
+    "[RUNTIME NOTICE.",
+)
 
 #: How many message contributors to list per report (newest cost first).
 _TOP_N = 12

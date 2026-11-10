@@ -85,14 +85,22 @@ def load_turn_logs(conv_id: str) -> List[Dict]:
 
 
 def delete_conversation_rows(cursor, conv_id: str) -> Dict[str, int]:
-    """Delete a workspace CHILD-FIRST: turn_log -> messages -> conversations.
+    """Delete a workspace CHILD-FIRST: runtime_state -> turn_log -> messages -> conversations.
 
     Order is the whole point. With foreign_keys ON, clearing the children before the
     parent is the only sequence that cannot raise IntegrityError, and it keeps the
     delete atomic: the caller commits once, so a workspace goes together with its
-    messages and cycle history - no orphan rows left behind.
+    messages, cycle history and its subagent/job ledger - no orphan rows left behind.
     """
     counts: Dict[str, int] = {}
+
+    # (2026-12) runtime_state is a child of conversations too: a workspace that delegated
+    # work must not leave ledger rows pointing at a conversation that no longer exists.
+    try:
+        from app.runtime.runtime_store import delete_runtime_rows
+        counts["runtime_state"] = delete_runtime_rows(cursor, conv_id)
+    except Exception as e:  # pragma: no cover - defensive: the table may not exist yet
+        logger.debug(f"runtime_state delete skipped for {conv_id}: {e}")
 
     cursor.execute("DELETE FROM turn_log WHERE conversation_id = ?", (conv_id,))
     counts["turn_log"] = cursor.rowcount

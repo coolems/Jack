@@ -31,6 +31,8 @@ original order:
                              learning, /api/my-permissions
     python_exec_approval.py  POST /api/stop/{conv_id} (bus-aware) +
                              POST /api/exec-approval/{conv_id}/{request_id}
+    runtime.py               (2026-12) POST /api/question/{conv}/{req} +
+                             GET /api/runtime/{conv} (children, jobs, ledger)
 
 The flat CLIENT/app/routers/agent.py file is a re-export facade so the existing import
 ('from app.routers.agent import create_agent_router' in app/endpoints.py) keeps working.
@@ -41,6 +43,7 @@ from fastapi import APIRouter
 from .auth_setup import register as _register_auth
 from .model_switching import register as _register_model_switching
 from .python_exec_approval import register as _register_python_exec_approval
+from .runtime import register as _register_runtime
 from .search_engines import register as _register_search_engines
 from .settings import register as _register_settings
 
@@ -57,5 +60,8 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
     _register_search_engines(router, provider, model_name, api_timeout, agent, stop_events)
     _register_model_switching(router, provider, model_name, api_timeout, agent, stop_events)
     _register_python_exec_approval(router, provider, model_name, api_timeout, agent, stop_events)
+    # (2026-12 runtime) question cards + the runtime panel read-out, last so they never
+    # shadow an existing path.
+    _register_runtime(router, provider, model_name, api_timeout, agent, stop_events)
 
     return router

@@ -55,6 +55,47 @@ from .config import (
     CLIENT_MAX_OPEN_CHAT_WS,        # (2026-09-08 multi-chat) UI LRU cap on open per-chat sockets
     CHAT_STEER_QUEUE_MAX,           # (2026-10-23 live steering) max queued mid-run user messages
 
+    # --- Runtime notice lane (2026-12 subagents + background jobs + questions) ---
+    # A notice is the RUNTIME speaking (child settled, job settled, user answered a
+    # question the AI asked). Same injection boundaries as steering, different header,
+    # different persistence flag (messages.is_notice), and it never defers a completion.
+    NOTICE_QUEUE_MAX,
+    NOTICE_MAX_CONSECUTIVE_WAKES,
+    NOTICE_QUIET_WAKE,
+    NOTICE_INLINE_BYTES,
+
+    # --- Subagents (2026-12) ---
+    SUBAGENT_MAX_DEPTH,
+    SUBAGENT_MAX_CONCURRENT_PER_CONV,
+    SUBAGENT_NOTICE_INLINE_BYTES,
+    SUBAGENT_TIMEOUT_SEC,
+
+    # --- Background jobs (2026-12) ---
+    JOB_LIVE_RETAIN_BYTES,
+    JOB_SETTLED_RETAIN_BYTES,
+    JOB_MAX_CONCURRENT_PER_CONV,
+    JOB_WAIT_TIMEOUT_SEC,
+    JOB_MAX_WAIT_TIMEOUT_SEC,
+    JOB_INLINE_OUTPUT_BYTES,
+    JOB_PUMP_POLL_MS,
+    JOB_SPILL_KEEP_FILES,
+
+    # --- Parallel tool dispatch (2026-12) ---
+    TOOL_MAX_PARALLEL,
+
+    # --- ask_user_question (2026-12) ---
+    QUESTION_TIMEOUT_DEFAULT_SEC,
+    QUESTION_MAX_OPTIONS,
+
+    # --- MCP servers (2026-12) ---
+    # Servers themselves are declared in CLIENT/config/mcp_servers.json and stay disabled
+    # until the human enables them; these bound what a server's payload may reach.
+    MCP_TEXT_PREVIEW_CHARS,
+    MCP_INSTRUCTIONS_MAX_CHARS,
+    MCP_TIMEOUT_DEFAULT_SEC,
+    MCP_TIMEOUT_MAX_SEC,
+    MCP_SPILL_KEEP_FILES,
+
     MODEL_NAME,
 
     # --- Model Switch Timing (CLIENT side) ---

@@ -68,7 +68,9 @@ def build_approval_frame(conv_id: str, request_id: str, code: str,
 #: Consent card categories - each has its OWN "allow until task done" grant flag.
 #: 'desktop' (2026-11-07) is the Computer Use gate: the payload is an APP identity, so
 #: its grant means "this AI may drive that application during this run".
-ALLOW_TILL_TASK_DONE_KINDS = ("python", "url", "file", "network", "subprocess", "desktop")  # (2026-10-24) subprocess; (2026-11-07) desktop
+#: 'question' (2026-12) is ask_user_question: its grant means "you may decide questions of
+#: this kind yourself for the rest of this task" - the AI then states each choice it makes.
+ALLOW_TILL_TASK_DONE_KINDS = ("python", "url", "file", "network", "subprocess", "desktop", "question")  # (2026-10-24) subprocess; (2026-11-07) desktop; (2026-12) question
 
 
 def _flag_name(kind: str) -> str:
@@ -97,6 +99,9 @@ class ExecApprovalState:
         self.allow_network_till_task_done = False
         self.allow_subprocess_till_task_done = False  # (2026-10-24)
         self.allow_desktop_till_task_done = False    # (2026-11-07) Computer Use cards
+        # (2026-12) ask_user_question: "you may decide questions of this kind yourself for
+        # the rest of this task". Declined/answered questions are unaffected.
+        self.allow_question_till_task_done = False
         # Per-kind "grant already announced" flags: set True the moment a kind's grant fires,
         # so callers can send their one-time system message exactly ONCE per agentic run + kind.
         self._notified: dict[str, bool] = {k: False for k in ALLOW_TILL_TASK_DONE_KINDS}

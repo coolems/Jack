@@ -19,7 +19,7 @@ import time
 import uuid
 from typing import Dict, Any, Tuple
 
-from config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS
+from config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS, PROVIDER_DEFAULT_TEMPERATURE
 from app.providers import BaseProvider
 # The loop-history frames format a tool's input for the UI (app.turn_log.format_args) and
 # carry the file identity for the tool's row line (tool_target). Imported at module level:
@@ -318,7 +318,30 @@ class ToolExecutor:
                  current_model: str = MODEL_NAME,
                  api_key: str = None,
                  session_timer=None,  # (2026-08-23) active-time timer; paused while user menus are open
-                 cycle=None):  # (2026-11-07) app.cycle_recorder.CycleRecorder for THIS turn
+                 cycle=None,  # (2026-11-07) app.cycle_recorder.CycleRecorder for THIS turn
+                 forbidden_tools: frozenset = frozenset(),
+                 child_id: str = "",  # (2026-12) delegated child: schema promise enforced HERE
+                 channel=None,          # (2026-12) this chat's ChatChannel (local tools need it)
+                 ollama_tools: list = None,   # (2026-12) the turn's tool schema, for a child
+                 generic_tool_prompt: str = "",
+                 enable_thinking: bool = False,
+                 temperature: float = None,
+                 role: str = None):
+        """forbidden_tools (2026-12 subagents): the fail-closed half of the child promise.
+
+        A child's SCHEMA already omits these names, but a model can still emit a tool
+        call for a name that is not in its schema (a copied past turn, a hallucination).
+        Enforcing it here means a child can never drive the physical screen, the shared
+        browser, the GPU, or delegate again — the singleton tool_lock would serialise it
+        anyway and the result would be garbage. child_id is diagnostic only.
+
+        channel / ollama_tools / generic_tool_prompt / enable_thinking / temperature /
+        role (2026-12): the per-turn context CLIENT-LOCAL tools need. `subagent` builds a
+        child that must run with THIS turn's schema and prompt, `job_*` and
+        `ask_user_question` need the channel (notice queue, pending questions, consent
+        cards). They are passed to orchestrator.execute_tool(local_context=...) only for
+        local tools — remote tools never see them.
+        """
         self.orchestrator = orchestrator
         self.lesson_manager = lesson_manager
         self.provider = provider
@@ -329,11 +352,41 @@ class ToolExecutor:
         # goes through _rec(), which swallows errors: history is best-effort and must never
         # break a tool call.
         self.cycle = cycle
+        self.forbidden_tools = frozenset(forbidden_tools or ())
+        self.child_id = child_id or ""
+        self.channel = channel
+        self.ollama_tools = list(ollama_tools or [])
+        self.generic_tool_prompt = generic_tool_prompt or ""
+        self.enable_thinking = bool(enable_thinking)
+        self.temperature = temperature
+        self.role = role
 
         # Detect if orchestrator uses async execute_tool (RemoteToolOrchestrator)
         self._is_async_orchestrator = inspect.iscoroutinefunction(
             getattr(self.orchestrator, 'execute_tool', None)
         )
+
+    def _local_context(self, conversation_history: list = None) -> Dict[str, Any]:
+        """Per-call context for CLIENT-LOCAL tools (2026-12). Built lazily, only used when
+        the orchestrator recognises a local name; remote tools never receive it."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        return {
+            "loop": loop,
+            "channel": self.channel,
+            "websocket": None,          # filled by the orchestrator from the call's websocket
+            "conversation_id": None,    # filled by the orchestrator from the call's conv id
+            "ollama_tools": self.ollama_tools,
+            "generic_tool_prompt": self.generic_tool_prompt,
+            "enable_thinking": self.enable_thinking,
+            "temperature": self.temperature if self.temperature is not None
+            else PROVIDER_DEFAULT_TEMPERATURE,
+            "parent_history": conversation_history,
+            "session_timer": self.session_timer,
+            "role": self.role,
+        }
 
     # ------------------------------------------------------------------
     # Cycle-history hooks (2026-11-07) - best-effort, never raise
@@ -383,6 +436,32 @@ class ToolExecutor:
         await self._rec("tool", name, args, bool(ok), output, float(duration_ms or 0.0),
                         call_id=call_id)
 
+    async def _record_image(self, call_id: str, img: Dict[str, Any]) -> None:
+        """Record one generated image's FILE IDENTITY on this turn (2026-12).
+
+        The live 'image_generated' frame already painted the pixels; this row is what makes
+        the image survive a page reload - CycleShell.rebuild() renders it from rel_path over
+        HTTP (/api/download?path=...&inline=true), so no base64 ever lands in the DB.
+        """
+        file_path = str(img.get("file_path") or "")
+        rel_path = ""
+        if file_path:
+            try:
+                import os as _os
+                from app.utils.common import get_working_root as _gwr
+                root = _gwr()
+                if root:
+                    _rel = _os.path.relpath(file_path, root).replace(_os.sep, "/")
+                    rel_path = "" if _rel.startswith("..") else _rel
+            except Exception:
+                rel_path = ""   # no root / bad path - the UI falls back to filename-only
+        await self._rec("image", call_id, file_path=file_path,
+                        filename=str(img.get("filename") or ""), rel_path=rel_path,
+                        width=int(img.get("width") or 0), height=int(img.get("height") or 0),
+                        pipeline=str(img.get("pipeline") or ""),
+                        model_id=str(img.get("model_id") or ""),
+                        dtype=str(img.get("dtype") or ""), setup=img.get("setup"))
+
     async def execute(
         self,
         tool_name: str,
@@ -423,6 +502,24 @@ class ToolExecutor:
         
         role = get_key_role(self.api_key) if self.api_key else DEFAULT_ROLE_NO_KEY
         logger.debug(f"[AGENTIC.DEBUG] ToolExecutor.execute() - Key role resolved: '{role}'")
+
+        # ============================================================
+        # CHILD FORBIDDEN TOOL GATE (2026-12 subagents) - fail-closed FIRST
+        # A delegated child's schema already omits these names, so reaching here means
+        # the model emitted a call it was not given (copied history / hallucination).
+        # Nothing runs: the child is told plainly what it may use instead.
+        # ============================================================
+        if self.forbidden_tools and tool_name in self.forbidden_tools:
+            logger.warning(f"[SUBAGENT] {tool_name} BLOCKED for child {self.child_id or '?'}")
+            blocked = (
+                f"ERROR: Tool '{tool_name}' is not available to a delegated subagent "
+                f"(child {self.child_id or 'unknown'}). You have no screen, browser, image "
+                "generation or delegation tools - do the work with file, search, web or "
+                "python tools, or report what you could not do."
+            )
+            await self._record_tool(tool_name, tool_args, False, blocked,
+                                    (time.time() - exec_start) * 1000.0, call_id=call_id)
+            return blocked, ""
 
         # ============================================================
         # USER APPROVAL GATE for python_exec (2026-09-24)
@@ -566,7 +663,10 @@ class ToolExecutor:
                 api_key=self.api_key,
                 websocket=websocket,
                 conversation_id=conversation_id,
-                cycle=self.cycle
+                cycle=self.cycle,
+                # (2026-12) CLIENT-LOCAL tools (subagent / job / question) need the turn's
+                # channel + schema; the orchestrator only uses this for local names.
+                local_context=self._local_context(conversation_history)
             )
         elif tool_name == 'generate_image':
             # Sync orchestrator + blocking subprocess -- run in thread
@@ -580,15 +680,28 @@ class ToolExecutor:
             logger.debug("[AGENTIC.DEBUG] ToolExecutor.execute() - generate_image thread complete")
         else:
             # Sync orchestrator -- call directly
-            tool_result = self.orchestrator.execute_tool(
-                tool_name,
-                tool_args,
-                conversation_history=conversation_history,
-                api_key=self.api_key,
-                websocket=websocket,
-                conversation_id=conversation_id,
-                cycle=self.cycle
-            )
+            try:
+                from tools.local_registry import is_local_tool, call as _local_call
+            except Exception:
+                is_local_tool = None
+                _local_call = None
+            if is_local_tool is not None and is_local_tool(tool_name):
+                # A sync orchestrator has no local_context parameter (legacy path), so the
+                # local dispatch happens HERE instead. Still on the event-loop thread.
+                ctx = self._local_context(conversation_history)
+                ctx["websocket"] = websocket
+                ctx["conversation_id"] = conversation_id
+                tool_result = await _local_call(tool_name, tool_args or {}, **ctx)
+            else:
+                tool_result = self.orchestrator.execute_tool(
+                    tool_name,
+                    tool_args,
+                    conversation_history=conversation_history,
+                    api_key=self.api_key,
+                    websocket=websocket,
+                    conversation_id=conversation_id,
+                    cycle=self.cycle
+                )
 
         exec_elapsed = time.time() - exec_start
 
@@ -698,6 +811,10 @@ class ToolExecutor:
                     )
                 except Exception as _img_err:
                     logger.warning(f"[AGENTIC.DEBUG] Image-to-UI push failed (non-fatal): {_img_err}")
+                # (2026-12) persist the image's FILE IDENTITY on this turn, so a page reload
+                # rebuilds it in the loop history from /api/download - independent of whether
+                # the live frame above reached the socket.
+                await self._record_image(call_id, _img)
 
         # Check for lessons for this tool
         # LEARNED LESSONS - skipped on purpose (see _LESSONS_INJECTION_ENABLED at

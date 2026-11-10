@@ -62,6 +62,9 @@ def _seed_from_example(target_path: str, example_path: str) -> bool:
             content = json.dumps([], indent=2) + "\n"
         elif name == "settings.json":
             content = json.dumps({"server_address": ""}, indent=2) + "\n"
+        elif name == "mcp_servers.json":
+            # No servers: fail-closed default, matching the template's disabled state.
+            content = json.dumps({"servers": []}, indent=2) + "\n"
         else:  # pragma: no cover - defensive, unknown file type
             return False
 
@@ -101,6 +104,10 @@ def ensure_client_config_files(client_dir: str | None = None) -> list[str]:
          os.path.join(config_dir, ".api_client_keys.example.json")),
         (os.path.join(config_dir, "settings.json"),
          os.path.join(config_dir, "settings.example.json")),
+        # (2026-12 MCP) the server list ships DISABLED in the template; seeding the file
+        # only makes the shape visible - enabling a server is a human edit.
+        (os.path.join(config_dir, "mcp_servers.json"),
+         os.path.join(config_dir, "mcp_servers.example.json")),
     ]
 
     created = []

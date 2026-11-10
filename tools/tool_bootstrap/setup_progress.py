@@ -60,6 +60,9 @@ class SetupProgress:
         # Bumped once per setup RUN (ensure_tool_runtime / model pre-flight). An orphaned
         # process from an earlier killed attempt may still be writing its old state - when
         # it notices the file carries a newer generation it stops, so the live run wins.
+        # One tool invocation bumps TWICE (bootstrap, then the tool's own model pre-flight),
+        # so a UI consumer must treat generation-1 rows as this run's too - see _gen in
+        # set_stage() and CLIENT/static/ui/setup-progress.js.
         self.generation = int(self.load().get("generation") or 0) + 1
 
     # -- low-level ---------------------------------------------------------
@@ -104,6 +107,13 @@ class SetupProgress:
             generate_image._ensure_model_cached re-adopts) but loses its status, so the
             UI hides it until the first real progress event rewrites it.
 
+        TERMINAL 'error' rows are retired too (2026-11-10 field fix): the UI's freshness
+        filter judges a terminal row by the FILE's updated_at, not by the row's own age -
+        so while a live download stamps the file every 0.5 s, the PREVIOUS attempt's
+        'error' row looks fresh and the card reads "Setup / Downloads — generate_tool:
+        failed" with the old failure text, next to numbers that are actually progressing.
+        A row from a dead attempt is never this run's status, so it is dropped here.
+
         Writes ONLY when a stale row was actually found, so a fully-cached machine still
         produces no progress file and no UI card (the 2026-09-24 rule).
         """
@@ -113,11 +123,14 @@ class SetupProgress:
             changed = False
             for name in list(stages.keys()):
                 st = stages.get(name)
-                if not isinstance(st, dict) or st.get("status") != "running":
+                if not isinstance(st, dict) or st.get("status") not in ("running", "error"):
                     continue
                 if name == "model":
                     st.pop("status", None)
                     st.pop("current_file", None)
+                    st.pop("detail", None)
+                    st.pop("speed_bps", None)
+                    st.pop("eta_sec", None)
                 else:
                     stages.pop(name, None)
                 changed = True
@@ -174,6 +187,18 @@ class SetupProgress:
                 st.update(fields)
             else:
                 state["stages"][stage] = fields
+            # Per-row ownership (2026-11-10): the UI's freshness filter judged a terminal
+            # row by the FILE's updated_at, so while a live model download stamps the file
+            # every 0.5 s, rows left by an EARLIER run - or a previous attempt's
+            # 'model: error' - looked fresh and were rendered as this run's status
+            # ('Setup / Downloads — generate_tool: failed' next to a download that was
+            # actually progressing). Each row now records WHICH run wrote it ('_gen') and
+            # WHEN ('_at'), so the UI can age a row exactly. Rows without them (older
+            # builds) keep the file-age rule.
+            tgt = state["stages"][stage]
+            if isinstance(tgt, dict):
+                tgt["_gen"] = self.generation
+                tgt["_at"] = time.time()
             self.save(state)
         except Exception as e:  # informational only - never break setup
             logger.debug(f"[bootstrap] progress set_stage({stage}) failed (ignored): {e}")

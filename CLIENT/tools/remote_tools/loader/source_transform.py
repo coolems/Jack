@@ -9,7 +9,10 @@ into the exec globals at compile time (see globals_builder.py).
 The pipeline is a sequence of small, independently testable steps. Order matters and
 is documented per step; each step only touches the import forms it owns:
 
-  1.  from ..utils import X            -> X = utils.X        (multi-dot relative)
+  0.  from X import (...)            -> from X import A, B   (parenthesized import
+                                       collapsed onto one line; parens must never reach
+                                       the line-based steps below -- see step 0 below)
+  1.  from ..utils import X          -> X = utils.X        (multi-dot relative)
   2.  from . import Name as Alias      -> Alias = Name       (bare parent-package)
   3.  from .module import (...)        -> pass               (same-package, multi-line)
   4.  from .module import X            -> pass               (same-package single-line plain name;
@@ -100,8 +103,119 @@ def _strip_multiline_paren_imports(source_code: str, pattern: str, replacement: 
 
 
 # ---------------------------------------------------------------------------
-# Step 1 -- multi-dot relative imports: 'from ..utils import X' -> 'X = utils.X'
+# Shared helper -- tell an import name list apart from the next real statement
 # ---------------------------------------------------------------------------
+
+#: One line of an import name list: 'A', 'A as B', 'A, B,', 'A, B as C'.
+#: Used to tell a real continuation line apart from the next real statement, so a
+#: malformed paren cannot swallow the code that follows it.
+_NAME_LIST_LINE_RE = _re.compile(
+    r'^[A-Za-z_]\w*(?:\s+as\s+[A-Za-z_]\w*)?'
+    r'(?:\s*,\s*[A-Za-z_]\w*(?:\s+as\s+[A-Za-z_]\w*)?)*\s*,?\s*$'
+)
+
+
+def _is_name_list(text: str) -> bool:
+    """True when *text* is only import names (optionally aliased, trailing comma OK)."""
+    return bool(_NAME_LIST_LINE_RE.match(text.strip()))
+
+
+# ---------------------------------------------------------------------------
+# Step 0 -- parenthesized imports: collapse onto the opening line
+# ---------------------------------------------------------------------------
+
+def _flatten_paren_imports(source_code: str) -> str:
+    """Collapse a parenthesized import onto its opening line (or drop the parens).
+
+    Handles every 'from <module> import (' form:
+      * ALREADY CLOSED on the opening line ('from tools.utils import (a, b)') -- the
+        statement is complete, so the parentheses are simply removed. The paren must
+        never reach a line-based step: '(a, b)' split on commas yields the names
+        '(a' and 'b)', so step 5 emitted 'a = utils.(a' / 'b = utils.b)' -> SyntaxError
+        ("unmatched ')'"), and step 3/8's skip-to-')' swallowed the following lines of
+        real code. FIX (2026-12-02): this form was never handled at all -- the old
+        forward scan looked for ')' on a LATER line, found the first ')' anywhere in the
+        file (typically the next 'def f(x):'), and glued that definition into the import
+        statement, destroying the tool.
+      * OPEN at the end of the opening line, with or without names on it -- names are
+        gathered from the continuation lines until the closing ')' is found.
+      * MALFORMED (no closing ')' before the next real statement) -- the line is left
+        untouched instead of swallowing the following lines. The old forward scan looked
+        for the first ')' ANYWHERE later, so a broken import glued the next statement
+        ('def f(x):') onto the import line and deleted real code. A malformed import must
+        fail on ITS OWN line, where the error is readable.
+
+    A trailing comment on either line is dropped (a comment glued onto the rewritten
+    statement would be parsed as part of the name list).
+
+    FIX (2026-11-30): every step below is LINE-BASED, so a parenthesized import that
+    spans lines was never seen as one statement. Step 5 matched only the opening line
+    and emitted '(get_working_root = utils.(get_working_root' -> SyntaxError
+    ("Maybe you meant '==' or ':='") -> ToolCompilationError, so the tool was refused
+    entirely. Five delivered tools hit this: read_file, delete_file, move_file,
+    rename_file, cua_screenshot. _flatten_multi_dot_paren_imports (2026-10-09) covered
+    only the EMPTY-opening-line RELATIVE form; this generalizes it to all module forms
+    and to content on the opening line. Runs as step 0, before every rewrite.
+    """
+    start_re = _re.compile(r'^(\s*)from\s+([.\w]+)\s+import\s*\(')
+    lines = source_code.split('\n')
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        m = start_re.match(lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        indent, module = m.group(1), m.group(2)
+        # Comments are stripped BEFORE any ')' test, so a comment that happens to
+        # contain a parenthesis cannot be mistaken for the end of the import.
+        head_code = _re.sub(r'\s*#.*$', '', lines[i][m.end():]).strip()
+
+        if head_code.endswith(')'):
+            # One complete statement already: keep the names, drop the parentheses.
+            body = head_code[:-1].strip().rstrip(',').strip()
+            joined = ', '.join(p.strip() for p in body.split(',') if p.strip())
+            out.append(f"{indent}from {module} import {joined}")
+            i += 1
+            continue
+
+        names: list[str] = [head_code.rstrip(',').strip()] if head_code else []
+        if names and not _is_name_list(names[0]):
+            out.append(lines[i])   # garbage on the opening line - leave it alone
+            i += 1
+            continue
+
+        j = i + 1
+        closed = False
+        while j < len(lines):
+            line_code = _re.sub(r'\s*#.*$', '', lines[j]).strip()
+            if line_code.endswith(')'):
+                # Names may sit BEFORE the closing paren -- keep them.
+                tail = line_code[:-1].strip().rstrip(',').strip()
+                if tail and not _is_name_list(tail):
+                    break          # not a name list -> malformed import, stop here
+                if tail:
+                    names.append(tail)
+                closed = True
+                break
+            if not line_code or not _is_name_list(line_code):
+                break              # a real statement followed the paren -> malformed
+            names.append(line_code.rstrip(',').strip())
+            j += 1
+
+        if not closed:
+            # Malformed paren: emit the original line unchanged. Consuming the following
+            # lines would delete the tool's code and hide the error on an unrelated line.
+            out.append(lines[i])
+            i += 1
+            continue
+
+        joined = ', '.join(p for p in names if p)
+        out.append(f"{indent}from {module} import {joined}")
+        i = j + 1
+    return '\n'.join(out)
+
 
 def _flatten_multi_dot_paren_imports(source_code: str) -> str:
     """Collapse a multi-line parenthesized multi-dot import to one line.
@@ -390,6 +504,7 @@ def transform_tool_source(source_code: str, tool_name: str = "") -> str:
         Transformed source ready for exec() with injected globals.
     """
     transformed = source_code
+    transformed = _flatten_paren_imports(transformed)         # 0. any multi-line 'import (' -> one line
     transformed = _step_multi_dot_relative(transformed)       # 1. from ..utils import X
     transformed = _step_bare_parent_import(transformed)       # 2. from . import Name as Alias
     transformed = _step_same_package_multiline(transformed)   # 3. from .mod import (...) -> pass

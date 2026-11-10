@@ -124,7 +124,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             logger.info(f"Client {current_ip} viewing conversation {conv_id}")
 
             cursor.execute(
-                "SELECT id, role, content, media_urls, file_contents, timestamp, is_steer FROM messages "
+                "SELECT id, role, content, media_urls, file_contents, timestamp, is_steer, "
+                "is_notice FROM messages "
                 "WHERE conversation_id = ? ORDER BY timestamp, rowid",
                 (conv_id,)
             )
@@ -149,6 +150,11 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 # message: the UI skips these rows and shows them inside the turn's
                 # loop-history block instead.
                 "is_steer": bool(row[6]) if len(row) > 6 else False,
+                # (2026-12 subagents / background jobs) a RUNTIME NOTICE is the runtime
+                # speaking to the model, not the user: the UI skips these rows too (they
+                # render as rows inside the turn block), while history loading keeps them
+                # as real model context.
+                "is_notice": bool(row[7]) if len(row) > 7 else False,
             })
 
         return {

@@ -43,7 +43,11 @@ logger = logging.getLogger("COOLEMS.ChatBus.ConsentDialog")
 #: Canonical card kinds - every frame built by build_frame() carries one of these.
 #: 'desktop' (2026-11-07) gates Computer Use: the payload is the app identity the AI
 #: wants to read/drive, not code, a URL or a path.
-KINDS = ("python", "url", "file", "network", "subprocess", "desktop")  # (2026-10-24) subprocess; (2026-11-07) desktop
+#: 'question' (2026-12) is NOT a permission gate: the payload is a question + options the
+#: AI asks the human, and the answer is free text. It has no auto-approve setting on
+#: purpose - auto-answering a question would invent an answer the user never gave, so the
+#: UI never starts a countdown for this kind (see static/ui/approval-dialog.js).
+KINDS = ("python", "url", "file", "network", "subprocess", "desktop", "question")  # (2026-10-24) subprocess; (2026-11-07) desktop; (2026-12) question
 
 #: Every kind's card offers the "Allow until task done" (allow_category_until_done) button. 2026-07-18 rev4:
 #: grants are PER KIND - clicking it on a python card only unlocks later python cards; url /

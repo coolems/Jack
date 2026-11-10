@@ -111,6 +111,7 @@ def save_user_message(
     file_contents: Optional[List[Dict]] = None,
     auto_title: bool = True,
     is_steer: bool = False,
+    is_notice: bool = False,
 ):
     """
     Save a user message to the database.
@@ -126,6 +127,11 @@ def save_user_message(
             is stored with the raw text so the model still sees the correction in a later
             turn, but the flag tells the UI it is NOT a chat-level message - it is painted
             as a row of that turn's loop-history block (app/turn_log `steers`).
+        is_notice: True for a RUNTIME NOTICE (2026-12 subagents / background jobs /
+            question answers). The row keeps its HEADER, because the notice is not user
+            speech and a later turn loading history must still see who said it. The flag
+            tells the UI to render it as a row of the turn's loop-history block
+            (turn_log `notices`) instead of a chat-level user bubble.
     """
     msg_id = str(uuid.uuid4())
     conn = get_db_connection()
@@ -135,8 +141,8 @@ def save_user_message(
         # working_root sync below can never be a silent no-op UPDATE.
         _ensure_conversation_exists(cursor, conv_id)
         cursor.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents, is_steer) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents, is_steer, is_notice) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 msg_id,
                 conv_id,
@@ -145,6 +151,7 @@ def save_user_message(
                 json.dumps(media_urls) if media_urls else None,
                 json.dumps(file_contents) if file_contents else None,
                 1 if is_steer else 0,
+                1 if is_notice else 0,
             ),
         )
         cursor.execute(

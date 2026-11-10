@@ -34,9 +34,14 @@ import asyncio
 import json
 import logging
 import time
+from typing import Dict
 
 from .channel import ChatChannel, ChannelStatus, ChannelWebSocket
 from .generation_task import run_generation_turn, register_stop_event, unregister_stop_event
+from app.websocket.db_ops import save_user_message
+from logic.runtime_notice import NOTICE_QUESTION, render_notice
+
+from config import NOTICE_QUIET_WAKE
 
 logger = logging.getLogger("COOLEMS.ChatBus")
 
@@ -113,7 +118,10 @@ class ChatBus:
         """
         self._bind_owner_loop()
         live = [ch for ch in list(self._channels.values())
-                if ch.task is not None and not ch.task.done()]
+                # (2026-11-30) A channel with no TURN task may still own delegated work -
+                # the window-closing contract covers that too, so it is not skipped.
+                if (ch.task is not None and not ch.task.done())
+                or self._live_runtime_count(ch.conv_id) > 0]
 
         async def _stop_one(ch: ChatChannel) -> bool:
             # Fail any steering message still waiting for an injection point BEFORE the
@@ -133,6 +141,12 @@ class ChatBus:
                 pass
             if not ch.stop_event.is_set():
                 ch.stop_event.set()
+            # (2026-12) The user's contract for stop_all is "no task keeps running once
+            # the window is gone" - that includes delegated children and background jobs.
+            try:
+                await self._cascade_stop(ch, reason=f"runtime shutdown ({reason})")
+            except Exception:
+                pass
             task = ch.task
             try:
                 if task is not None and not task.done():
@@ -204,19 +218,35 @@ class ChatBus:
 
     # --- generation -------------------------------------------------------------------
 
-    async def submit(self, ws, conv_id: str, prepared: dict) -> ChatChannel:
+    async def submit(self, ws, conv_id: str, prepared: dict,
+                     notice_wake: bool = False) -> ChatChannel:
         """Start a background generation turn for *prepared* (see handler._prepare_user_message).
 
         If the chat already has a live session the old one is stopped first — a new user
         message supersedes it (same as clicking send while generating before this refactor,
         which used to be impossible because the receive loop was busy).
+
+        notice_wake=True marks a turn started by the RUNTIME (a settlement notice on an
+        idle chat) rather than by the user. Such a turn does NOT reset the consecutive-wake
+        budget - it consumes it - which is what stops the agent's own children from waking
+        it forever. A real user message always resets it.
         """
         self._bind_owner_loop()
         ch = self.get_or_create(conv_id)
 
         if ch.task is not None and not ch.task.done():
             logger.info(f"[CHATBUS] New message supersedes live session for conv={conv_id} — stopping it")
-            await self.stop(conv_id, send_frame=False)
+            # cascade=False: a NEW USER MESSAGE supersedes the TURN, not the background
+            # work the user deliberately started. Children and jobs outlive the turn that
+            # launched them - that is the whole point of a background job. Only an
+            # explicit Stop (or shutdown) cascades.
+            await self.stop(conv_id, send_frame=False, cascade=False)
+
+        # (2026-12 notice lane) A real user message re-opens the notice wake budget. A
+        # notice-driven turn does NOT reset it - it consumes it, and the consumption is
+        # counted in submit_notice() where the wake decision is made.
+        if not notice_wake:
+            ch.reset_notice_wakes()
 
         channel_ws = ChannelWebSocket(ch)
         register_stop_event(self._stop_events, conv_id, ch.stop_event)
@@ -272,9 +302,180 @@ class ChatBus:
                     "task_stopping")
 
         item = ch.queue_steer(text, steer_id)
+        # A real user message (typed mid-run) re-opens the notice wake lane: the user is
+        # watching this chat, so its own settlements may wake it again afterwards.
+        ch.reset_notice_wakes()
         logger.info(f"[CHATBUS] Steering message queued for conv={conv_id} "
                     f"(id={item['id'][:12]}, pending={ch.pending_steer_count()})")
         return True, item, ""
+
+    # --- runtime notices (2026-12 subagents / background jobs / questions) ----------
+
+    async def queue_notice(self, conv_id: str, text: str, source: str = "runtime",
+                           notice_id: str | None = None, meta: dict | None = None) -> dict:
+        """Queue one runtime notice on a chat's channel (UI frame emitted, no turn).
+
+        Used when the chat is LIVE: the ReAct loop injects it at its next safe boundary.
+        Also used when a wake is refused (budget spent) — the notice then waits for the
+        user's next turn instead of starting one.
+        """
+        self._bind_owner_loop()
+        ch = self.get_or_create(conv_id)
+        item = ch.queue_notice(text, source, notice_id, meta)
+        try:
+            await ch.emit_frame({
+                "type": "notice_queued",
+                "conv_id": conv_id,
+                # The notice belongs to the turn that is running right now, so the UI can
+                # place its row inside that turn's block (same targeting as steering).
+                "turn_id": getattr(ch, "turn_id", "") or "",
+                "notice_id": item["id"],
+                "source": item["source"],
+                "content": item["text"][:600],
+                "at_ts": item["received_at"],
+                "pending": ch.pending_notice_count(),
+            })
+        except Exception:
+            pass  # UI gone - the notice still waits
+        logger.info(f"[CHATBUS] Notice queued for conv={conv_id} "
+                    f"(source={item['source']}, id={item['id'][:12]}, pending={ch.pending_notice_count()})")
+        return item
+
+    async def submit_notice(self, conv_id: str, text: str, source: str = "runtime",
+                            meta: dict | None = None) -> bool:
+        """Wake an IDLE chat with a runtime notice: a follow-up turn with no user input.
+
+        This is the lane that makes background work useful: a child or a job that settles
+        while nobody is talking still gets acted on. Bounded by the channel's consecutive-
+        wake budget, because the notices are generated by the agent's own work — without a
+        cap one settlement wakes the parent, which delegates again, forever.
+
+        Returns True when a turn was started, False when the notice was only queued
+        (live turn, wake budget spent, quiet-wake setting, or a stopping channel).
+        """
+        self._bind_owner_loop()
+        text = (text or "").strip()
+        if not text:
+            return False
+        ch = self.get_or_create(conv_id)
+
+        if ch.task is not None and not ch.task.done():
+            # A live turn already has an injection point — do not start a second turn.
+            await self.queue_notice(conv_id, text, source, meta=meta)
+            return False
+        if ch.stop_event.is_set():
+            await self.queue_notice(conv_id, text, source, meta=meta)
+            return False
+        if NOTICE_QUIET_WAKE or not ch.notice_wake_allowed():
+            item = await self.queue_notice(conv_id, text, source, meta=meta)
+            try:
+                await ch.emit_frame({
+                    "type": "notice_deferred",
+                    "conv_id": conv_id,
+                    "notice_id": item["id"],
+                    "source": item["source"],
+                    "content": item["text"][:600],
+                    "reason": ("quiet wake mode" if NOTICE_QUIET_WAKE
+                               else "notice wake budget spent - waiting for your next message"),
+                    "at_ts": item["received_at"],
+                })
+            except Exception:
+                pass
+            logger.info(f"[CHATBUS] Notice deferred for conv={conv_id} (source={source})")
+            return False
+
+        # The wake is decided HERE, so the budget is spent here - not inside submit().
+        # A notice-driven turn must consume one unit even if submit() is replaced (tests,
+        # or a future wrapper): otherwise the cap would never be reached and one settled
+        # child could wake the parent forever.
+        ch.bump_notice_wakes()
+
+        # Persist the notice BEFORE the turn runs, flagged is_notice: the UI never paints
+        # it as a chat bubble (it is a row of the turn's block), and a later turn loading
+        # history still sees WHO said it (the header rides in the row).
+        try:
+            save_user_message(self._db_path, conv_id,
+                              render_notice(source, text), auto_title=False,
+                              is_notice=True)
+        except Exception as e:
+            logger.error(f"[CHATBUS] Failed to persist notice for conv={conv_id}: {e}")
+
+        ollama_tools = None
+        if self._tool_orchestrator is not None:
+            try:
+                ollama_tools = await self._tool_orchestrator.get_ollama_tools(api_key=self._ws_key)
+            except Exception as e:
+                logger.warning(f"[CHATBUS] Notice wake: tool schema unavailable ({e})")
+
+        # History for a wake turn is loaded from the DB exactly like a user turn: the
+        # notice itself is already persisted (is_notice), so the model sees the session
+        # plus this notice as its newest message.
+        history: list = []
+        try:
+            from utils.history_manager import (
+                load_conversation_history,
+                trim_history_to_token_limit,
+            )
+            from config import max_history_tokens
+            history = load_conversation_history(conv_id)
+            history = trim_history_to_token_limit(history, max_tokens=max_history_tokens())
+        except Exception as e:
+            logger.warning(f"[CHATBUS] Notice wake: history load failed ({e}) - running with no history")
+
+        prepared = {
+            "user_msg": text,
+            "model": self._model_name,
+            "system_prompt": f"You are {self._agent.get_name()}.",
+            "agent_mode": True,          # a notice is only meaningful inside the loop
+            "enable_thinking": False,
+            "enhanced_message": render_notice(source, text),
+            "image_data": [],
+            "image_paths": [],
+            "file_contents": [],
+            "media_files": [],
+            "requires_tools": True,
+            "ollama_tools": ollama_tools,
+            "dna_content": self._agent.get_identity(),
+            "notice_wake": True,         # the turn runner must not persist a user message
+            "history": history,
+        }
+        logger.info(f"[CHATBUS] Notice wake turn for conv={conv_id} (source={source}, "
+                    f"wake_round={ch._wake_rounds})")
+        await self.submit(None, conv_id, prepared, notice_wake=True)
+        return True
+
+    async def deliver_notice(self, conv_id: str, text: str, source: str = "runtime",
+                             meta: dict | None = None) -> bool:
+        """Route one runtime notice: live turn -> inject at its next boundary; idle -> wake.
+
+        The single entry point every settlement handler uses (jobs, children, questions).
+        Returns True when a follow-up turn was started.
+        """
+        ch = self._channels.get(conv_id)
+        if ch is not None and ch.task is not None and not ch.task.done():
+            await self.queue_notice(conv_id, text, source, meta=meta)
+            return False
+        return await self.submit_notice(conv_id, text, source, meta=meta)
+
+    async def answer_question(self, conv_id: str, request_id: str, answer: str) -> bool:
+        """Deliver the user's answer to an ask_user_question card.
+
+        Live turn -> a <question_answered> notice injected at the next boundary (the tool
+        call that asked may already have returned 'pending' in timed mode). Idle chat ->
+        a follow-up turn, so a late answer still lands. The pending card is dropped either
+        way, so the UI cannot answer the same question twice.
+        """
+        ch = self._channels.get(conv_id)
+        if ch is None:
+            return False
+        answer = (answer or "").strip()
+        # The card is settled whether or not the answer reached the model: leaving it
+        # pending would let the UI answer the same question twice.
+        ch.drop_pending_question(request_id)
+        if not answer:
+            return False
+        return await self.deliver_notice(conv_id, answer, NOTICE_QUESTION,
+                                         meta={"request_id": request_id})
 
     async def _reject_pending_steers(self, ch: ChatChannel, message: str, code: str) -> int:
         """Tell attached UI clients that still-queued steering messages will never run.
@@ -362,15 +563,82 @@ class ChatBus:
 
     # --- cancellation -------------------------------------------------------------------
 
-    async def stop(self, conv_id: str, send_frame: bool = True) -> bool:
+    def _live_runtime_count(self, conv_id: str) -> int:
+        """How much delegated/background work this chat still owns (children + jobs).
+
+        Read lazily so a bus built without the runtime (tests, legacy callers) still works.
+        Used by stop()/stop_all() to decide there IS something to stop even when the chat's
+        TURN task is gone - delegated work outlives the turn that started it.
+        """
+        count = 0
+        try:
+            from app.runtime.children import get_child_registry
+            reg = get_child_registry()
+            if reg is not None:
+                count += len(reg.live_children(conv_id))
+        except Exception:
+            pass
+        try:
+            from app.runtime.jobs import get_job_registry
+            jobs = get_job_registry()
+            if jobs is not None:
+                count += len(jobs.live_for_owner(conv_id))
+        except Exception:
+            pass
+        return count
+
+    async def _cascade_stop(self, ch: ChatChannel, reason: str) -> Dict[str, int]:
+        """Stop this chat's delegated children AND background jobs, child-first, awaited.
+
+        The runtime registries are process-local singletons; they are read lazily so a
+        bus built without the runtime (tests, legacy callers) still stops normally.
+        Bounded: a stuck child or job must never make the Stop button hang.
+        """
+        counts = {"children": 0, "jobs": 0}
+        try:
+            from app.runtime.children import get_child_registry
+            reg = get_child_registry()
+            if reg is not None:
+                counts["children"] = await reg.drain_children(ch.conv_id, reason)
+        except Exception as e:  # pragma: no cover - a cascade must never break a stop
+            logger.debug(f"[CHATBUS] child cascade failed for conv={ch.conv_id}: {e}")
+        try:
+            from app.runtime.jobs import get_job_registry
+            jobs = get_job_registry()
+            if jobs is not None:
+                counts["jobs"] = await jobs.drain_owner(ch.conv_id, reason)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"[CHATBUS] job cascade failed for conv={ch.conv_id}: {e}")
+        if counts["children"] or counts["jobs"]:
+            logger.info(f"[CHATBUS] Cascade stop for conv={ch.conv_id}: "
+                        f"{counts['children']} child(ren), {counts['jobs']} job(s)")
+        return counts
+
+    async def stop(self, conv_id: str, send_frame: bool = True,
+                   cascade: bool = True) -> bool:
         """Stop a chat's session (queued or running). Returns True when something was active.
 
         Two layers (see module docstring): cooperative stop_event + hard-cancel backstop so
         the red Stop button ALWAYS stops the task - even if it is stuck inside a long tool
-        execution that does not poll the event on its own.
+        execution that does not poll the event on itself.
+
+        cascade=True (2026-12) also stops this chat's delegated children and background
+        jobs: pressing Stop means "stop everything this chat started". bus.submit() passes
+        cascade=False when a NEW USER MESSAGE supersedes a turn - background work the user
+        deliberately started outlives the turn that launched it, which is the whole point
+        of a job.
+
+        (2026-11-30 fix) The early-return used to bail out whenever the chat had NO turn
+        task, so a Stop pressed while only DELEGATED work was running stopped nothing: the
+        children kept burning tokens and the button reported "nothing active". The turn is
+        gone but the work the chat started is still alive - that is exactly what Stop must
+        stop, so the runtime registries are consulted before deciding there is nothing to do.
         """
         ch = self._channels.get(conv_id)
-        if ch is None or (ch.task is None and not ch.stop_event.is_set()):
+        if ch is None:
+            return False
+        live_runtime = self._live_runtime_count(conv_id)
+        if ch.task is None and not ch.stop_event.is_set() and live_runtime == 0:
             return False
         if not ch.stop_event.is_set():
             ch.stop_event.set()
@@ -398,6 +666,13 @@ class ChatBus:
             "The task was stopped before this steering message could be applied.",
             "task_stopped",
         )
+        if cascade:
+            # (2026-12) Stop means "stop everything this chat started": children first
+            # (a child may itself be holding a job), then the chat's background jobs.
+            try:
+                await self._cascade_stop(ch, reason="user stop")
+            except Exception as e:  # pragma: no cover - a cascade must never break a stop
+                logger.debug(f"[CHATBUS] cascade stop failed for conv={conv_id}: {e}")
         if send_frame:
             try:
                 await ch.emit_frame({"type": "system",

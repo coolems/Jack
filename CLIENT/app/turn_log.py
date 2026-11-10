@@ -21,6 +21,7 @@ app/websocket/turn_ops.delete_conversation_rows().
 """
 
 import json
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -192,8 +193,17 @@ def _normalize_legacy_grant_lines(data: Dict) -> Dict:
                         if not str(f.get("text", "")).startswith(LEGACY_GRANT_FEEDBACK_PREFIX)]
 
     data["feedback"] = _dedupe_feedback(feedback)
+    if not data.get("notices"):
+        data["notices"] = []
+    for _key in ("children", "jobs", "questions"):
+        if not data.get(_key):
+            data[_key] = []
     if not data.get("speech"):
         data["speech"] = []
+    # (2026-12 images) a row written before the image lane has no key - backfill it so the
+    # reader never KeyErrors and old turns simply show no generated images.
+    if not data.get("images"):
+        data["images"] = []
     return data
 
 
@@ -250,6 +260,8 @@ def parse_payload(raw: Any) -> Optional[Dict]:
 def counts_of(data: Dict) -> Dict[str, int]:
     """The summary-line counters, derived from the rows (single source of truth)."""
     tools = data.get("tools") or []
+    feedback = data.get("feedback") or []
+    runtime_notices = data.get("notices") or []
     return {
         "turns": len(data.get("steps") or []),
         "tools": len(tools),
@@ -257,7 +269,15 @@ def counts_of(data: Dict) -> Dict[str, int]:
         "consents": len(data.get("consents") or []),
         "grants": len(data.get("grants") or []),
         "steers": len(data.get("steers") or []),
-        "notices": len(data.get("feedback") or []),
+        # The head line's single counter covers BOTH notice kinds: loop notices
+        # (`feedback`) and runtime notices (`notices`, 2026-12). Every counted notice has
+        # a row behind it, so the number never advertises rows that are not there.
+        "notices": len(feedback) + len(runtime_notices),
+        "runtime_notices": len(runtime_notices),
+        # (2026-12) delegated children / background jobs of this turn — the head line
+        # counts them so a reload shows the same numbers the live turn showed.
+        "children": len(data.get("children") or []),
+        "jobs": len(data.get("jobs") or []),
     }
 
 
@@ -286,6 +306,17 @@ class TurnLog:
         self.steers: List[Dict] = []
         self.grants: List[Dict] = []
         self.feedback: List[Dict] = []
+        self.notices: List[Dict] = []   # (2026-12) runtime notices (child/job/question)
+        # (2026-12) the runtime ENTITIES of this turn, one row each, updated by their frames:
+        # delegated subagents, background jobs, and ask_user_question cards.
+        self.children: List[Dict] = []
+        self.jobs: List[Dict] = []
+        self.questions: List[Dict] = []
+        # (2026-12 images) generated-image artifacts of this turn, one row per call. The
+        # row carries the FILE IDENTITY only - never the base64 pixels (a 600x400 PNG is
+        # ~300 KB and would bloat the persisted JSON); the UI renders it over HTTP from
+        # file_path (/api/download?path=...&inline=true), so a reload shows the same image.
+        self.images: List[Dict] = []
         self.speech: List[Dict] = []
         self.final: Optional[Dict] = None
         self.final_step: int = 0
@@ -441,6 +472,156 @@ class TurnLog:
         self.feedback.append(row)
         return row
 
+    # ===== runtime notices (2026-12 subagents / background jobs / questions) =====
+
+    def add_notice(self, step_no: int, text: str, source: str = "runtime",
+                   seq: int = 0, at_ts: Optional[float] = None,
+                   notice_id: str = "") -> Dict:
+        """One RUNTIME notice the loop actually injected: a child settled, a job settled,
+        or the user answered a question the AI asked.
+
+        Separate from `feedback` on purpose. `feedback` is the LOOP speaking (context
+        guardian, tool guidance); `notices` is the RUNTIME speaking, and each row carries
+        its source + notice_id so the UI can correlate the notice_queued / notice_applied
+        frames and render one row per settlement instead of duplicating it. Dedupe by
+        notice_id first, then by (step_no, text) for a retry re-emit.
+        """
+        if notice_id:
+            existing = next((n for n in self.notices if n.get("notice_id") == notice_id), None)
+            if existing is not None:
+                return existing
+        existing = next((n for n in self.notices
+                         if n["step_no"] == int(step_no) and n["text"] == (text or "")), None)
+        if existing is not None:
+            return existing
+        row = {"step_no": int(step_no), "text": text or "",
+               "source": source or "runtime", "seq": int(seq or 0),
+               "notice_id": notice_id or "",
+               "at_ts": at_ts if at_ts is not None else time.time()}
+        self.notices.append(row)
+        return row
+
+    # ===== runtime entities: children / jobs / questions (2026-12) =====
+
+    def add_child(self, child_id: str, label: str = "", mode: str = "spawn",
+                  depth: int = 1, status: str = "running", stop_reason: str = "",
+                  output: str = "", turns: int = 0, tool_calls: int = 0,
+                  steps: int = 0, at_ts: Optional[float] = None) -> Dict:
+        """One delegated subagent of this turn. ONE row per child id — a settlement frame
+        updates the same row instead of adding a second one (same rule as tool call ids).
+
+        `steps` is the child's own provider iterations (2026-11-30); `turns` counts the
+        run_child calls (1 per delegation/continuation), which read as "the child barely
+        worked" when it had actually done dozens of tool calls.
+        """
+        existing = next((c for c in self.children if c["child_id"] == child_id), None)
+        if existing is None:
+            row = {"step_no": self.final_step or len(self.steps), "child_id": child_id,
+                   "label": label or "", "mode": mode or "spawn", "depth": int(depth or 1),
+                   "status": status or "running", "stop_reason": stop_reason or "",
+                   "output": _clip(output or "", TOOL_OUTPUT_KEEP),
+                   "turns": int(turns or 0), "steps": int(steps or 0),
+                   "tool_calls": int(tool_calls or 0),
+                   "at_ts": at_ts if at_ts is not None else time.time()}
+            self.children.append(row)
+            return row
+        existing["status"] = status or existing["status"]
+        existing["stop_reason"] = stop_reason or existing["stop_reason"]
+        if output:
+            existing["output"] = _clip(output, TOOL_OUTPUT_KEEP)
+        existing["turns"] = int(turns or existing["turns"])
+        existing["steps"] = int(steps or existing["steps"])
+        existing["tool_calls"] = int(tool_calls or existing["tool_calls"])
+        if at_ts is not None:
+            existing["at_ts"] = at_ts
+        return existing
+
+    def add_job(self, job_id: str, label: str = "", kind: str = "job",
+                status: str = "running", detail: str = "", progress: str = "",
+                output: str = "", spill_path: str = "", result: str = "",
+                at_ts: Optional[float] = None) -> Dict:
+        """One background job of this turn. ONE row per job id, updated by its frames.
+
+        `result` is the job's terminal payload (what the producer returned), kept separate
+        from `output` (the stream) — the notice already carries both, and the row shows the
+        result in the detail without re-printing the whole stream.
+        """
+        existing = next((j for j in self.jobs if j["job_id"] == job_id), None)
+        if existing is None:
+            row = {"step_no": self.final_step or len(self.steps), "job_id": job_id,
+                   "label": label or "", "kind": kind or "job",
+                   "status": status or "running", "detail": detail or "",
+                   "progress": progress or "", "output": _clip(output or "", TOOL_OUTPUT_KEEP),
+                   "result": _clip(result or "", TOOL_OUTPUT_KEEP),
+                   "spill_path": spill_path or "",
+                   "at_ts": at_ts if at_ts is not None else time.time()}
+            self.jobs.append(row)
+            return row
+        existing["status"] = status or existing["status"]
+        existing["detail"] = detail or existing["detail"]
+        existing["progress"] = progress or existing["progress"]
+        if output:
+            existing["output"] = _clip(output, TOOL_OUTPUT_KEEP)
+        if result:
+            existing["result"] = _clip(result, TOOL_OUTPUT_KEEP)
+        if spill_path:
+            existing["spill_path"] = spill_path
+        if at_ts is not None:
+            existing["at_ts"] = at_ts
+        return existing
+
+    def add_question(self, request_id: str, question: str = "",
+                     options: Optional[List[str]] = None, decision: str = "",
+                     pending: bool = True, at_ts: Optional[float] = None) -> Dict:
+        """One ask_user_question card. The card itself is transient (like a consent card);
+        this row is the durable fact. An answer folds into the SAME row."""
+        existing = next((q for q in self.questions if q["request_id"] == request_id), None)
+        if existing is None:
+            row = {"step_no": self.final_step or len(self.steps), "request_id": request_id,
+                   "question": question or "", "options": list(options or []),
+                   "decision": decision or "", "pending": bool(pending and not decision),
+                   "at_ts": at_ts if at_ts is not None else time.time()}
+            self.questions.append(row)
+            return row
+        if decision:
+            existing["decision"] = decision
+            existing["pending"] = False
+        return existing
+
+    # ===== generated images (2026-12) =====
+
+    def add_image(self, call_id: str, file_path: str = "", filename: str = "",
+                  rel_path: str = "", width: int = 0, height: int = 0, pipeline: str = "",
+                  model_id: str = "", dtype: str = "", setup: Any = None,
+                  at_ts: Optional[float] = None) -> Dict:
+        """One generated image of this turn. ONE row per call id - a duplicate frame for
+        the same call updates nothing (the pixels are already on disk; only identity).
+
+        `rel_path` is the working-root-relative path with forward slashes (e.g.
+        `.temp/images/cat.png`) so the UI can build an HTTP download URL without knowing
+        the absolute root. `setup` is generate_image's per-run setup/tier report dict.
+        """
+        existing = next((i for i in self.images if i.get("call_id") == call_id), None) \
+            if call_id else None
+        if existing is not None:
+            return existing
+        row = {
+            "step_no": self.final_step or len(self.steps),
+            "call_id": call_id or "",
+            "file_path": file_path or "",
+            "rel_path": rel_path or "",
+            "filename": (filename or os.path.basename(file_path)) if file_path else (filename or ""),
+            "width": int(width or 0),
+            "height": int(height or 0),
+            "pipeline": pipeline or "",
+            "model_id": model_id or "",
+            "dtype": dtype or "",
+            "setup": setup if isinstance(setup, dict) else None,
+            "at_ts": at_ts if at_ts is not None else time.time(),
+        }
+        self.images.append(row)
+        return row
+
     # ===== AI text =====
 
     def add_speech(self, step_no: int, text: str, kind: str = "answer") -> Optional[Dict]:
@@ -473,6 +654,20 @@ class TurnLog:
             if c["pending"]:
                 c["decision"] = UNANSWERED_DECISION
                 c["pending"] = False
+        # (2026-12) A question the user never answered is a fact too: record it as
+        # unanswered, never leave the row claiming the card is still open.
+        for q in self.questions:
+            if q["pending"]:
+                q["decision"] = UNANSWERED_DECISION
+                q["pending"] = False
+        # A child/job still running when the TURN ended is not finished — turn completion
+        # never implies they stopped (their settlement arrives later, as a notice).
+        for c in self.children:
+            if c["status"] == "running":
+                c["status"] = "still-running"
+        for j in self.jobs:
+            if j["status"] == "running":
+                j["status"] = "still-running"
 
         speeds = [s["speed_tps"] for s in self.steps if s["speed_tps"]]
         avg_speed = round(sum(speeds) / len(speeds), 1) if speeds else 0.0
@@ -494,6 +689,14 @@ class TurnLog:
             "consents": self.consents,
             "grants": self.grants,
             "feedback": self.feedback,
+            # (2026-12) runtime notices: child/job settlements and answers to questions the
+            # AI asked. Kept separate from `feedback` so the UI can label the source.
+            "notices": self.notices,
+            "children": self.children,
+            "jobs": self.jobs,
+            "questions": self.questions,
+            # (2026-12 images) generated-image artifacts: identity only, rendered over HTTP.
+            "images": self.images,
             "final": self.final or {"text": "", "stopped": False},
         }
         data["counts"] = counts_of(data)

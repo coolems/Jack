@@ -310,6 +310,156 @@ const CycleRows = {
     },
 
     /**
+     * A RUNTIME notice (2026-12): a delegated subagent settled, a background job settled,
+     * or the user answered a question the AI asked. It is NOT user speech and NOT loop
+     * guidance, so it reads as its own row kind with a source label. The status line
+     * settles through CycleBlock.setNotice() (one row per notice_id), exactly like a steer.
+     */
+    runtime(el, d) {
+        el.dataset.noticeId = d.notice_id || '';
+        el.dataset.noticeState = d.state || (d.applied ? 'applied'
+            : (d.deferred ? 'deferred' : (d.queued ? 'queued' : 'arrived')));
+
+        const label = document.createElement('span');
+        label.className = 'cycle-runtime-label';
+        label.textContent = _runtimeSourceLabel(d.source || 'runtime');
+
+        const status = document.createElement('span');
+        status.className = 'cycle-runtime-status';
+        status.textContent = _runtimeStatusLabel(el.dataset.noticeState, d.reason);
+
+        this._line(el, d, { nameEl: label, extra: status, text: d.text || '' });
+        const text = document.createElement('div');
+        text.className = 'cycle-runtime-text';
+        text.textContent = d.text || '';
+        this._detail(el).appendChild(text);
+    },
+
+    /** A delegated subagent (2026-12): id + label on the line, mode/depth/status/time in
+     *  the detail. `status` settles from the cycle_child frame (running -> settled/aborted). */
+    child(el, d) {
+        el.dataset.childId = d.child_id || '';
+        el.dataset.childStatus = d.status || 'running';
+
+        const name = document.createElement('span');
+        name.className = 'cycle-child-name';
+        name.textContent = 'subagent ' + (d.child_id || '?');
+        if (d.label) {
+            const lab = document.createElement('span');
+            lab.className = 'cycle-child-label';
+            lab.textContent = d.label;
+            name.appendChild(lab);
+        }
+        const status = document.createElement('span');
+        status.className = 'cycle-child-status';
+        status.textContent = _runtimeEntityLabel(d.status, d.stop_reason);
+
+        this._line(el, d, { kind: 'child', nameEl: name, extra: status });
+
+        const detail = this._detail(el);
+        const meta = document.createElement('div');
+        meta.className = 'cycle-runtime-meta';
+        const bits = [];
+        if (d.mode) bits.push(d.mode);
+        if (d.depth != null) bits.push('depth ' + d.depth);
+        // `steps` = the child's own provider iterations; `turns` only counts the
+        // delegation calls, so showing it alone read as "the child barely worked".
+        if (d.steps) bits.push('steps ' + d.steps);
+        else if (d.turns) bits.push('turns ' + d.turns);
+        if (d.tool_calls) bits.push('tools ' + d.tool_calls);
+        if (d.at_ts) bits.push('finished ' + _fmtClock(d.at_ts));
+        meta.textContent = bits.join(' \u00b7 ');
+        detail.appendChild(meta);
+        // The child's own streamed output lines (2026-11-30). A child's content/thinking
+        // chunks arrive as cycle_child_output frames — they must paint HERE, inside this
+        // child's row, never in the parent's answer strip.
+        const out = document.createElement('div');
+        out.className = 'cycle-child-output';
+        detail.appendChild(out);
+        if (d.output) this.appendChildOutput(el, d.output, 'answer');
+    },
+
+    /** Append one streamed chunk to a child row's detail. `channel` separates the child's
+     *  reasoning from its answer. Observers only — the parent reads the report through the
+     *  settlement notice, so painting here never steals it. */
+    appendChildOutput(el, text, channel) {
+        const out = el.querySelector('.cycle-child-output');
+        if (!out) return;
+        const line = document.createElement('div');
+        line.className = 'cycle-child-line' + (channel === 'thinking' ? ' thinking' : '');
+        line.textContent = String(text || '');
+        out.appendChild(line);
+        // A child can stream a lot; keep the DOM light, the report itself is bounded.
+        while (out.childElementCount > 200) out.removeChild(out.firstElementChild);
+    },
+
+    /** A background job (2026-12): id + label, status, and its live output lines (appended
+     *  by cycle_job_output frames - observers only, never the model's read cursor). */
+    job(el, d) {
+        el.dataset.jobId = d.job_id || '';
+        el.dataset.jobStatus = d.status || 'running';
+
+        const name = document.createElement('span');
+        name.className = 'cycle-job-name';
+        name.textContent = 'job ' + (d.job_id || '?');
+        if (d.label) {
+            const lab = document.createElement('span');
+            lab.className = 'cycle-child-label';
+            lab.textContent = d.label;
+            name.appendChild(lab);
+        }
+        const status = document.createElement('span');
+        status.className = 'cycle-job-status';
+        status.textContent = _runtimeEntityLabel(d.status, d.detail);
+
+        this._line(el, d, { kind: 'job', nameEl: name, extra: status });
+
+        const detail = this._detail(el);
+        const meta = document.createElement('div');
+        meta.className = 'cycle-runtime-meta';
+        const bits = [];
+        if (d.kind) bits.push(d.kind);
+        if (d.progress) bits.push('progress: ' + d.progress);
+        if (d.at_ts) bits.push('finished ' + _fmtClock(d.at_ts));
+        if (d.spill_path) bits.push('full stream: ' + d.spill_path);
+        meta.textContent = bits.join(' \u00b7 ');
+        detail.appendChild(meta);
+        const out = document.createElement('div');
+        out.className = 'cycle-job-output';
+        detail.appendChild(out);
+        if (d.output) this.appendJobOutput(el, d.output, 'stdout');
+    },
+
+    /** Append one live output chunk to a job row's detail. `channel` distinguishes the
+     *  producer's stdout/stderr from its narration ('log'). */
+    appendJobOutput(el, text, channel) {
+        const out = el.querySelector('.cycle-job-output');
+        if (!out) return;
+        const line = document.createElement('div');
+        line.className = 'cycle-job-line' + (channel === 'stderr' ? ' stderr' : '');
+        line.textContent = String(text || '');
+        out.appendChild(line);
+        // A job can stream a lot; keep the DOM light, the full stream is in the spill file.
+        while (out.childElementCount > 200) out.removeChild(out.firstElementChild);
+    },
+
+    /** The answer to a question the AI asked (2026-12). The card itself is transient, like
+     *  a consent card: this row is the durable fact. */
+    question(el, d) {
+        el.dataset.requestId = d.request_id || '';
+        const line = document.createElement('div');
+        line.className = 'cycle-consent-line';
+        line.textContent = _questionLabel(d.decision, d.pending);
+        this._line(el, d, { kind: 'question', extra: line, text: d.question || '' });
+        if (d.options && d.options.length) {
+            const opts = document.createElement('div');
+            opts.className = 'cycle-runtime-meta';
+            opts.textContent = 'options: ' + d.options.join(' | ');
+            this._detail(el).appendChild(opts);
+        }
+    },
+
+    /**
      * A steering message the user typed WHILE this turn was running.
      * It is loop work, never a chat-level user message: the row sits inside the block at
      * the moment the user typed it (at_ts = received_at), so it reads as "the user
@@ -364,13 +514,22 @@ const CycleRows = {
         detail.appendChild(body);
     },
 
-    /** A generated image: filename on the line, thumb + setup line in the detail. */
+    /** A generated image: filename on the line, thumb + setup line in the detail.
+     *  TWO SOURCES (2026-12): a live 'image_generated' frame carries inline base64; a row
+     *  rebuilt from the persisted turn_log payload carries FILE IDENTITY only and renders
+     *  over HTTP (/api/download?path=...&inline=true) - so a reload shows the same image. */
     image(el, d) {
+        el.dataset.callId = d.call_id || '';
         this._line(el, d, { kind: 'image', text: d.filename || 'generated image' });
         const detail = this._detail(el);
         const img = document.createElement('img');
         img.className = 'cycle-image-thumb';
-        img.src = 'data:image/png;base64,' + d.image_base64;
+        if (d.image_base64) {
+            img.src = 'data:image/png;base64,' + d.image_base64;
+        } else if (d.rel_path || d.filename) {
+            const rel = String(d.rel_path || d.filename).replace(/\\/g, '/');
+            img.src = '/api/download?path=' + encodeURIComponent(rel) + '&inline=true';
+        }
         img.alt = d.filename || 'Generated image';
         img.title = 'Click to open file';
         if (d.file_path) {
@@ -440,6 +599,65 @@ window._steerStatusLabel = _steerStatusLabel;
 /** Status order for one steering row: a late ack must never downgrade a settled row. */
 const _STEER_STATE_RANK = { sending: 0, received: 1, applied: 2, rejected: 2 };
 window._STEER_STATE_RANK = _STEER_STATE_RANK;
+
+/**
+ * (2026-12 runtime) Labels for the runtime lane. ONE source of truth, mirroring
+ * logic/runtime_notice.py's sources: a notice is the RUNTIME speaking (a child settled, a
+ * job settled, the user answered a question the AI asked), never user speech.
+ */
+function _runtimeSourceLabel(source) {
+    switch (String(source || '')) {
+        case 'subagent': return '\u2935 subagent settled';
+        case 'job': return '\u2935 background job settled';
+        case 'question': return '\u21B3 your answer';
+        default: return '\u2935 runtime notice';
+    }
+}
+window._runtimeSourceLabel = _runtimeSourceLabel;
+
+function _runtimeStatusLabel(state, reason) {
+    switch (state) {
+        case 'queued': return '\u23F3 queued \u2014 injected at the loop\u2019s next step';
+        case 'applied': return '\u2713 applied \u2014 the agent has read this';
+        case 'deferred': return '\u26A0 waiting \u2014 ' + (reason || 'no wake budget left; it waits for your next message.');
+        case 'arrived': return '\u21B3 arrived';
+        default: return '\u2713 ' + (state || 'recorded');
+    }
+}
+window._runtimeStatusLabel = _runtimeStatusLabel;
+
+/** Status rank so a late frame never downgrades a settled runtime row. */
+const _RUNTIME_STATE_RANK = { arrived: 0, queued: 1, deferred: 2, applied: 3 };
+window._RUNTIME_STATE_RANK = _RUNTIME_STATE_RANK;
+
+/** A child/job entity status on its row line. Honest about what the runtime knows. */
+function _runtimeEntityLabel(status, detail) {
+    switch (String(status || '')) {
+        case 'running': return '\u23F3 running';
+        case 'stopping': return '\u23F3 stopping';
+        case 'settled': return '\u2713 done';
+        case 'completed': return '\u2713 done';
+        case 'aborted': return '\u26A0 aborted' + (detail ? ' \u2014 ' + detail : '');
+        case 'killed': return '\u26A0 killed' + (detail ? ' \u2014 ' + detail : '');
+        case 'failed': return '\u2716 failed' + (detail ? ' \u2014 ' + detail : '');
+        case 'error': return '\u2716 error' + (detail ? ' \u2014 ' + detail : '');
+        case 'incomplete': return '\u26A0 incomplete \u2014 the process ended before it settled';
+        default: return String(status || 'unknown');
+    }
+}
+window._runtimeEntityLabel = _runtimeEntityLabel;
+
+/** The question row's decision label (the card itself is transient, like a consent card). */
+function _questionLabel(decision, pending) {
+    if (pending) return '\u23F3 waiting for your answer';
+    switch (String(decision || '')) {
+        case 'deny': return '\u274C skipped \u2014 the AI decides';
+        case 'allow_category_until_done': return '\u26A1 you decided \u2014 no more questions this task';
+        case 'unanswered': return '\u26A0 unanswered';
+        default: return '\u2713 answered';
+    }
+}
+window._questionLabel = _questionLabel;
 
 window.CycleRows = CycleRows;
 window._fmtMs = _fmtMs;

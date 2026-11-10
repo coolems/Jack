@@ -22,7 +22,12 @@ import time
 
 import uuid
 
-from config import CHAT_BACKGROUND_FRAME_BUFFER, CHAT_STEER_QUEUE_MAX
+from config import (
+    CHAT_BACKGROUND_FRAME_BUFFER,
+    CHAT_STEER_QUEUE_MAX,
+    NOTICE_QUEUE_MAX,
+    NOTICE_MAX_CONSECUTIVE_WAKES,
+)
 
 
 class ChannelStatus(str, Enum):
@@ -55,6 +60,11 @@ class ChatChannel:
         # block (static/ui/cycle-block.js keys blocks by (conv_id, turn_id)). "" when no turn
         # is running or the turn has no cycle history (normal one-shot mode).
         self.turn_id: str = ""
+        # (2026-12 runtime) the live turn's CycleRecorder, set by run_generation_turn. The
+        # runtime layer (app.runtime.notice_hub, tools/local_tools) records child/job frames
+        # through record_runtime() so they land as rows of THIS turn's block; with no live
+        # turn (a settlement after the turn ended) they go out as plain frames instead.
+        self.cycle = None
         # Messages typed by the user DURING a run. Drained by the ReAct loop at its next safe
         # boundary (before a provider call / before pending tool calls), never as a new turn.
         self._steer_queue: deque[dict] = deque(maxlen=max(1, CHAT_STEER_QUEUE_MAX))
@@ -62,6 +72,19 @@ class ChatChannel:
         # applied EXACTLY once: the loop can drain twice (stop / teardown race), so applied
         # ids are remembered and never handed out again by drain_steer().
         self._applied_steers: set[str] = set()
+        # (2026-12 runtime notice lane) the runtime's OWN queue: subagent settlements,
+        # background-job settlements, answers to questions the AI asked. Deliberately
+        # separate from the steer queue (see queue_notice): a steer is user speech and may
+        # defer a premature completion; a notice is runtime information and never does.
+        self._notice_queue: deque[dict] = deque(maxlen=max(1, NOTICE_QUEUE_MAX))
+        self._applied_notices: set[str] = set()
+        # Notices that started a follow-up turn WITHOUT user input. Reset by any real user
+        # message; bounded by NOTICE_MAX_CONSECUTIVE_WAKES so the agent's own settlements
+        # cannot wake it forever (self-exciting chain).
+        self._wake_rounds: int = 0
+        # (2026-12 ask_user_question) unanswered question cards, keyed by request id, so a
+        # follow-up turn can say "still pending" and a UI reload can re-render the card.
+        self._pending_questions: dict[str, dict] = {}
         # (2026-08-23 session stats) duration of the PREVIOUS completed turn, in ACTIVE seconds
         # (approval-menu pauses excluded - see logic.base_mode.SessionTimer). The next turn's
         # config reads this so the UI status bar can show "last session" time. 0 = no previous
@@ -142,6 +165,107 @@ class ChatChannel:
         firing for a steer that was already applied but not yet removed from the queue.
         """
         return any(item.get("id") not in self._applied_steers for item in self._steer_queue)
+
+    # --- runtime notices (2026-12 subagents / background jobs / questions) ----------
+    # The runtime's own lane, deliberately SEPARATE from the steer queue:
+    #   * a steer is USER speech and may defer a premature completion (interjection);
+    #   * a notice is runtime information (a child settled, a job settled, a question
+    #     answered) and must never defer completion.
+    # Same injection boundaries, different header + different persistence flag
+    # (messages.is_notice) + different turn_log row kind. Ids are deduped the same way:
+    # one settlement delivers exactly one notice, even if the loop drains twice.
+    #
+    # _wake_rounds counts notices that started a FOLLOW-UP turn with no user input. Any
+    # real user message resets it (bus.submit / steer), which is what keeps an idle chat
+    # from being woken forever by its own children (self-exciting chain).
+    def queue_notice(self, text: str, source: str = "runtime",
+                     notice_id: str | None = None, meta: dict | None = None) -> dict:
+        """Queue one runtime notice for this chat's live turn (or for a later wake).
+
+        Bounded like the steer queue: a flood of settlements drops the OLDEST unapplied
+        notice rather than growing memory. Nothing is persisted here - persistence happens
+        when the loop actually injects it (or when a wake turn runs it), so a notice that
+        never reached the model never pollutes history.
+        """
+        item = {
+            "id": notice_id or uuid.uuid4().hex,
+            "source": str(source or "runtime"),
+            "text": text or "",
+            "meta": meta or {},
+            "received_at": time.time(),
+        }
+        self._notice_queue.append(item)
+        self.last_activity = time.time()
+        return item
+
+    def has_unapplied_notice(self) -> bool:
+        """True when a notice is waiting that has NOT been injected yet."""
+        return any(item.get("id") not in self._applied_notices for item in self._notice_queue)
+
+    def pending_notice_count(self) -> int:
+        return len(self._notice_queue)
+
+    def drain_notice(self) -> list[dict]:
+        """Remove and return every notice the loop has not injected yet (FIFO).
+
+        Already-applied ids are dropped instead of returned: a second injection of one
+        settlement would make the model believe a child finished twice.
+        """
+        pending = [item for item in self._notice_queue
+                   if item.get("id") not in self._applied_notices]
+        self._notice_queue.clear()
+        return pending
+
+    def mark_notice_applied(self, notice_id: str | None) -> None:
+        """Record that ONE notice reached the model. Idempotent, never re-handed out."""
+        if not notice_id:
+            return
+        self._applied_notices.add(str(notice_id))
+
+    def applied_notice_count(self) -> int:
+        return len(self._applied_notices)
+
+    def notice_wake_allowed(self) -> bool:
+        """True when an idle chat may be woken by a notice (consecutive-wake budget).
+
+        The budget exists because notices are generated by the agent's own work: without
+        a cap, one child settling can wake the parent, which delegates again, forever.
+        reset_notice_wakes() is called by every real user input, so the user always
+        re-opens the lane.
+        """
+        return self._wake_rounds < max(0, NOTICE_MAX_CONSECUTIVE_WAKES)
+
+    def bump_notice_wakes(self) -> int:
+        """Count one notice-driven follow-up turn. Returns the new count."""
+        self._wake_rounds += 1
+        return self._wake_rounds
+
+    def reset_notice_wakes(self) -> None:
+        """A real user message (or a new user turn) re-opens the notice lane."""
+        self._wake_rounds = 0
+
+    # --- pending questions (ask_user_question, timed mode) -------------------------
+    # A question card the AI asked that is still unanswered. Lives on the channel so a
+    # follow-up turn can tell the model "still pending, keep working" and so the UI can
+    # re-render the card on a reload. Answers arrive through the question endpoint.
+    def add_pending_question(self, request_id: str, payload: dict) -> dict:
+        item = {"id": request_id, "payload": payload or {}, "asked_at": time.time()}
+        self._pending_questions[request_id] = item
+        self.last_activity = time.time()
+        return item
+
+    def pending_questions(self) -> list[dict]:
+        return list(self._pending_questions.values())
+
+    def has_pending_question(self, request_id: str | None = None) -> bool:
+        if request_id is None:
+            return bool(self._pending_questions)
+        return request_id in self._pending_questions
+
+    def drop_pending_question(self, request_id: str | None) -> None:
+        if request_id:
+            self._pending_questions.pop(request_id, None)
+
     # --- subscribers (UI sockets attached to this chat) ---------------------------
 
     def attach(self, ws) -> None:
@@ -195,6 +319,41 @@ class ChatChannel:
                 await ws.send_text(text)
             except Exception:
                 self.subscribers.discard(ws)
+
+    async def record_runtime(self, entity_kind: str, entity_id: str, **data) -> None:
+        """Record one runtime entity (2026-12) of THIS chat: a child, a job, a question.
+
+        (2026-12 fix) The first parameter was named `kind`, which collided with the `kind=`
+        payload key the job callers pass (a job's producer kind: 'python' / 'bash'). Python
+        raises "got multiple values for argument 'kind'" at CALL time, before the body runs,
+        so the TypeError escaped this method and the caller's best-effort except swallowed
+        it: NO job row ever painted, on start or on settlement. Renamed to entity_kind; the
+        payload key stays `kind`, which is what CycleRecorder.job() and the UI read.
+
+        When a live turn owns a CycleRecorder, the frame goes through it, so the entity is
+        ONE row of that turn's block and it is persisted in the turn_log payload (a reload
+        shows the same rows the live turn showed). With no live turn — a child or job that
+        settles AFTER the turn ended, which is the normal case — the frame is emitted
+        directly with the turn id it was launched under, so the UI can still settle that
+        block's row. Never raises: history is best-effort and must not break a settlement.
+        """
+        cycle = getattr(self, "cycle", None)
+        recorder = getattr(cycle, entity_kind, None)
+        # turn_id is frame plumbing, not an entity field: the recorder already stamps its
+        # own turn id. Keep it for the fallback frame so a settlement that arrives AFTER the
+        # turn ended still lands in the block that launched it.
+        launch_turn_id = data.pop("turn_id", None)
+        if recorder is not None:
+            try:
+                await recorder(entity_id, **data)
+                return
+            except Exception:
+                pass  # fall through to the plain frame so the UI still gets the fact
+        frame = {"type": f"cycle_{entity_kind}", "conv_id": self.conv_id,
+                 "turn_id": launch_turn_id or getattr(self, "turn_id", "") or "",
+                 f"{entity_kind}_id" if entity_kind != "question" else "request_id": entity_id}
+        frame.update(data)
+        await self.emit_frame(frame)
 
 
 class ChannelWebSocket:

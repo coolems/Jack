@@ -280,6 +280,22 @@
 .exec-approval-icon { font-size: 15px; margin-right: 2px; }
 .exec-btn-explain:hover:not(:disabled) { background: rgba(59, 130, 246, 0.15); border-color: var(--accent); color: var(--accent); }
 
+/* ===== ASK_USER_QUESTION CARD (2026-12) =====
+   Same card shell as the consent kinds, but the payload is a QUESTION, not code: the
+   question text reads as prose, options are buttons, and a free-text field is always
+   available. Never auto-answered (backend pins kind 'question' to manual). */
+.exec-approval-question {
+    font-size: 14px; line-height: 1.5; color: var(--text-primary);
+    margin: 0 0 10px 0; white-space: pre-wrap; word-break: break-word;
+}
+.exec-approval-answer-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.exec-approval-answer-input {
+    flex: 1; min-width: 0; padding: 7px 10px; border-radius: 6px; font-size: 13px;
+    background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border);
+}
+.exec-approval-answer-input:focus { border-color: var(--accent); outline: none; }
+.exec-btn-option:hover:not(:disabled) { background: rgba(34, 197, 94, 0.12); border-color: var(--success); color: var(--success); }
+
 /* ===== LIVE STEERING (2026-10-23; moved into the turn block 2026-11-08) =====
    A message typed WHILE an agentic turn runs is LOOP WORK, not a chat message, so it is
    NOT painted here at all - it is a row of that turn's loop-history block

@@ -29,7 +29,7 @@ __tool_description__ = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search (recursive); '' / '.' / 'root' = whole working_root.",
+                    "description": "Directory to search (recursive) OR a single file, '' / '.' / 'root' = whole working_root.",
                     "default": ""
                 },
                 "include": {
@@ -125,16 +125,23 @@ def grep(pattern: str, path: str = "", include: str = "", context_lines: int = 0
             return include_err
 
         effective_working = get_working_root()
-        dirpath = resolve_path_to_dir(effective_working, path)
-        if not os.path.isdir(dirpath):
-            return f"Error: '{path}' is not a directory inside working_root - " \
-                   f"use list_files to confirm the path (grep takes a DIRECTORY, not a file)."
+        target = resolve_path_to_dir(effective_working, path)
+        # (2026-11-30) A FILE path is now accepted, not just a directory. ripgrep takes a
+        # file target directly, so the only change is which path type we allow. Before this,
+        # path='CLIENT/logic/react_loop.py' returned "is not a directory" and the caller had
+        # to read the whole file and regex it in Python - the single most common mistake with
+        # this tool, since every other file tool takes a file path.
+        if not os.path.isdir(target) and not os.path.isfile(target):
+            return f"Error: '{path}' is not a file or directory inside working_root - " \
+                   f"use list_files to confirm the path."
 
-        argv = build_grep_argv(pattern, dirpath, include, ctx, bool(ignore_case),
+        argv = build_grep_argv(pattern, target, include, ctx, bool(ignore_case),
                                bool(include_ignored))
         exe = ensure_binary()
+        # cwd anchors --glob patterns; for a FILE target that is its parent directory.
+        _cwd = target if os.path.isdir(target) else os.path.dirname(target) or effective_working
         try:
-            # cwd=dirpath (same convention as git_tools/git_clone.py: cwd=, never os.chdir,
+            # cwd=_cwd (same convention as git_tools/git_clone.py: cwd=, never os.chdir,
             # which would mutate the process-wide CWD shared by every other coroutine).
             # rg anchors --glob patterns to the process CWD, and this process's CWD is not
             # necessarily working_root (CLIENT/code_client.py chdirs into CLIENT/), so
@@ -148,7 +155,7 @@ def grep(pattern: str, path: str = "", include: str = "", context_lines: int = 0
             # byte readable and never fails the call.
             r = subprocess.run([exe, *argv], capture_output=True, text=True,
                                encoding="utf-8", errors="replace",
-                               timeout=DEADLINE_S, cwd=dirpath)
+                               timeout=DEADLINE_S, cwd=_cwd)
         except subprocess.TimeoutExpired:
             return f"Error: search timed out after {DEADLINE_S}s - narrow the pattern or the path."
         except OSError as e:
@@ -156,7 +163,9 @@ def grep(pattern: str, path: str = "", include: str = "", context_lines: int = 0
 
         code = r.returncode
         if code == 1:
-            return f"No matches for {pattern!r} in {os.path.basename(dirpath)} (or its subfolders)."
+            scope = os.path.basename(target) if os.path.isfile(target) \
+                else f"{os.path.basename(target)} (or its subfolders)"
+            return f"No matches for {pattern!r} in {scope}."
         if code >= 2:
             detail = (r.stderr or r.stdout or "").strip()[:400]
             return f"Error: ripgrep failed (exit {code}): {detail or 'no detail'}"

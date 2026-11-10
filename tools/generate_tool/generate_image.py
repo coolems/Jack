@@ -745,7 +745,7 @@ if __name__ == "__main__":
 
 _DEFAULT_MANIFEST = {
         "name": "generate_image",
-        "version": 24,  # mirrors tools/generate_tool/tool_manifest.json - only used when a legacy SERVER ships no TOOL_MANIFEST at all
+        "version": 26,  # mirrors tools/generate_tool/tool_manifest.json - only used when a legacy SERVER ships no TOOL_MANIFEST at all
         "runtime_name": "generate_tool",
         "requirements": ["torch==2.9.1+cu128", "diffusers>=0.40", "transformers", "accelerate>=0.17.0"],
         "extra_index_urls": ["https://download.pytorch.org/whl/cu128"],
@@ -1695,6 +1695,14 @@ def _tool_env(rt: dict) -> dict:
     """
     env = dict(os.environ)
     env["HF_HOME"] = os.path.join(rt["runtime_dir"], "hf_cache")
+    # 2026-11-10 field fix: on Windows without symlink support (no Developer Mode /
+    # admin rights) hf's cache layer emits a multi-line symlinks advisory whose last
+    # printed line is the bare source fragment '  warnings.warn(message)'. It is pure
+    # advice - files still download, just as copies instead of symlinks - but it lands
+    # in stderr, and the pre-flight failure tail used to pick the LAST line, so the UI
+    # and log reported that fragment as the failure reason. Suppress the advisory;
+    # an explicit user-set value is respected.
+    env.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     return env
 
 
@@ -2329,6 +2337,72 @@ def _merge_model_progress(model_state: dict, ev: dict) -> None:
     model_state["current_file"] = _pick_current_file(model_state)
 
 
+# ---------------------------------------------------------------------------
+# FAILURE TAIL (2026-11-10 field fix): the pre-flight's failure reason is taken from
+# the LAST line of stdout+stderr. huggingface_hub's Windows cache layer prints its
+# 'symlinks are not supported in <dir>' advisory with warnings.warn(), which appends
+# the bare source fragment '  warnings.warn(message)' as its own final line - so a run
+# that stopped for a real reason used to report that fragment instead ('Model
+# pre-flight incomplete (  warnings.warn(message))'), and the UI card showed
+# 'Setup / Downloads — generate_tool: failed' with a meaningless detail while the
+# download itself was still progressing. Skip the advisory noise and pick the line
+# that actually says something.
+# ---------------------------------------------------------------------------
+
+_TAIL_SKIP_MARKERS = (
+    "warnings.warn(",
+    "cache-system uses symlinks",
+    "activate developer mode",
+    "enable-your-device-for-development",
+    "HF_HUB_DISABLE_SYMLINKS_WARNING",
+)
+
+
+def _repo_cached_locally(rt: dict, model_id: str) -> bool:
+    """True when *model_id* is already fully cached in this runtime's HF cache.
+
+    2026-11-10: used to decide whether the pre-flight should fetch the img2img repo at
+    all. The probe is a plain filesystem check (no huggingface_hub import - the CALLING
+    process is the CLIENT, which has no hf installed; only the tool venv does), and it is
+    FAIL-CLOSED: a missing snapshot dir or any leftover '.incomplete' blob means 'not
+    cached', so a broken probe can never let the worker run without a model it needs -
+    the worker still downloads inside its own subprocess budget as the net.
+    """
+    try:
+        hub = os.path.join(os.path.join(rt["runtime_dir"], "hf_cache"), "hub")
+        repo = os.path.join(hub, "models--" + str(model_id).replace("/", "--"))
+        snaps = os.path.join(repo, "snapshots")
+        if not os.path.isdir(snaps):
+            return False
+        commits = [c for c in os.listdir(snaps) if os.path.isdir(os.path.join(snaps, c))]
+        if not commits:
+            return False
+        blobs = os.path.join(repo, "blobs")
+        if os.path.isdir(blobs):
+            # A killed download leaves '<sha>.<n>.incomplete' next to the real blobs.
+            for name in os.listdir(blobs):
+                if name.endswith(".incomplete"):
+                    return False
+        # The snapshot must hold at least one real file (an empty dir is not a cache).
+        for root, _dirs, files in os.walk(os.path.join(snaps, commits[0])):
+            if any(files):
+                return True
+        return False
+    except Exception as e:
+        logger.debug(f"  local cache probe for {model_id!r} failed (treated as not cached): {e}")
+        return False
+
+
+def _failure_tail(lines: list) -> str:
+    """Last informative line of a failed prep script's output, advisory noise excluded."""
+    keep = [l for l in lines
+            if l.strip() and not any(m in l for m in _TAIL_SKIP_MARKERS)]
+    for l in keep:
+        if "MODEL_NOT_READY" in l or "Exception" in l or "Error" in l:
+            return l[:400]
+    return keep[-1][:400] if keep else ""
+
+
 def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
     """Prepare the HF model cache(s) BEFORE the generation subprocess starts (2026-09-12).
 
@@ -2367,7 +2441,10 @@ def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
     progress = _setup_progress(rt)
     # current_file starts as an explicit None - the manifest branch returns early
     # without touching it, and a missing key would make the UI's pickKey undefined.
-    model_state: dict = {"status": "running", "current_file": None}
+    # detail is cleared too: set_stage() MERGES into the stage dict already on disk, so
+    # a previous attempt's failure text would otherwise survive and be shown as this
+    # run's failure reason (2026-11-10 field fix).
+    model_state: dict = {"status": "running", "current_file": None, "detail": None}
     stage_started = [False]  # lazy write - see the LAZY STAGE note in this docstring
 
     def _reclaim_previous() -> None:
@@ -2524,7 +2601,7 @@ def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
         return True
 
     detail = ((out + "\n" + (err_text or "")).strip()).splitlines()
-    tail = detail[-1][:400] if detail else f"exit code {rc}"
+    tail = _failure_tail(detail) or f"exit code {rc}"
     logger.warning(f"  Model pre-flight incomplete ({tail}) - the worker will attempt "
                    f"a download inside its own subprocess budget")
     if progress is not None and stage_started[0]:
@@ -2740,10 +2817,22 @@ def generate_image(
         try:
             # High tier needs TWO repos (base + img2img Edit) - pass them as a list so ONE
             # prep-script run downloads both sequentially with one shared progress state.
+            # 2026-11-10 field fix: the Edit repo (~57.7 GB) is ONLY used by img2img. A plain
+            # text-to-image call used to fetch BOTH repos (~115 GB) before generating one
+            # image - on an ~8 MB/s link that is ~4 h of setup for a single picture, and the
+            # UI showed 'Repo 1 of 2' the whole time. Edit is now fetched only when this call
+            # actually has a reference image, or when it is already cached (then the pre-flight
+            # just verifies it and emits no events). An img2img call still gets the full
+            # TOOLS_BOOTSTRAP_TIMEOUT_SEC budget for that download.
             model_ids = [cfg["model_id"]]
             edit_id = cfg.get("edit_model_id")
             if isinstance(edit_id, str) and edit_id.strip() and edit_id != cfg["model_id"]:
-                model_ids.append(edit_id)
+                if reference_image or _repo_cached_locally(rt, edit_id):
+                    model_ids.append(edit_id)
+                else:
+                    logger.info(f"  Edit repo {edit_id!r} not cached and this call is "
+                                f"text-to-image - skipped (it downloads on the first "
+                                f"image-to-image call)")
             _ensure_model_cached(rt, model_ids)
         except Exception as e:
             logger.warning(f"  Model preparation failed ({e}) - the worker will attempt "

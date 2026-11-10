@@ -39,6 +39,42 @@ _CLIENT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 # (Moved here so they are visible to startup_event inside create_app())
 
 
+async def _close_runtime() -> None:
+    """Close the (2026-12) runtime registries: delegated children, then background jobs.
+
+    (2026-12 fix) This was a SYNC function calling reg.close(), which is an async def: the
+    coroutine was never awaited ("coroutine 'JobRegistry.close' was never awaited"), so the
+    registry's `_closed` flag stayed False and every live job/child survived the shutdown -
+    exactly the zombie the docstring claims it prevents. It is now awaited (the shutdown
+    handler already awaits _close_mcp for the same reason), and each registry is optional.
+    Never raises - shutdown must not fail because of the runtime layer.
+    """
+    for getter in ("get_child_registry", "get_job_registry"):
+        try:
+            import app.runtime as _rt
+            reg = getattr(_rt, getter)()
+            if reg is not None:
+                await reg.close()
+        except Exception as e:  # pragma: no cover - shutdown must never raise
+            logger.debug(f"[RUNTIME] {getter} close failed (non-fatal): {e}")
+
+
+async def _close_mcp() -> None:
+    """Close every MCP connection (2026-12): stdio servers are child processes.
+
+    Must be awaited, not synchronous: closing a transport waits (bounded) for the child to
+    exit. A server left running would outlive the CLIENT process, exactly the zombie the
+    runtime layer avoids for children and jobs.
+    """
+    try:
+        from app.mcp.registry import get_registry
+        reg = get_registry()
+        if reg is not None:
+            await reg.close_all()
+    except Exception as e:  # pragma: no cover - shutdown must never raise
+        logger.debug(f"[MCP] close failed (non-fatal): {e}")
+
+
 
 def create_app(db_path: str, provider, model_name: str, api_timeout: int,
                agent, tool_orchestrator, stop_events, server_port: int, use_https=False,
@@ -87,6 +123,50 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         stop_events=stop_events,  # legacy dict stays the source of truth for /api/stop
     )
     set_chat_bus(chat_bus)
+
+    # ===== (2026-12 runtime) subagents + background jobs =====
+    # Wire the two registries to THIS bus so a settled child / settled job becomes a
+    # runtime notice on its owner's chat (live turn -> injected at the next safe
+    # boundary; idle chat -> a budgeted follow-up turn). Job output streams spill to
+    # <CLIENT>/.temp/jobs/*.log (scratch policy: never the repo root) so a complete
+    # stream stays readable after the ring evicts its head.
+    from app.runtime import wire_runtime
+    from app.runtime.runtime_store import prune_orphan_runtime_rows
+
+    _JOB_SPILL_DIR = os.path.normpath(os.path.join(_CLIENT_ROOT, ".temp", "jobs"))
+    try:
+        os.makedirs(_JOB_SPILL_DIR, exist_ok=True)
+        wire_runtime(chat_bus, spill_dir=_JOB_SPILL_DIR)
+    except Exception as e:  # pragma: no cover - a runtime wiring failure must not kill the UI
+        logger.warning(f"[RUNTIME] subagent/job wiring failed (tools report it honestly): {e}")
+
+    # (2026-12) Scratch retention: job streams and MCP payloads spill to .temp so a reader
+    # below the evicted ring head still gets a locator, but they must not accumulate forever.
+    # Bounded cleanup at startup only - never on a hot path, never outside .temp.
+    try:
+        from app.spill_archive import prune_spill_dir
+        from config import JOB_SPILL_KEEP_FILES, MCP_SPILL_KEEP_FILES
+        prune_spill_dir(_JOB_SPILL_DIR, keep=JOB_SPILL_KEEP_FILES, suffix=".log")
+        prune_spill_dir(os.path.normpath(os.path.join(_CLIENT_ROOT, ".temp", "mcp")),
+                        keep=MCP_SPILL_KEEP_FILES, suffix=".txt")
+        prune_spill_dir(os.path.normpath(os.path.join(_CLIENT_ROOT, ".temp", "mcp")),
+                        keep=MCP_SPILL_KEEP_FILES, suffix=".bin")
+    except Exception as e:  # pragma: no cover - cleanup must never block startup
+        logger.debug(f"[SPILL] startup prune skipped: {e}")
+
+    try:
+        # Rows whose settlement never arrived (process died mid-run) are marked, never
+        # given an invented finish time. get_db_connection() takes NO argument - the
+        # db_manager already holds the path (init_db ran at startup); passing one here
+        # would raise TypeError and silently skip the prune.
+        from app.db_manager import get_db_connection, close_db_connection
+        _conn = get_db_connection()
+        try:
+            prune_orphan_runtime_rows(_conn)
+        finally:
+            close_db_connection(_conn)
+    except Exception as e:
+        logger.debug(f"[RUNTIME] orphan row prune skipped: {e}")
 
     app = FastAPI(title="COOLEMS API", version="5.0.0")
 
@@ -206,6 +286,26 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         chat_bus.start_cleanup()
         logger.info("ChatBus stale-session cleanup task started (runs every 10 minutes)")
 
+        # ===== (2026-12 MCP) external servers =====
+        # Built from CLIENT/config/mcp_servers.json. Nothing is enabled by default, so this
+        # is a no-op unless the user enabled a server. Connecting happens HERE because the
+        # event loop is running (a stdio transport needs one); a failure never stops the UI -
+        # the MCP tools report the registry state honestly when called.
+        try:
+            from app.mcp.registry import connect_all, wire_mcp
+            _mcp_reg = wire_mcp(chat_bus, spill_dir=os.path.normpath(
+                os.path.join(_CLIENT_ROOT, ".temp", "mcp")))
+            if _mcp_reg is not None:
+                _mcp_state = await connect_all()
+                _live = sorted(n for n, ok in _mcp_state.items() if ok)
+                _dead = sorted(n for n, ok in _mcp_state.items() if not ok)
+                logger.info(f"[MCP] connected: {_live or 'none'}"
+                            + (f"; failed: {_dead}" if _dead else ""))
+                if _dead:
+                    logger.warning("[MCP] failed server(s) contribute no tools - see GET /api/runtime")
+        except Exception as e:  # pragma: no cover - MCP must never block the UI boot
+            logger.warning(f"[MCP] startup wiring failed (MCP tools report it honestly): {e}")
+
         # ===== DEFERRED BOOT (2026-10-07 setup-mode UI fix) =====
         # The provider/agent boot runs as a background task on THIS event loop. It keeps
         # retrying the SERVER bootstrap until it succeeds or its budget expires; the phase
@@ -271,6 +371,14 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
             await chat_bus.stop_all(reason="client-shutdown")
         except Exception as e:  # pragma: no cover - shutdown must never raise
             logger.warning(f"stop_all on shutdown failed (non-fatal): {e}")
+        # (2026-12 runtime) stop_all already cascades children first, then jobs. Closing
+        # the registries here drops any task/job that survived the cascade, so no child
+        # or job outlives the process. Awaited: close() is async (a sync call left the
+        # coroutine unawaited and every live job/child survived shutdown).
+        await _close_runtime()
+        # (2026-12 MCP) stdio servers are child processes of THIS process - close them
+        # (bounded) so no server outlives the CLIENT. Awaited: closing waits for exit.
+        await _close_mcp()
         # (2026-09-08 multi-chat) stop the bus' cleanup task first
         chat_bus.stop_cleanup()
         if provider is not None:

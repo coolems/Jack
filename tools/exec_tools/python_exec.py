@@ -131,7 +131,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "python_exec",
-        "description": "Execute Python code. Use for calculations, data processing, git commands, or any task that requires running Python code. Text-mode open() writes do not translate newlines (no CRLF conversion); use write_file for repository files that need enforced LF endings.",
+        "description": "Execute Python code. Use for calculations, data processing, git commands, or any task that requires running Python code. Text-mode open() writes do not translate newlines (no CRLF conversion); use write_file for repository files that need enforced LF endings. Set run_in_background=true for work that takes longer than a normal tool call (a build, a long test run, a download loop): the call returns a job id immediately, the code keeps running in the background, and its output/result arrive later as a runtime notice - read the stream with job_output and cancel with job_kill. Do not busy-poll a job; keep working on independent steps.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -141,8 +141,13 @@ __tool_description__ = {
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Optional timeout in seconds (default: uses config value). Useful for testing or quick checks.",
+                    "description": "Optional timeout in seconds (default: uses config value). Useful for testing or quick checks. Ignored when run_in_background=true - a background job is cancelled with job_kill, not with a timeout.",
                     "default": None
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Run this code as a background job instead of waiting for it. Returns a job id immediately; output streams to the job ring and the terminal result arrives as a notice. Use for genuinely long work.",
+                    "default": False
                 }
             },
             "required": ["code"]
@@ -216,6 +221,100 @@ except ImportError:
         SANDBOX_BOOTSTRAP = _load_sibling_module('_sandbox_bootstrap').SANDBOX_BOOTSTRAP
 
 logger = logging.getLogger("COOLEMS.Tools.Exec")
+
+
+# ============================================================================
+# BACKGROUND JOBS (2026-12) — python_exec run_in_background=True
+# ----------------------------------------------------------------------------
+# The CLIENT owns the job runtime (CLIENT/app/runtime/jobs.py): ids, the output ring
+# with absolute offsets that never move, the model's consuming cursor, the lifecycle and
+# the terminal notice. The tool cannot import CLIENT modules from inside the loader
+# sandbox, so RemoteToolOrchestrator._call_pyexec_with_context() hands it ONE callable on
+# the per-call context: job_starter(kind, label, owner, spawn_fn, output_limit_bytes).
+#
+# spawn_fn(handle, cancel_event) is a BLOCKING sync function run on the job's worker
+# thread: it appends output as it arrives, watches cancel_event (job_kill), and returns
+# (status, detail, result) with status in completed | killed | failed. A throwing
+# producer becomes a FAILED job — it never crashes the turn that launched it.
+#
+# This exception is the runner's own cancellation signal: a job_kill is NOT a timeout, so
+# the seam must report 'killed' and still hand the partial output to the ring.
+class _JobCancelled(Exception):
+    def __init__(self, message, output="", stderr=""):
+        super().__init__(message)
+        self.output = output
+        self.stderr = stderr
+
+
+#: Wall-clock cap for a background job when the caller gave no explicit timeout. A
+#: runaway job must still die; 24h is the tool's own maximum (see _coerce_timeout).
+_BG_JOB_TIMEOUT_SEC = 86400
+
+
+def _spawn_background_job(wrapped_code, working_dir, effective_timeout,
+                          net_ask_callback, ctx, code):
+    """Start THIS code as a background job. Returns the tool result text (always a string).
+
+    Fail-closed: no registry in this process -> a clear error, never a fake job id. The
+    guardrails and the runtime sandbox are the SAME as a foreground run — background only
+    changes who waits for the child.
+    """
+    starter = ctx.get("job_starter") if isinstance(ctx, dict) else None
+    if not callable(starter):
+        return ("Error: run_in_background is not available in this CLIENT build "
+                "(the background-job runtime is not wired). Run the code without "
+                "run_in_background, or split the work into shorter steps.")
+    conv_id = str(ctx.get("conversation_id") or "") or None
+
+    def spawn_fn(handle, cancel_event):
+        """Blocking producer: run the sandboxed child, stream its output into the ring."""
+        def sink(text, channel):
+            if text:
+                handle.append(text, channel)
+        try:
+            proc = _run_sandboxed_subprocess(
+                wrapped_code, working_dir, effective_timeout,
+                net_ask_callback=net_ask_callback,
+                output_sink=sink, cancel_event=cancel_event)
+        except _JobCancelled as jc:
+            return ("killed", "cancelled by job_kill",
+                    _clean_output(jc.output or "") + ("\n--- stderr ---\n" + _clean_output(jc.stderr)
+                                                      if jc.stderr else ""))
+        except subprocess.TimeoutExpired as exc:
+            return ("failed", _format_timeout(exc, effective_timeout),
+                    _clean_output(exc.output or ""))
+        except Exception as exc:
+            return ("failed", f"python_exec background job failed: {type(exc).__name__}: {exc}", "")
+        stdout = _clean_output(proc.stdout or "")
+        stderr = _clean_output(proc.stderr or "")
+        if proc.returncode != 0:
+            return ("failed", _format_failure(code, proc.returncode, proc.stdout or "",
+                                              proc.stderr or ""), stdout)
+        return ("completed", "", _format_success(proc.stdout or "", proc.stderr or ""))
+
+    label = (code.strip().splitlines()[0][:80] if code.strip() else "python_exec background")
+    # The CLIENT captured the event loop on the loop thread before asyncio.to_thread put
+    # THIS call on a worker thread (orchestrator._call_pyexec_with_context). Registration
+    # must be marshalled back onto that loop - a worker thread has no running loop.
+    loop = ctx.get("loop") if isinstance(ctx, dict) else None
+    try:
+        job_id = starter("python", label, conv_id, spawn_fn, loop=loop)
+    except RuntimeError as e:
+        # Concurrency budget: the model must see the limit, not a stack trace.
+        return f"Error: {e} (start fewer jobs, or job_kill one first)."
+    except Exception as e:
+        return f"Error: could not start the background job: {type(e).__name__}: {e}"
+
+    return (
+        f"BACKGROUND JOB STARTED: job {job_id} is running now.\n"
+        "This result does NOT contain the output - the stream and the terminal result "
+        "arrive later as a runtime notice ('BACKGROUND JOB SETTLED').\n"
+        f"Read the stream with job_output(job_id=\"{job_id}\") (it keeps your read cursor), "
+        f"wait for it with job_output(job_id=\"{job_id}\", wait=true), or cancel with "
+        f"job_kill(job_id=\"{job_id}\").\n"
+        "Keep working on INDEPENDENT steps now - do not busy-poll or sleep on this job. "
+        "Before your final answer, collect every still-relevant job's output and result."
+    )
 
 
 # ============================================================================
@@ -1066,7 +1165,8 @@ def _wrap_user_code(user_code):
 
 
 def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
-                              net_ask_callback=None):
+                              net_ask_callback=None, output_sink=None,
+                              cancel_event=None):
     """Run a sandbox-prefixed payload in an isolated child process.
 
     * Prepends SANDBOX_BOOTSTRAP (the runtime containment layer) to the wrapped
@@ -1207,7 +1307,17 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
 
     _out_chunks, _err_chunks = bytearray(), bytearray()
 
-    def _drain(_pipe, _sink):
+    def _emit(_text, _channel):
+        # (2026-12 background jobs) forward a drained chunk to the job's output sink while
+        # the child is still alive. Best-effort: a failing sink must never break the run.
+        if output_sink is None:
+            return
+        try:
+            output_sink(_text, _channel)
+        except Exception:
+            pass
+
+    def _drain(_pipe, _sink, _channel="stdout"):
         # Continuous drain in a dedicated thread per pipe -- prevents the classic
         # "one pipe fills up and blocks the child" deadlock. Lossless: repeated
         # communicate(timeout) polling would discard partial reads on every timeout.
@@ -1217,12 +1327,13 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
                 if not _chunk:
                     break
                 _sink.extend(_chunk)  # bytes chunk into bytearray sink (binary pipes, 2026-09-22)
+                _emit(_chunk.decode("utf-8", "replace"), _channel)  # live job output (2026-12)
         except Exception:
             pass  # pipe closed by kill -- keep whatever was already drained
 
     _feed_thread = threading.Thread(target=_feed_stdin, daemon=True)
-    _out_thread = threading.Thread(target=_drain, args=(proc.stdout, _out_chunks), daemon=True)
-    _err_thread = threading.Thread(target=_drain, args=(proc.stderr, _err_chunks), daemon=True)
+    _out_thread = threading.Thread(target=_drain, args=(proc.stdout, _out_chunks, "stdout"), daemon=True)
+    _err_thread = threading.Thread(target=_drain, args=(proc.stderr, _err_chunks, "stderr"), daemon=True)
     _feed_thread.start()
     _out_thread.start()
     _err_thread.start()
@@ -1291,6 +1402,10 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
     try:
         while proc.poll() is None:
             _poll_net_requests()
+            # (2026-12 background jobs) job_kill sets cancel_event: stop the child with the
+            # SAME teardown as a timeout, then report the cancellation to the job seam.
+            if cancel_event is not None and cancel_event.is_set():
+                raise _JobCancelled("cancelled by job_kill")
             if time.time() - _t_dbg >= effective_timeout:
                 raise subprocess.TimeoutExpired(cmd=_cmd, timeout=effective_timeout)
             if time.time() >= _hb_next:
@@ -1305,11 +1420,12 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
         _err_thread.join(timeout=5)
         _feed_thread.join(timeout=1.0)
         _close_proc_pipes()
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, _JobCancelled) as _abort:
+        _is_kill = isinstance(_abort, _JobCancelled)
         elapsed = time.time() - _t_dbg
         _pyexec_dbg(
-            "#9.5 TIMEOUT after %.1fs -- killing child pid=%s (whole process group on POSIX) | CHILD TRACE: %s"
-            % (elapsed, proc.pid, _child_trace()), working_dir)
+            "#9.5 %s after %.1fs -- killing child pid=%s (whole process group on POSIX) | CHILD TRACE: %s"
+            % ("JOB KILLED" if _is_kill else "TIMEOUT", elapsed, proc.pid, _child_trace()), working_dir)
         # Unblock the feed thread first: closing the write end turns a pending
         # pipe write into BrokenPipeError instead of letting it linger.
         try:
@@ -1334,6 +1450,11 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
         _timeout_out = bytes(_out_chunks).decode("utf-8", "replace")
         _timeout_err = bytes(_err_chunks).decode("utf-8", "replace")
         _close_proc_pipes()
+        if _is_kill:
+            # A job_kill is NOT a timeout: the job seam reports 'killed', and the partial
+            # output still reaches the ring (the sink already streamed it live).
+            raise _JobCancelled(str(_abort) or "cancelled", output=_timeout_out,
+                                stderr=_timeout_err)
         raise subprocess.TimeoutExpired(
             cmd=_cmd, timeout=effective_timeout,
             output=_timeout_out,
@@ -1364,7 +1485,7 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
 # No relative imports of helper modules at call time; fully sandbox-deliverable.
 # ============================================================================
 
-def python_exec(code, timeout=None):
+def python_exec(code, timeout=None, run_in_background=False):
     """Execute Python code in an isolated child process.
 
     Runs the code as a separate ``python -c`` subprocess pinned to working_root
@@ -1381,6 +1502,12 @@ def python_exec(code, timeout=None):
         timeout: Optional timeout in seconds. Defaults to the configured value
             (FILE_EXEC_TIMEOUT, typically 300). On expiry the process is killed and
             a TIMEOUT message with any partial output is returned.
+        run_in_background: (2026-12) Start the SAME code as a CLIENT background job and
+            return its job id immediately instead of waiting. Guardrails and the runtime
+            sandbox are identical - only who waits for the child changes. The stream and
+            the terminal result arrive later as a runtime notice; read them with
+            job_output, cancel with job_kill. Requires the CLIENT job runtime (see
+            _spawn_background_job); without it this returns a clear error, never a fake id.
 
     Returns:
         str - the subprocess stdout on success ("Executed successfully (no output)"
@@ -1388,6 +1515,7 @@ def python_exec(code, timeout=None):
         Failures return a one-line category, the failing user line + source, a
         cleaned traceback whose line numbers refer to the SUBMITTED code, and any
         stdout produced before the failure. Timeouts include partial stdout/stderr.
+        With run_in_background=True, the job id + how to read it.
     """
 
     if not isinstance(code, str):
@@ -1521,6 +1649,20 @@ def python_exec(code, timeout=None):
     # Build the child-side block: the user's source is compiled as-is (filename
     # "<python_exec>") so line numbers and decorators/future imports are preserved.
     wrapped_code = _wrap_user_code(code)
+
+    # (2026-12 BACKGROUND JOB) Same guardrails, same sandbox — only who waits changes.
+    # Returns the job id immediately; the stream + terminal result arrive later as a
+    # runtime notice. Anything that failed before the spawn is reported as a plain error.
+    if run_in_background:
+        _pyexec_dbg("#7b run_in_background -> handing the child to the job registry", working_dir)
+        # A background run has no caller waiting on a timeout: give it the tool's own
+        # ceiling so a runaway child still dies. An explicit timeout is honoured as-is.
+        _bg_timeout = effective_timeout if timeout is not None else _BG_JOB_TIMEOUT_SEC
+        # The explain stash is module-global: drain THIS run's instructions into the job's
+        # detail so they cannot leak into a later foreground python_exec result.
+        drain_explain_instructions()
+        return _spawn_background_job(wrapped_code, working_dir, _bg_timeout,
+                                     net_ask_callback, _net_ctx, code)
 
     try:
         proc = _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
