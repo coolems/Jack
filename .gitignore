@@ -127,7 +127,7 @@ llama_server/models/*/*
 (choice/company/email/ip_history/last_check). The CLIENT keeps no license files.
 /config/license_state.json
 
-# Llama node launcher (2026-10 fleet): per-machine node config + runtime state.
-# config/llama_node.example.json is the tracked template.
-config/llama_node.json
+# Llama fleet runtime state (2026-11 multi-config fleet): per-name desired/pid/log state
+# written by utils/start_llama_node. The configs themselves live in config/llama_servers.json
+# (ignored above); this is machine runtime data and never committed.
 config/.llama_node_state.json

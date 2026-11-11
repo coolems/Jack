@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""COOLEMS llama-node launcher (2026-10 fleet) - ADMIN path.
+"""COOLEMS llama fleet launcher (2026-11 multi-config fleet) - ADMIN path.
 
-Lives in utils/start_llama_node/ for admins who want to configure and start ANY
-node they like (this machine, a remote GPU box, any port). Regular users never
-touch this folder: ZZZ_SERVER.bat auto-starts the local node from the settings
-init wrote into config/llama_node.json.
+Lives in utils/start_llama_node/ for admins who want to see, configure and start the
+llama-services on this machine. Regular users never touch this folder: ZZZ_SERVER.bat
+starts the LOCAL entry of config/llama_servers.json automatically (after checking that
+the model actually fits in the free RAM/VRAM).
 
-Runs on a GPU machine that is NOT the brain. Starts ONE llama-server with the same
-settings the brain uses, verifies it, prints the brain entry, and exits leaving
-llama-server running detached. The brain attaches to it and discovers slots/model.
+The single source of truth is config/llama_servers.json: a JSON LIST of complete configs,
+one per llama-service (name, host, port, model, slots, ctx/slot, threads, gpu layers,
+bind, extra_args, auto_start). Three entries on three ports = three llama-services with
+three different models on one machine, as long as the memory is there.
 
-Usage:
-    python utils\\start_llama_node\\llama_node.py configure   # interactive wizard -> config/llama_node.json
-    python utils\\start_llama_node\\llama_node.py start [--force]  # idempotent start (scheduled-task friendly)
-    ... status / stop / restart / cmd
+Usage (name = the entry's name, or its number from 'list', or host:port):
+    python utils\\start_llama_node\\llama_node.py list
+    python utils\\start_llama_node\\llama_node.py configure [name|new]
+    python utils\\start_llama_node\\llama_node.py start <name|all>
+    python utils\\start_llama_node\\llama_node.py stop <name>
+    python utils\\start_llama_node\\llama_node.py status [name]
+    python utils\\start_llama_node\\llama_node.py restart <name>
+    python utils\\start_llama_node\\llama_node.py cmd <name>
+    python utils\\start_llama_node\\llama_node.py delete <name>
 
 Double-click ZZZ_LLAMA_NODE.bat (this folder) for a menu.
 """
@@ -34,24 +40,47 @@ from app.providers.llama import node_launcher  # noqa: E402
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="llama_node.py",
-        description="Start/manage one llama-server node for a COOLEMS fleet.",
+        description="List, configure and start the llama-services in config/llama_servers.json.",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("configure", help="interactive wizard -> config/llama_node.json")
-    s = sub.add_parser("start", help="start the node (idempotent)")
-    s.add_argument("--force", action="store_true",
-                   help="start even if the node was intentionally stopped")
-    sub.add_parser("status", help="probe this node and print its settings")
-    sub.add_parser("stop", help="stop this node's llama-server")
-    sub.add_parser("restart", help="stop + start")
-    sub.add_parser("cmd", help="print the raw llama-server command")
+    sub.add_parser("list", help="every config + what is actually running on its port")
+
+    c = sub.add_parser("configure", help="wizard: edit one entry or add a new one")
+    c.add_argument("name", nargs="?", default="",
+                   help="entry name (empty/'new'/'add' = create a new config)")
+
+    # Every name is optional: the .bat menu may pass an empty string (user just pressed
+    # Enter), and dispatch() then reports the available names instead of an argparse usage
+    # error. An empty name is never treated as "all".
+    s = sub.add_parser("start", help="start one config (idempotent) or 'all'")
+    s.add_argument("name", nargs="?", default="",
+                   help="config name / number / host:port, or 'all'")
+
+    st = sub.add_parser("stop", help="stop one config's llama-server")
+    st.add_argument("name", nargs="?", default="")
+
+    stat = sub.add_parser("status", help="probe /health + /props (all configs when no name)")
+    stat.add_argument("name", nargs="?", default="")
+
+    r = sub.add_parser("restart", help="stop + start one config")
+    r.add_argument("name", nargs="?", default="")
+
+    cm = sub.add_parser("cmd", help="print the raw llama-server command for one config")
+    cm.add_argument("name", nargs="?", default="")
+
+    d = sub.add_parser("delete", help="remove one entry from config/llama_servers.json")
+    d.add_argument("name", nargs="?", default="")
+
+    sub.add_parser("start-all", help="start every local entry with auto_start=true (memory-gated)")
     return p
 
 
 def main() -> int:
     args = _build_parser().parse_args()
-    return node_launcher.dispatch(args.command, force=getattr(args, "force", False))
+    return node_launcher.dispatch(args.command,
+                                  getattr(args, "name", "") or "",
+                                  force=getattr(args, "force", False))
 
 
 if __name__ == "__main__":

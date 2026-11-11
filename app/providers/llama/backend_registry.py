@@ -1,15 +1,15 @@
-"""Multi-instance LLM backend registry (2026-09-08 multi-chat; fleet model 2026-10).-
+"""Multi-instance LLM backend registry (2026-09-08 multi-chat; fleet model 2026-10).
 
 The hand-editable ``config/llama_servers.json`` is the single source of truth for WHICH
-llama servers we talk to. This module turns that list into live, tracked backends:
+llama servers we talk to and WHAT each one runs. This module turns that list into live,
+tracked backends:
 
-  * :class:`LlmBackend` — one llama-server instance (host:port): its provider handle,
-    health state, busy counter, DISCOVERED capacity (``/props.total_slots``), per-slot
-    context, loaded model and llama.cpp build. LOCAL instances are reconciled at boot by
-    the node launcher (attach to a healthy matching node, else spawn one with the settings
-    from ``config/llama_node.json`` — init writes defaults there); remote instances (LAN
-    machines) are ATTACH-ONLY. Remote concurrency is owned by the node launcher and
-    discovered here.
+  * :class:`LlmBackend` — one backend entry (host:port): its provider handle, health state,
+    busy counter, DISCOVERED capacity (``/props.total_slots``), per-slot context, loaded
+    model and llama.cpp build. LOCAL entries are reconciled at boot by the fleet manager
+    (``node_launcher.reconcile``): attach to a healthy node that serves this entry's model,
+    otherwise spawn one with THIS entry's settings — after the memory gate says it fits.
+    Remote entries (LAN machines) are ATTACH-ONLY.
 
   * Shutdown semantics (2026-10-25): ``stop_all()`` terminates ONLY backends WE spawned
     (``spawned_by_us=True``, tracked Popen). A node started outside us (admin launcher,
@@ -18,12 +18,11 @@ llama servers we talk to. This module turns that list into live, tracked backend
     periodic health+props poller, a capacity-aware acquisition helper and a fleet
     snapshot for logs and the fleet table.
 
-Single-instance default: when llama_servers.json holds only the legacy local entry, this
-module behaves exactly like the old single-server code path (same process, same port,
-one slot).
+Single-entry default: when llama_servers.json holds only the local entry, this module
+behaves exactly like the old single-server code path (same process, same port, one slot).
 
 (2026-11 strata backend) The same registry also drives ``config/strata_servers.json`` when
-config.SERVER_BACKEND = "strata": those instances carry ``kind="strata"`` and a Bearer key,
+config.SERVER_BACKEND = "strata": those entries carry ``kind="strata"`` and a Bearer key,
 are ALWAYS attach-only (``spawnable=False`` - Strata starts its own process, we never spawn
 or kill it), their /health + /props + /v1/models calls carry the auth header, and their
 provider handle is a :class:`StrataProvider` instead of a :class:`LlamaProvider`.
@@ -40,7 +39,6 @@ from config import (
     get_strata_server_instances,
     strata_auth_headers,
     LLAMA_MAX_CONCURRENCY,
-    LLAMA_SERVER_PARALLEL,
     CONTEXT_WINDOW_TOKENS,
 )
 from .model_state import key_for_api_url
@@ -73,7 +71,7 @@ class LlmBackend:
         self.spawnable: bool = self.local and self.kind == "llama"
         # (2026-10-25) True only when WE launched this instance's llama-server at boot
         # (tracked Popen in process_mgmt). Attached foreign nodes keep False so stop_all()
-        # and the discovery relaunch never kill a node an admin started.
+        # never kills a node an admin started.
         self.spawned_by_us: bool = False
         self.healthy: Optional[bool] = None      # None = not probed yet
         self.busy: int = 0                       # requests currently running on this backend
@@ -81,9 +79,8 @@ class LlmBackend:
 
         # --- discovered via /props (2026-10 fleet) --------------------------------
         self.total_slots: Optional[int] = None   # what llama.cpp reports (--parallel N)
-        # n_ctx of ONE slot. A configured value on the instance (llama_node.json /
-        # strata_servers.json 'ctx_per_slot') is the starting point; /props overwrites it
-        # with what the node actually reports.
+        # n_ctx of ONE slot. A configured value on the entry ('ctx_per_slot') is the
+        # starting point; /props overwrites it with what the node actually reports.
         self.ctx_per_slot: Optional[int] = getattr(instance, "ctx_per_slot", None)
         self.model_key: str = ""                 # canonical routing key (see model_identity)
         # (2026-11 strata) Extra canonical keys this backend must route: an endpoint can
@@ -94,10 +91,6 @@ class LlmBackend:
         self.build: str = ""                     # llama.cpp build_info
         self.props_at: float = 0.0
         self.props_error: str = ""
-        # Discovery-driven spawn: how many times we relaunched a LOCAL instance to match
-        # its reported slot count after booting with the LLAMA_SERVER_PARALLEL fallback.
-        # Capped so a pathological /props can never cause a restart loop.
-        self._discovery_relaunches = 0
         # One-shot operator warnings (a 30 s poll must not repeat them forever).
         self._warned_slots = False
         self._warned_ctx = False
@@ -363,150 +356,43 @@ class LlmBackend:
     # --- lifecycle ------------------------------------------------------------
 
     async def ensure_started(self) -> bool:
-        """Make sure this instance is up. Local: reconcile (attach or spawn); remote: probe only.
+        """Make sure this instance is up. Local llama: reconcile (attach or spawn); else probe only.
 
-        (2026-10 discovery model) The SPAWN slot count is the explicit config value when
-        present, else LLAMA_SERVER_PARALLEL as a launch fallback - after /props lands the
-        DISCOVERED total_slots own routing capacity and the worker pool reconciles to it.
+        (2026-11 multi-config fleet) The entry in config/llama_servers.json IS the config:
+        its model, slots, ctx/slot, threads, gpu layers, bind and extra flags are what a
+        spawn uses — there is no separate per-machine file and no "reconcile against
+        defaults" step. node_launcher.reconcile() does the whole decision:
 
-        If no explicit concurrency was configured AND the server reports a different slot
-        count than we launched with (e.g. a manually-started llama-server on our port runs
-        --parallel 4), relaunch ONCE with the discovered number so process reality matches
-        routing capacity - otherwise we would over-admit requests into fewer real slots.
+          * healthy node on our port serving THIS entry's model -> ATTACH (spawned_by_us
+            stays False; it survives SERVER shutdown)
+          * port occupied by a different model / a non-llama process -> REPORT, never kill
+          * nothing on the port and auto_start=true -> memory gate, then spawn detached
+          * auto_start=false -> probe only (an admin owns the lifecycle)
 
-        A MATCHING report never touches the running server: terminate+respawn only happens
-        inside the mismatch branch (audit fix 2026-10 - the old structure terminated our own
-        tracked process unconditionally and then skipped the respawn, killing llama at boot
-        while still reporting HEALTHY).
+        The old discovery-driven relaunch is gone: routing capacity always follows
+        /props.total_slots, and we never kill a process we did not start to "fix" it.
 
-        (2026-10-25 node auto-start) LOCAL instances whose port matches config/llama_node.json
-        are reconciled by the NODE LAUNCHER instead of start_server(): a healthy matching
-        node is ATTACHED (spawned_by_us stays False - it survives SERVER shutdown), otherwise
-        we SPAWN detached with the init/admin settings from that file. No matching node
-        config -> legacy start_server() path exactly as before.
-
-        (2026-11 strata) ATTACH-ONLY backends (`spawnable=False`) are probe-only: remote llama
-        nodes as before, plus every Strata endpoint - Strata launches its own inference
-        process, so the brain never spawns, relaunches or terminates it.
+        (2026-11 strata) ATTACH-ONLY backends (`spawnable=False`: remote llama nodes and
+        every Strata endpoint) are probe-only - their processes belong to their owners.
         """
         if not self.spawnable:
             return await self.probe_health()
 
-        # (2026-10-25) Node-launcher reconcile when a VALID node config describes THIS port.
-        # When it does, its verdict is FINAL: auto_start=false must never be overridden by a
-        # legacy spawn, and a failed reconcile (foreign process on the port, model missing...)
-        # must not be papered over by spawning with generic defaults - the health poller
-        # keeps probing so a manually-fixed node comes back without a SERVER restart.
         from . import node_launcher
-        cfg = None
         try:
-            if node_launcher.load_raw_config() is not None:
-                cfg = node_launcher.load_config()
-        except RuntimeError as e:
-            logger.warning("[REGISTRY] %s unreadable/invalid (%s) - using the legacy spawn path",
-                           self.label, e)
-
-        use_node_cfg = (cfg is not None and int(cfg["port"]) == self.instance.port)
-        if use_node_cfg:
-            try:
-                spawned, ok = await node_launcher.ensure_local_node(self.instance)
-            except Exception as e:  # pragma: no cover - defensive (ensure never raises)
-                logger.error("[REGISTRY] %s node-launcher reconcile failed: %s", self.label, e)
-                spawned, ok = False, False
-            self.spawned_by_us = bool(spawned and ok)
-            if not ok:
-                self.healthy = False
-                return False
-            # Same ordering rule as probe_health: discovery BEFORE workers can wake.
-            props_ok = await self.refresh_props()
-            self.healthy = bool(props_ok)
-            if self.healthy:
-                self._healthy_event.set()
-            else:
-                self._healthy_event.clear()
-            return bool(self.healthy)
-
-        from .server import start_server
-        launch_slots = self.configured_capacity or LLAMA_SERVER_PARALLEL
-        ok = await start_server(
-            self.api_url,
-            host=self.instance.host,
-            port=self.instance.port,
-            concurrency=launch_slots,
-        )
+            spawned, ok = await node_launcher.reconcile(self.instance)
+        except Exception as e:  # pragma: no cover - defensive (reconcile never raises)
+            logger.error("[REGISTRY] %s reconcile failed: %s", self.label, e)
+            spawned, ok = False, False
+        self.spawned_by_us = bool(spawned and ok)
         if not ok:
             self.healthy = False
+            self._healthy_event.clear()
             return False
-
-        # Legacy path spawned it ourselves (start_server tracks the Popen).
-        self.spawned_by_us = True
 
         # Same ordering rule as probe_health: discovery BEFORE workers can wake.
         props_ok = await self.refresh_props()
-
-        # Discovery-driven relaunch (only when the operator gave no explicit value AND the
-        # server's real slot count differs from what we launched with). The terminate+respawn
-        # happens ONLY inside that branch: a matching report must never kill a healthy server.
-        reported = self.total_slots if isinstance(self.total_slots, int) and self.total_slots > 0 else None
-        need_relaunch = bool(
-            props_ok and self.configured_capacity is None and reported is not None
-            and reported != launch_slots
-        )
-
-        if need_relaunch:
-            if self._discovery_relaunches < 2:
-                # NOTE: start_server() fast-paths "we already own a tracked process", so we
-                # must terminate our OWN process first to force a real respawn with the new
-                # --parallel. Under restart_lock so a worker-side pre-flight/stall restart of
-                # this node can never interleave with this relaunch (see streaming.py).
-                from .process_mgmt import (_server_processes, _get_server_process,
-                                           _terminate_process, wait_for_port_free_async)
-                async with self.restart_lock:
-                    if not (self.spawned_by_us or _get_server_process(self.key) is not None):
-                        # (2026-10-25) ATTACHED node we did not spawn - NEVER kill it.
-                        logger.warning(
-                            "[REGISTRY] %s reports %d slot(s) but was launched with --parallel %d "
-                            "- it is an ATTACHED node we did not spawn, so it is NOT killed; "
-                            "routing capacity follows /props",
-                            self.label, reported, launch_slots,
-                        )
-                    else:
-                        logger.info(
-                            "[REGISTRY] %s reports %d slot(s) but was launched with --parallel %d "
-                            "(no explicit 'concurrency' in config) - relaunching with the discovered count",
-                            self.label, reported, launch_slots,
-                        )
-                        _proc = _server_processes.get(self.key)
-                        if _proc is not None and _proc.poll() is None:
-                            logger.info("[REGISTRY] %s terminating our tracked llama-server (PID %d) "
-                                        "for a discovery relaunch", self.label, _proc.pid)
-                            await asyncio.to_thread(_terminate_process, _proc)
-                        # Wait for the port to actually free: start_server()'s fast path would
-                        # otherwise attach to whatever still answers /health instead of respawning.
-                        if not await wait_for_port_free_async(self.instance.port):
-                            logger.warning("[REGISTRY] %s port %d still busy after terminate - "
-                                           "marking node DOWN; health poller will retry",
-                                           self.label, self.instance.port)
-                            ok = False   # we killed our own server and the port is still taken
-                        else:
-                            self._discovery_relaunches += 1
-                            ok = await start_server(
-                                self.api_url,
-                                host=self.instance.host,
-                                port=self.instance.port,
-                                concurrency=reported,
-                            )
-                if not ok:
-                    logger.warning("[REGISTRY] %s relaunch with discovered slots failed - "
-                                   "node is DOWN now; health poller will retry", self.label)
-            else:
-                logger.warning(
-                    "[REGISTRY] %s still reports %d slot(s) after %d discovery relaunch(es) - "
-                    "stopping automatic relaunches; routing capacity follows /props",
-                    self.label, reported, self._discovery_relaunches,
-                )
-
-        self.healthy = bool(props_ok and ok)
+        self.healthy = bool(props_ok)
         if self.healthy:
             self._healthy_event.set()
         else:
@@ -741,6 +627,16 @@ class LlmBackendRegistry:
         """Start/attach every configured instance and log the startup fleet table.
 
         Returns True when at least one backend is healthy (the SERVER can serve)."""
+        # (2026-11 memory gate) One boot line about what the machine actually has, so an
+        # operator can read WHY a LOCAL entry was refused (free RAM/VRAM vs what a launch
+        # needs) without guessing. Never raises - an unreadable machine reports zeros.
+        if any(b.spawnable for b in self.backends.values()):
+            try:
+                from . import memory
+                logger.info("[REGISTRY] machine memory now: %s", memory.snapshot().describe())
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("[REGISTRY] memory snapshot unavailable: %s", e)
+
         results = []
         for b in self.backends.values():
             ok = await b.ensure_started()

@@ -1,4 +1,47 @@
 [
-  { "name": "local", "host": "127.0.0.1", "port": 5000 },
-  { "name": "remote-gpu-box", "host": "192.168.1.50", "port": 5000 }
+  {
+    "name": "local",
+    "host": "127.0.0.1",
+    "port": 5000,
+    "model": null,
+    "concurrency": 1,
+    "ctx_per_slot": 181072,
+    "threads": 8,
+    "gpu_layers": 99,
+    "bind": "127.0.0.1",
+    "extra_args": [],
+    "auto_start": true
+  },
+  {
+    "name": "gemma-26b",
+    "host": "127.0.0.1",
+    "port": 5001,
+    "model": "gemma-4-26B-A4B-it-uncensored-heretic-Q6_K.gguf",
+    "concurrency": 1,
+    "ctx_per_slot": 65536,
+    "threads": 8,
+    "gpu_layers": 99,
+    "bind": "127.0.0.1",
+    "extra_args": [],
+    "auto_start": false
+  },
+  {
+    "name": "qwen-small",
+    "host": "127.0.0.1",
+    "port": 5002,
+    "model": "Qwen3.6-27B-MTP-Q4_K_M.gguf",
+    "concurrency": 2,
+    "ctx_per_slot": 32768,
+    "threads": 8,
+    "gpu_layers": 99,
+    "bind": "127.0.0.1",
+    "extra_args": [],
+    "auto_start": false
+  },
+  {
+    "name": "remote-gpu-box",
+    "host": "192.168.1.50",
+    "port": 5000,
+    "auto_start": false
+  }
 ]

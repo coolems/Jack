@@ -20,6 +20,10 @@ from .payload import build_llama_payload
 from .streaming import chat_stream as _chat_stream
 from .non_streaming import chat_non_streaming as _chat_non_streaming
 from .health import HealthChecker
+# (2026-11 fleet) module-level, not lazy: health_check() is called on every boot and by
+# clients; a function-local `from .backend_registry import ...` would re-resolve the
+# package each time. No circularity - backend_registry only imports provider lazily.
+from .backend_registry import get_registry as _get_registry
 from .server import get_current_model as _get_current_model
 from .ocr import ocr_transcribe as _ocr_transcribe
 from .status import status_message as _status_message
@@ -155,8 +159,35 @@ class LlamaProvider(BaseProvider):
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
         """Check llama.cpp health. Returns (is_healthy, error_message, model_names).
 
+        (2026-11 fleet) FLEET-AWARE: the provider's own api_url is ONE node of possibly
+        several (config/llama_servers.json). The SERVER is healthy when ANY registry
+        backend serves traffic — one stopped local node must not report the whole fleet
+        down and flood the log with "service is not running". The model list returned is
+        every model a HEALTHY node serves, which is exactly what gets streamed to clients.
+        Without a registry (direct single-node mode) this degrades to probing api_url.
+
         (2026-09 threadless refactor): async - awaits the HealthChecker's pooled httpx probe
         on the caller's loop instead of blocking it with a sync requests call."""
+        reg = _get_registry()
+        if reg is not None and reg.backends:
+            healthy = [b for b in reg.healthy_backends()]
+            models: List[str] = []
+            seen = set()
+            for b in healthy:
+                for m in (b.model_label or "", *sorted(b.model_aliases)):
+                    if m and m not in seen:
+                        seen.add(m)
+                        models.append(m)
+            if healthy:
+                logger.info("llama fleet is healthy. %d node(s), models: %s",
+                            len(healthy), models)
+                return True, "", models
+            down = ", ".join(b.label for b in reg.backends.values()) or "(none)"
+            error_msg = (f"no llama node of the fleet ({len(reg.backends)}) is serving - "
+                         f"{down}. Start one with utils/start_llama_node/ZZZ_LLAMA_NODE.bat")
+            logger.error(error_msg)
+            return False, error_msg, []
+
         return await self._health.health_check(force=force)
 
     # ---- get_models_list ----

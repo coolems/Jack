@@ -29,7 +29,8 @@
 - 🔎 **Web search & fetch** — live internet access with SSRF protection
 - 🖼️ **Image generation & vision** — GPU-tiered Qwen-Image / Z-Image-Turbo / SANA-Sprint pipelines + OCR transcription
 - ⏰ **Time tools** — local/UTC/city time, timezone differences
-- 🔁 **Model auto-switching with drain policy** — running requests finish on their backend; new ones are held back until every instance has reloaded
+- 🔁 **Model switching = routing, never reloading** — every llama-service keeps the model it was started with; picking another model in the UI simply sends your request to the llama that already runs it. Nothing is ever loaded or unloaded during serving
+- 🧠 **Launch memory gate** — before any llama is started, free RAM/VRAM is measured and the model's footprint estimated; if the machine is already full (e.g. Strata loaded) the start is REFUSED with the numbers instead of going out of memory
 - 🩹 **LLM self-heal** — a 90 s stream stall kills and restarts the llama-server automatically
 - ⚡ **MTP speculative decoding** — auto-detected (filename or GGUF header scan) for >2x speedup on MTP builds
 - 🔒 **Security by default** — TLS relay, API-key auth, loopback-only client bind (refused without keys), gitignored secrets
@@ -42,7 +43,9 @@ Two independent mechanisms make Jack usable as a shared team service:
 
 **2. One queue per model, one worker per slot.** Every request lands in the bounded FIFO queue of the model it names (`QUEUE_MAX_PENDING = 32` per model group by default). Each `llama-server` exposes N inference slots (`--parallel N`, discovered from `/props`) and the `WorkerPool` runs exactly one worker per slot. Whichever slot frees first takes the next request **of its own model group** — Qwen traffic never delays Gemma and vice versa. A full group gets a 5-second grace to free a slot; if none frees, the client gets a retryable *"Resend request in a min as server is full"* (no penalty — the rate-limit token is refunded). Per-user caps (`max_parallel_slots` in `profiles.json`) count **across the whole fleet**.
 
-**`config/llama_servers.json` is the single source of truth for the fleet.** Every entry's slot count is **discovered from `/props.total_slots`** — `"concurrency"` is optional on ALL entries (local and remote) and, when present, only acts as an upper bound. Local entries (`127.0.0.1`) are spawned by the SERVER; if you omit `concurrency`, it launches with a default slot count, asks `/props` what the server actually reports, and relaunches once to match (so routing capacity always equals real slots). Remote LAN entries are attach-only — the registry probes `/health` + `/props` every 30 s, learns each node's **model, slot count and per-slot context**, and routes by model. Adding a GPU box is one `{name, host, port}` entry; its slot count is discovered, never duplicated. Models are identified by GGUF filename, so keep filenames unique across the fleet.
+**`config/llama_servers.json` is the single source of truth for the fleet — a LIST of complete configs.** One entry per llama-service: `name`, `host`, `port`, `model`, `concurrency`, `ctx_per_slot`, `threads`, `gpu_layers`, `bind`, `extra_args`, `auto_start`. That is what lets you run **three llama-services on three ports with three different models on one machine** — each entry is a self-contained config, and the admin menu (`utils/start_llama_node/ZZZ_LLAMA_NODE.bat`) lists, edits, starts, stops and deletes them. `concurrency` is optional on ALL entries: the routing capacity is always **discovered from `/props.total_slots`**, and an explicit value only bounds it (for a LOCAL entry it is also the exact `--parallel` we launch with). Remote LAN entries are attach-only — the registry probes `/health` + `/props` every 30 s, learns each node's **model, slot count and per-slot context**, and routes by model. Adding a GPU box is one `{name, host, port}` entry. Models are identified by GGUF filename, so keep filenames unique across the fleet.
+
+**Before any LOCAL launch, the memory gate says yes or no.** `app/providers/llama/memory.py` reads free RAM (`GlobalMemoryStatusEx`) and free VRAM (`nvidia-smi`), estimates the model from the `.gguf` size + header (layer count, KV head count, per-head key/value lengths) + slots × ctx/slot × KV-cache quant (capped by `LLAMA_SERVER_CACHE_RAM`, the `--cache-ram` llama.cpp is launched with) + compute buffers, and REFUSES the spawn with concrete numbers ("needs ~24 GB, only 6 GB free — stop Strata or another node") instead of loading it and going out of memory. So starting llama while Strata already holds the machine stops with a report, it never loads both. The dedicated OCR side instance (`LLAMA_OCR_SERVER_PORT`) goes through the same gate before it is spawned.
 
 ## Architecture
 
@@ -63,7 +66,7 @@ The SERVER never runs tools — it authenticates, applies profiles and relays LL
   - `coolems_server` → headless relay only (no UI)
   - `llama` → just relay + launches the CLIENT as a subprocess for local UI use
   Which **local LLM engine** sits behind `coolems_server` is `config.SERVER_BACKEND`:
-  - `"llama"` (llama.cpp) → `config/llama_servers.json`, llama-server on `LLAMA_SERVER_PORT` (5000). The SERVER spawns LOCAL instances and attaches to LAN ones.
+  - `"llama"` (llama.cpp) → `config/llama_servers.json`, one entry per llama-server (default port **5000**). The SERVER spawns LOCAL entries with their own model/slots/context — after the memory gate confirms they fit — and attaches to LAN ones.
   - `"strata"` (2026-11) → `config/strata_servers.json`, Strata's own OpenAI-compatible endpoint on `STRATA_SERVER_PORT` (18500). The SERVER **never spawns or kills** Strata — it attaches to whatever Strata already runs and authenticates with `STRATA_API_KEY`. Vision/OCR are refused on this backend (Strata reports `images:false` and runs no dedicated OCR instance).
   `python code.py provider=strata` is shorthand for `SERVER_BACKEND="strata"` (the CLI arg wins over the config value).
 - **CLIENT** (`CLIENT/code_client.py`) — where all intelligence lives. Can be relocated on another machine and configured to connect to server. It hosts the web UI, the ChatBus background sessions, the agentic loop and every tool execution (files, browser via CDP/Playwright, Python exec, OCR, image generation). All LLM requests are routed through the SERVER; direct LLM access from the client is blocked by design.
@@ -108,7 +111,7 @@ The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeF
 ├── config/                 # SERVER configuration (+ .example templates, bootstrapped at startup)
 │   ├── .api_keys.json      #    ← your API keys  (gitignored; seeded from .api_keys.example.json)
 │   ├── profiles.json       #    ← role profiles  (gitignored; seeded from profiles.example.json)
-│   ├── llama_servers.json  #    ← llama backends: local + LAN instances (gitignored; seeded from .example)
+│   ├── llama_servers.json  #    ← llama fleet: one full config per llama-service (gitignored; seeded from .example)
 │   └── strata_servers.json #    ← Strata endpoints, used when SERVER_BACKEND="strata" (gitignored; seeded from .example)
 ├── app/                    # Shared server-side modules
 │   ├── providers/          #     llama backend registry, queue integration, auth gateway plumbing
@@ -344,39 +347,44 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
 4. Point the working root at a local folder: every workspace (chat) has its OWN working folder, stored per-workspace in `CLIENT/chat_history.db` (`conversations.working_root`) — set it via the **folder chip in the UI header** while that workspace is open. A workspace without its own folder yet falls back to the project root (all file tools are locked into the active workspace's folder).
 5. Set API key + e-mail as in step 6 → **Connect**. The laptop now drives Jack on the workstation: models listed are exactly what your profile allows, and all heavy lifting happens where the GPU is.
 
-### Step 8 — Scale out: add GPU nodes (optional, admin path)
+### Step 8 — Scale out: more llama-services on more ports (optional, admin path)
 
-The SERVER routes each request to a node that serves the requested model. A node is any machine running `llama-server`; the SERVER never starts/stops remote nodes. The node launcher lives in **`utils/start_llama_node/`** (`ZZZ_LLAMA_NODE.bat` + `llama_node.py`) — it is the admin path for configuring and starting ANY node you like. Regular users don't touch it: init writes default local-node settings to `config/llama_node.json`, and `ZZZ_SERVER.bat` auto-starts that node when nothing is running on its port (see below).
+The SERVER routes each request to the llama-service that runs the requested model. All of them — local ports and LAN boxes — are described in **one file**: `config/llama_servers.json`. The admin menu **`utils/start_llama_node/ZZZ_LLAMA_NODE.bat`** (`llama_node.py`) lists every config, configures/adds one, starts/stops/restarts one, prints its raw command and deletes one. Regular users don't touch it: init writes the `local` entry and `ZZZ_SERVER.bat` starts it when nothing is on its port — **and refuses if the machine has no free RAM/VRAM for it**.
 
-1. **On the GPU machine:** clone/copy the repo, bring the `llama_server/` binaries (gitignored, ~1.3 GB) and the model `.gguf` — put it under `llama_server/models/` (the scanner also looks one subfolder deep) or set an absolute path in the node config.
-2. Double-click **`utils\start_llama_node\ZZZ_LLAMA_NODE.bat`** → **2) Configure this machine**. The wizard asks for node name, port, **concurrency (`--parallel` slots)**, context per slot and model (plus whether the SERVER may auto-start it), then writes `config/llama_node.json`:
-   - `default` — 1 slot, full context (same as the brain's local node)
-   - `h200` — 2 slots, full context per slot
-   - `5090` — 1 slot, 64k context
-3. **1) Start** (or run `utils\start_llama_node\ZZZ_LLAMA_NODE.bat start`). The launcher spawns `llama-server` detached, waits for the model, verifies `/props`, prints the exact entry to add, and exits. llama keeps running. `start` is idempotent, so schedule it every 5 minutes at logon as a free watchdog (`utils\start_llama_node\ZZZ_LLAMA_NODE.bat start`).
-4. **On the SERVER**, add the printed entry to **`config/llama_servers.json`**:
+1. **One entry = one llama-service.** Three LOCAL entries on ports 5000/5001/5002 = three llama-services with three different models on this machine (if the RAM allows). A full entry:
 
    ```json
    [
-     { "name": "local",   "host": "127.0.0.1",    "port": 5000 },
-     { "name": "h200-a",  "host": "192.168.1.60", "port": 5000 },
-     { "name": "h200-b",  "host": "192.168.1.61", "port": 5000 }
+     { "name": "local",  "host": "127.0.0.1", "port": 5000,
+       "model": "C:\\models\\qwen38-27b-q6_k\\Dirk-Qwen3.8-27B-UD-Q6_K.gguf",
+       "concurrency": 1, "ctx_per_slot": 185000, "threads": 8, "gpu_layers": 99,
+       "bind": "127.0.0.1", "extra_args": [], "auto_start": true },
+     { "name": "gemma",  "host": "127.0.0.1", "port": 5001,
+       "model": "gemma-4-26B-A4B-it-uncensored-heretic-Q6_K.gguf",
+       "concurrency": 1, "ctx_per_slot": 65536, "gpu_layers": 99, "auto_start": false },
+     { "name": "h200-a", "host": "192.168.1.60", "port": 5000 }
    ]
    ```
 
-   No entry needs `concurrency` — the SERVER reads each node's slot count, model and per-slot context from `/props` every 30 s (local instances are relaunched once at boot to match what they report). Set `"concurrency": N` only to CAP a node below its reported slots. Restart the SERVER.
-5. **Firewall:** allow the node's port (5000) inbound from the SERVER.
+   `model`/`concurrency`/`ctx_per_slot`/`threads`/`gpu_layers`/`bind`/`extra_args` only apply to LOCAL entries (we spawn those). A remote entry is just `{name, host, port}` — that machine's own launcher owns the model and flags, and the brain discovers them from `/props`. `auto_start: false` means the SERVER only probes/attaches; you start it by hand.
+
+2. **Configure one:** `ZZZ_LLAMA_NODE.bat` → **3) Configure / add a config**. The menu clears the screen and prints the whole fleet first (each config, its port, whether it is UP, its model/slots/ctx), then asks *which config to modify* — answer by number, name or `host:port`, or press Enter for a NEW one. The chosen entry's current JSON is echoed before any question, and every question shows the value Enter keeps (preset `default` / `h200` / `5090` / `small` / `custom` — while **editing**, pressing Enter on the preset keeps the values shown above instead of applying a preset; while **adding**, preset 1 is the starting point. Then name, host, port, slots, ctx/slot, threads, GPU layers, model, bind, extra args, auto-start). It saves the whole list atomically — other entries are never lost, a rename replaces the entry (and moves its runtime state), and a `host:port` another config already owns is **refused** instead of silently deduped.
+
+3. **Start one:** menu **2) Start one config** — it shows the fleet, then asks *which config to start* (number, name, or `all`). Or `ZZZ_LLAMA_NODE.bat start gemma` (also `start all`). Idempotent: a healthy llama on that port already serving that model does nothing, so scheduling it every 5 minutes is a free watchdog. Before a real spawn the memory gate prints its verdict; a refusal names the numbers and nothing is launched.
+
+4. **On a GPU box elsewhere:** copy the repo + `llama_server/` binaries + the `.gguf`, run the same menu there with `bind: 0.0.0.0`, then add `{name, host: <that LAN IP>, port}` to the SERVER's `llama_servers.json` and restart the SERVER. The brain never starts or stops remote nodes.
+
+5. **Firewall:** allow the node's port inbound from the SERVER only — `llama-server` has no authentication; the SERVER's API keys protect clients, not the raw port.
 
 Notes:
-- **Models are routed by GGUF filename.** Three Qwen nodes and two Gemma nodes simply appear as two groups; requests go to the group they name. Keep filenames unique across the fleet.
-- Nodes must run a llama.cpp build that exposes **`/props`** (the repo ships b10441; `/props` is how the brain learns the model, slot count and per-slot context). A node without `/props` is never routed to.
-- A node's concurrency is a **launch flag** (`--parallel`). Change it in the node wizard and restart that node (model reload); the SERVER picks the new count up within 30 s. Context per slot is also per node.
-- **No model switching.** Nodes keep the model they started with; the CLIENT's model picker routes to a serving node or reports *"No llama node is serving X"*. The SERVER never reloads a node during serving.
-- **Local auto-start (regular users).** Init writes default settings for this machine's local node into `config/llama_node.json` (`127.0.0.1:<LLAMA_SERVER_PORT>`, the model init downloaded, slots by GPU tier — 2 on ≥28 GB VRAM else 1 — and ctx/slot = your tier's context). At boot, for every LOCAL entry in `config/llama_servers.json` whose port matches that file: a healthy matching node is **attached**, otherwise the SERVER **spawns** it detached with those settings. Set `"auto_start": false` in `llama_node.json` to make the SERVER probe-only (you start the node by hand). No `llama_node.json` at all → the legacy default spawn, exactly as before.
+- **Models are routed by GGUF filename.** Three Qwen services and two Gemma services simply appear as two groups; requests go to the group they name. Keep filenames unique across the fleet.
+- **Switching a model never loads anything.** The CLIENT picker lists the models the SERVER discovered from every backend's `/props` (filtered by your profile); choosing one sends the request to the llama-service that already runs it. There is no reload path.
+- Services must run a llama.cpp build that exposes **`/props`** (the repo ships b10441) — that is how the brain learns model, slot count and per-slot context. A service without `/props` is never routed to.
+- `concurrency` is a **launch flag** (`--parallel`) for LOCAL entries and an upper bound for remote ones; routing capacity always follows `/props.total_slots`.
+- **Local auto-start (regular users).** Init writes/updates the `local` entry (`127.0.0.1:<LLAMA_SERVER_PORT>`, the model init downloaded, 1 slot, ctx/slot = your tier's context, `auto_start: true`) and leaves every other entry alone. At boot a healthy matching node is **attached** (it survives SERVER shutdown), otherwise the SERVER **spawns** it detached.
 - A full model group waits up to 5 s for a slot; then the client gets a retryable *"Resend request in a min as server is full"* (the rate-limit token is refunded).
-- **Firewall:** restrict the node's port to the SERVER's IP. `llama-server` itself has **no authentication** — the SERVER's API keys protect clients, not the raw node port.
 - If the brain's own model lives outside `llama_server/models`, the scanner also includes the folder recorded in `.last_model_loaded.json`; otherwise add the folder to `LLAMA_MODEL_DIRS` in `config/config.py`.
-- Invalid entries in `llama_servers.json` (missing host, bad port, duplicate `host:port`) are skipped/deduped with a logged warning.
+- Invalid entries in `llama_servers.json` (missing host, bad port, duplicate `host:port`) are skipped/deduped with a logged warning; a missing file is re-seeded with the default local entry.
 
 ## Troubleshooting
 
@@ -388,7 +396,9 @@ Notes:
 | *"Authentication failed or no valid profile"* | The key's `role` has no matching entry in `config/profiles.json` — add the profile (step 3) or fix the role name; both files hot-reload, just retry Connect |
 | Model selector empty / model missing | Non-admin profiles must list the model **filename** in `allowed_models` (and the SERVER must see the file under `llama_server/models/`, `LLAMA_MODEL_DIRS`, or the persisted model folder). A model served only by a remote node appears once that node is healthy. |
 | CLIENT can't reach SERVER at all | Wrong address or firewall: verify the Server Address field (shows *Active* vs *Saved*), confirm port 8080 is open, and remember a changed address needs a CLIENT restart. `CLIENT/config/settings.json` is authoritative |
-| A remote backend shows DOWN in the fleet table | The llama-server on that machine isn't running or its firewall blocks the probe: run `utils\start_llama_node\ZZZ_LLAMA_NODE.bat status` there. The SERVER only attaches, never starts remote nodes (it auto-starts ONLY local nodes matching `config/llama_node.json`) |
+| A remote backend shows DOWN in the fleet table | The llama-server on that machine isn't running or its firewall blocks the probe: run `utils\start_llama_node\ZZZ_LLAMA_NODE.bat status` there. The SERVER only attaches, never starts remote nodes |
+| Log says *REFUSED '...': needs ~X MB ... only Y MB free* | The memory gate stopped a launch that would not fit — something else (Strata or another llama-service) already holds the machine. Stop that one, or lower `ctx_per_slot` / `concurrency` / quant for this entry in `config/llama_servers.json` |
+| Port already serves a different model | The gate reports *"port N is already serving 'X' and we did not start it"* — stop that service (`ZZZ_LLAMA_NODE.bat stop <name>`) or give the new entry its own port |
 | Chat sits at *queued* for a long time | All slots of **that model group** are busy. It starts when one frees (FIFO); add a node for that model or raise its `concurrency` (step 8) |
 | *"Resend request in a min as server is full"* | That model group's backlog (32) is full. Wait a minute and resend — nothing is penalized |
 | *"No llama node is serving X"* | No configured node runs that model (or all its nodes are offline). Check the fleet table / `profiles.json` `allowed_models`, start the node, or pick another model |
@@ -401,9 +411,8 @@ Notes:
 
 - **SERVER** config lives in `config/` — real values (API keys, profiles, backend list, per-machine state) are **gitignored**; only `.example` templates are tracked and used to bootstrap first runs. See steps 2–3 above for the exact file shapes.
   - **`SERVER_BACKEND`** (in `config/config.py`) — `"llama"` | `"strata"`: the local inference engine behind `coolems_server`. Default `"strata"`.
-  - **`llama_servers.json`** — the llama fleet: one entry per llama-server instance: `name`, `host`, `port`, plus OPTIONAL `concurrency` (upper bound only). LOCAL (`127.0.0.1`) entries are spawned by the SERVER; remote hosts are attach-only, probed every 30 s via `/health` + `/props`. Slot counts for ALL entries are discovered from `/props.total_slots`, never configured.
+  - **`llama_servers.json`** — the llama fleet: a JSON LIST, one FULL config per llama-service: `name`, `host`, `port`, `model`, `concurrency`, `ctx_per_slot`, `threads`, `gpu_layers`, `bind`, `extra_args`, `auto_start`. LOCAL (`127.0.0.1`) entries are spawned by the SERVER with their own model and flags — after `app/providers/llama/memory.py` confirms the model fits in the free RAM/VRAM (`LLAMA_LAUNCH_RESERVE_MB` headroom); remote hosts are attach-only, probed every 30 s via `/health` + `/props`. Slot counts for ALL entries are discovered from `/props.total_slots` (an explicit `concurrency` only bounds them). `utils/start_llama_node/ZZZ_LLAMA_NODE.bat` is the admin menu for this file: list, configure/add, start, stop, restart, status, cmd, delete.
   - **`strata_servers.json`** — the Strata fleet (used only when `SERVER_BACKEND="strata"`): one entry per endpoint: `name`, `host`, `port`, optional `api_key`, optional `concurrency` (upper bound on parallel sessions — real capacity comes from `/props.total_slots`), optional `ctx_per_slot` (fallback only; the `/props` n_ctx wins). ALWAYS attach-only — Jack never starts, restarts or kills Strata; it reads `/health` + `/props` for the model, slot count and per-slot context. A Strata endpoint answers for its model under alias ids (`/props.model_alias`, `/v1/models`); every one of those ids routes to the same slot group. Missing file is seeded from `strata_servers.example.json` at startup. To run 2+ chats at once: give Strata itself 2 request slots (Expert settings → "Concurrent requests", or `strata serve --parallel 2`) and set the role's `max_parallel_slots` / `max_connections` to ≥ 2 in `profiles.json`.
-  - **`llama_node.json`** — per GPU machine. Init writes the local-node defaults (auto-start); the admin wizard (`utils\start_llama_node`) overwrites it: `name`, `model`, `bind`, `port`, `concurrency` (`--parallel`), `ctx_per_slot`, `threads`, `gpu_layers`, `extra_args`. The node launcher uses it; the SERVER never reads it.
   - **`profiles.json`** — per role: `allowed_models` (GGUF **filenames**, `null` = all), **required** `max_parallel_slots` (parallel generations across the whole fleet; missing/invalid = authentication denied), `max_connections`, `max_rate_limit`, tools.
   - **`config.py`** — queue limits: `QUEUE_MAX_PENDING` (32 **per model group**), `QUEUE_FULL_GRACE_SEC` (5 s), `QUEUE_FULL_RETRY_AFTER_SEC` (60 s), `QUEUE_MODEL_WAIT_SEC` (120 s, model configured but all nodes down), `LLAMA_MAX_CONCURRENCY` (8).
 - **CLIENT** config lives in `CLIENT/config/` — same pattern: gitignored data files bootstrapped from `.example` templates (`.api_client_keys.json`, `settings.json`). Working roots are per-workspace values in the CLIENT database (`conversations.working_root`) — each workspace is locked into its own folder, with the project root as fallback; change one live via the folder chip in the UI header.

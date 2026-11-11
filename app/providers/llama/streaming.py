@@ -39,6 +39,7 @@ import httpx
 from config import (
     CONTEXT_WINDOW_TOKENS,
     LLAMA_MIN_SAFE_MAX_TOKENS,
+    LLAMA_SERVER_PORT,
     STREAM_BUFFER_SIZE_CHARS,
     STREAM_BUFFER_SIZE_MSGS,
     STREAM_BUFFER_TIMEOUT_SEC,
@@ -112,12 +113,8 @@ async def _iter_sse_with_stall(aiter, timeout_sec: int, conv_id: str, api_url: s
                         wait_for_port_free_async,
                         start_server as _restart,
                     )
-                    from config import LLAMA_SERVER_PORT
 
                     _port = _backend.instance.port if _backend is not None else LLAMA_SERVER_PORT
-                    _host = _backend.instance.host if _backend is not None else None
-                    _conc = ((_backend.configured_capacity or _backend.capacity)
-                             if _backend is not None else 1)
                     _key = _backend.key if _backend is not None else None
                     logger.error("[STREAM-STALL] Auto-restart enabled - restarting local node on "
                                  "port %d...", _port)
@@ -131,8 +128,11 @@ async def _iter_sse_with_stall(aiter, timeout_sec: int, conv_id: str, api_url: s
                             await asyncio.to_thread(_kill_orphaned_process, _key)
                             await asyncio.to_thread(_kill_llama_server_by_port, _port)
                             if await wait_for_port_free_async(_port):
+                                # (2026-11 multi-config fleet) restart with THIS entry's own
+                                # config (model, slots, ctx/slot, threads, gpu layers) - the
+                                # memory gate inside start_server() decides whether it fits.
                                 restarted = await _restart(
-                                    api_url, host=_host, port=_port, concurrency=_conc,
+                                    api_url, _backend.instance if _backend is not None else None,
                                 )
                         finally:
                             if _lock is not None:
@@ -409,12 +409,10 @@ async def chat_stream(
             elif _backend is not None:
                 # Serialize restarts between slots of the same local node.
                 async with _backend.restart_lock:
-                    restarted = await _start_server(
-                        api_url,
-                        host=_backend.instance.host,
-                        port=_backend.instance.port,
-                        concurrency=_backend.configured_capacity or _backend.capacity,
-                    )
+                    # (2026-11 multi-config fleet) restart with THIS entry's own config
+                    # (model, slots, ctx/slot, threads, gpu layers); the memory gate inside
+                    # start_server() decides whether it still fits.
+                    restarted = await _start_server(api_url, _backend.instance)
                 if restarted:
                     logger.info(f"[LLAMA] Auto-restart successful, proceeding with request")
                 else:

@@ -236,6 +236,11 @@ def _popen_ocr(model_file: str, mmproj_file: str) -> Optional[subprocess.Popen]:
 async def _launch_and_wait(model_file: str, mmproj_file: str) -> bool:
     """Start the OCR llama-server and wait until healthy + verified (ASYNC).
 
+    (2026-11 memory gate) Before any Popen, memory.check_launch() asks whether this small
+    instance still fits in the free RAM/VRAM. An OCR launch is a real llama-server load:
+    if Strata or the chat node already holds the machine, we REPORT and refuse instead of
+    loading anyway and pushing the box out of memory.
+
     (2026-09 threadless refactor): split from the old fully-blocking version. The Popen
     leaf runs in a worker thread; the health wait / model verification are AWAITED on the
     loop directly - .health_check._wait_for_health and _verify_model_loaded are async now,
@@ -243,8 +248,26 @@ async def _launch_and_wait(model_file: str, mmproj_file: str) -> bool:
     them: awaiting nothing)."""
     global _ocr_process
 
+    from . import memory
     from .health_check import _wait_for_health, _verify_model_loaded
+    from .model_utils import _is_mtp_model
     from .process_mgmt import _terminate_process, _log_process_error
+
+    from config import LLAMA_OCR_CTX_SIZE, LLAMA_SERVER_GPU_LAYERS, LLAMA_SERVER_PARALLEL
+
+    ok, budget = memory.check_launch(
+        model_file, slots=max(1, int(LLAMA_SERVER_PARALLEL or 1)),
+        ctx_per_slot=int(LLAMA_OCR_CTX_SIZE or 0),
+        gpu_layers=int(LLAMA_SERVER_GPU_LAYERS or 0), mtp=_is_mtp_model(model_file),
+    )
+    if not ok:
+        logger.error(
+            "[OCRSRV] REFUSED '%s' on port %d: %s - NOT spawned. Free memory (stop another "
+            "llama / Strata) or lower config.LLAMA_OCR_CTX_SIZE.",
+            os.path.basename(model_file), _port(), budget,
+        )
+        return False
+    logger.info(f"[OCRSRV] memory budget OK for OCR instance: {budget}")
 
     process = await asyncio.to_thread(_popen_ocr, model_file, mmproj_file)
     if process is None:

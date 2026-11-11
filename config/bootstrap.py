@@ -67,6 +67,8 @@ def _seed_from_example(config_dir: str, filename: str, example_name: str) -> boo
         elif filename == "profiles.json":
             content = json.dumps({}, indent=2) + "\n"
         elif filename == "llama_servers.json":
+            # Minimal valid local entry (same shape as the example; the loader/launcher fill
+            # in the rest). A launch is memory-gated, so a fresh machine never overloads.
             from config import LLAMA_SERVER_PORT as _port
             content = json.dumps([{"name": "local", "host": "127.0.0.1", "port": _port}], indent=2) + "\n"
         elif filename == "strata_servers.json":

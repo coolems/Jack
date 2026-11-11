@@ -56,7 +56,6 @@ from .config import (
     STRATA_SERVER_PORT,
     STRATA_API_KEY,
     STRATA_SERVERS_FILE,
-    StrataServerInstance,
     get_strata_server_instances,
     strata_auth_headers,
 
@@ -93,11 +92,17 @@ from .config import (
     LLAMA_SERVER_GPU_LAYERS,
     LLAMA_SERVER_PORT,
 
-    # Llama server instance list (hand-editable config/llama_servers.json, 2026-09-08)
+    # Backend instance list (config/llama_servers.json + config/strata_servers.json):
+    # one entry per backend, each with its own model + launch parameters. The admin menu
+    # utils/start_llama_node edits and saves them (save_*_server_instances).
     LLAMA_SERVERS_FILE,
     LLAMA_MODEL_DIRS,
     LlamaServerInstance,
+    get_llama_server_entries_raw,
     get_llama_server_instances,
+    instance_to_entry,
+    save_llama_server_instances,
+    save_strata_server_instances,
     LLAMA_OCR_SERVER_PORT,
     LLAMA_OCR_CTX_SIZE,
     LLAMA_OCR_UNLOAD_AFTER_USE,
@@ -118,6 +123,8 @@ from .config import (
     LLAMA_SERVER_PARALLEL,
     LLAMA_MAX_CONCURRENCY,
     LLAMA_SERVER_CACHE_RAM,
+    # Launch memory gate (app/providers/llama/memory.py)
+    LLAMA_LAUNCH_RESERVE_MB,
 
     # Llama Server MTP (Multi-Token Prediction) Support
     LLAMA_SERVER_MTP_ENABLED,

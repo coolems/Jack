@@ -13,7 +13,8 @@ Provider modes:
                         Shorthand for config.SERVER_BACKEND = "strata".
 
 Local LLM backend (config.SERVER_BACKEND; the relay never spawns Strata — attach-only):
-  - llama  → llama-server, spawned/attached from config/llama_servers.json + llama_node.json
+  - llama  → llama-server, spawned/attached from config/llama_servers.json (one entry per
+             service; a LOCAL launch is gated by app/providers/llama/memory.py)
   - strata → Strata's own inference endpoint (config.STRATA_URL; keys in config/strata_servers.json)
 
 Information flow:

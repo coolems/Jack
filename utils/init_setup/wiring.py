@@ -285,8 +285,8 @@ def wire_configs(ctx: dict) -> None:
     # ---- 6g. CLIENT UI TLS certificates (browser trust for the local UI URL, port from config.CLIENT_UI_PORT) ----
     ctx["ui_certs_ok"] = ensure_ui_certs(root)
 
-    # ---- 6h. default LOCAL llama node config so ZZZ_SERVER.bat can auto-start it ----
-    write_local_node_config(ctx)
+    # ---- 6h. default LOCAL entry in config/llama_servers.json so ZZZ_SERVER.bat can start it ----
+    write_local_server_entry(ctx)
 
 
 def _read_int_from_config_py(cfg_py: str, name: str, fallback: int) -> int:
@@ -302,22 +302,19 @@ def _read_int_from_config_py(cfg_py: str, name: str, fallback: int) -> int:
     return fallback
 
 
-def write_local_node_config(ctx: dict) -> None:
-    """Write DEFAULT settings for the local llama node (2026-10-25 auto-start).
+def write_local_server_entry(ctx: dict) -> None:
+    """Add/update the 'local' entry of config/llama_servers.json (2026-11 multi-config fleet).
 
-    config/llama_node.json is the single file both paths use: init writes sane defaults
-    here, and the admin wizard (utils/start_llama_node) overwrites it when an admin wants
-    a custom node. At boot the SERVER reconciles each LOCAL instance against this file:
-    healthy matching node -> attach; nothing running -> spawn detached with these settings
-    ("auto_start": true). NEVER overwrites an existing file - an admin's configuration wins.
+    config/llama_servers.json is a LIST of complete configs - one entry per llama-service.
+    init only owns the LOCAL entry here: it sets this machine's model, port, slots, ctx/slot,
+    threads and gpu layers for it. Every OTHER entry (extra local ports, remote LAN nodes) is
+    an admin's own configuration and is preserved untouched.
+
+    At boot the SERVER reconciles each LOCAL entry: healthy node serving that model -> attach;
+    nothing on the port -> spawn detached with these settings IF the memory gate says it fits.
     """
-    import socket
-
     root = ctx["root"]
-    path = os.path.join(root, "config", "llama_node.json")
-    if os.path.exists(path):
-        ok("config/llama_node.json: already present (admin/custom) - kept as-is")
-        return
+    path = os.path.join(root, "config", "llama_servers.json")
 
     cfg_py = os.path.join(root, "config", "config.py")
     port = _read_int_from_config_py(cfg_py, "LLAMA_SERVER_PORT", 5000)
@@ -326,29 +323,57 @@ def write_local_node_config(ctx: dict) -> None:
 
     # Default start is ALWAYS a single inference slot: one slot keeps the whole KV budget
     # for one conversation (full per-slot context) and boots fastest on every GPU tier.
-    # Admins who want more parallel slots raise it in config/llama_node.json or via the
-    # node wizard (utils\start_llama_node -> Configure); init never overwrites that file.
-    concurrency = 1
-
-    cfg = {
-        "name": socket.gethostname(),
-        "model": ctx["model_path"],
-        "bind": "127.0.0.1",
+    # Admins who want more parallel slots raise it via utils\start_llama_node -> Configure.
+    entry = {
+        "name": "local",
+        "host": "127.0.0.1",
         "port": port,
-        "concurrency": concurrency,
+        "model": ctx["model_path"],
+        "concurrency": 1,
         "ctx_per_slot": int(ctx["tier"]["ctx"]),
         "threads": threads,
         "gpu_layers": gpu_layers,
+        "bind": "127.0.0.1",
         "extra_args": [],
-        # true = ZZZ_SERVER.bat boot spawns this node when nothing is on its port;
+        # true = ZZZ_SERVER.bat boot starts this node when nothing is on its port;
         # set false to make the SERVER probe/attach only (admin starts it by hand).
         "auto_start": True,
     }
+
+    entries: list = []
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, list):
+                entries = raw
+            else:
+                warn(f"config/llama_servers.json is not a JSON list - rewriting it with the local entry")
+        except (json.JSONDecodeError, OSError) as e:
+            warn(f"config/llama_servers.json unreadable ({e}) - rewriting it with the local entry")
+
+    # Replace the LOCAL entry (by name, or by any loopback entry on the port we are about
+    # to use) and keep every other entry - including remote nodes that share the port number.
+    def _is_local_entry(e: dict) -> bool:
+        return str(e.get("host") or "").strip().lower() in ("127.0.0.1", "localhost", "::1")
+
+    kept = [e for e in entries
+            if isinstance(e, dict)
+            and str(e.get("name") or "").strip().lower() != "local"
+            and not (_is_local_entry(e) and e.get("port") == port)]
+    kept.insert(0, entry)
+
     try:
-        write_json(path, cfg)
-        ok(f"config/llama_node.json: default local node written "
-           f"(port {port}, {concurrency} slot(s), ctx/slot {cfg['ctx_per_slot']}, auto_start)")
-        info("   ZZZ_SERVER.bat will now start this node automatically when nothing is on its port.")
+        write_json(path, kept)
+        ok(f"config/llama_servers.json: local entry written "
+           f"(port {port}, 1 slot, ctx/slot {entry['ctx_per_slot']}, model "
+           f"{os.path.basename(ctx['model_path'])}, auto_start)")
+        if len(kept) > 1:
+            info(f"   {len(kept) - 1} other config(s) kept as-is: "
+                 + ", ".join(str(e.get("name") or f"{e.get('host')}:{e.get('port')}") for e in kept[1:]))
+        info("   ZZZ_SERVER.bat will start this node automatically when nothing is on its port,")
+        info("   and refuses to load it if the machine has no free RAM/VRAM for it.")
+        info("   More llama-services on other ports: utils/start_llama_node/ZZZ_LLAMA_NODE.bat -> Configure.")
     except OSError as e:
-        warn(f"Could not write config/llama_node.json ({e}) - the SERVER falls back to "
+        warn(f"Could not write config/llama_servers.json ({e}) - the SERVER falls back to "
              f"default spawn settings at boot")

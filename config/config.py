@@ -211,6 +211,12 @@ LLAMA_SERVER_PARALLEL: int = 1                          # DEFAULT slots for a LO
 # /props.total_slots (its node launcher owns the number). This cap is a sanity guard only.
 LLAMA_MAX_CONCURRENCY: int = 8                          # Hard ceiling per llama instance (1..8)
 LLAMA_SERVER_CACHE_RAM: int = 4096                      # Max RAM (MB) for KV cache (prevents OOM on tool calls)
+# (2026-11 memory gate) Headroom that must stay FREE before a llama-server is spawned.
+# app/providers/llama/memory.py refuses a launch when weights + KV + buffers would eat
+# the free RAM/VRAM down to this margin: the brain itself, the OS and whatever else is
+# loaded (Strata, another llama node) need room to keep running. Raise it on a machine
+# that runs other GPU workloads; 0 disables the margin (the estimate alone is checked).
+LLAMA_LAUNCH_RESERVE_MB: int = 1500                     # MB of RAM/VRAM that must stay free after a launch
 
 # --- Llama Server MTP (Multi-Token Prediction) Support ---
 # For MTP models (e.g. Qwen3.6-27B-MTP), these params enable speculative decoding
@@ -339,7 +345,8 @@ def set_server_backend(name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Llama server instances - config/llama_servers.json (2026-09-08 multi-chat)
+# LLM backend instances - config/llama_servers.json + config/strata_servers.json
+# (2026-09-08 multi-chat; per-config entries 2026-11)
 # ---------------------------------------------------------------------------
 
 _logger = _logging.getLogger("COOLEMS.Config")
@@ -347,48 +354,80 @@ _logger = _logging.getLogger("COOLEMS.Config")
 
 @_dataclass(frozen=True)
 class LlamaServerInstance:
-    """One llama-server instance to create/attach at boot.
+    """One LLM backend from config/llama_servers.json (2026-11 multi-config fleet).
 
-    Mirrors the shape of CLIENT's settings.json server_addresses pattern, but for
-    SERVER-side LLM instances: a plain hand-editable JSON list in config/.
-      name        - human label only (logs/startup table); optional, defaults to host:port.
-      host        - "127.0.0.1"/"localhost" for same-machine instances, or a LAN IP of a
-                    remote machine running its own llama-server.
+    The file is a plain hand-editable JSON list; ONE ENTRY PER llama-server we run or
+    attach to, and every entry carries its OWN model and launch parameters. That is what
+    makes "three llama-services on three ports, three different models, on one machine"
+    possible: each entry is a complete, self-contained config.
+
+      name        - human label; used by utils/start_llama_node (list / start / stop /
+                    configure) and by the fleet table. Optional -> defaults to host:port.
+      host        - "127.0.0.1"/"localhost" for a node on THIS machine (we may spawn it),
+                    or a LAN IP of another machine's llama-server (attach-only).
       port        - integer TCP port of that instance's HTTP endpoint.
+      model       - .gguf FILENAME or absolute path this node must run. LOCAL entries only:
+                    None = "whatever this machine has" (the disk scan / persisted model).
+                    Ignored for remote entries - the node reports its model via /props.
+      bind        - LOCAL spawn bind address (default 127.0.0.1; 0.0.0.0 = reachable on LAN).
       concurrency - requests this instance may run at once (llama.cpp --parallel N).
-                    OPTIONAL everywhere (2026-10 discovery model): None = DISCOVERED from
-                    the node's /props.total_slots, which is then the routing capacity.
-                    LOCAL entries: an explicit int is also used to SPAWN the process
-                    (--parallel N, scaling --ctx-size by N); with None the spawn falls
-                    back to LLAMA_SERVER_PARALLEL and discovery takes over afterwards.
-                    REMOTE entries: attach-only - set an int only to CAP a remote node.
-
-    Every LOCAL instance runs the SAME model + launch args from this config module
-    (LLAMA_SERVER_*) - one knob stays in one place.
+                    OPTIONAL everywhere: None = DISCOVERED from /props.total_slots, which is
+                    then the routing capacity. LOCAL with an int = the exact spawn value.
+                    REMOTE: an int only CAPS a node below its reported slots.
+      ctx_per_slot- context tokens PER slot for a LOCAL spawn (total --ctx-size = N x this).
+                    None = config CONTEXT_WINDOW_TOKENS. /props always wins for routing.
+      threads     - CPU threads for a LOCAL spawn (None = LLAMA_SERVER_THREADS).
+      gpu_layers  - --n-gpu-layers for a LOCAL spawn (None = LLAMA_SERVER_GPU_LAYERS).
+      extra_args  - raw extra llama-server flags, appended verbatim (LOCAL spawn only).
+      auto_start  - LOCAL: may the SERVER spawn this node at boot when nothing is on its
+                    port? false = probe/attach only (an admin owns its lifecycle).
+      api_key     - only meaningful for kind="strata" (Bearer token); None for llama.
+      kind        - "llama" (llama-server) or "strata" (attach-only endpoint).
     """
     name: str
     host: str
     port: int
     concurrency: Optional[int] = None
+    api_key: Optional[str] = None
+    ctx_per_slot: Optional[int] = None
+    model: Optional[str] = None
+    bind: Optional[str] = None
+    threads: Optional[int] = None
+    gpu_layers: Optional[int] = None
+    extra_args: tuple = ()
+    auto_start: bool = True
+    kind: str = "llama"
 
     @property
     def api_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
     @property
+    def label(self) -> str:
+        """Operator-facing identity: name + endpoint (+ kind when it is not llama)."""
+        base = f"{self.name} ({self.host}:{self.port})"
+        return base if self.kind == "llama" else f"{base} [{self.kind}]"
+
+    @property
     def is_local(self) -> bool:
-        """Loopback = the instance WE spawn. Everything else is attach-only."""
+        """Local = the instance WE may spawn. Everything else is attach-only."""
         return self.host.strip().lower() in ("127.0.0.1", "localhost", "::1")
 
+    @property
+    def is_spawnable(self) -> bool:
+        """We may start/stop this process: only our own local llama-server entries."""
+        return self.is_local and self.kind == "llama"
 
-def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Optional[int]:
-    """Validate one llama_servers.json 'concurrency' (alias 'parallel') value.
 
-    LOCAL and REMOTE alike: returns None on missing/bad input - None means "DISCOVER
-    from /props.total_slots" (the 2026-10 discovery model; the node owns its slot count).
-    A local instance with concurrency=None is SPAWNED with --parallel LLAMA_SERVER_PARALLEL
-    as a launch fallback, after which discovery takes over and the worker pool reconciles.
-    An explicit int is an UPPER BOUND (and the exact spawn value for local instances).
+def _parse_instance_concurrency(entry: dict, loopback: bool, index: int,
+                                source: str = "llama_servers.json") -> Optional[int]:
+    """Validate one entry's 'concurrency' (alias 'parallel') value.
+
+    LOCAL and REMOTE alike: returns None on missing/bad input - None means "DISCOVER from
+    /props.total_slots" (the node owns its slot count). A local instance with None is
+    SPAWNED with --parallel LLAMA_SERVER_PARALLEL as a launch fallback, after which
+    discovery takes over and the worker pool reconciles. An explicit int is an UPPER
+    BOUND (and the exact spawn value for local instances).
     """
     raw = entry.get("concurrency", entry.get("parallel"))
     if raw is None:
@@ -397,8 +436,8 @@ def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Opti
     # bool is a subclass of int in Python - reject it explicitly.
     if isinstance(raw, bool) or not isinstance(raw, int):
         _logger.warning(
-            "[CONFIG] llama_servers.json entry #%d has an invalid 'concurrency' (%r) - "
-            "%s", index, raw,
+            "[CONFIG] %s entry #%d has an invalid 'concurrency' (%r) - "
+            "%s", source, index, raw,
             f"spawning with {LLAMA_SERVER_PARALLEL} slot(s), then discovering from /props"
             if loopback else "will discover it from /props",
         )
@@ -406,8 +445,8 @@ def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Opti
 
     if raw < 1:
         _logger.warning(
-            "[CONFIG] llama_servers.json entry #%d has 'concurrency' < 1 (%r) - %s",
-            index, raw,
+            "[CONFIG] %s entry #%d has 'concurrency' < 1 (%r) - %s",
+            source, index, raw,
             f"spawning with {LLAMA_SERVER_PARALLEL} slot(s), then discovering from /props"
             if loopback else "will discover it from /props",
         )
@@ -415,183 +454,303 @@ def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Opti
 
     if raw > LLAMA_MAX_CONCURRENCY:
         _logger.warning(
-            "[CONFIG] llama_servers.json entry #%d 'concurrency' %d exceeds LLAMA_MAX_CONCURRENCY=%d - clamped",
-            index, raw, LLAMA_MAX_CONCURRENCY,
+            "[CONFIG] %s entry #%d 'concurrency' %d exceeds LLAMA_MAX_CONCURRENCY=%d - clamped",
+            source, index, raw, LLAMA_MAX_CONCURRENCY,
         )
         return LLAMA_MAX_CONCURRENCY
 
     return raw
 
 
+def _parse_int(entry: dict, key: str, source: str, index: int, minimum: int = 1,
+               maximum: Optional[int] = None, note: str = "") -> Optional[int]:
+    """Validate one optional int field of a server entry (bool rejected explicitly).
+
+    Returns None on missing/invalid input so the caller applies its own default. Bad
+    input is said and ignored - a hand-edited file must never stop a boot.
+    """
+    raw = entry.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        _logger.warning("[CONFIG] %s entry #%d has an invalid '%s' (%r) - ignored%s",
+                        source, index, key, raw, note)
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        _logger.warning("[CONFIG] %s entry #%d has an invalid '%s' (%r) - ignored%s",
+                        source, index, key, raw, note)
+        return None
+    if value < minimum:
+        _logger.warning("[CONFIG] %s entry #%d has '%s' < %d (%r) - ignored%s",
+                        source, index, key, minimum, raw, note)
+        return None
+    if maximum is not None and value > maximum:
+        _logger.warning("[CONFIG] %s entry #%d '%s' %d exceeds %d - clamped",
+                        source, index, key, value, maximum)
+        return maximum
+    return value
+
+
 def _parse_instance_ctx_per_slot(entry: dict, source: str, index: int) -> Optional[int]:
     """Validate an optional ``ctx_per_slot`` override on a server instance entry.
 
-    (2026-11 strata) Only a fallback for an endpoint whose /props reports no n_ctx: a
-    reported per-slot context always wins (backend_registry.refresh_props overwrites this).
-    Bad input is said and ignored - it must never stop a boot.
+    For a LOCAL llama spawn this is the per-slot --ctx-size we launch with (total
+    --ctx-size = slots x this). For an endpoint we only attach to it is a fallback for a
+    /props that reports no n_ctx - a reported per-slot context always wins
+    (backend_registry.refresh_props overwrites it). Bad input is said and ignored.
     """
-    raw = entry.get("ctx_per_slot")
-    if raw is None:
-        return None
-    # bool is a subclass of int in Python - reject it explicitly.
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
-        _logger.warning(
-            "[CONFIG] %s entry #%d has an invalid 'ctx_per_slot' (%r) - ignored "
-            "(the per-slot context comes from /props)", source, index, raw
-        )
-        return None
-    return raw
+    return _parse_int(entry, "ctx_per_slot", source, index, minimum=256,
+                      note=" (per-slot context comes from /props or config)")
 
 
 def _default_local_instance() -> "LlamaServerInstance":
-    """The always-present local instance (legacy single-server behaviour).
+    """The always-present local instance (what a fresh machine gets).
 
-    concurrency=None: slots are DISCOVERED from /props after the spawn (the spawn itself
-    uses --parallel LLAMA_SERVER_PARALLEL as a launch fallback - see ensure_started())."""
-    return LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT, None)
+    model=None: the node launcher picks whatever this machine has (persisted last-loaded
+    model, else the first .gguf on disk). concurrency=None: slots are DISCOVERED from
+    /props after the spawn (the spawn uses LLAMA_SERVER_PARALLEL as a launch fallback)."""
+    return LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT)
 
 
 def _write_default_local_file(path: str) -> None:
-    """(2026-09-09 default-local fix) Re-create a missing llama_servers.json with the
-    default local entry. Best-effort - a write failure only costs one boot cycle.
+    """Re-create a missing llama_servers.json with the default local entry.
+
+    Best-effort - a write failure only costs one boot cycle. Written in the FULL shape
+    (model + slots + ctx + auto_start) so a fresh checkout shows what can be edited.
     """
     try:
-        payload = _json.dumps(
-            [{"name": "local", "host": "127.0.0.1", "port": LLAMA_SERVER_PORT}],
-            indent=2,
-        ) + "\n"
+        payload = _json.dumps([{
+            "name": "local",
+            "host": "127.0.0.1",
+            "port": LLAMA_SERVER_PORT,
+            "model": None,
+            "concurrency": LLAMA_SERVER_PARALLEL,
+            "ctx_per_slot": CONTEXT_WINDOW_TOKENS,
+            "auto_start": True,
+        }], indent=2) + "\n"
         with open(path, "w", encoding="utf-8") as f:
             f.write(payload)
     except OSError as e:
         _logger.error("[CONFIG] Could not re-create %s: %s", path, e)
 
 
-def get_llama_server_instances() -> list["LlamaServerInstance"]:
-    """Fresh read + validation of config/llama_servers.json.
+def _entry_to_instance(entry: dict, index: int, source: str, kind: str = "llama",
+                       api_key: Optional[str] = None) -> Optional["LlamaServerInstance"]:
+    """Validate ONE backend-list entry into a LlamaServerInstance (None = skip, loudly).
 
-    Same contract as CLIENT's get_server_address_list(): the file is the single
-    source of truth for WHICH llama servers we create, and it is re-read on every
-    call (boot reads it once; tests may point LLAMA_SERVERS_FILE elsewhere).
-
-    Validation rules (hand-edited file - be forgiving but loud):
-      * entry not an object / missing host / non-integer port -> skipped with a warning.
-      * duplicate host:port -> deduped, first occurrence wins, warning logged.
-      * empty list after validation, OR file corrupt/non-list -> FALL BACK to the default
-        local instance (127.0.0.1:LLAMA_SERVER_PORT). A MISSING file is re-seeded on disk
-        with that same default local entry (2026-09-09), so there is always a local server
-        in the list that we can spawn and start with the last-loaded model.
-
-    Returns a non-empty list of LlamaServerInstance.
+    Shared by llama_servers.json and strata_servers.json - same shape; only 'kind' and
+    the api_key differ. Every field is optional except host+port.
     """
-    path = LLAMA_SERVERS_FILE
+    if not isinstance(entry, dict):
+        _logger.warning("[CONFIG] %s entry #%d is not an object - skipped", source, index)
+        return None
+
+    host = str(entry.get("host") or "").strip()
+    port_raw = entry.get("port")
+    if not host:
+        _logger.warning("[CONFIG] %s entry #%d has no 'host' - skipped", source, index)
+        return None
+    # bool is a subclass of int in Python - reject it explicitly.
+    if isinstance(port_raw, bool) or not isinstance(port_raw, int) or not (0 < port_raw < 65536):
+        _logger.warning("[CONFIG] %s entry #%d has an invalid 'port' (%r) - skipped",
+                        source, index, port_raw)
+        return None
+
+    loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
+    name = str(entry.get("name") or "").strip() or f"{host}:{port_raw}"
+
+    model = entry.get("model")
+    if model is not None and not isinstance(model, str):
+        _logger.warning("[CONFIG] %s entry #%d has a non-string 'model' (%r) - ignored",
+                        source, index, model)
+        model = None
+    model = (model or "").strip() or None
+    if model and kind == "strata":
+        # Strata picks its own model; a 'model' here would only lie about who serves what.
+        _logger.warning("[CONFIG] %s entry #%d sets 'model' but Strata owns its model - ignored",
+                        source, index)
+        model = None
+
+    bind_raw = entry.get("bind")
+    bind = str(bind_raw).strip() if bind_raw else None
+    if bind and kind == "strata":
+        bind = None
+
+    return LlamaServerInstance(
+        name=name,
+        host=host,
+        port=port_raw,
+        concurrency=_parse_instance_concurrency(entry, loopback=loopback, index=index,
+                                               source=source),
+        api_key=api_key,
+        ctx_per_slot=_parse_instance_ctx_per_slot(entry, source, index),
+        model=model,
+        bind=bind,
+        threads=_parse_int(entry, "threads", source, index, minimum=1),
+        gpu_layers=_parse_int(entry, "gpu_layers", source, index, minimum=0),
+        extra_args=_parse_extra_args(entry, source, index),
+        # Strata starts its own process - the brain never spawns it, whatever the file says.
+        auto_start=(entry.get("auto_start") if isinstance(entry.get("auto_start"), bool) else True)
+                   if kind == "llama" else False,
+        kind=kind,
+    )
+
+
+def _parse_extra_args(entry: dict, source: str, index: int) -> tuple:
+    """Validate an entry's 'extra_args' (list of raw llama-server flags) as a tuple."""
+    raw = entry.get("extra_args")
+    if raw is None:
+        return ()
+    if isinstance(raw, list) and all(isinstance(a, str) for a in raw):
+        return tuple(a for a in raw if a.strip())
+    _logger.warning("[CONFIG] %s entry #%d has an invalid 'extra_args' (%r) - ignored "
+                    "(expected a list of strings)", source, index, raw)
+    return ()
+
+
+def _load_server_list(path: str, kind: str, default_factory, write_default,
+                      api_key_fallback: Optional[str] = None,
+                      env_key: Optional[str] = None,
+                      dedupe: bool = True) -> list["LlamaServerInstance"]:
+    """Read + validate one backend list file (llama_servers.json / strata_servers.json).
+
+    Identical contract for both files:
+      * missing file   -> re-seed it with the default entry, return that entry.
+      * corrupt/not a list -> leave the file for inspection, return the default entry.
+      * bad entries    -> skipped with a warning; duplicate host:port deduped, first wins
+                          (dedupe=False keeps every valid entry - the admin menu view).
+      * nothing valid  -> the default entry.
+    """
+    source = os.path.basename(path)
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = _json.load(f)
     except FileNotFoundError:
-        # (2026-09-09 default-local fix) always keep a local entry in the list and
-        # re-seed the missing file so it exists for hand-editing afterwards.
-        _logger.warning(
-            "[CONFIG] %s not found - recreating it with the default local instance 127.0.0.1:%d",
-            path, LLAMA_SERVER_PORT,
-        )
-        _write_default_local_file(path)
-        return [_default_local_instance()]
+        _logger.warning("[CONFIG] %s not found - recreating it with the default entry", path)
+        write_default(path)
+        return [default_factory()]
     except (OSError, ValueError) as e:
         _logger.warning(
-            "[CONFIG] %s unreadable/invalid JSON (%s) - keeping the default local instance 127.0.0.1:%d "
-            "(the corrupt file is left in place for inspection; fix it to configure more instances)",
-            path, e, LLAMA_SERVER_PORT,
+            "[CONFIG] %s unreadable/invalid JSON (%s) - keeping the default entry "
+            "(the corrupt file is left in place for inspection; fix it to configure more backends)",
+            path, e,
         )
-        return [_default_local_instance()]
+        return [default_factory()]
 
     if not isinstance(raw, list):
-        _logger.warning(
-            "[CONFIG] %s must be a JSON LIST of {name, host, port, concurrency} entries - using the default local instance 127.0.0.1:%d",
-            path, LLAMA_SERVER_PORT,
-        )
-        return [_default_local_instance()]
+        _logger.warning("[CONFIG] %s must be a JSON LIST of backend entries - using the default entry",
+                        path)
+        return [default_factory()]
 
     instances: list[LlamaServerInstance] = []
     seen: set[tuple[str, int]] = set()
     for i, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            _logger.warning("[CONFIG] llama_servers.json entry #%d is not an object - skipped", i)
+        api_key = None
+        if kind == "strata" and isinstance(entry, dict):
+            api_key = (str(entry.get("api_key") or "").strip()
+                       or (api_key_fallback or "") or (env_key or "") or None)
+        inst = _entry_to_instance(entry, i, source, kind=kind, api_key=api_key)
+        if inst is None:
             continue
-        host = str(entry.get("host") or "").strip()
-        port_raw = entry.get("port")
-        name = str(entry.get("name") or "").strip()
-        if not host:
-            _logger.warning("[CONFIG] llama_servers.json entry #%d has no 'host' - skipped", i)
+        key = ("127.0.0.1" if inst.host.lower() == "localhost" else inst.host.lower(), inst.port)
+        if dedupe and key in seen:
+            _logger.warning("[CONFIG] %s duplicate host:port %s:%d - deduped",
+                            path, inst.host, inst.port)
             continue
-        # bool is a subclass of int in Python - reject it explicitly.
-        if isinstance(port_raw, bool) or not isinstance(port_raw, int) or not (0 < port_raw < 65536):
-            _logger.warning(
-                "[CONFIG] llama_servers.json entry #%d has an invalid 'port' (%r) - skipped", i, port_raw
-            )
-            continue
-        key = ("127.0.0.1" if host.lower() == "localhost" else host.lower(), port_raw)
-        if key in seen:
-            _logger.warning("[CONFIG] llama_servers.json duplicate host:port %s:%d - deduped", host, port_raw)
-            continue
-        seen.add(key)
-        loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
-        concurrency = _parse_instance_concurrency(entry, loopback=loopback, index=i)
-        instances.append(
-            LlamaServerInstance(name or f"{host}:{port_raw}", host, port_raw, concurrency)
-        )
+        if dedupe:
+            seen.add(key)
+        instances.append(inst)
 
     if not instances:
         _logger.warning(
-            "[CONFIG] llama_servers.json has no valid entries - using the default local instance 127.0.0.1:%d "
-            "(the file is kept; add a {name, host, port, concurrency} entry to configure more instances)",
-            LLAMA_SERVER_PORT,
-        )
-        return [_default_local_instance()]
+            "[CONFIG] %s has no valid entries - using the default entry (the file is kept; "
+            "add a {name, host, port, model, ...} entry to configure more backends)", path)
+        return [default_factory()]
 
     return instances
 
 
-# ---------------------------------------------------------------------------
-# Strata instances - config/strata_servers.json (2026-11 strata backend)
-# ---------------------------------------------------------------------------
+def get_llama_server_instances() -> list["LlamaServerInstance"]:
+    """Fresh read + validation of config/llama_servers.json.
 
-# Path to the hand-editable Strata endpoint list. Same contract as llama_servers.json, but
-# every entry is ATTACH-ONLY: Strata starts its own inference process, so the brain only
-# probes and talks HTTP to it. Gitignored (per-machine, carries the Bearer key); the
-# .example.json template is tracked and bootstrap.py seeds the real file at first boot.
-STRATA_SERVERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strata_servers.json")
+    The file is the single source of truth for WHICH llama servers exist and WHAT each
+    one runs (model, slots, ctx/slot, threads, gpu layers, bind, auto_start). Re-read on
+    every call (boot reads it once; tests may point LLAMA_SERVERS_FILE elsewhere), so an
+    edit made by utils/start_llama_node takes effect on the next boot.
 
-
-@_dataclass(frozen=True)
-class StrataServerInstance(LlamaServerInstance):
-    """One Strata endpoint to attach to at boot.
-
-    Shares the shape of LlamaServerInstance (name/host/port/concurrency) plus:
-      api_key   - Bearer token for /props, /v1/models and /v1/chat/completions.
-                  OPTIONAL: falls back to config.STRATA_API_KEY, then env STRATA_API_KEY.
-                  /health needs no key, so a missing key still health-probes (but /props
-                  fails, and the registry refuses to route on a failed /props).
-      concurrency - OPTIONAL cap; the node's own /props.total_slots is the routing
-                  capacity (Strata reports what it actually runs). THIS is the knob for
-                  "how many sessions may generate at once" on a Strata endpoint: Jack
-                  spawns one worker per slot up to this cap.
-      ctx_per_slot - OPTIONAL per-slot context used for client trim math. The endpoint's
-                  /props n_ctx wins whenever it reports one; this only covers an endpoint
-                  that answers /props without a context figure.
-
-    Strata instances are NEVER spawned or terminated by the SERVER.
+    A MISSING file is re-seeded with the default local entry, so there is always at least
+    one local server in the list. Returns a non-empty list of LlamaServerInstance.
     """
-    api_key: Optional[str] = None
-    ctx_per_slot: Optional[int] = None
+    return _load_server_list(
+        LLAMA_SERVERS_FILE, "llama", _default_local_instance, _write_default_local_file,
+    )
 
-    @property
-    def kind(self) -> str:
-        return "strata"
 
-    @property
-    def is_spawnable(self) -> bool:
-        """False always: Strata owns its process, the brain only attaches."""
+def get_llama_server_entries_raw() -> list["LlamaServerInstance"]:
+    """EVERY valid entry in llama_servers.json, INCLUDING duplicate host:port pairs.
+
+    The admin menu (list / configure / delete) must see the whole file: a shadowed
+    duplicate is still editable and deletable, even though the runtime fleet view
+    (get_llama_server_instances) keeps only the first entry per host:port.
+    """
+    return _load_server_list(
+        LLAMA_SERVERS_FILE, "llama", _default_local_instance, _write_default_local_file,
+        dedupe=False,
+    )
+
+
+def instance_to_entry(inst: "LlamaServerInstance") -> dict:
+    """Serialize one instance back to the JSON entry shape (for saving a list)."""
+    entry = {
+        "name": inst.name,
+        "host": inst.host,
+        "port": inst.port,
+        "model": inst.model,
+        "concurrency": inst.concurrency,
+        "ctx_per_slot": inst.ctx_per_slot,
+        "threads": inst.threads,
+        "gpu_layers": inst.gpu_layers,
+        "bind": inst.bind,
+        "extra_args": list(inst.extra_args),
+        "auto_start": bool(inst.auto_start),
+    }
+    if inst.kind == "strata":
+        entry["api_key"] = inst.api_key or ""
+    return entry
+
+
+def save_llama_server_instances(instances: list["LlamaServerInstance"],
+                                path: Optional[str] = None) -> bool:
+    """Write config/llama_servers.json atomically (tmp file + os.replace).
+
+    utils/start_llama_node uses this when an admin saves a config; the file stays the
+    single source of truth and a half-written file can never be read by a boot.
+    """
+    target = path or LLAMA_SERVERS_FILE
+    payload = _json.dumps([instance_to_entry(i) for i in instances], indent=2) + "\n"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, target)
+        return True
+    except OSError as e:
+        _logger.error("[CONFIG] Could not write %s: %s", target, e)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Strata endpoints - config/strata_servers.json (2026-11 strata backend)
+# ---------------------------------------------------------------------------
+
+# Path to the hand-editable Strata endpoint list. Same contract and same entry shape as
+# llama_servers.json, but every entry is ATTACH-ONLY: Strata starts its own inference
+# process, so the brain only probes and talks HTTP to it. Gitignored (per-machine, carries
+# the Bearer key); the .example.json template is tracked and bootstrap.py seeds it.
+STRATA_SERVERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strata_servers.json")
 
 
 def strata_auth_headers(api_key: Optional[str]) -> Optional[dict]:
@@ -602,104 +761,55 @@ def strata_auth_headers(api_key: Optional[str]) -> Optional[dict]:
     return {"Authorization": f"Bearer {key}"}
 
 
-def _default_strata_instance() -> "StrataServerInstance":
+def _default_strata_instance() -> "LlamaServerInstance":
     """The always-present local Strata endpoint (127.0.0.1:STRATA_SERVER_PORT)."""
-    return StrataServerInstance("strata", "127.0.0.1", STRATA_SERVER_PORT, None, None)
+    return LlamaServerInstance("strata", "127.0.0.1", STRATA_SERVER_PORT, kind="strata")
 
 
 def _write_default_strata_file(path: str) -> None:
-    """Re-create a missing strata_servers.json with the default local entry. Best-effort."""
+    """Re-create a missing strata_servers.json with the default local endpoint. Best-effort."""
     try:
-        payload = _json.dumps(
-            [{"name": "strata", "host": "127.0.0.1", "port": STRATA_SERVER_PORT, "api_key": ""}],
-            indent=2,
-        ) + "\n"
+        payload = _json.dumps([{
+            "name": "strata",
+            "host": "127.0.0.1",
+            "port": STRATA_SERVER_PORT,
+            "api_key": "",
+            "concurrency": None,
+            "ctx_per_slot": None,
+        }], indent=2) + "\n"
         with open(path, "w", encoding="utf-8") as f:
             f.write(payload)
     except OSError as e:
         _logger.error("[CONFIG] Could not re-create %s: %s", path, e)
 
 
-def get_strata_server_instances() -> list["StrataServerInstance"]:
-    """Fresh read + validation of config/strata_servers.json (mirror of the llama loader).
+def get_strata_server_instances() -> list["LlamaServerInstance"]:
+    """Fresh read + validation of config/strata_servers.json (same loader as llama's).
 
-    Rules (hand-edited file - forgiving but loud):
-      * entry not an object / missing host / bad port -> skipped with a warning.
-      * duplicate host:port -> deduped, first occurrence wins, warning logged.
-      * 'api_key' missing -> falls back to config.STRATA_API_KEY, then env STRATA_API_KEY.
-      * empty/invalid list -> FALL BACK to the default local endpoint; a MISSING file is
-        re-seeded on disk with that entry so it exists for hand-editing afterwards.
-
-    Returns a non-empty list of StrataServerInstance.
+    Every entry comes back with kind="strata" and auto_start=False - Strata owns its
+    process, so the brain never spawns, relaunches or terminates it. 'api_key' falls back
+    to config.STRATA_API_KEY, then env STRATA_API_KEY. A missing file is re-seeded with
+    the default local endpoint. Returns a non-empty list.
     """
-    path = STRATA_SERVERS_FILE
-    env_key = (os.environ.get("STRATA_API_KEY") or "").strip()
-    config_key = (STRATA_API_KEY or "").strip()
+    return _load_server_list(
+        STRATA_SERVERS_FILE, "strata", _default_strata_instance, _write_default_strata_file,
+        api_key_fallback=(STRATA_API_KEY or "").strip(),
+        env_key=(os.environ.get("STRATA_API_KEY") or "").strip(),
+    )
 
+
+def save_strata_server_instances(instances: list["LlamaServerInstance"],
+                                 path: Optional[str] = None) -> bool:
+    """Write config/strata_servers.json atomically. Carries the Bearer key - gitignored."""
+    target = path or STRATA_SERVERS_FILE
+    payload = _json.dumps([instance_to_entry(i) for i in instances], indent=2) + "\n"
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = _json.load(f)
-    except FileNotFoundError:
-        _logger.warning(
-            "[CONFIG] %s not found - recreating it with the default local endpoint 127.0.0.1:%d",
-            path, STRATA_SERVER_PORT,
-        )
-        _write_default_strata_file(path)
-        return [_default_strata_instance()]
-    except (OSError, ValueError) as e:
-        _logger.warning(
-            "[CONFIG] %s unreadable/invalid JSON (%s) - keeping the default local endpoint 127.0.0.1:%d "
-            "(the corrupt file is left in place for inspection; fix it to configure more endpoints)",
-            path, e, STRATA_SERVER_PORT,
-        )
-        return [_default_strata_instance()]
-
-    if not isinstance(raw, list):
-        _logger.warning(
-            "[CONFIG] %s must be a JSON LIST of {name, host, port, api_key, concurrency} entries "
-            "- using the default local endpoint 127.0.0.1:%d",
-            path, STRATA_SERVER_PORT,
-        )
-        return [_default_strata_instance()]
-
-    instances: list[StrataServerInstance] = []
-    seen: set[tuple[str, int]] = set()
-    for i, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            _logger.warning("[CONFIG] strata_servers.json entry #%d is not an object - skipped", i)
-            continue
-        host = str(entry.get("host") or "").strip()
-        port_raw = entry.get("port")
-        name = str(entry.get("name") or "").strip()
-        if not host:
-            _logger.warning("[CONFIG] strata_servers.json entry #%d has no 'host' - skipped", i)
-            continue
-        # bool is a subclass of int in Python - reject it explicitly.
-        if isinstance(port_raw, bool) or not isinstance(port_raw, int) or not (0 < port_raw < 65536):
-            _logger.warning(
-                "[CONFIG] strata_servers.json entry #%d has an invalid 'port' (%r) - skipped", i, port_raw
-            )
-            continue
-        key = ("127.0.0.1" if host.lower() == "localhost" else host.lower(), port_raw)
-        if key in seen:
-            _logger.warning("[CONFIG] strata_servers.json duplicate host:port %s:%d - deduped", host, port_raw)
-            continue
-        seen.add(key)
-        loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
-        concurrency = _parse_instance_concurrency(entry, loopback=loopback, index=i)
-        api_key = str(entry.get("api_key") or "").strip() or config_key or env_key or None
-        ctx_per_slot = _parse_instance_ctx_per_slot(entry, "strata_servers.json", i)
-        instances.append(
-            StrataServerInstance(name or f"{host}:{port_raw}", host, port_raw,
-                                 concurrency, api_key, ctx_per_slot)
-        )
-
-    if not instances:
-        _logger.warning(
-            "[CONFIG] strata_servers.json has no valid entries - using the default local endpoint 127.0.0.1:%d "
-            "(the file is kept; add a {name, host, port, api_key, concurrency} entry to configure more endpoints)",
-            STRATA_SERVER_PORT,
-        )
-        return [_default_strata_instance()]
-
-    return instances
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, target)
+        return True
+    except OSError as e:
+        _logger.error("[CONFIG] Could not write %s: %s", target, e)
+        return False
