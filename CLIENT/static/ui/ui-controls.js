@@ -51,6 +51,7 @@ function toggleThink() {
         loadSettings();
         if (typeof loadSearchEngineSettings === 'function') loadSearchEngineSettings(); // config/search_engines.json -> Settings UI
         if (typeof loadRuntimeSettings === 'function') loadRuntimeSettings(); // settings.json runtime keys -> Runtime tab
+        if (typeof loadMcpServers === 'function') loadMcpServers(); // config/mcp_servers.json -> MCP tab (2026-12)
     }
 
 function closeSettings() {
