@@ -489,9 +489,14 @@
 .cycle-ai-seg .cycle-ai-thinking { border-left: none; padding: 0; }
 
 /* The final answer of the loop is the one that stays after the loop ends (the speech row
-   carries `final`, so the strip marks it - step 0 is never a real step number). */
+   carries `final`, so the strip marks it - step 0 is never a real step number).
+   NO BLUE LEFT EDGE ON THE FINAL SEGMENT (user request 2026-11-12): the rule
+   `.cycle-ai-seg[data-final="1"] { border-left-color: var(--accent) }` used to recolour the
+   segment's left border once the turn settled - the answer streamed with the neutral edge the
+   user liked, then that edge turned into a blue vertical line at settle. The final answer is
+   already identifiable by its weight, so the recolour is gone and the edge stays exactly as
+   it looked while streaming. `data-final` is still set by the JS (it drives the weight). */
 .cycle-ai-answer[data-final="1"] { font-weight: 500; }
-.cycle-ai-seg[data-final="1"] { border-left-color: var(--accent, #4f8cff); }
 
 /* ---- AI strip Copy buttons (2026-11-08, restored to the REPO shape) ----
    In the last repo version an AI answer was a .message-content bubble whose Copy chip
