@@ -240,6 +240,11 @@ const CycleBlock = {
             const el = block.consents[rid];
             if (el && el.dataset.decision === 'pending') this.settleCard(block, rid, 'unanswered');
         }
+        // Unanswered question cards must disappear with the turn, not stay on screen.
+        for (const rid of Object.keys(block.questionRows || {})) {
+            const el = block.questionRows[rid];
+            if (el && el.dataset.pending !== '0') this.settleQuestion(block, rid, 'unanswered');
+        }
         block.node.classList.add('settled');
         if (stopped) block.node.classList.add('stopped');
         this._renderSummary(block);
@@ -526,6 +531,24 @@ const CycleBlock = {
         if (line) line.textContent = _consentLabel(decision, el.dataset.kind);
         CycleShell.removeCard(requestId);
         return true;
+    },
+
+    /** Fold a QUESTION row that settled WITHOUT the user answering: row folds to the
+     *  real decision, card removed by request id. Question rows live in `questionRows`,
+     *  not `consents`, so the generic settle cannot reach them.
+     */
+    settleQuestion(block, requestId, decision) {
+        if (!block || !requestId) return false;
+        const el = block.questionRows[requestId];
+        if (el) {
+            el.dataset.decision = decision || 'unanswered';
+            el.dataset.pending = '0';
+            el.classList.add('cycle-consent-settled');
+            const line = el.querySelector('.cycle-consent-line');
+            if (line) line.textContent = _questionLabel(el.dataset.decision, false);
+        }
+        CycleShell.removeCard(requestId);
+        return !!el;
     },
 
     /** A per-kind auto-allow unlock (no card was shown). */

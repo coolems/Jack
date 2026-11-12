@@ -20,6 +20,7 @@ Design rules baked into the descriptions:
 import asyncio
 import json
 import logging
+import re
 import threading
 from typing import Any, Dict, Optional
 
@@ -27,9 +28,11 @@ from config import (
     JOB_MAX_WAIT_TIMEOUT_SEC,
     JOB_WAIT_TIMEOUT_SEC,
     QUESTION_MAX_OPTIONS,
+    QUESTION_RECOMMENDED_INDEX,
     QUESTION_TIMEOUT_DEFAULT_SEC,
     SUBAGENT_MAX_CONCURRENT_PER_CONV,
     SUBAGENT_MAX_DEPTH,
+    get_question_card_timeout_sec,
 )
 
 logger = logging.getLogger("COOLEMS.LocalTools")
@@ -358,6 +361,39 @@ async def job_kill(job_id: str, reason: str = "") -> str:
 # ask_user_question (rides the shared consent dialog, kind='question')
 # ============================================================
 
+#: Outcome when the user never answered (card expired or the turn ended). Not a refusal.
+QUESTION_UNANSWERED = "unanswered"
+
+#: "The AI decides questions of this kind itself for the rest of this task."
+QUESTION_DECIDE_MYSELF = "allow_category_until_done"
+
+#: Option lines that only point at the card's free-text input ("Something else - I'll
+#: type it", "Other", ...) are not answers and are dropped. Mirrors _isPlaceholderOption()
+#: in static/ui/approval-dialog.js.
+_FILL_OPTION_RES = (
+    # starts with a filler phrase; a trailing " - I'll type it" is filler too
+    r"^\s*(?:[-*\u00b7\u2022]\s*)?(?:something else|some other(?:\s+(?:thing|option|answer))?"
+    r"|anything else|any other(?:\s+(?:one|option|answer))?|none of the (?:above|two|three|list)"
+    r"|custom(?:\s+answer)?|your own(?:\s+answer)?|type (?:your own|my own|it|something|your answer)"
+    r"|write (?:your own|my own|it)|fill in|free text)\b\s*"
+    r"(?:[-:!.,]?\s*(?:i(?:'ll| w+ill)?(?: will)? (?:type|write|say|enter).*"
+    r"|you(?:r)? (?:type|own).*|specify|specify (?:your own|it|something)|else)?)?\s*$",
+    # nothing but a filler word
+    r"^\s*(?:[-*\u00b7\u2022]\s*)?(?:other(?:\s+thing)?|n/a|none|custom|free text|-+)\s*[.!]*$",
+    # "Other - specify", "Other - I'll type it"
+    r"^\s*(?:[-*\u00b7\u2022]\s*)?other\s*[-:!.,]\s*(?:specify|specify (?:your own|it|something)"
+    r"|i(?:'ll| w+ill)?(?: will)? (?:type|write|say|enter).*|you(?:r)? (?:type|own).*|else)\s*[.!]*$",
+    # the whole line is just an intent to type
+    r"^\s*(?:[-*\u00b7\u2022]\s*)?i(?:'ll| w+ill)?(?: will)? (?:type|write|say|enter)"
+    r" (?:my own|my answer|it|something)\s*[.!]*$",
+)
+
+def _is_fill_option(text: str) -> bool:
+    """True when an option line is only a placeholder for the card's free-text input."""
+    low = text.strip().lower()
+    return any(re.match(pat, low) for pat in _FILL_OPTION_RES)
+
+
 async def ask_user_question(question: str, options: Optional[list] = None,
                             context: str = "", mode: str = "blocking",
                             timeout_sec: int = 0) -> str:
@@ -376,7 +412,15 @@ async def ask_user_question(question: str, options: Optional[list] = None,
     if state is None:
         return _err("no approval state for this chat - the question cannot be asked now.")
 
-    opts = [str(o) for o in (options or [])][:QUESTION_MAX_OPTIONS]
+    opts = [str(o).strip() for o in (options or [])]
+    # Only real answers reach the card: blanks, duplicates, filler lines and the
+    # 'unanswered' outcome word itself are dropped.
+    seen = set()
+    opts = [o for o in opts
+            if o and o != QUESTION_UNANSWERED and not _is_fill_option(o)
+            and not (o in seen or seen.add(o))][:QUESTION_MAX_OPTIONS]
+    # One number for both halves: UI countdown and backend expiry.
+    card_timeout = float(get_question_card_timeout_sec() or 0)
     payload = json.dumps({"question": question, "options": opts, "context": context},
                          ensure_ascii=False)
     request_id = state.new_request_id()
@@ -391,6 +435,7 @@ async def ask_user_question(question: str, options: Optional[list] = None,
             "kind": "question",
             "code": payload,
             "description": context or "",
+            "dismiss_sec": int(card_timeout),   # shared by UI countdown + backend expiry
         }))
         if channel is not None:
             await channel.record_runtime("question", request_id, question=question,
@@ -403,6 +448,10 @@ async def ask_user_question(question: str, options: Optional[list] = None,
     timer = ctx.get("session_timer")
     if timer is not None:
         timer.pause()   # the user deciding is not working time
+
+    # Backend-side expiry of the card, with the same budget as the UI countdown.
+    # 0 (default) = no expiry. Never shortens an explicit timed wait - it only closes
+    # the card when its own deadline comes first.
     try:
         if mode == "timed":
             wait = float(timeout_sec or QUESTION_TIMEOUT_DEFAULT_SEC)
@@ -410,12 +459,30 @@ async def ask_user_question(question: str, options: Optional[list] = None,
                 answer = await asyncio.wait_for(
                     state.wait_for_decision(request_id, kind="question"), timeout=wait)
             except asyncio.TimeoutError:
+                if card_timeout and wait >= card_timeout:
+                    # Nothing can answer it any more - close it and say so honestly.
+                    await _settle_unanswered(channel, conv_id, request_id)
+                    return (f"PENDING: the user has not answered within {int(wait)}s. This is NOT a "
+                            "refusal. The card has now been dismissed and the question is recorded "
+                            "as unanswered. Continue with independent work that does not depend on "
+                            "the answer; if it is still genuinely the user's decision, ask again "
+                            "later with a fresh question.")
                 # The card stays live: the answer arrives later as a notice / follow-up turn.
                 return (f"PENDING: the user has not answered within {int(wait)}s. This is NOT a "
                         "refusal - the card stays open. Continue with independent work that does "
                         "not depend on the answer; the answer will arrive as a runtime notice.")
         else:
-            answer = await state.wait_for_decision(request_id, kind="question")
+            try:
+                answer = await asyncio.wait_for(
+                    state.wait_for_decision(request_id, kind="question"),
+                    timeout=card_timeout if card_timeout else None)
+            except asyncio.TimeoutError:
+                if channel is not None:
+                    await _settle_unanswered(channel, conv_id, request_id)
+                return (f"UNANSWERED: the question card expired after {int(card_timeout)}s "
+                        "without an answer. This is NOT a refusal and NOT an answer - the user "
+                        "simply did not decide. Do not re-ask it; state the assumption you are "
+                        "making and continue, or report what you could not decide.")
     finally:
         if timer is not None:
             timer.resume()
@@ -423,21 +490,41 @@ async def ask_user_question(question: str, options: Optional[list] = None,
     if channel is not None:
         channel.drop_pending_question(request_id)
         try:
-            await channel.emit_frame({"type": "cycle_question", "conv_id": conv_id,
-                                      "turn_id": getattr(channel, "turn_id", "") or "",
-                                      "request_id": request_id, "decision": answer,
-                                      "pending": True})
+            # answer= rides the frame so the row shows the verbatim choice.
+            await channel.record_runtime("question", request_id, question=question,
+                                         options=opts, decision=answer, answer=answer,
+                                         pending=False)
         except Exception:
             pass
 
-    if answer in ("deny", "unavailable"):
-        return ("USER DECISION: the question was declined or could not be answered. Do not "
-                "re-ask it; state the assumption you are making and continue, or report what "
-                "you could not decide.")
-    if answer == "allow_category_until_done":
+    if answer in ("deny", "unavailable", QUESTION_UNANSWERED):
+        return ("USER DECISION: the question was declined, could not be answered, or was left "
+                "unanswered. Do not re-ask it; state the assumption you are making and continue, "
+                "or report what you could not decide.")
+    if answer == QUESTION_DECIDE_MYSELF:
         return ("USER DECISION: you may decide questions of this kind yourself for the rest of "
                 "this task. State each choice you make in your final answer.")
     return f"USER ANSWER: {answer}"
+
+
+async def _settle_unanswered(channel, conv_id: str, request_id: str) -> None:
+    """Close an expired question: drop the pending store, fold the row, remove the card.
+
+    Best-effort; never invents an answer - the row records 'unanswered'.
+    """
+    channel.drop_pending_question(request_id)
+    try:
+        await channel.record_runtime("question", request_id, decision=QUESTION_UNANSWERED,
+                                     answer=QUESTION_UNANSWERED, pending=False)
+    except Exception:
+        pass
+    try:
+        await channel.emit_frame({"type": "cycle_question", "conv_id": conv_id,
+                                  "turn_id": getattr(channel, "turn_id", "") or "",
+                                  "request_id": request_id,
+                                  "decision": QUESTION_UNANSWERED, "pending": False})
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -615,12 +702,20 @@ TOOL_DEFINITIONS: Dict[str, Dict] = {
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask the USER a question on a card in the chat: one question with up to "
-                f"{QUESTION_MAX_OPTIONS} options plus a free-text answer. mode 'blocking' waits for "
-                f"the user with no time limit (the session clock pauses). mode 'timed' waits at most "
-                f"{QUESTION_TIMEOUT_DEFAULT_SEC}s and then returns PENDING - that is NOT a refusal: "
-                "the card stays answerable, so keep doing independent work and the answer arrives "
-                "later as a runtime notice. Use this when a decision genuinely belongs to the user; "
+                "Ask the USER a question on a card in the chat: one question whose options "
+                f"are listed one line under another (up to {QUESTION_MAX_OPTIONS}), and the "
+                "FIRST option is your recommended choice - the card marks it with a star and "
+                "an empty free-text answer submits it. Put the option you recommend first. "
+                "EVERY option must be a real answer you can act on: never a filler line like "
+                "'Something else - I'll type it' or 'Other' - the card already has a free-text "
+                "input at the end, so the user types their own answer there. Blank and "
+                "duplicate options are dropped. "
+                "mode 'blocking' waits for the user (the session clock pauses); the card "
+                "self-dismisses after the question-card timeout in Settings > Runtime "
+                "(0 = no limit, the default: it waits for the user forever), which comes "
+                "back as UNANSWERED - not a refusal, not an answer. mode 'timed' waits "
+                f"at most {QUESTION_TIMEOUT_DEFAULT_SEC}s and then returns PENDING - that is "
+                "NOT a refusal either. Use this when a decision genuinely belongs to the user; "
                 "never invent an answer."
             ),
             "parameters": {
@@ -628,10 +723,17 @@ TOOL_DEFINITIONS: Dict[str, Dict] = {
                 "properties": {
                     "question": {"type": "string", "description": "The question, one sentence."},
                     "options": {"type": "array", "items": {"type": "string"},
-                                "description": f"Up to {QUESTION_MAX_OPTIONS} short answer options."},
+                                "description": (f"Up to {QUESTION_MAX_OPTIONS} short answer options, "
+                                                "one per line in the card. Put your recommended "
+                                                "choice FIRST - it gets the star and is submitted "
+                                                "when the user sends an empty answer. Each entry "
+                                                "must be a real answer: no filler like 'Something "
+                                                "else' or 'Other' (the card has its own free-text "
+                                                "input for that).")},
                     "context": {"type": "string", "description": "Why you are asking, one or two lines."},
                     "mode": {"type": "string", "enum": ["blocking", "timed"]},
-                    "timeout_sec": {"type": "integer", "description": "timed mode wait bound."},
+                    "timeout_sec": {"type": "integer",
+                                    "description": "timed mode wait bound (also capped by the card's own dismissal timeout)."},
                 },
                 "required": ["question"],
             },

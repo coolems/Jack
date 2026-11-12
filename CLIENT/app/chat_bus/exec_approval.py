@@ -192,3 +192,15 @@ class ExecApprovalState:
                     pass
             self._pending.pop(rid, None)
         self._request_kind.clear()
+
+    def expire_questions(self, decision: str = "unanswered") -> list[str]:
+        """Close every STILL-OPEN question card with *decision*.
+
+        Called when the turn ends. Consent cards are untouched here; they fail closed
+        via cancel_all() on the normal stop path. Returns the request ids so the caller
+        can tell the UI to remove those cards.
+        """
+        ids = [rid for rid, k in self._request_kind.items() if k == "question"]
+        for rid in ids:
+            self.resolve(rid, decision)
+        return [rid for rid in ids if rid not in self._pending]

@@ -477,6 +477,26 @@ class ChatBus:
         return await self.deliver_notice(conv_id, answer, NOTICE_QUESTION,
                                          meta={"request_id": request_id})
 
+    async def expire_open_questions(self, conv_id: str) -> list[str]:
+        """Close this chat's still-open question cards when the turn ends.
+
+        The awaiting tool call gets 'unanswered' (never an invented answer), the pending
+        store is dropped, and the request ids come back so the caller can remove each
+        card. Best-effort: a dead channel returns [].
+        """
+        ch = self._channels.get(conv_id)
+        if ch is None:
+            return []
+        ids: list[str] = []
+        try:
+            state = getattr(ch, "exec_approval", None)
+            if state is not None and hasattr(state, "expire_questions"):
+                ids = state.expire_questions("unanswered") or []
+        except Exception as e:  # pragma: no cover - teardown must never raise
+            logger.debug(f"[CHATBUS] question expire failed for conv={conv_id}: {e}")
+        for item in list(ch.pending_questions()):
+            ch.drop_pending_question(item.get("id"))
+        return ids
     async def _reject_pending_steers(self, ch: ChatChannel, message: str, code: str) -> int:
         """Tell attached UI clients that still-queued steering messages will never run.
 

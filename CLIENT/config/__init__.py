@@ -86,6 +86,10 @@ from .config import (
     # --- ask_user_question (2026-12) ---
     QUESTION_TIMEOUT_DEFAULT_SEC,
     QUESTION_MAX_OPTIONS,
+    QUESTION_RECOMMENDED_INDEX,     # first option = the AI's starred recommendation
+    QUESTION_CARD_TIMEOUT_SEC,      # unanswered-card limit (0 = no limit)
+    QUESTION_CARD_GREEN,            # question-card accent colour
+    get_question_card_timeout_sec,  # live reader of that limit
 
     # --- MCP servers (2026-12) ---
     # Servers themselves are declared in CLIENT/config/mcp_servers.json and stay disabled

@@ -253,8 +253,11 @@
 .cycle-row-consent[data-decision="explain"] .cycle-consent-line { color: var(--accent, #4f8cff); }
 .cycle-row-consent[data-decision="auto"] .cycle-consent-line { color: var(--success, #2ecc71); }
 .cycle-row-consent[data-decision="unanswered"] .cycle-consent-line { color: var(--warning, #f59e0b); }
+/* Question rows share the consent decision colours; the card itself is green (css/04). */
+.cycle-row-question[data-decision="unanswered"] .cycle-consent-line { color: var(--question-green, #5fae8b); }
+.cycle-row-question[data-decision="deny"] .cycle-consent-line { color: var(--danger, #e5534b); }
 .cycle-consent-settled { opacity: 0.85; }
-.cycle-row-consent .exec-approval-card { margin: 4px 0 0; }
+.cycle-row-consent .exec-approval-card, .cycle-row-question .exec-approval-card { margin: 4px 0 0; }
 
 /* ---- auto-allow grants ---- */
 .cycle-row-grant .cycle-consent-line { color: var(--success, #2ecc71); }

@@ -35,9 +35,11 @@
 // (2026-12) 'question' is deliberately NOT in this list: ask_user_question is not a
 // permission gate, and an auto-answered question would invent an answer the user never
 // gave. The backend pins it to manual (config.CONSENT_NEVER_AUTO_KINDS), so there is no
-// row for it here and no key is ever posted for it.
+// auto-approve row for it here and no key is ever posted for it.
+// It DOES get its own row - QUESTION CARD - which only sets how long an UNANSWERED card
+// may stay on screen (default 0 = no limit). Never an auto-answer.
 const CONSENT_KINDS = ['python', 'url', 'file', 'network', 'subprocess', 'desktop'];
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess; (2026-11-07) desktop
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, questionCardSeconds: 0, questionCardColor: '#5fae8b', approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess; (2026-11-07) desktop
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
 let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
@@ -88,8 +90,13 @@ async function refreshRuntimeSettingsFromApi() {
     let imgWidth = _coerceImageGenSize(data && data.image_gen_width, 600);
     let imgHeight = _coerceImageGenSize(data && data.image_gen_height, 400);
 
-    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, approvals: approvals };
+    // Question card: auto-close seconds (0 = no limit) + accent.
+    const qSecs = _coerceQuestionCardSeconds(data && data.question_card_timeout_seconds, 0);
+    const qColor = _coerceQuestionCardColor(data && data.question_card_color);
+
+    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionCardSeconds: qSecs, questionCardColor: qColor, approvals: approvals };
     COOLEMS._runtimeSettingsLoaded = true;
+    _applyQuestionCardAccent(qColor);
 
     // Fill the Runtime tab controls when they are in the DOM (openSettings path).
     const manualRadio = document.getElementById('pyExecManual');
@@ -121,6 +128,12 @@ async function refreshRuntimeSettingsFromApi() {
         const heightInput = document.getElementById('imgGenHeight');
         if (widthInput) widthInput.value = String(imgWidth);
         if (heightInput) heightInput.value = String(imgHeight);
+
+        // Fill the QUESTION CARD row (seconds + accent).
+        const qSecInput = document.getElementById('questionCardSeconds');
+        if (qSecInput) qSecInput.value = String(qSecs);
+        const qColorInput = document.getElementById('questionCardColor');
+        if (qColorInput) qColorInput.value = qColor;
 
         toggleRuntimeSecondsGroup(mode === 'auto');
     }
@@ -185,6 +198,27 @@ function _coerceImageGenSize(value, fallback) {
     const v = parseInt(value, 10);
     if (!Number.isFinite(v)) return fallback;
     return Math.min(4096, Math.max(32, v));
+}
+
+// Question-card auto-close seconds: int in 0..3600 (0 = no limit), else *fallback*.
+function _coerceQuestionCardSeconds(value, fallback) {
+    const v = parseInt(value, 10);
+    if (!Number.isFinite(v)) return fallback;
+    return Math.min(3600, Math.max(0, v));
+}
+
+// Question-card accent: a #rrggbb hex, else the default green.
+const QUESTION_CARD_GREEN_DEFAULT = '#5fae8b';
+function _coerceQuestionCardColor(value) {
+    const v = String(value || '').trim().toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(v) ? v : QUESTION_CARD_GREEN_DEFAULT;
+}
+
+/** Publish the question-card accent as a CSS variable (config.QUESTION_CARD_GREEN ->
+ *  /api/settings -> here), so the card's colour comes from one place. */
+function _applyQuestionCardAccent(color) {
+    try { document.documentElement.style.setProperty('--question-green', color); }
+    catch (e) { /* no DOM yet - the stylesheet default stands */ }
 }
 
 function toggleRuntimeSecondsGroup(show) {
@@ -260,6 +294,15 @@ async function saveRuntimeSettings() {
     if (widthInput) widthInput.value = String(imgWidth);
     if (heightInput) heightInput.value = String(imgHeight);
 
+    // Read the QUESTION CARD row: seconds (0 = no limit) + accent.
+    let qSecs = _coerceQuestionCardSeconds(document.getElementById('questionCardSeconds')
+        && document.getElementById('questionCardSeconds').value, 0);
+    const qSecInput = document.getElementById('questionCardSeconds');
+    if (qSecInput) qSecInput.value = String(qSecs);
+    const qColor = _coerceQuestionCardColor(document.getElementById('questionCardColor')
+        && document.getElementById('questionCardColor').value);
+    _applyQuestionCardAccent(qColor);
+
     try {
         const response = await fetch('/api/settings', {
             method: 'POST',
@@ -271,7 +314,10 @@ async function saveRuntimeSettings() {
                 python_exec_auto_approve_seconds: seconds,
                 image_gen_tier: imageGenTier,
                 image_gen_width: imgWidth,
-                image_gen_height: imgHeight
+                image_gen_height: imgHeight,
+                // Question card: auto-close seconds + accent.
+                question_card_timeout_seconds: qSecs,
+                question_card_color: qColor
             }, {
                     url_consent_auto_approve: approvalsNow.url.mode,
                     url_consent_auto_approve_seconds: approvalsNow.url.seconds,
@@ -291,7 +337,7 @@ async function saveRuntimeSettings() {
 
         // Silent by design: the Runtime tab shows no save feedback in the UI.
         if (response.ok) {
-            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, approvals: readApprovalsFromControls() };
+            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionCardSeconds: qSecs, questionCardColor: qColor, approvals: readApprovalsFromControls() };
         } else {
             const errData = await response.json().catch(() => ({}));
             console.error('[RUNTIME SETTINGS] Save rejected:', errData.detail || 'Unknown error');

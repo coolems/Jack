@@ -300,6 +300,10 @@ const CycleShell = {
                     context: String(q.context || ''),
                 }),
                 description: String(q.context || ''),
+                // A re-rendered card uses the budget live NOW (Settings > Runtime), so a
+                // reload cannot resurrect it on a stale timer. 0 = no timer.
+                dismiss_sec: (typeof COOLEMS !== 'undefined' && COOLEMS.runtimeSettings)
+                    ? Number(COOLEMS.runtimeSettings.questionCardSeconds || 0) : 0,
             };
             if (block && !block.settled) {
                 const mount = block.liveEl ? block.liveEl.querySelector(

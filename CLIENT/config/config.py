@@ -539,6 +539,15 @@ def get_runtime_settings() -> dict:
         if not (1 <= _sec <= 3600):
             _sec = _def_sec
         approvals[_kind] = {"mode": _mode, "seconds": _sec}
+
+    # Question card dismissal budget, read live so a Runtime save applies to the next question.
+    try:
+        _qsec = int(str(settings.get(QUESTION_CARD_TIMEOUT_KEY) or "").strip())
+    except (TypeError, ValueError):
+        _qsec = QUESTION_CARD_TIMEOUT_SEC
+    if not (QUESTION_CARD_TIMEOUT_MIN <= _qsec <= QUESTION_CARD_TIMEOUT_MAX):
+        _qsec = QUESTION_CARD_TIMEOUT_SEC
+
     return {
         "python_exec_auto_approve": mode,
         "python_exec_auto_approve_seconds": seconds,
@@ -547,6 +556,9 @@ def get_runtime_settings() -> dict:
         "image_gen_height": height,
         # (2026-07-18) per-kind consent auto-approve settings (see CONSENT_SETTING_KEYS).
         "approvals": approvals,
+        # Question card: dismissal budget + accent (the UI reads both).
+        "question_card_timeout_seconds": _qsec,
+        "question_card_color": QUESTION_CARD_GREEN,
     }
 
 
@@ -715,12 +727,35 @@ MCP_TIMEOUT_DEFAULT_SEC: int = 30    # per-request wall clock when an entry sets
 MCP_TIMEOUT_MAX_SEC: int = 300       # clamp for an entry's timeout_sec
 MCP_SPILL_KEEP_FILES: int = 20       # .temp/mcp/* payloads kept for full results
 
-# --- ask_user_question (2026-12) ---
+# --- ask_user_question (2026-12; card redesign 2026-11-12) ---
 # 'blocking' waits for the user with no time limit (SessionTimer pauses, exactly like a
 # consent card). 'timed' releases the model after the timeout with a PENDING notice - the
 # question stays answerable, so a late answer arrives as a notice / follow-up turn.
 QUESTION_TIMEOUT_DEFAULT_SEC: int = 120
 QUESTION_MAX_OPTIONS: int = 6
+#: The FIRST option is the AI's recommendation: starred, and submitted on an empty answer.
+QUESTION_RECOMMENDED_INDEX: int = 0
+#: Seconds an unanswered question card may stay on screen. 0 = no limit (default).
+#: Settings > Runtime "Question card - auto-close after" sets it live.
+QUESTION_CARD_TIMEOUT_SEC: int = 0
+#: Calm green accent of the question card - a question is not a rights gate.
+QUESTION_CARD_GREEN: str = "#5fae8b"
+#: settings.json key of the dismissal budget, live-read by ask_user_question().
+QUESTION_CARD_TIMEOUT_KEY: str = "question_card_timeout_seconds"
+QUESTION_CARD_TIMEOUT_MIN, QUESTION_CARD_TIMEOUT_MAX = 0, 3600
+
+
+def get_question_card_timeout_sec() -> int:
+    """Live read of the question card's dismissal budget. 0 = wait forever (default);
+    a corrupt or out-of-range value falls back to 0 - waiting is the safe state.
+    """
+    try:
+        v = int(str(_load_settings().get(QUESTION_CARD_TIMEOUT_KEY) or "").strip())
+    except (TypeError, ValueError):
+        return QUESTION_CARD_TIMEOUT_SEC
+    if not (QUESTION_CARD_TIMEOUT_MIN <= v <= QUESTION_CARD_TIMEOUT_MAX):
+        return QUESTION_CARD_TIMEOUT_SEC
+    return v
     
 # --- Model (fetched from SERVER at runtime) ---
 MODEL_NAME: str = ""  # Auto-detected from SERVER loaded models at runtime do not hardcode here

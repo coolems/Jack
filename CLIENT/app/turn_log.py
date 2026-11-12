@@ -572,20 +572,28 @@ class TurnLog:
 
     def add_question(self, request_id: str, question: str = "",
                      options: Optional[List[str]] = None, decision: str = "",
-                     pending: bool = True, at_ts: Optional[float] = None) -> Dict:
+                     pending: bool = True, at_ts: Optional[float] = None,
+                     answer: str = "") -> Dict:
         """One ask_user_question card. The card itself is transient (like a consent card);
-        this row is the durable fact. An answer folds into the SAME row."""
+        this row is the durable fact. An answer folds into the SAME row.
+
+        `answer` is the user's verbatim choice, kept next to the decision. An unanswered
+        card records decision='unanswered' and no answer - never an invented one.
+        """
         existing = next((q for q in self.questions if q["request_id"] == request_id), None)
         if existing is None:
             row = {"step_no": self.final_step or len(self.steps), "request_id": request_id,
                    "question": question or "", "options": list(options or []),
-                   "decision": decision or "", "pending": bool(pending and not decision),
+                   "decision": decision or "", "answer": answer or "",
+                   "pending": bool(pending and not decision),
                    "at_ts": at_ts if at_ts is not None else time.time()}
             self.questions.append(row)
             return row
         if decision:
             existing["decision"] = decision
             existing["pending"] = False
+        if answer:
+            existing["answer"] = answer
         return existing
 
     # ===== generated images (2026-12) =====

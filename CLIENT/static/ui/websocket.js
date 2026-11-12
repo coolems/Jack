@@ -619,8 +619,12 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
     if (data.type === 'cycle_question') {
+        // The card is transient: an answered OR unanswered decision removes it. With no
+        // block row found, still remove the card by request id (it may be a chat bubble).
         const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setQuestion(block, data);
+        if (!block || !CycleBlock.settleQuestion(block, data.request_id, data.decision)) {
+            CycleShell.removeCard(data.request_id);
+        }
         return;
     }
     if (data.type === 'cycle_final') {

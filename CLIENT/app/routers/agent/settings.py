@@ -61,6 +61,10 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
             settings["image_gen_width"] = runtime["image_gen_width"]
             settings["image_gen_height"] = runtime["image_gen_height"]
 
+            # Question card: dismissal budget + accent (one source of truth for the UI).
+            settings["question_card_timeout_seconds"] = runtime["question_card_timeout_seconds"]
+            settings["question_card_color"] = runtime["question_card_color"]
+
             # Return both values:
             # 1. current_server_address - the value active at startup (module-level cached)
             # 2. resolved_server_address - freshly re-resolved NOW (reflects latest settings.json changes)
@@ -206,6 +210,20 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                     if not (32 <= size_val <= 4096):
                         return JSONResponse(status_code=400, content={"detail": f"{_size_key} must be between 32 and 4096 pixels"})
                     current[_size_key] = size_val
+
+            # Runtime tab: question-card auto-close seconds. 0 = no limit; read live by
+            # ask_user_question(), so a save applies to the next question.
+            if "question_card_timeout_seconds" in data:
+                raw_q = str(data.get("question_card_timeout_seconds") or "").strip()
+                try:
+                    qsec = int(raw_q)
+                except (TypeError, ValueError):
+                    return JSONResponse(status_code=400,
+                                        content={"detail": "question_card_timeout_seconds must be a whole number of seconds (0 = no limit)"})
+                if not (0 <= qsec <= 3600):
+                    return JSONResponse(status_code=400,
+                                        content={"detail": "question_card_timeout_seconds must be between 0 and 3600 (0 = no limit)"})
+                current["question_card_timeout_seconds"] = qsec
 
             if "relay_port" in data:
                 raw_port = str(data.get("relay_port") or "").strip()
