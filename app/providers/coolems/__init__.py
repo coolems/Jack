@@ -25,6 +25,18 @@
             done          <- {type:"done"}
             stop          -> {type:"stop", conv_id}
 
+        request.enable_thinking (2026-12 thinking levels) carries EITHER shape:
+            true / false          legacy: show reasoning (true) or discard it (false)
+            "none"|"low"|"medium"|"high"   canonical level, chosen by the UI per model
+        The SERVER translates a level into the serving model's own template vocabulary
+        (app/providers/llama/thinking.py) and never echoes a model-specific name back.
+        A level widens the accepted VALUE RANGE of an existing field only, so
+        PROTOCOL_VERSION is deliberately NOT bumped: an old client keeps sending a bool
+        and behaves exactly as before. A new client talking to an OLD server is read as
+        a truthy value, i.e. "reasoning visible" - display only (an old server never
+        sends template kwargs), so the worst case is reasoning shown when the user asked
+        for none, never a failed request.
+
         Control (short round-trips; see CLIENT control_channel for the persistent variant):
             health_check  -> {}            health_ok     <- {models:[...]} | error
             models_request-> {}            models_response <- {models:[{name,size}]}

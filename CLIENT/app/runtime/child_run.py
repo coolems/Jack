@@ -145,7 +145,8 @@ async def run_child(rec: ChildRecord, context: Dict, continuation: str = "") -> 
     config = AgenticModeConfig(
         model=context.get("model") or "",
         temperature=float(context.get("temperature") or 0.6),
-        enable_thinking=bool(context.get("enable_thinking")),
+        # (2026-12 thinking) verbatim: a bool or the parent's canonical level.
+        enable_thinking=context.get("enable_thinking", False),
         provider=provider,
         agent_name=context.get("agent_name") or "Jack",
         dna_content=context.get("system_prompt") or "",
@@ -185,7 +186,8 @@ async def run_child(rec: ChildRecord, context: Dict, continuation: str = "") -> 
         channel=channel,
         ollama_tools=_filter_schema(context.get("ollama_tools") or []),
         generic_tool_prompt=context.get("generic_tool_prompt") or "",
-        enable_thinking=bool(context.get("enable_thinking")),
+        # (2026-12 thinking) verbatim: a bool or the parent's canonical level.
+        enable_thinking=context.get("enable_thinking", False),
         temperature=float(context.get("temperature") or 0.6),
         role=context.get("role"),
     )

@@ -116,6 +116,19 @@
 
 .thinking-content:empty { display: none; }
 
+/* (2026-12 thinking levels) The normal-mode panel is collapsible: the header is the toggle,
+   and 'done' is set once the answer starts streaming - reasoning is over, so the pulse that
+   meant "still working" stops. Agentic turns never use these classes (CycleBlock paints its
+   own .cycle-ai-thinking strip). */
+.thinking-block.done { animation: none; opacity: 1; }
+.thinking-block.collapsed .thinking-content { display: none; }
+.thinking-block.collapsed .thinking-header { border-bottom: none; }
+.thinking-header { cursor: pointer; user-select: none; }
+.thinking-header::after {
+    content: "▾"; margin-left: auto; font-size: 11px; opacity: 0.7;
+}
+.thinking-block.collapsed .thinking-header::after { content: "▸"; }
+
 .thinking-content::-webkit-scrollbar {
     width: 6px;
 }

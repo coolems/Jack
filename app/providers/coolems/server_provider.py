@@ -419,12 +419,14 @@ class CoolemsServerProvider(BaseProvider):
 
     async def chat_stream(
         self, model: str, messages: List[Dict], websocket: Any,
-        temperature: float = 0.7, enable_thinking: bool = False,
+        temperature: float = 0.7, enable_thinking=None,
         conv_id: str = None, tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
         context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
-        """Local UI calls this directly (same PC) -> delegates to LlamaProvider."""
+        """Local UI calls this directly (same PC) -> delegates to LlamaProvider.
+
+        enable_thinking accepts a bool or a canonical thinking level (2026-12)."""
         return await self._get_local_provider().chat_stream(
             model=model, messages=messages, websocket=websocket,
             temperature=temperature, enable_thinking=enable_thinking,
@@ -433,17 +435,31 @@ class CoolemsServerProvider(BaseProvider):
         )
 
     async def chat_non_streaming(self, model: str, messages: List[Dict],
-                                  temperature: float = 0.7) -> str:
+                                  temperature: float = 0.7,
+                                  enable_thinking=None) -> str:
         return await self._get_local_provider().chat_non_streaming(
-            model=model, messages=messages, temperature=temperature
+            model=model, messages=messages, temperature=temperature,
+            enable_thinking=enable_thinking,
         )
 
     def build_payload(self, model: str, messages: List[Dict], *, stream: bool = True,
-                      temperature: float = 0.7, enable_thinking: bool = False,
+                      temperature: float = 0.7, enable_thinking=None,
                       tools: list = None) -> Dict:
-        return self._get_local_provider().build_payload(
+        """Build a backend payload. `enable_thinking` may be a canonical thinking level
+        (2026-12); it is translated by the serving backend's ThinkingPolicy."""
+        local = self._get_local_provider()
+        thinking_kwargs = None
+        if isinstance(enable_thinking, str) and enable_thinking.strip():
+            from ..llama.backend_registry import get_registry
+            from ..llama.thinking import ThinkingPolicy, normalize_mode
+            mode = normalize_mode(enable_thinking)
+            reg = get_registry()
+            policy = (reg.thinking_for_model(model) if reg is not None
+                      else ThinkingPolicy.none())
+            thinking_kwargs = policy.kwargs(mode)
+        return local.build_payload(
             model=model, messages=messages, stream=stream,
-            temperature=temperature, enable_thinking=enable_thinking, tools=tools
+            temperature=temperature, tools=tools, thinking_kwargs=thinking_kwargs
         )
 
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:

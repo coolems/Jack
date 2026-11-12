@@ -96,6 +96,7 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
         }, msg.get("_relay_from") or "")
         return
     from ..chat_relay import _filter_tools_by_profile
+    from app.providers.llama.thinking import level_or_bool
     _req = ChatRequest(
         owner_key=f"relay:{_relay_client_id}|{_conv_id}",
         user_key=_client_user_info.get("email") or f"relay:{_relay_client_id}",
@@ -104,7 +105,8 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
         model=msg.get("model", ""),
         messages=msg.get("messages", []),
         temperature=msg.get("temperature", LLAMA_SERVER_TEMP),
-        enable_thinking=bool(msg.get("enable_thinking", False)),
+        # (2026-12 thinking) bool OR canonical level; never coerced, a level must survive.
+        enable_thinking=level_or_bool(msg.get("enable_thinking")),
         conv_id=_conv_id,
         tools=_filter_tools_by_profile(server_provider, _client_user_info,
                                        msg.get("tools") if msg.get("tools") else None),

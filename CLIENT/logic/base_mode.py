@@ -94,7 +94,11 @@ class BaseModeConfig:
     """Base configuration shared by both normal and agentic chat modes"""
     model: str = MODEL_NAME
     temperature: float = PROVIDER_DEFAULT_TEMPERATURE
-    enable_thinking: bool = False
+    # (2026-12 thinking) Either a legacy bool (show reasoning or not) or a canonical level
+    # "none"/"low"/"medium"/"high". A level is forwarded to the SERVER, which translates it
+    # into the serving model's own vocabulary (app/providers/llama/thinking.py). Keep the
+    # value as-is on every hop - coercing it with bool() would erase the level.
+    enable_thinking: Any = False
     provider: Optional[BaseProvider] = None
     agent_name: str = "Jack"
     dna_content: str = ""

@@ -34,7 +34,8 @@ class UserCancelled(Exception):
 
 async def chat_stream_websocket(
     provider, model: str, messages: List[Dict], websocket: Any,
-    temperature: float = 0.7, enable_thinking: bool = False,
+    # (2026-12 thinking) bool OR canonical level - forwarded verbatim to the SERVER.
+    temperature: float = 0.7, enable_thinking: Any = False,
     conv_id: str = None, tools: list = None,
     stop_event: Optional[asyncio.Event] = None
 ) -> Tuple[str, Any]:

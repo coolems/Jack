@@ -165,7 +165,7 @@ def mcp_instructions(role: Optional[str] = None) -> str:
 
 async def call(name: str, arguments: Dict[str, Any], *, loop, channel, websocket,
                conversation_id: str, ollama_tools: Optional[List[Dict]] = None,
-               generic_tool_prompt: str = "", enable_thinking: bool = False,
+               generic_tool_prompt: str = "", enable_thinking: Any = False,
                temperature: float = 0.6, parent_history: Optional[List[Dict]] = None,
                session_timer=None, role: Optional[str] = None) -> Any:
     """Dispatch one local tool call on the event-loop thread.

@@ -29,7 +29,8 @@ def build_normal_config(
     *,
     model: str = MODEL_NAME,
     temperature: float = PROVIDER_DEFAULT_TEMPERATURE,
-    enable_thinking: bool = False,
+    # (2026-12 thinking) bool OR canonical level ("none"/"low"/"medium"/"high").
+    enable_thinking: Any = False,
     provider: Optional[BaseProvider] = None,
     agent_name: str = "Jack",
     dna_content: str = "",
@@ -48,7 +49,8 @@ def build_normal_config(
     Args:
         model: Model name (default: MODEL_NAME from config).
         temperature: Generation temperature (default: PROVIDER_DEFAULT_TEMPERATURE from config).
-        enable_thinking: Enable thinking/reasoning mode.
+        enable_thinking: Thinking level - a canonical string ("none"/"low"/"medium"/
+            "high") or a legacy bool. Forwarded unchanged; SERVER maps it per model.
         provider: AI provider instance.
         agent_name: Agent identity name.
         dna_content: Agent DNA/system prompt content.
@@ -86,7 +88,8 @@ def build_agentic_config(
     *,
     model: str = MODEL_NAME,
     temperature: float = PROVIDER_DEFAULT_TEMPERATURE,
-    enable_thinking: bool = False,
+    # (2026-12 thinking) bool OR canonical level ("none"/"low"/"medium"/"high").
+    enable_thinking: Any = False,
     provider: Optional[BaseProvider] = None,
     agent_name: str = "Jack",
     dna_content: str = "",
@@ -114,7 +117,8 @@ def build_agentic_config(
     Args:
         model: Model name (default: MODEL_NAME from config).
         temperature: Generation temperature (default: PROVIDER_DEFAULT_TEMPERATURE from config).
-        enable_thinking: Enable thinking/reasoning mode.
+        enable_thinking: Thinking level - a canonical string ("none"/"low"/"medium"/
+            "high") or a legacy bool. Forwarded unchanged; SERVER maps it per model.
         provider: AI provider instance.
         agent_name: Agent identity name.
         dna_content: Agent DNA/system prompt content.

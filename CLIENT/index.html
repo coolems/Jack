@@ -94,9 +94,12 @@
                      steering placeholder in the textarea itself is enough. -->
                 <div class="input-footer">
                     <div class="file-preview" id="filePreview"></div>
-                    <button class="think-toggle" id="thinkToggle" onclick="toggleThink()" title="Toggle thinking mode">
+                    <!-- (2026-12 thinking) A capability-driven chip, not a boolean: it cycles
+                         only through the levels the SELECTED model actually offers (discovered
+                         from its chat template by ThinkingPolicy). Default: none. -->
+                    <button class="think-toggle" id="thinkToggle" onclick="cycleThinking()" title="Thinking level - click to change">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
-                        <span>Think</span>
+                        <span id="thinkLabel">Think</span>
                     </button>
                     <button class="send-btn" id="sendBtn" onclick="handleSendClick()" title="Send message">
                         <svg id="sendIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>

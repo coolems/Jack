@@ -351,7 +351,9 @@ class CoolemsClientProvider(BaseProvider):
 
         self, model: str, messages: List[Dict], websocket: Any,
 
-        temperature: float = 0.7, enable_thinking: bool = False,
+        # (2026-12 thinking) bool OR canonical level ("none"/"low"/"medium"/"high"),
+        # forwarded verbatim; the SERVER translates it per model.
+        temperature: float = 0.7, enable_thinking: Any = False,
 
         conv_id: str = None, tools: list = None,
 
@@ -637,11 +639,15 @@ class CoolemsClientProvider(BaseProvider):
 
     def build_payload(self, model: str, messages: List[Dict], *, stream: bool = True,
 
-                      temperature: float = 0.7, enable_thinking: bool = False,
+                      temperature: float = 0.7, enable_thinking: Any = False,
 
                       tools: list = None) -> Dict:
 
-        """Build the request payload (kept minimal - SERVER owns final shaping)."""
+        """Build the request payload (kept minimal - SERVER owns final shaping).
+
+        (2026-12 thinking) ``enable_thinking`` may be a bool or a canonical level; the
+        SERVER translates a level into this model's own template kwargs.
+        """
 
         return {"model": model, "messages": messages, "stream": stream,
 

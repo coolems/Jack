@@ -20,6 +20,7 @@ from typing import List
 
 from app.providers.llama.backend_registry import get_registry
 from app.providers.llama.model_identity import model_key as model_key_of
+from app.providers.llama.thinking import ThinkingPolicy
 
 logger = logging.getLogger("COOLEMS.Provider.ModelCatalog")
 
@@ -48,6 +49,7 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
         by_key[key] = entry
 
     reg = get_registry()
+    policies: dict[str, list] = {}
     if reg is not None:
         for b in reg.backends.values():
             if not b.model_key:
@@ -78,6 +80,9 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
             # remote groups do not both pretend to be "the loaded model".
             if b.healthy and b.local:
                 entry["loaded"] = True
+            # (2026-12 thinking) What a request to THIS model may control about reasoning,
+            # discovered from the serving node's chat template.
+            policies.setdefault(b.model_key, []).append(b.thinking)
 
             # (2026-11 strata) An endpoint can advertise the SAME model under alias ids
             # (/v1/models). Fold those entries into the served one so the picker shows ONE
@@ -96,6 +101,10 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
         entry["online_slots"] = online_slots
         entry["served"] = online_slots > 0
         entry.setdefault("loaded", False)
+        # (2026-12 thinking) Offer only what every serving node accepts. A model with no
+        # serving node at all keeps the "nothing discovered" policy: the picker then shows
+        # the control as unavailable instead of promising levels we cannot honor.
+        entry["thinking"] = ThinkingPolicy.merge(policies.get(entry.get("model_key"), [])).describe()
         catalog.append(entry)
 
     # Served models first, then alphabetical - stable picker order.

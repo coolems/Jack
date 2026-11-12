@@ -74,7 +74,10 @@ def set_local_context(loop, channel, websocket, conversation_id, ollama_tools,
         "conversation_id": conversation_id,
         "ollama_tools": ollama_tools or [],
         "generic_tool_prompt": generic_tool_prompt or "",
-        "enable_thinking": bool(enable_thinking),
+        # (2026-12 thinking) kept as given: a bool means "show reasoning", a canonical level
+        # string ("none"/"low"/"medium"/"high") is an instruction to the model. bool() here
+        # would erase the level and a child would lose the parent's thinking choice.
+        "enable_thinking": enable_thinking if enable_thinking is not None else False,
         "temperature": float(temperature or 0.6),
         "parent_history": parent_history or [],
         "session_timer": session_timer,
@@ -104,7 +107,9 @@ def _child_context() -> Dict[str, Any]:
     return {
         "ollama_tools": ctx.get("ollama_tools") or [],
         "generic_tool_prompt": ctx.get("generic_tool_prompt") or "",
-        "enable_thinking": bool(ctx.get("enable_thinking")),
+        # (2026-12 thinking) inherit the parent's choice verbatim - a bool or a canonical
+        # level. Coercing it would turn "low" into True and lose the level.
+        "enable_thinking": ctx.get("enable_thinking", False),
         "temperature": float(ctx.get("temperature") or 0.6),
         "history": ctx.get("parent_history") or [],
         "role": ctx.get("role"),

@@ -120,7 +120,9 @@ class ChatSession:
         messages: List[Dict],
         websocket: Any,
         temperature: float = 0.7,
-        enable_thinking: bool = False,
+        # (2026-12 thinking) bool OR a canonical level ("none"/"low"/"medium"/"high").
+        # Pass it through verbatim - bool() would erase the level the user picked.
+        enable_thinking: Any = False,
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,

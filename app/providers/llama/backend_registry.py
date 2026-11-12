@@ -43,6 +43,7 @@ from config import (
 )
 from .model_state import key_for_api_url
 from .model_identity import model_basename, model_key as model_key_of
+from .thinking import ThinkingPolicy
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Registry")
 
@@ -50,6 +51,21 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Registry")
 def _is_local(host: str) -> bool:
     """Local instances are the ones we may spawn processes for."""
     return host.lower() in ("127.0.0.1", "localhost", "::1")
+
+
+def _startup_reasoning_enabled() -> bool:
+    """True when a llama node we spawn is started with --reasoning (2026-12 thinking).
+
+    That flag is startup-only: it makes llama.cpp SEPARATE reasoning out into
+    `reasoning_content` even for a template with no request knob, so the UI can still
+    display thinking - but no request can turn it off. Read lazily so a test or a CLI
+    override of config is honored, and never fail on an odd config module.
+    """
+    try:
+        import config as _cfg
+        return bool(getattr(_cfg, "LLAMA_SERVER_REASONING", False))
+    except Exception:  # pragma: no cover - defensive
+        return False
 
 
 class LlmBackend:
@@ -89,6 +105,12 @@ class LlmBackend:
         self.model_aliases: set[str] = set()
         self.model_label: str = ""               # display basename
         self.build: str = ""                     # llama.cpp build_info
+        # (2026-12 thinking) What THIS node's baked chat template lets a request control
+        # about reasoning. Discovered from /props (template text + caps), never hardcoded:
+        # Qwen3.8 offers enable_thinking + reasoning_effort in its own words, Qwen3.5 only
+        # a toggle, Gemma 3 nothing at all. An entry's optional 'thinking' block pins it.
+        self.thinking: ThinkingPolicy = ThinkingPolicy.none()
+        self.thinking_override = getattr(instance, "thinking", None)
         self.props_at: float = 0.0
         self.props_error: str = ""
         # One-shot operator warnings (a 30 s poll must not repeat them forever).
@@ -96,6 +118,7 @@ class LlmBackend:
         self._warned_ctx = False
         self._warned_cap = False
         self._warned_props = False
+        self._warned_thinking = False
 
         # --- error provenance (shown in the fleet table / error frames) ------------
         self.last_error: str = ""
@@ -225,9 +248,42 @@ class LlmBackend:
                 return False
 
             self.build = str(data.get("build_info") or "")
+            # (2026-12 thinking) What this node's baked template lets a REQUEST control.
+            # Read from the template text itself (the only trustworthy source) and folded
+            # with chat_template_caps; an entry's 'thinking' block pins anything it states.
+            #
+            # A policy demoted at runtime (streaming._demote_thinking: the endpoint actually
+            # rejected our thinking keys) SURVIVES this re-discovery - otherwise the 30 s
+            # props poll would resurrect a knob we just proved broken and every turn would
+            # fail again. An operator 'thinking' block overrides that on purpose: pinning it
+            # is the explicit statement that the model really does support these controls.
+            demoted = self.thinking if self.thinking.source == "runtime" else None
+            policy = ThinkingPolicy.from_props(data, model_name=self.model_label or raw_model)
+            resolved = ThinkingPolicy.from_override(self.thinking_override, policy)
+            if demoted is not None and self.thinking_override is None:
+                self.thinking = demoted
+            else:
+                self.thinking = resolved
+                if resolved.source == "template" and not self._warned_thinking:
+                    self._warned_thinking = True
+                    logger.info(
+                        "[REGISTRY] %s thinking controls: %s%s (model values %s)",
+                        self.label, resolved.levels(),
+                        f" preserve={resolved.preserve}" if resolved.preserve else "",
+                        resolved.efforts or "none",
+                    )
         except Exception as e:  # malformed /props payload - keep whatever we already had
             self.props_error = f"unparseable /props: {e}"
             return False
+
+        # A node that exposes no template knob can still SEPARATE reasoning out when it
+        # was started with --reasoning (LLAMA_SERVER_REASONING): nothing can then turn
+        # thinking off per request, but the UI may still offer to display it.
+        if self.thinking.source == "none" and _startup_reasoning_enabled():
+            self.thinking = ThinkingPolicy(
+                emit_only=True, source="emit",
+                hint="reasoning is separated by the node's --reasoning flag; "
+                     "the request cannot change it")
 
         self.props_at = time.time()
         self.props_error = ""
@@ -351,6 +407,7 @@ class LlmBackend:
             "slots": self.capacity,
             "ctx_per_slot": self.ctx_per_slot,
             "build": self.build,
+            "thinking": self.thinking.describe(),
         }
 
     # --- lifecycle ------------------------------------------------------------
@@ -555,9 +612,30 @@ class LlmBackendRegistry:
                 "busy": b.busy,
                 "error": b.props_error or b.last_error,
                 "error_count": b.error_count,
+                # (2026-12 thinking) what a request to this node may control about reasoning
+                "thinking": b.thinking.describe(),
             }
             for b in self.backends.values()
         ]
+
+    def thinking_for_model(self, model: str) -> ThinkingPolicy:
+        """Merged thinking policy of every node serving *model* (2026-12).
+
+        The INTERSECTION across backends (see ThinkingPolicy.merge): the catalog must
+        offer only levels every serving node accepts, or a request routed to the weaker
+        node fails at template render time. Healthy state is irrelevant here - a node
+        that is merely down still defines what the model's template allows.
+        """
+        return ThinkingPolicy.merge([b.thinking for b in self.backends_for_model(model)])
+
+    def thinking_snapshot(self) -> dict:
+        """model_key -> merged policy description, for the catalog and the fleet log."""
+        groups: dict[str, list[ThinkingPolicy]] = {}
+        for b in self.backends.values():
+            if b.model_key:
+                groups.setdefault(b.model_key, []).append(b.thinking)
+        return {key: ThinkingPolicy.merge(policies).describe()
+                for key, policies in groups.items()}
 
     # --- lifecycle ------------------------------------------------------------
 

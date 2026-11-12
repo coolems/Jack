@@ -324,7 +324,7 @@ class ToolExecutor:
                  channel=None,          # (2026-12) this chat's ChatChannel (local tools need it)
                  ollama_tools: list = None,   # (2026-12) the turn's tool schema, for a child
                  generic_tool_prompt: str = "",
-                 enable_thinking: bool = False,
+                 enable_thinking: Any = False,
                  temperature: float = None,
                  role: str = None):
         """forbidden_tools (2026-12 subagents): the fail-closed half of the child promise.
@@ -357,7 +357,9 @@ class ToolExecutor:
         self.channel = channel
         self.ollama_tools = list(ollama_tools or [])
         self.generic_tool_prompt = generic_tool_prompt or ""
-        self.enable_thinking = bool(enable_thinking)
+        # (2026-12 thinking) kept as-is (bool OR canonical level string): coercing with
+        # bool() would erase a level, and a child must inherit the parent's level.
+        self.enable_thinking = enable_thinking if enable_thinking is not None else False
         self.temperature = temperature
         self.role = role
 

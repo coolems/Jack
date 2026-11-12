@@ -321,7 +321,8 @@ def _child_executor(bus):
             channel=channel,
             history=context.get("history"),
             working_root=working_root,
-            enable_thinking=bool(context.get("enable_thinking")),
+            # (2026-12 thinking) verbatim: a bool or the parent's canonical level.
+            enable_thinking=context.get("enable_thinking", False),
             temperature=float(context.get("temperature") or 0.6),
             role=context.get("role"),
         )

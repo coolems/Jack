@@ -16,10 +16,117 @@ function updateAgentUI() {
     document.getElementById('agentSwitch').classList.toggle('active', COOLEMS.agentMode); 
 }
 
-function toggleThink() { 
-    COOLEMS.enableThinking = !COOLEMS.enableThinking; 
-    document.getElementById('thinkToggle').classList.toggle('active', COOLEMS.enableThinking); 
+/* ===== THINKING LEVEL (2026-12) =============================================
+ * One chip that cycles the levels the SELECTED model really offers.
+ *
+ * The capability comes from the SERVER catalog entry's `thinking` block, which the brain
+ * built from the serving endpoint's /props chat_template (ThinkingPolicy). So the chip
+ * never promises a level a model cannot honor:
+ *   Qwen3.8   -> none / low / medium / high   (its template says xhigh|medium|low; 'high'
+ *                is mapped to xhigh server-side)
+ *   Qwen3.5   -> none / medium                (template has only enable_thinking)
+ *   Gemma 3   -> "Think: n/a"                 (template exposes nothing -> nothing is sent)
+ *   unknown   -> "Think: n/a"                 (capability not discovered -> nothing is sent)
+ * Default is 'none' (user rule) and the choice is persisted like agentMode.
+ * ============================================================================ */
+const THINK_LEVELS = ['none', 'low', 'medium', 'high'];
+const THINK_LABELS = { none: 'Think: off', low: 'Think: low', medium: 'Think: medium', high: 'Think: high' };
+/* Shown when there is nothing to switch. The chip must say WHY, because the fallback is
+   silent by design: ThinkingPolicy sends NO thinking keys when it cannot figure out the
+   model's controls (a strict GGUF template raises on an undeclared variable, which would
+   fail every request), so the model just keeps its own default. */
+const THINK_NA_LABEL = 'Think: n/a';
+const THINK_NA_UNKNOWN = 'Thinking capability not discovered yet for this model - no thinking keys are sent, the model keeps its own default.';
+const THINK_NA_NONE = 'This model exposes no thinking control - no thinking keys are sent, the model keeps its own default.';
+
+function persistThinking() {
+    try { localStorage.setItem('coolems_thinking', COOLEMS.enableThinking || 'none'); } catch (e) {}
 }
+
+/** Capability description of the model currently selected in the picker. */
+function thinkingCapsForSelected() {
+    const sel = document.getElementById('modelSelector');
+    const name = sel ? sel.value : '';
+    if (!name) return null;
+    return COOLEMS.thinkingCaps[name] || null;
+}
+
+/** Levels the selected model offers. Always starts with 'none' when it can be disabled. */
+function availableThinkingLevels() {
+    const caps = thinkingCapsForSelected();
+    if (!caps) return ['none'];                 // no catalog info yet -> send nothing
+    const levels = (caps.levels || []).filter(l => THINK_LEVELS.includes(l));
+    return levels.length ? levels : ['none'];
+}
+
+/** True when this model has anything to switch (a request knob, or reasoning we can show). */
+function thinkingAvailable() {
+    return availableThinkingLevels().length > 1;
+}
+
+/** Why there is nothing to switch - the tooltip/notification text. */
+function thinkingUnavailableReason() {
+    const caps = thinkingCapsForSelected();
+    if (!caps) return THINK_NA_UNKNOWN;
+    if (caps.hint) return caps.hint;
+    return THINK_NA_NONE;
+}
+
+/** Paint the chip: label + active state + tooltip naming the model's own values. */
+function updateThinkingUI() {
+    const btn = document.getElementById('thinkToggle');
+    const label = document.getElementById('thinkLabel');
+    if (!btn) return;
+    const levels = availableThinkingLevels();
+    const caps = thinkingCapsForSelected();
+    // A stored level the new model cannot honor drops back to 'none' - never send a value
+    // that its template would reject (that is an HTTP 400 on every request).
+    if (!levels.includes(COOLEMS.enableThinking)) { COOLEMS.enableThinking = 'none'; persistThinking(); }
+
+    const na = levels.length <= 1 && (!caps || !caps.supported);
+    const off = COOLEMS.enableThinking === 'none';
+    btn.classList.toggle('active', !off && !na);
+    btn.classList.toggle('na', na);
+    if (label) {
+        label.textContent = na ? THINK_NA_LABEL
+            : (off ? 'Think' : (THINK_LABELS[COOLEMS.enableThinking] || 'Think'));
+    }
+
+    btn.title = na ? thinkingUnavailableReason()
+        : (!caps || !caps.supported)
+            // Nothing to INSTRUCT, but reasoning may still arrive (an R1-style model, or a
+            // node started with --reasoning): the level only decides whether we SHOW it.
+            ? ((caps && caps.hint) ? caps.hint : 'This model cannot be instructed to think')
+              + ' - the level only decides whether reasoning is displayed'
+            : 'Thinking level: ' + COOLEMS.enableThinking + ' (this model offers '
+                + levels.join(', ') + '; its own values: '
+                + ((caps.model_values || []).join('/') || 'on/off') + ')'
+                + (caps.enforced === false ? ' - note: ' + (caps.hint || 'control may be ignored') : '');
+    // NOT disabled on purpose: a click on an unavailable chip explains WHY (see
+    // cycleThinking). A disabled button would be silent and read as a broken control.
+    btn.disabled = false;
+    btn.setAttribute('aria-disabled', na ? 'true' : 'false');
+    btn.style.opacity = na ? '0.55' : '1';
+}
+
+/** Click: step to the next level this model offers (wraps around). */
+function cycleThinking() {
+    const levels = availableThinkingLevels();
+    if (levels.length <= 1) {
+        // Nothing to switch: say so plainly instead of pretending the level changed.
+        showNotification('Thinking not available: ' + thinkingUnavailableReason(), 'info');
+        return;
+    }
+    const i = levels.indexOf(COOLEMS.enableThinking);
+    COOLEMS.enableThinking = levels[(i + 1) % levels.length];
+    persistThinking();
+    updateThinkingUI();
+}
+
+window.cycleThinking = cycleThinking;
+window.updateThinkingUI = updateThinkingUI;
+window.availableThinkingLevels = availableThinkingLevels;
+window.thinkingAvailable = thinkingAvailable;
 
 /**
      * Settings tabs - switch between panes (Authentication | Agent / Search).
@@ -103,6 +210,10 @@ async function loadModels() {
         // Build options with size, fleet state (2026-10: models served by any node)
         // and loaded indicator. Unserved models are disabled - picking one would only
         // produce a "no llama node is serving this" error.
+        // (2026-12 thinking) Keep each model's discovered thinking capability so the chip
+        // can offer exactly the levels that model honors.
+        COOLEMS.thinkingCaps = {};
+        models.forEach(m => { if (m && m.name) COOLEMS.thinkingCaps[m.name] = m.thinking || null; });
         sel.innerHTML = models.map(m => {
             const name = m.name;
             const sizeStr = m.size ? ` (${formatFileSize(m.size)})` : '';
@@ -117,7 +228,10 @@ async function loadModels() {
         }).join('');
         
         log('Loaded ' + models.length + ' models (fleet catalog)');
-        
+        // (2026-12 thinking) The picker changed (possibly to another model), so re-check
+        // which thinking levels are selectable now.
+        if (typeof updateThinkingUI === 'function') updateThinkingUI();
+
     } catch (e) { 
         logError('Failed to load models:', e); 
     }
@@ -136,6 +250,11 @@ async function switchModel(modelName) {
     if (!modelName) { logError('[MODEL SWITCH] No model name provided'); return; }
     
     log('[MODEL SWITCH] Switching to: ' + modelName);
+
+    // (2026-12 thinking) The picker already shows the new model, so re-evaluate which
+    // thinking levels it honors BEFORE anything else (the capability map is already in
+    // COOLEMS.thinkingCaps from the last catalog load).
+    if (typeof updateThinkingUI === 'function') updateThinkingUI();
     
     // Find which model is currently LOADED (the one with ⬤ indicator)
     const sel = document.getElementById('modelSelector');
