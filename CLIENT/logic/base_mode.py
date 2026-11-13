@@ -249,7 +249,7 @@ def build_messages(
     # The boundary line sits immediately BEFORE the current prompt, every turn, so the
     # model always knows where background ends and the task begins. System role: it is
     # the runtime speaking, not user speech. Also `_protect` (a trim must not drop it)
-    # and `_loop_marker` (so _loop_boundary still keys on the user prompt, not this line).
+    # and `_loop_marker` (so loop-boundary logic still keys on the user prompt, not this line).
     messages.append(boundary_message())
     messages.append(current_message)
 

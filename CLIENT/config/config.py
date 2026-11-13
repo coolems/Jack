@@ -769,23 +769,8 @@ PROVIDER_DEFAULT_TEMPERATURE: float = 0.6
 
 # --- Agentic Loop ---
 AGENTIC_MAX_TOOL_ITERATIONS: int = 2000             # Max total tool iterations (prevents infinite loops)
-AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.95     # Fraction of the MESSAGE-LIST budget (max_history_tokens) where the console/UI "trimming is about to engage" warning fires
-#: (2026-11-07) Fraction of the FULL context window (CONTEXT_WINDOW_TOKENS, the number the UI
-#: status bar shows as "N K ctx") at which the context-guardian [SYSTEM NOTICE] is injected.
-#: It used to be measured against max_history_tokens() (= HISTORY_CONTEXT_FRACTION 0.90 of the
-#: window) AND quoted as a percentage OF that budget, so the notice said "96% of the safe
-#: budget" while the status bar still showed ~100K tokens free - a contradiction the user
-#: reported. The threshold is now a fraction of the window itself and the notice quotes sent /
-#: left against that same window, so guardian and UI can never disagree. Default 0.90 = the
-#: moment the history budget is reached, which is exactly when trimming starts.
-AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION: float = 0.90
+AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.85     # Fraction of the safe token budget (max_history_tokens) where the console warning + context-guardian message fire
 AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS: int = 3  # Max times per run the near-limit guardian may be injected - bounded so a pathological prompt cannot loop forever
-#: (2026-11-09) The old AGENTIC_CONTEXT_GUT_FRACTION ("a trim pass that removed >= 50% of the
-#: context is a GUT") was REMOVED: it gated nothing. With the LOOP RULE (utils/history_trimmer
-#: safe_trim_history loop_start) a big pass can only eat PREVIOUS turns of the session, which is
-#: legitimate trimming - never a reason to stop the run. The guardian fires on TRIM NO-OP
-#: (stuck_at_limit) instead; the trim log still shows "before -> after" + removed=N tok, so a
-#: large discard stays visible without a second threshold to maintain.
 AGENTIC_ITERATION_TIMEOUT_SEC: int = 180          # Timeout per single provider call iteration (3 minutes)
 # UI frame budget for the `tool_end` notification only (the chat's last-tool strip shows the
 # real result). The ReAct history is NOT trimmed here - it keeps what the tool returned
