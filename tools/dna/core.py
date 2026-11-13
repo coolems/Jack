@@ -86,13 +86,17 @@ class AgentDNA:
         for key, value in self.identity.get('value_scale', {}).items():
             lines.append(f"{key}: {value}")
 
-        lines.append("\n## My Behavior Rules")
-        for rule in self.identity.get('behavior_rules', []):
-            lines.append(f"- {rule}")
+        rules = self.identity.get('behavior_rules', [])
+        if rules:
+            lines.append("\n## My Behavior Rules")
+            for rule in rules:
+                lines.append(f"- {rule}")
 
-        lines.append("\n## My Goals")
-        for goal in self.identity.get('constant_goals', []):
-            lines.append(f"- {goal}")
+        goals = self.identity.get('constant_goals', [])
+        if goals:
+            lines.append("\n## My Goals")
+            for goal in goals:
+                lines.append(f"- {goal}")
 
         #if self.intelligence:
         #    lines.append("\n## What I've Learned")
