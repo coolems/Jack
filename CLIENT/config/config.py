@@ -479,16 +479,42 @@ CONSENT_NEVER_AUTO_KINDS = frozenset({"question"})
 CONSENT_AUTO_APPROVE_DEFAULT = "manual"
 CONSENT_AUTO_APPROVE_SECONDS_DEFAULT = 5
 
+#: (2026-11-13) The ask_user_question card is tinted with its OWN colour, so a question
+#: reads apart from the amber consent cards. Settings > Runtime stores it in settings.json
+#: as 'question_dialog_color' (#rrggbb); the UI applies it live as the CSS variable
+#: --question-accent, so a pick recolours every card on screen without a restart.
+QUESTION_DIALOG_COLOR_DEFAULT = "#22c55e"
+#: The one accepted shape: '#' + exactly six hex digits.
+QUESTION_DIALOG_HEX_LEN = 6
+_HEX_DIGITS = "0123456789abcdefABCDEF"
+
+
+def is_question_dialog_color(raw) -> bool:
+    """True when *raw* is exactly '#rrggbb'. POST /api/settings rejects anything else."""
+    s = str(raw or "").strip()
+    return (len(s) == 1 + QUESTION_DIALOG_HEX_LEN and s[0] == "#"
+            and all(c in _HEX_DIGITS for c in s[1:]))
+
+
+def _coerce_question_dialog_color(value) -> str:
+    """A stored question-card colour lowercased, or the default when it is not #rrggbb.
+
+    Hand-checked instead of a regex: config.py stays import-light, and a corrupt
+    settings.json must never paint the card with an unreadable colour (fail-closed).
+    """
+    return str(value).strip().lower() if is_question_dialog_color(value) else QUESTION_DIALOG_COLOR_DEFAULT
+
 
 def get_runtime_settings() -> dict:
     """Return the live Runtime-tab values from settings.json with safe defaults.
 
-    Always returns exactly five keys so callers never hit a missing key:
+    Always returns exactly six keys so callers never hit a missing key:
       {"python_exec_auto_approve": "manual"|"auto",
        "python_exec_auto_approve_seconds": int,
        "image_gen_tier": "auto"|"high"|"mid"|"low",
        "image_gen_width": int (default 600),
-       "image_gen_height": int (default 400)}
+       "image_gen_height": int (default 400),
+       "question_dialog_color": "#rrggbb" (default QUESTION_DIALOG_COLOR_DEFAULT)}
     Bad/corrupt stored values fall back to the defaults (fail-closed = manual/auto).
     """
     settings = _load_settings()
@@ -512,6 +538,10 @@ def get_runtime_settings() -> dict:
     # tool's own defaults so a bad settings.json can never break generation.
     width = _coerce_image_gen_size(settings.get("image_gen_width"), IMAGE_GEN_WIDTH_DEFAULT)
     height = _coerce_image_gen_size(settings.get("image_gen_height"), IMAGE_GEN_HEIGHT_DEFAULT)
+
+    # (2026-11-13) Question-card tint. A bad/absent value falls back to the default green,
+    # so a corrupt settings.json can never paint the card with an unreadable colour.
+    question_color = _coerce_question_dialog_color(settings.get("question_dialog_color"))
 
 
     # (2026-07-18 unified consent dialog) per-kind auto-approve settings, fully detached:
@@ -539,26 +569,16 @@ def get_runtime_settings() -> dict:
         if not (1 <= _sec <= 3600):
             _sec = _def_sec
         approvals[_kind] = {"mode": _mode, "seconds": _sec}
-
-    # Question card dismissal budget, read live so a Runtime save applies to the next question.
-    try:
-        _qsec = int(str(settings.get(QUESTION_CARD_TIMEOUT_KEY) or "").strip())
-    except (TypeError, ValueError):
-        _qsec = QUESTION_CARD_TIMEOUT_SEC
-    if not (QUESTION_CARD_TIMEOUT_MIN <= _qsec <= QUESTION_CARD_TIMEOUT_MAX):
-        _qsec = QUESTION_CARD_TIMEOUT_SEC
-
     return {
         "python_exec_auto_approve": mode,
         "python_exec_auto_approve_seconds": seconds,
         "image_gen_tier": tier,
         "image_gen_width": width,
         "image_gen_height": height,
+        # (2026-11-13) question-card tint, read live so the UI recolours on the next card.
+        "question_dialog_color": question_color,
         # (2026-07-18) per-kind consent auto-approve settings (see CONSENT_SETTING_KEYS).
         "approvals": approvals,
-        # Question card: dismissal budget + accent (the UI reads both).
-        "question_card_timeout_seconds": _qsec,
-        "question_card_color": QUESTION_CARD_GREEN,
     }
 
 
@@ -727,35 +747,12 @@ MCP_TIMEOUT_DEFAULT_SEC: int = 30    # per-request wall clock when an entry sets
 MCP_TIMEOUT_MAX_SEC: int = 300       # clamp for an entry's timeout_sec
 MCP_SPILL_KEEP_FILES: int = 20       # .temp/mcp/* payloads kept for full results
 
-# --- ask_user_question (2026-12; card redesign 2026-11-12) ---
+# --- ask_user_question (2026-12) ---
 # 'blocking' waits for the user with no time limit (SessionTimer pauses, exactly like a
 # consent card). 'timed' releases the model after the timeout with a PENDING notice - the
 # question stays answerable, so a late answer arrives as a notice / follow-up turn.
 QUESTION_TIMEOUT_DEFAULT_SEC: int = 120
 QUESTION_MAX_OPTIONS: int = 6
-#: The FIRST option is the AI's recommendation: starred, and submitted on an empty answer.
-QUESTION_RECOMMENDED_INDEX: int = 0
-#: Seconds an unanswered question card may stay on screen. 0 = no limit (default).
-#: Settings > Runtime "Question card - auto-close after" sets it live.
-QUESTION_CARD_TIMEOUT_SEC: int = 0
-#: Calm green accent of the question card - a question is not a rights gate.
-QUESTION_CARD_GREEN: str = "#5fae8b"
-#: settings.json key of the dismissal budget, live-read by ask_user_question().
-QUESTION_CARD_TIMEOUT_KEY: str = "question_card_timeout_seconds"
-QUESTION_CARD_TIMEOUT_MIN, QUESTION_CARD_TIMEOUT_MAX = 0, 3600
-
-
-def get_question_card_timeout_sec() -> int:
-    """Live read of the question card's dismissal budget. 0 = wait forever (default);
-    a corrupt or out-of-range value falls back to 0 - waiting is the safe state.
-    """
-    try:
-        v = int(str(_load_settings().get(QUESTION_CARD_TIMEOUT_KEY) or "").strip())
-    except (TypeError, ValueError):
-        return QUESTION_CARD_TIMEOUT_SEC
-    if not (QUESTION_CARD_TIMEOUT_MIN <= v <= QUESTION_CARD_TIMEOUT_MAX):
-        return QUESTION_CARD_TIMEOUT_SEC
-    return v
     
 # --- Model (fetched from SERVER at runtime) ---
 MODEL_NAME: str = ""  # Auto-detected from SERVER loaded models at runtime do not hardcode here
@@ -769,8 +766,23 @@ PROVIDER_DEFAULT_TEMPERATURE: float = 0.6
 
 # --- Agentic Loop ---
 AGENTIC_MAX_TOOL_ITERATIONS: int = 2000             # Max total tool iterations (prevents infinite loops)
-AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.85     # Fraction of the safe token budget (max_history_tokens) where the console warning + context-guardian message fire
+AGENTIC_TOKEN_WARNING_THRESHOLD: float = 0.95     # Fraction of the MESSAGE-LIST budget (max_history_tokens) where the console/UI "trimming is about to engage" warning fires
+#: (2026-11-07) Fraction of the FULL context window (CONTEXT_WINDOW_TOKENS, the number the UI
+#: status bar shows as "N K ctx") at which the context-guardian [SYSTEM NOTICE] is injected.
+#: It used to be measured against max_history_tokens() (= HISTORY_CONTEXT_FRACTION 0.90 of the
+#: window) AND quoted as a percentage OF that budget, so the notice said "96% of the safe
+#: budget" while the status bar still showed ~100K tokens free - a contradiction the user
+#: reported. The threshold is now a fraction of the window itself and the notice quotes sent /
+#: left against that same window, so guardian and UI can never disagree. Default 0.90 = the
+#: moment the history budget is reached, which is exactly when trimming starts.
+AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION: float = 0.90
 AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS: int = 3  # Max times per run the near-limit guardian may be injected - bounded so a pathological prompt cannot loop forever
+#: (2026-11-09) The old AGENTIC_CONTEXT_GUT_FRACTION ("a trim pass that removed >= 50% of the
+#: context is a GUT") was REMOVED: it gated nothing. With the LOOP RULE (utils/history_trimmer
+#: safe_trim_history loop_start) a big pass can only eat PREVIOUS turns of the session, which is
+#: legitimate trimming - never a reason to stop the run. The guardian fires on TRIM NO-OP
+#: (stuck_at_limit) instead; the trim log still shows "before -> after" + removed=N tok, so a
+#: large discard stays visible without a second threshold to maintain.
 AGENTIC_ITERATION_TIMEOUT_SEC: int = 180          # Timeout per single provider call iteration (3 minutes)
 # UI frame budget for the `tool_end` notification only (the chat's last-tool strip shows the
 # real result). The ReAct history is NOT trimmed here - it keeps what the tool returned

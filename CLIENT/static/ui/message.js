@@ -372,7 +372,7 @@ async function sendMessage() {
     COOLEMS._inReplay = false;
     // (2026-10-23 live steering) remember whether THIS turn can be steered
     COOLEMS.streamingAgentMode = !!COOLEMS.agentMode;
-    COOLEMS.isStreaming = true; COOLEMS.streamingBuffer = ''; COOLEMS.thinkingPending = ''; setButtonState(true);
+    COOLEMS.isStreaming = true; COOLEMS.streamingBuffer = ''; setButtonState(true);
     const payload = {
         message,
         model: document.getElementById('modelSelector').value,

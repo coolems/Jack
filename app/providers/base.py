@@ -37,7 +37,7 @@ class BaseProvider(ABC):
         messages: List[Dict],
         websocket: Any,
         temperature: float = 0.7,
-        enable_thinking=None,
+        enable_thinking: bool = False,
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
@@ -56,12 +56,7 @@ class BaseProvider(ABC):
             messages: List of message dicts with 'role' and 'content'.
             websocket: FastAPI WebSocket for streaming content chunks.
             temperature: Sampling temperature (default 0.7).
-            enable_thinking (2026-12): a bool (show reasoning or not) OR a canonical
-                       thinking level "none"/"low"/"medium"/"high". A level is translated
-                       into the serving model's own vocabulary by its ThinkingPolicy
-                       (app/providers/llama/thinking.py) and sent to the endpoint; a bool
-                       only decides whether reasoning is displayed. Both shapes are
-                       accepted so older callers keep working.
+            enable_thinking: Whether to enable thinking/reasoning mode.
             conv_id: Conversation ID for logging and stop control.
             tools: Optional list of tool definitions for native tool calling.
             stop_event: asyncio.Event that is set when user clicks stop button.
@@ -107,7 +102,7 @@ class BaseProvider(ABC):
         *,
         stream: bool = True,
         temperature: float = 0.7,
-        enable_thinking=None,
+        enable_thinking: bool = False,
         tools: list = None,
     ) -> Dict:
         """
@@ -118,10 +113,7 @@ class BaseProvider(ABC):
             messages: List of message dicts.
             stream: Whether to enable streaming.
             temperature: Sampling temperature.
-            enable_thinking: A bool (show reasoning) or a canonical thinking level
-                       "none"/"low"/"medium"/"high" (2026-12). Implementations translate a
-                       level with the serving model's ThinkingPolicy; a model whose
-                       controls are unknown gets NO thinking keys at all (the fallback).
+            enable_thinking: Whether to enable thinking mode.
             tools: Optional list of tool definitions.
 
         Returns:

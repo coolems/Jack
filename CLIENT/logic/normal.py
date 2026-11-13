@@ -141,8 +141,7 @@ async def stream_ollama(
     websocket: Any,
     temperature: float = None,
     timeout: int = None,
-    # (2026-12 thinking) bool OR canonical level, forwarded verbatim.
-    enable_thinking: Any = False,
+    enable_thinking: bool = False,
     conv_id: str = None,
     tools: list = None,
     provider=None,

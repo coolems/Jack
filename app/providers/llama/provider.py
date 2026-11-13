@@ -78,7 +78,7 @@ class LlamaProvider(BaseProvider):
         messages: List[Dict],
         websocket: Any,
         temperature: float = 0.7,
-        enable_thinking=None,
+        enable_thinking: bool = False,
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
@@ -95,10 +95,7 @@ class LlamaProvider(BaseProvider):
             messages: List of message dicts with 'role' and 'content'.
             websocket: FastAPI WebSocket for streaming content chunks.
             temperature: Sampling temperature (default 0.7).
-            enable_thinking: A bool (show reasoning or not) or a canonical thinking level
-                       "none"/"low"/"medium"/"high" (2026-12). A level is translated into
-                       this model's own vocabulary by its ThinkingPolicy and sent as
-                       chat_template_kwargs; see streaming._resolve_thinking.
+            enable_thinking: Whether to enable thinking/reasoning mode.
             conv_id: Conversation ID for logging and stop control.
             tools: Optional list of tool definitions for native tool calling.
             stop_event: asyncio.Event set by the stop endpoint when user
@@ -127,19 +124,14 @@ class LlamaProvider(BaseProvider):
         model: str,
         messages: List[Dict],
         temperature: float = 0.7,
-        enable_thinking=None,
     ) -> str:
-        """Non-streaming chat completion. Returns the response string.
-
-        enable_thinking (2026-12) accepts a canonical thinking level string; see chat_stream.
-        """
+        """Non-streaming chat completion. Returns the response string."""
         return await _chat_non_streaming(
             api_url=self._api_url,
             timeout=self._timeout,
             model=model,
             messages=messages,
             temperature=temperature,
-            thinking_mode=enable_thinking if isinstance(enable_thinking, str) else None,
         )
 
     # ---- build_payload ----
@@ -151,7 +143,6 @@ class LlamaProvider(BaseProvider):
         stream: bool = True,
         temperature: float = 0.7,
         tools: list = None,
-        thinking_kwargs: Dict = None,
     ) -> Dict:
         """
         Build the request payload for llama.cpp (OpenAI-compatible).
@@ -159,11 +150,9 @@ class LlamaProvider(BaseProvider):
         Note: Messages should already be converted for vision format before
         calling this. Use converter.convert_messages_for_vision() if needed.
         if you have Ollama-style messages with 'images' keys.
-        thinking_kwargs (2026-12): chat_template_kwargs from a ThinkingPolicy.
         """
         return build_llama_payload(
             model, messages, stream=stream, temperature=temperature, tools=tools,
-            thinking_kwargs=thinking_kwargs,
         )
 
     # ---- health_check ----

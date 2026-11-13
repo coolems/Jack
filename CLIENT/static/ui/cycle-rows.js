@@ -447,8 +447,6 @@ const CycleRows = {
      *  a consent card: this row is the durable fact. */
     question(el, d) {
         el.dataset.requestId = d.request_id || '';
-        el.dataset.decision = d.decision || '';
-        el.dataset.pending = (d.pending && !d.decision) ? '1' : '0';
         const line = document.createElement('div');
         line.className = 'cycle-consent-line';
         line.textContent = _questionLabel(d.decision, d.pending);
@@ -456,21 +454,8 @@ const CycleRows = {
         if (d.options && d.options.length) {
             const opts = document.createElement('div');
             opts.className = 'cycle-runtime-meta';
-            // The first option is the AI's starred recommendation; filler lines that
-            // only pointed at the free-text input are not printed (same filter as the card).
-            const real = (typeof _isPlaceholderOption === 'function')
-                ? d.options.filter(function (o) { return !_isPlaceholderOption(o); })
-                : d.options;
-            if (real.length) opts.textContent = 'options: \u2605 ' + real.join(' | ');
-            else opts.textContent = 'options: free-text answer only';
+            opts.textContent = 'options: ' + d.options.join(' | ');
             this._detail(el).appendChild(opts);
-        }
-        // The verbatim choice, when there was one.
-        if (d.answer && d.answer !== 'unanswered') {
-            const ans = document.createElement('div');
-            ans.className = 'cycle-runtime-meta';
-            ans.textContent = 'answer: ' + d.answer;
-            this._detail(el).appendChild(ans);
         }
     },
 
@@ -662,17 +647,14 @@ function _runtimeEntityLabel(status, detail) {
 }
 window._runtimeEntityLabel = _runtimeEntityLabel;
 
-/** The question row's decision label (the card itself is transient, like a consent card).
- *  'unanswered' is the honest outcome of a card that closed without a click - never
- *  worded as a refusal, and never as an answer the user did not give. */
+/** The question row's decision label (the card itself is transient, like a consent card). */
 function _questionLabel(decision, pending) {
-    if (pending) return '\u23F3 waiting for your answer (no time limit)';
+    if (pending) return '\u23F3 waiting for your answer';
     switch (String(decision || '')) {
         case 'deny': return '\u274C skipped \u2014 the AI decides';
         case 'allow_category_until_done': return '\u26A1 you decided \u2014 no more questions this task';
-        case 'unanswered': return '\u26A0 unanswered \u2014 no choice was made';
-        case 'unavailable': return '\u26A0 could not ask';
-        default: return '\u2713 answered: ' + String(decision);
+        case 'unanswered': return '\u26A0 unanswered';
+        default: return '\u2713 answered';
     }
 }
 window._questionLabel = _questionLabel;

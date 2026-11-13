@@ -18,15 +18,9 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger("COOLEMS.MCP.Config")
 
-# (2026-12 audit fix) This module lives in <CLIENT>/app/mcp/ - the CONFIG directory is
-# <CLIENT>/config/, TWO levels up from HERE. The old code went only one level up and
-# pointed SERVERS_FILE at <CLIENT>/app/mcp/mcp_servers.json (never created, never read):
-# the real user file in <CLIENT>/config/ was silently ignored at boot AND the settings
-# save wrote a second orphaned file next to this module. CLIENT_DIR is kept for tests.
-_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))          # .../app/mcp
-_APP_DIR = os.path.dirname(_CONFIG_DIR)                           # .../app
-CLIENT_DIR = os.path.dirname(_APP_DIR)                            # <CLIENT>
-SERVERS_FILE = os.path.join(CLIENT_DIR, "config", "mcp_servers.json")
+_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+CLIENT_DIR = os.path.dirname(_CONFIG_DIR)
+SERVERS_FILE = os.path.join(_CONFIG_DIR, "mcp_servers.json")
 
 #: Namespace for a tool name: mcp__<name>__<tool>. Anything looser would break the name
 #: the model emits back to us (and the SERVER's own name rules).

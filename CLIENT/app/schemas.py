@@ -4,38 +4,6 @@ COOLEMS Pydantic Schemas - Input validation for WebSocket and API endpoints.
 from pydantic import BaseModel, Field, field_validator
 from typing import Any, List, Optional
 
-# (2026-12 thinking) The thinking field carries either a legacy bool ("show reasoning or
-# not") or a canonical level the user picked in the UI. Levels are the ONLY vocabulary on
-# the wire: each model's own effort names (xhigh / medium / low / none / thinking_budget...)
-# are decided by the serving endpoint's ThinkingPolicy from its chat template, so the
-# client must never send a model-specific value.
-THINKING_MODES = ("none", "low", "medium", "high")
-_THINKING_ALIASES = {
-    "": "none", "off": "none", "false": "none", "disabled": "none",
-    "on": "medium", "auto": "medium", "true": "medium", "think": "medium",
-    "xhigh": "high", "highest": "high", "max": "high",
-    "minimal": "low", "brief": "low",
-}
-
-
-def normalize_thinking(value) -> Any:
-    """Canonical thinking level (str) or legacy bool for anything the client sent.
-
-    Unknown strings become '' (no instruction), which the SERVER reads as "send nothing" -
-    a model then keeps its own default instead of getting a value its template rejects.
-    """
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    raw = str(value).strip().lower()
-    if raw in THINKING_MODES:
-        return raw
-    if raw in _THINKING_ALIASES:
-        return _THINKING_ALIASES[raw]
-    return ""
-
-
 class WebSocketChatMessage(BaseModel):
     """
     Validated schema for incoming WebSocket chat messages from the client.
@@ -77,10 +45,9 @@ class WebSocketChatMessage(BaseModel):
         None,
         description="Legacy field (old UI builds only) - engine config lives in config/search_engines.json"
     )
-    enable_thinking: Any = Field(
+    enable_thinking: bool = Field(
         False,
-        description="Thinking: legacy bool (show reasoning) or a canonical level "
-                    "'none' | 'low' | 'medium' | 'high' chosen from the model's capabilities"
+        description="Whether to enable model thinking/reasoning mode"
     )
     # (2026-10-23 live steering) While an agentic turn is running the UI sends a normal
     # message payload with steer=True instead of submitting a new turn. The text is queued
@@ -123,17 +90,6 @@ class WebSocketChatMessage(BaseModel):
             if ".." in f or "\0" in f:
                 raise ValueError("File path contains invalid characters")
         return v
-
-    @field_validator("enable_thinking")
-    @classmethod
-    def enable_thinking_must_be_bool_or_level(cls, v: Any) -> Any:
-        """Accept a bool or a level name; anything else is treated as 'no instruction'.
-
-        Deliberately lenient (never raises): an older UI sends a bool, a newer one sends a
-        level, and a typo must not reject the whole message - it just means the model keeps
-        its own thinking default.
-        """
-        return normalize_thinking(v)
 
 class WebSocketErrorMessage(BaseModel):
     """Schema for error responses sent back to the client."""

@@ -27,20 +27,7 @@ window.COOLEMS = {
     selectedFiles: [],
     // Persisted in localStorage (see persistAgentMode in ui-controls.js)
     agentMode: (function () { try { return localStorage.getItem('coolems_agent_mode') === '1'; } catch (e) { return false; } })(),
-    // (2026-12 thinking) A canonical level, NOT a boolean: 'none' | 'low' | 'medium' | 'high'.
-    // Default 'none' (the user's rule). Persisted like agentMode, and only levels the
-    // selected model actually offers are selectable - COOLEMS.thinkingCaps is filled by
-    // loadModels() from the SERVER catalog, which discovered them from the model's chat
-    // template (app/providers/llama/thinking.py). An unsupported stored level falls back
-    // to 'none' when the model changes, so we never send a value its template rejects.
-    enableThinking: (function () {
-        try {
-            const v = (localStorage.getItem('coolems_thinking') || 'none').toLowerCase();
-            return ['none', 'low', 'medium', 'high'].includes(v) ? v : 'none';
-        } catch (e) { return 'none'; }
-    })(),
-    // model_key -> capability description from the SERVER catalog ({levels, supported,...})
-    thinkingCaps: {},
+    enableThinking: false,
     isStreaming: false,
     // (2026-10-23 live steering) true when the CURRENT in-flight turn is agentic, i.e. it
     // has a ReAct loop that can accept a mid-run steering message. Normal-mode completions
@@ -383,7 +370,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (typeof loadTree === 'function') loadTree();
     initScrollDetection();
     if (typeof updateAgentUI === 'function') updateAgentUI(); // sync header toggle with persisted state
-    if (typeof updateThinkingUI === 'function') updateThinkingUI(); // sync thinking chip with the persisted level + model caps
     checkOllamaStatus();
 
     // Load conversations on page init (so sidebar populates after refresh)

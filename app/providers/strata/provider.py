@@ -124,7 +124,7 @@ class StrataProvider(LlamaProvider):
         messages: List[Dict],
         websocket: Any,
         temperature: float = 0.7,
-        enable_thinking=None,
+        enable_thinking: bool = False,
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
@@ -135,12 +135,7 @@ class StrataProvider(LlamaProvider):
         Adds the Bearer headers, a vision capability check, provider_name="strata" in the
         returned TokenStats, and Strata-worded failures (_strata_error); everything else —
         context guard, model guard, stall watchdog, stop_event, reasoning_content frames,
-        real token counts — is the identical code path llama.cpp uses.
-
-        enable_thinking (2026-12) accepts a bool or a canonical thinking level
-        "none"/"low"/"medium"/"high"; the level is translated by the serving endpoint's
-        ThinkingPolicy (its /props chat_template) into that model's own vocabulary.
-        """
+        real token counts — is the identical code path llama.cpp uses."""
         if self._has_image_content(messages) and not await self._strata_images_enabled():
             raise self._vision_error(model)
         try:
@@ -169,11 +164,8 @@ class StrataProvider(LlamaProvider):
         model: str,
         messages: List[Dict],
         temperature: float = 0.7,
-        enable_thinking=None,
     ) -> str:
-        """Non-streaming chat completion against Strata (same payload, Bearer headers).
-
-        enable_thinking (2026-12) accepts a canonical thinking level string."""
+        """Non-streaming chat completion against Strata (same payload, Bearer headers)."""
         if self._has_image_content(messages) and not await self._strata_images_enabled():
             raise self._vision_error(model)
         try:
@@ -184,7 +176,6 @@ class StrataProvider(LlamaProvider):
                 messages=messages,
                 temperature=temperature,
                 headers=self._headers,
-                thinking_mode=enable_thinking if isinstance(enable_thinking, str) else None,
             )
         except Exception as exc:  # noqa: BLE001 - re-worded below, never swallowed
             raise self._strata_error(exc) from exc

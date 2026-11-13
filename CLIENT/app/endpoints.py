@@ -293,9 +293,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         # the MCP tools report the registry state honestly when called.
         try:
             from app.mcp.registry import connect_all, wire_mcp
-            # (2026-12 fix) wire_mcp() is keyword-only and takes NO chat bus - passing one
-            # positionally raised TypeError on every boot, so MCP was never wired at all.
-            _mcp_reg = wire_mcp(spill_dir=os.path.normpath(
+            _mcp_reg = wire_mcp(chat_bus, spill_dir=os.path.normpath(
                 os.path.join(_CLIENT_ROOT, ".temp", "mcp")))
             if _mcp_reg is not None:
                 _mcp_state = await connect_all()

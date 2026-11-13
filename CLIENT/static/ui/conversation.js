@@ -167,7 +167,6 @@ async function newChat() {
         COOLEMS.isStreaming = false;
         COOLEMS.streamingAgentMode = false;
         COOLEMS.streamingBuffer = '';
-        COOLEMS.thinkingPending = '';
         setButtonState(false);
         COOLEMS._inReplay = false;
         COOLEMS._baselineAssistant = 0;
@@ -453,7 +452,6 @@ async function loadConversation(id) {
         // (2026-11-24 mix fix) NOW that currentConversation IS newConvId, bind its per-conv
         // render state: fresh buffer + baseline = the assistant bubbles just rebuilt from DB.
         COOLEMS.streamingBuffer = '';
-        COOLEMS.thinkingPending = '';
         COOLEMS._baselineAssistant = _countAssistantBubbles();
 
         // (2026-09-08 multi-chat) open this chat's own socket immediately — the server
@@ -706,7 +704,6 @@ async function editAndResend(messageIndex, newContent) {
         COOLEMS.isStreaming = true;
         COOLEMS.streamingAgentMode = !!COOLEMS.agentMode;   // (2026-10-23 live steering)
         COOLEMS.streamingBuffer = '';
-        COOLEMS.thinkingPending = '';
         setButtonState(true);
 
         const modelSelector = document.getElementById('modelSelector');

@@ -122,6 +122,9 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                         "question": payload.get("question") or "",
                         "options": payload.get("options") or [],
                         "context": payload.get("context") or "",
+                        # (2026-11-13) what the user asked for, so a restored card still
+                        # shows the requirement its offers must satisfy.
+                        "requirement": payload.get("requirement") or "",
                         "mode": payload.get("mode") or "blocking",
                         "asked_at": item.get("asked_at"),
                     })

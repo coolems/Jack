@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261227a">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261109c">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -94,12 +94,9 @@
                      steering placeholder in the textarea itself is enough. -->
                 <div class="input-footer">
                     <div class="file-preview" id="filePreview"></div>
-                    <!-- (2026-12 thinking) A capability-driven chip, not a boolean: it cycles
-                         only through the levels the SELECTED model actually offers (discovered
-                         from its chat template by ThinkingPolicy). Default: none. -->
-                    <button class="think-toggle" id="thinkToggle" onclick="cycleThinking()" title="Thinking level - click to change">
+                    <button class="think-toggle" id="thinkToggle" onclick="toggleThink()" title="Toggle thinking mode">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
-                        <span id="thinkLabel">Think</span>
+                        <span>Think</span>
                     </button>
                     <button class="send-btn" id="sendBtn" onclick="handleSendClick()" title="Send message">
                         <svg id="sendIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
@@ -248,8 +245,6 @@
                     <button type="button" class="settings-tab" data-pane="agent" onclick="switchSettingsTab('agent')">Agent / Search</button>
                     <button type="button" class="settings-tab" data-pane="runtime"
                             onclick="switchSettingsTab('runtime')">Runtime</button>
-                    <button type="button" class="settings-tab" data-pane="mcp"
-                            onclick="switchSettingsTab('mcp')">MCP</button>
                 </div>
 
                 <!-- Tab: Authentication (server address + email + API key).
@@ -540,6 +535,28 @@
                                 </div>
                             </div>
 
+                        <!-- (2026-11-13) Question Dialog Color - the tint of the ask_user_question
+                             card. Saved to settings.json via POST /api/settings and applied live
+                             as the CSS variable --question-accent, so the pick recolours every
+                             question card on screen immediately (no restart). Palette swatches are
+                             rendered by runtime-settings.js; the picker accepts any #rrggbb. -->
+                        <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                            <label>&#128172; Question Dialog Color</label>
+                            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                The card where the AI asks you a question gets its own colour, so it reads apart from the amber approval cards. Pick one from the palette or use the colour picker - it applies to every question card immediately.
+                            </p>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <input type="color" id="questionDialogColor" class="color-picker-input" value="#22c55e" onchange="saveRuntimeSettings()" title="Pick any colour (#rrggbb)">
+                                <span id="questionDialogColorHex" class="color-hex">#22c55e</span>
+                                <button type="button" onclick="resetQuestionDialogColor()"
+                                        style="padding: 6px 12px; background: var(--bg-tertiary); color: var(--text-secondary);
+                                               border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 13px;">
+                                    Reset to default
+                                </button>
+                            </div>
+                            <div id="questionColorPalette" class="color-swatch-row"></div>
+                        </div>
+
                         <!-- (2026-10-03) Image Generator - model line + default resolution for generate_image().
                              Saved to settings.json via POST /api/settings and read LIVE by the tool on
                              every generation, so a save applies to the very next image - no restart. -->
@@ -588,95 +605,8 @@
                                 <span style="color: var(--text-secondary); font-size: 13px;">pixels (32 - 4096 each)</span>
                             </div>
 
-                            <!-- QUESTION CARD: how long an unanswered ask_user_question card
-                                 may stay on screen (0 = no limit, the default) and its accent
-                                 colour. A dialog setting, never an auto-answer. -->
-                            <p style="color: var(--text-secondary); font-size: 13px; margin: 14px 0 8px;">
-                                Question card - auto-close after (0 = no limit, waits forever)
-                            </p>
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <input type="number" id="questionCardSeconds" min="0" max="3600" step="30" value="0"
-                                autocomplete="off" onchange="saveRuntimeSettings()" title="Seconds an unanswered question card stays on screen (0 = no limit - it waits for you forever)"
-                                style="width: 100px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
-                                    background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
-                                <span style="color: var(--text-secondary); font-size: 13px;">seconds (0 - 3600)</span>
-                                <input type="color" id="questionCardColor" value="#5fae8b"
-                                onchange="saveRuntimeSettings()" title="Accent colour of the question card"
-                                style="width: 34px; height: 28px; padding: 2px; border: 1px solid var(--border-color); border-radius: 6px;
-                                    background: var(--bg-tertiary); cursor: pointer;">
-                            </div>
-
                         </div>
                     </div>
-
-                <!-- Tab: MCP (2026-12) - external Model Context Protocol servers.
-                     Managed live over config/mcp_servers.json via GET/POST /api/mcp/servers:
-                     every save re-wires the registry immediately, no restart needed.
-                     Enabling is a human decision here; first use of any server's tools
-                     still asks its consent card (subprocess for stdio, url for http). -->
-                <div id="settingsPaneMcp" class="settings-pane" data-pane="mcp">
-                    <div class="form-group">
-                        <label>MCP Servers</label>
-                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
-                            MCP (Model Context Protocol) servers let the AI drive external apps on this machine - for example a Blender bridge that models 3D scenes live. Saved to <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">config/mcp_servers.json</code> and applied immediately (no restart). Click a row to edit it; the toggle enables/disables it. The first use of any server's tools still asks a consent card - nothing runs without your approval.
-                        </p>
-                        <div id="mcpServerList" class="se-list"></div>
-                        <div id="mcpStatus" style="margin-top:8px; font-size: 12px;"></div>
-                    </div>
-
-                    <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
-                        <label id="mcpFormTitle">Add MCP Server</label>
-                        <p id="mcpFormHint" style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;"></p>
-
-                        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-                            <input type="text" id="mcpNameInput" placeholder="name (e.g. blender)" autocomplete="off" spellcheck="false"
-                                   style="flex:1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
-                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
-                            <select id="mcpTransportSelect" onchange="mcpToggleTransportFields()"
-                                    style="padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
-                                           background: var(--bg-tertiary); color: var(--text-primary);">
-                                <option value="stdio" selected>stdio (local program)</option>
-                                <option value="http">http (remote url)</option>
-                            </select>
-                        </div>
-
-                        <div id="mcpStdioFields" style="display: grid; gap: 8px;">
-                            <input type="text" id="mcpCommandInput" placeholder="command to start (e.g. uvx)" autocomplete="off" spellcheck="false"
-                                   style="width:100%; box-sizing:border-box; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
-                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
-                            <textarea id="mcpArgsInput" placeholder="arguments, one per line (e.g. --from / blender-mcp / blender-mcp)" rows="3" autocomplete="off" spellcheck="false"
-                                      style="width:100%; box-sizing:border-box; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
-                                             background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace; resize: vertical;"></textarea>
-                        </div>
-
-                        <input type="text" id="mcpUrlInput" placeholder="endpoint url (e.g. http://127.0.0.1:3000/mcp)" autocomplete="off" spellcheck="false" style="display:none; width:100%; box-sizing:border-box; margin-bottom: 8px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
-                               oninput="if (!this.value) this.style.display = mcpTransportIsHttp() ? 'block' : 'none'">
-
-                        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-                            <input type="number" id="mcpTimeoutInput" min="1" max="300" step="1" value="30" autocomplete="off" title="Per-request timeout in seconds (1 - 300)"
-                                   style="width: 120px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
-                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
-                            <span style="color: var(--text-secondary); font-size: 13px; align-self:center;">timeout (sec)</span>
-                            <input type="text" id="mcpRolesInput" value="*" autocomplete="off" spellcheck="false" title="Which roles may use this server, comma-separated ('*' = any)"
-                                   style="flex:1; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
-                                          background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;">
-                            <span style="color: var(--text-secondary); font-size: 13px; align-self:center;">roles (comma list, * = any)</span>
-                        </div>
-
-                        <div style="display: flex; gap: 8px;">
-                            <button id="mcpSaveBtn" onclick="mcpSaveServer(false)" style="padding: 6px 16px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
-                                Add Server
-                            </button>
-                            <button id="mcpDeleteBtn" onclick="mcpSaveServer(true)" style="display:none; padding: 6px 16px; background: var(--bg-tertiary); color: var(--danger, #f44336); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-size: 13px;">
-                                Delete Server
-                            </button>
-                            <button id="mcpCancelEditBtn" onclick="mcpResetForm()" style="display:none; padding: 6px 16px; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-size: 13px;">
-                                Cancel
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
         </div>
     </div>
 
@@ -702,16 +632,16 @@
     </script>
     <!-- Loop-history UI (2026-11-08): rows -> shell -> block, loaded before the
          modules that call into them (conversation.js / websocket.js / message.js). -->
-    <script src="/static/ui/cycle-rows.js?v=20261227a"></script>
-    <script src="/static/ui/cycle-shell.js?v=20261227a"></script>
-    <script src="/static/ui/cycle-block.js?v=20261227a"></script>
+    <script src="/static/ui/cycle-rows.js?v=20261215a"></script>
+    <script src="/static/ui/cycle-shell.js?v=20261215b"></script>
+    <script src="/static/ui/cycle-block.js?v=20261215b"></script>
     <script src="/static/ui/conversation-manager.js?v=20261108a">
     </script>
     <script src="/static/ui/conversation.js?v=20261108c">
     </script>
     <script src="/static/ui/workspace-view.js?v=20261108a"></script>
     <script src="/static/ui/chat-socket-pool.js?v=20261108b"></script>
-    <script src="/static/ui/websocket.js?v=20261227a">
+    <script src="/static/ui/websocket.js?v=20261215a">
     </script>
     <script src="/static/ui/message.js?v=20261108e">
     
@@ -776,11 +706,8 @@
     <script src="/static/ui/files/files-panel.js?v=20260918a"></script>
     <script src="/static/ui/search-engine-settings.js?v=20260827e">
     </script>
-    <script src="/static/ui/runtime-settings.js?v=20261227a"></script>
-    <!-- (2026-12) MCP tab: config/mcp_servers.json management - before ui-controls.js, whose
-         openSettings() calls loadMcpServers(). -->
-    <script src="/static/ui/mcp-settings.js?v=20261225a"></script>
-    <script src="/static/ui/approval-dialog.js?v=20261227a"></script>
+    <script src="/static/ui/runtime-settings.js?v=20261125a"></script>
+    <script src="/static/ui/approval-dialog.js?v=20261125b"></script>
     <script src="/static/ui/ui-controls.js?v=20260827e">
     
     </script>

@@ -91,7 +91,6 @@ function stopGeneration() {
     setButtonState(false);
     // (2026-11-24) the alias proxies into ChatStreamState for THIS conversation.
     COOLEMS.streamingBuffer = '';
-    COOLEMS.thinkingPending = '';
 
     // Abort any pending stop request to prevent multiple concurrent stops
     if (stopAbortController) {
@@ -317,14 +316,14 @@ function updateHistoryStatusBar(data) {
 // that OWNS the frame (threaded through handleWebSocketMessage(data, ownerConvId)), never
 // by whichever workspace happens to be current at delivery time.
 const ChatStreamState = {
-    states: {},   // convId -> { streamingBuffer, thinkingPending, inReplay, baselineAssistant, pendingTurnStatsLine }
+    states: {},   // convId -> { streamingBuffer, inReplay, baselineAssistant, pendingTurnStatsLine }
 
     /** Get (or lazily create) the render state of one conversation. */
     get(convId) {
         if (!convId) return null;
         let s = this.states[convId];
         if (!s) {
-            s = { streamingBuffer: '', thinkingPending: '', inReplay: false, baselineAssistant: 0, pendingTurnStatsLine: '' };
+            s = { streamingBuffer: '', inReplay: false, baselineAssistant: 0, pendingTurnStatsLine: '' };
             this.states[convId] = s;
         }
         return s;
@@ -344,8 +343,7 @@ const ChatStreamState = {
         Object.defineProperty(COOLEMS, prop, {
             get: () => {
                 const s = COOLEMS.currentConversation ? ChatStreamState.get(COOLEMS.currentConversation) : null;
-                return s ? s[key] : (key === 'streamingBuffer' || key === 'pendingTurnStatsLine'
-                    || key === 'thinkingPending' ? '' : 0);
+                return s ? s[key] : (key === 'streamingBuffer' || key === 'pendingTurnStatsLine' ? '' : 0);
             },
             set: v => {
                 if (!COOLEMS.currentConversation) return;   // no view - nothing to bind to
@@ -354,7 +352,6 @@ const ChatStreamState = {
         });
     }
     alias('streamingBuffer', 'streamingBuffer');
-    alias('thinkingPending', 'thinkingPending');
     alias('_inReplay', 'inReplay');
     alias('_baselineAssistant', 'baselineAssistant');
     alias('_pendingTurnStatsLine', 'pendingTurnStatsLine');
@@ -383,50 +380,6 @@ function _cycleTarget(convId, data) {
     if (typeof CycleBlock === 'undefined' || !convId) return null;
     const turnId = (data && data.turn_id) || '';
     return turnId ? CycleBlock.target(convId, turnId) : CycleBlock.current(convId);
-}
-
-// ===== NORMAL-MODE THINKING SURFACE (2026-12 thinking levels) =====================
-// A one-shot (non-agentic) turn has no cycle block, so reasoning used to be dropped on the
-// floor. It now renders in the answer bubble as a collapsible panel, created ONLY when
-// reasoning frames actually arrive - the SERVER sends them only when the user picked a
-// thinking level, so a turn with thinking off looks exactly as it did before.
-
-/** The streaming assistant bubble of a normal turn, or null when it does not exist yet. */
-function _streamingBubble(chatContainer) {
-    const last = chatContainer.lastElementChild;
-    if (last && last.classList.contains('assistant') && last.dataset.streaming) return last;
-    return null;
-}
-
-/** Paint/refresh the reasoning panel inside one answer bubble. Idempotent; grows as chunks
-    arrive. ``done`` (the first answer chunk) stops the pulse and renames the header, because
-    reasoning is over at that point. */
-function _paintNormalThinking(bubble, st, done = false) {
-    const mc = bubble.querySelector('.message-content');
-    if (!mc) return;
-    const text = (st && st.thinkingPending) ? String(st.thinkingPending) : '';
-    if (!text) return;
-    let blk = mc.querySelector('.thinking-block');
-    if (!blk) {
-        blk = document.createElement('div');
-        blk.className = 'thinking-block';
-        const head = document.createElement('div');
-        head.className = 'thinking-header';
-        head.textContent = 'Thinking';
-        head.onclick = () => blk.classList.toggle('collapsed');
-        const body = document.createElement('div');
-        body.className = 'thinking-content';
-        blk.appendChild(head);
-        blk.appendChild(body);
-        mc.insertBefore(blk, mc.querySelector('.content-text') || null);
-    }
-    const body = blk.querySelector('.thinking-content');
-    if (body) body.textContent = text;
-    const head = blk.querySelector('.thinking-header');
-    if (done) {
-        blk.classList.add('done');
-        if (head) head.textContent = 'Thought process';
-    }
 }
 
 // (2026-11-08 loop-history UI) FINAL TURN STATS: the old code spliced a stats line into
@@ -619,12 +572,8 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
     if (data.type === 'cycle_question') {
-        // The card is transient: an answered OR unanswered decision removes it. With no
-        // block row found, still remove the card by request id (it may be a chat bubble).
         const block = _cycleTarget(convId, data);
-        if (!block || !CycleBlock.settleQuestion(block, data.request_id, data.decision)) {
-            CycleShell.removeCard(data.request_id);
-        }
+        if (block) CycleBlock.setQuestion(block, data);
         return;
     }
     if (data.type === 'cycle_final') {
@@ -640,10 +589,6 @@ function handleWebSocketMessage(data, ownerConvId) {
     // ===== AI stream ============================================================
     // Inside a block: chunks go to that turn's AI-response strip (visible while collapsed).
     // Outside a block (a normal one-shot turn): the plain streaming answer bubble.
-    // (2026-12 thinking) A normal turn now HAS a thinking surface: reasoning is painted in a
-    // collapsible .thinking-block above the answer text, but only when the user picked a
-    // thinking level - the SERVER sends reasoning frames only then. Agentic turns keep using
-    // CycleBlock's per-step strip.
 
     if (data.type === 'content' || data.type === 'thinking') {
         const kind = data.type === 'thinking' ? 'thinking' : 'answer';
@@ -661,31 +606,8 @@ function handleWebSocketMessage(data, ownerConvId) {
             else if (COOLEMS.userScrolledUp && COOLEMS.isStreaming) showScrollIndicator();
             return;
         }
+        if (data.type === 'thinking') return;   // no block -> no thinking surface in normal mode
         if (!_replayShouldRenderCycleFrame(convId, data.turn_id)) return;
-
-        if (kind === 'thinking') {
-            // Buffer first: the answer bubble may not exist yet (reasoning arrives before the
-            // first answer chunk), and appendMessage is async. Painted once the bubble is there.
-            st.thinkingPending += (data.content || '');
-            const bubble = _streamingBubble(chatContainer);
-            if (!bubble) {
-                // Reasoning arrives before the first answer chunk, so the bubble may not
-                // exist yet: open the streaming answer bubble, then paint into it once the
-                // async append has actually landed in the DOM.
-                void appendMessage('assistant', '', true)
-                    .then(() => {
-                        const b = _streamingBubble(chatContainer);
-                        if (b) _paintNormalThinking(b, st);
-                    })
-                    .catch(e => console.error('[WS] appendMessage failed:', e));
-                return;
-            }
-            _paintNormalThinking(bubble, st);
-            if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) scrollToBottom();
-            else if (COOLEMS.userScrolledUp && COOLEMS.isStreaming) showScrollIndicator();
-            return;
-        }
-
         st.streamingBuffer += data.content;
         let lastMsg = chatContainer.lastElementChild;
         if (lastMsg && lastMsg.classList.contains('assistant') && lastMsg.dataset.streaming) {
@@ -693,21 +615,10 @@ function handleWebSocketMessage(data, ownerConvId) {
             if (contentDiv) contentDiv.innerHTML = parseMarkdown(st.streamingBuffer, true);
             const messageContent = lastMsg.querySelector('.message-content');
             if (messageContent) messageContent.setAttribute('data-raw-content', st.streamingBuffer);
-            // The answer has started: reasoning is finished, so the panel settles (no pulse,
-            // renamed to "Thought process").
-            _paintNormalThinking(lastMsg, st, true);
         } else {
             st.streamingBuffer = data.content;
             // SECURITY fix 2026-10-05: appendMessage is async - fire-and-forget in this sync handler.
-            void appendMessage('assistant', st.streamingBuffer, true)
-                // (2026-12 thinking) If reasoning arrived while the bubble did not exist yet,
-                // this is the path that created it - paint the buffered reasoning too (a no-op
-                // when nothing was buffered, which is the ordinary no-thinking case).
-                .then(() => {
-                    const b = _streamingBubble(chatContainer);
-                    if (b) _paintNormalThinking(b, st, true);
-                })
-                .catch(e => console.error('[WS] appendMessage failed:', e));
+            void appendMessage('assistant', st.streamingBuffer, true).catch(e => console.error('[WS] appendMessage failed:', e));
         }
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp && wasNearBottom) scrollToBottom();
         else if (COOLEMS.userScrolledUp && COOLEMS.isStreaming) showScrollIndicator();
@@ -832,7 +743,6 @@ function handleWebSocketMessage(data, ownerConvId) {
         }
         if (data.type === 'provider_error' || data.type === 'ollama_error') {
             st.streamingBuffer = '';
-        st.thinkingPending = '';
             if (!convId || convId === COOLEMS.currentConversation) {
                 COOLEMS.isStreaming = false;
                 setButtonState(false);
@@ -859,7 +769,6 @@ function handleWebSocketMessage(data, ownerConvId) {
             CycleBlock.settle(block, block.finalText || '', false);
         }
         st.streamingBuffer = '';
-        st.thinkingPending = '';
         if (!convId || convId === COOLEMS.currentConversation) {
             COOLEMS.isStreaming = false;
             setButtonState(false);
@@ -1005,7 +914,6 @@ function triggerWebSearch(query) {
     }
     COOLEMS.isStreaming = false;
     COOLEMS.streamingBuffer = '';
-    COOLEMS.thinkingPending = '';
     setButtonState(false);
     const fullMessage = lastAiResponse ? `/search ${query}\n\nPrevious answer for comparison:\n${lastAiResponse}` : `/search ${query}`;
     document.getElementById('messageInput').value = fullMessage;

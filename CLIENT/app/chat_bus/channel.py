@@ -353,10 +353,6 @@ class ChatChannel:
                  "turn_id": launch_turn_id or getattr(self, "turn_id", "") or "",
                  f"{entity_kind}_id" if entity_kind != "question" else "request_id": entity_id}
         frame.update(data)
-        # An open question card is `cycle_question_pending`; a settled one is
-        # `cycle_question`, which the UI uses to REMOVE the card.
-        if entity_kind == "question" and frame.get("pending") and not frame.get("decision"):
-            frame["type"] = "cycle_question_pending"
         await self.emit_frame(frame)
 
 

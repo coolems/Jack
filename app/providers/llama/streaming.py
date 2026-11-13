@@ -17,16 +17,11 @@ TOKEN STATISTICS (Bulletproof Per-Request):
 
     Return value is now a tuple: (response_str, TokenStats)
 
-THINKING / REASONING MODE (2026-12):
-    llama.cpp / Strata emit 'reasoning_content' in delta chunks. Whether that happens is
-    decided by the model's own chat template; what we SEND is decided by ThinkingPolicy
-    (app/providers/llama/thinking.py), which discovers the model's controls from /props and
-    translates the UI's canonical level ("none"/"low"/"medium"/"high") into that model's
-    vocabulary (chat_template_kwargs). Reasoning is buffered and streamed to the UI as
-    {type: "thinking"} frames.
-    FALLBACK: if a model's controls cannot be discovered - or the endpoint rejects the keys
-    we sent - NO thinking keys are sent at all. The model keeps its own default, the request
-    still succeeds, and the UI shows "Think: n/a". See _resolve_thinking / _demote_thinking.
+THINKING / REASONING MODE:
+    When enable_thinking=True and the server supports reasoning (--reasoning on),
+    llama.cpp emits 'reasoning_content' in delta chunks. This content is buffered
+    and streamed to the UI as {type: "thinking"} WebSocket messages, displayed
+    in a collapsible "Reasoning" block before the final answer.
 
 HTTP CLIENT POOL:
     Uses shared httpx.AsyncClient from http_client module instead of creating
@@ -57,110 +52,12 @@ from config import (
 from ..token_stats import TokenStats
 from .converter import convert_messages_for_vision
 from .payload import build_llama_payload
-from .thinking import ThinkingPolicy, normalize_mode
 from .model_utils import _is_mmproj_file, normalize_model_name
 from .vision_support import VisionNotAvailableError, make_vision_error, _looks_like_mmproj_error
 from .http_client import get_async_client
 from . import model_state
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Streaming")
-
-
-def _thinking_policy_for(api_url: str, model: str) -> ThinkingPolicy:
-    """The thinking policy of the backend that will answer this request (2026-12).
-
-    Registry-first: the node's /props already told us what its baked template accepts.
-    Without a registry (direct single-node use, tests) we cannot know, and the answer must
-    be `ThinkingPolicy.none()` - sending a guessed kwarg to a strict template is an HTTP
-    400 on every request, so NOT sending is the only safe default.
-
-    Imported lazily (as elsewhere in this module) to keep the import graph acyclic.
-    """
-    try:
-        from .backend_registry import get_registry
-        reg = get_registry()
-    except Exception:  # pragma: no cover - defensive
-        return ThinkingPolicy.none()
-    if reg is None:
-        return ThinkingPolicy.none()
-    backend = reg.get_for_api_url(api_url)
-    if backend is not None:
-        return backend.thinking
-    return reg.thinking_for_model(model or "")
-
-
-def _resolve_thinking(api_url: str, model: str, thinking_mode, enable_thinking):
-    """(mode, chat_template_kwargs, display) for one request.
-
-    Two independent decisions, because they were conflated before 2026-12:
-      * what the MODEL is told  - only from a canonical level, translated by the serving
-        node's ThinkingPolicy. Nothing is sent when no level is given, so a model keeps its
-        own default and a strict template never sees an undeclared variable.
-      * whether reasoning is SHOWN - a chosen level other than 'none' shows it; with no
-        level given, the legacy boolean decides.
-
-    `enable_thinking` may still be a plain bool (every older caller and older client) OR a
-    canonical level string, which is what the UI sends now. Accepting both here keeps the
-    20-layer call chain on its existing single field instead of threading a new parameter.
-    """
-    mode = normalize_mode(thinking_mode) if thinking_mode not in (None, "") else ""
-    if not mode and isinstance(enable_thinking, str):
-        mode = normalize_mode(enable_thinking)
-    policy = _thinking_policy_for(api_url, model)
-    kwargs = policy.kwargs(mode) if mode else {}
-    if mode:
-        display = mode != "none"
-    else:
-        display = bool(enable_thinking)
-    if mode and not kwargs:
-        logger.debug(
-            "[THINKING] mode=%s requested but %s/%s exposes no thinking knob "
-            "(policy %s: %s) - sending nothing",
-            mode, api_url, model or "?", policy.source, policy.hint or "no controls",
-        )
-    elif kwargs:
-        logger.debug("[THINKING] %s/%s -> chat_template_kwargs %s", api_url, model or "?", kwargs)
-    return mode, kwargs, bool(display)
-
-
-def _demote_thinking(api_url: str, model: str, reason: str, sent_kwargs: dict) -> None:
-    """Stop sending thinking keys to a node whose advertised knob just failed (2026-12).
-
-    THE FALLBACK RULE: when we cannot prove a model's thinking control works, we send
-    nothing. A template can declare a knob its build does not honor (a node started without
-    --jinja ignores chat_template_kwargs; some patched templates raise on a value their own
-    allow-list admits), and the failure only shows up as an HTTP 4xx on a REAL request. On
-    the first such rejection we replace that node's policy with ThinkingPolicy.demote():
-    subsequent requests carry no thinking keys, the model keeps its own default, the turn
-    succeeds, and the catalog/UI shows "Think: n/a" with this reason.
-
-    Only demoted when we actually sent keys - a 400 caused by something else (bad tool JSON,
-    an unsupported image) must not silently disable thinking for the whole node.
-    """
-    if not sent_kwargs:
-        return
-    try:
-        from .backend_registry import get_registry
-        reg = get_registry()
-    except Exception:  # pragma: no cover - defensive
-        return
-    if reg is None:
-        return
-    backend = reg.get_for_api_url(api_url)
-    if backend is None:
-        return
-    if backend.thinking.source == "runtime":
-        return                      # already demoted - do not rewrite the reason
-    if not backend.thinking.supported:
-        return                      # nothing was ever advertised - nothing to demote
-    backend.thinking = ThinkingPolicy.demote(backend.thinking, reason)
-    logger.warning(
-        "[THINKING] %s/%s rejected thinking keys (%s) - demoted to 'not available'; "
-        "requests now send none. UI shows 'Think: n/a'. Pin it in the server config's "
-        "'thinking' block if the model really supports these controls.",
-        backend.label, model or "?", reason,
-    )
-
 
 
 async def _iter_sse_with_stall(aiter, timeout_sec: int, conv_id: str, api_url: str):
@@ -275,7 +172,6 @@ async def chat_stream(
     context_window: Optional[int] = None,
     headers: Optional[dict] = None,
     provider_name: str = "llama",
-    thinking_mode: Optional[str] = None,
 ) -> Tuple[str, TokenStats]:
     """
     Stream chat completions from llama.cpp via SSE.
@@ -310,12 +206,6 @@ async def chat_stream(
         provider_name: Name reported in TokenStats.provider_name (2026-11 strata): the
                    llama path sends "llama" as before; the Strata wrapper sends "strata"
                    so the CLIENT token panel names the engine that actually answered.
-        thinking_mode: Canonical reasoning level for THIS request (2026-12): "none" |
-                   "low" | "medium" | "high". Translated into the serving model's own
-                   vocabulary by its ThinkingPolicy and sent as chat_template_kwargs.
-                   None/"" sends no thinking keys (the model's own default) and leaves the
-                   display decision to `enable_thinking`, so older clients behave exactly
-                   as before.
 
     Returns:
         Tuple of (response_string, TokenStats).
@@ -331,12 +221,6 @@ async def chat_stream(
     """
 
     window = int(context_window or CONTEXT_WINDOW_TOKENS)
-
-    # ---- THINKING (2026-12): what the model is told vs what the UI shows ----
-    # The policy comes from the backend that will answer, so the kwargs use the model's own
-    # vocabulary; `think_display` decides whether reasoning_content reaches the UI.
-    _thinking_mode, thinking_kwargs, think_display = _resolve_thinking(
-        api_url, model, thinking_mode, enable_thinking)
 
     # Convert messages to OpenAI-compatible multimodal format
     messages = convert_messages_for_vision(messages)
@@ -449,18 +333,11 @@ async def chat_stream(
             est_prompt_tokens += len(json.dumps(tools)) // 4
         except Exception:
             pass
-    # (2026-12 thinking) Reasoning tokens are billed against max_tokens too. Measured on
-    # Strata/Qwen3.8: a riddle cost ~3.2k chars of reasoning at xhigh and ~1.0k at low, and
-    # with max_tokens=900 the model spent the ENTIRE budget on thinking and returned an
-    # empty answer. So when thinking is on, the output floor grows by a per-level reserve:
-    # reasoning eats the budget first, and without this the answer gets nothing.
-    _THINK_RESERVE_TOKENS = {"low": 512, "medium": 1536, "high": 4096}
-    _reserve = _THINK_RESERVE_TOKENS.get(_thinking_mode, 0) if think_display else 0
     safe_max_tokens = min(
         LLAMA_SERVER_MAX_NEW_TOKENS,
         # Floor is now configurable (was hardcoded 1024 - too small for a full
         # multi-image answer + the TASK DONE marker; see plan_20260910_1835.md).
-        max(LLAMA_MIN_SAFE_MAX_TOKENS + _reserve, window - est_prompt_tokens - 512),
+        max(LLAMA_MIN_SAFE_MAX_TOKENS, window - est_prompt_tokens - 512),
     )
     if safe_max_tokens < LLAMA_SERVER_MAX_NEW_TOKENS:
         logger.warning(
@@ -484,7 +361,6 @@ async def chat_stream(
         temperature=temperature,
         tools=tools,
         max_tokens=safe_max_tokens,
-        thinking_kwargs=thinking_kwargs,
     )
 
     if tools:
@@ -642,37 +518,14 @@ async def chat_stream(
                         "Re-issue with smaller payloads (split large code into multiple calls)."
                     )
                 logger.error(f"llama.cpp HTTP 500 body: {err_text[:2000]}")
-                # (2026-12 thinking) A jinja raise_exception in the chat template surfaces as
-                # HTTP 500. Demote ONLY when the body actually names a thinking/effort term -
-                # a 500 caused by vision/tool-JSON problems must not disable thinking.
-                low_err = err_text.lower()
-                if any(t in low_err for t in ("reasoning_effort", "enable_thinking",
-                                              "thinking_budget", "reasoning effort",
-                                              "chat_template_kwargs")):
-                    _demote_thinking(api_url, model,
-                                     f"HTTP 500: {err_text.strip()[:160]}", thinking_kwargs)
                 raise RuntimeError(f"llama.cpp server error: {err_text.strip()[:300]}")
             elif response.status_code == 400:
                     # Read the actual error body from llama.cpp for debugging
                     error_body = (await response.aread()).decode("utf-8", errors="replace")
                     logger.error(f"llama.cpp HTTP 400 Bad Request - body: {error_body[:500]}")
-                    # (2026-12 thinking) If WE sent thinking keys and the endpoint rejected
-                    # the request, its advertised knob is not usable: demote so the next
-                    # request sends nothing instead of failing the same way every turn.
-                    _demote_thinking(api_url, model,
-                                     f"HTTP 400: {error_body.strip()[:160]}", thinking_kwargs)
                     raise RuntimeError(f"llama.cpp returned HTTP 400: {error_body.strip()[:300]}")
             elif response.status_code != 200:
                 error_text = await response.aread()
-                # (2026-12 thinking) A strict server may reject unknown body fields with a
-                # 4xx instead of ignoring them. 400/422 are the "bad request" shapes that
-                # prove this node cannot take our keys; 429/413 are load/size problems and
-                # must not disable thinking.
-                if response.status_code in (400, 422):
-                    _demote_thinking(api_url, model,
-                                     f"HTTP {response.status_code}: "
-                                     f"{error_text.decode('utf-8', errors='replace').strip()[:160]}",
-                                     thinking_kwargs)
                 raise RuntimeError(f"llama.cpp returned HTTP {response.status_code}")
 
             # Effective stall timeout scales with prompt size so a legitimate
@@ -759,10 +612,8 @@ async def chat_stream(
                                     acc_tc["function"]["arguments"] += func["arguments"]
 
                         # ---- Thinking / Reasoning content extraction ----
-                        # `think_display` (not `enable_thinking`) gates it: a chosen thinking
-                        # level shows reasoning even when the legacy flag is off.
                         think_chunk = None
-                        if think_display:
+                        if enable_thinking:
                             think_chunk = delta.get("reasoning_content", "")
 
                         if think_chunk:

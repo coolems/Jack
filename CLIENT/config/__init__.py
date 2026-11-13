@@ -86,10 +86,10 @@ from .config import (
     # --- ask_user_question (2026-12) ---
     QUESTION_TIMEOUT_DEFAULT_SEC,
     QUESTION_MAX_OPTIONS,
-    QUESTION_RECOMMENDED_INDEX,     # first option = the AI's starred recommendation
-    QUESTION_CARD_TIMEOUT_SEC,      # unanswered-card limit (0 = no limit)
-    QUESTION_CARD_GREEN,            # question-card accent colour
-    get_question_card_timeout_sec,  # live reader of that limit
+    # (2026-11-13) question-card tint: default + the strict '#rrggbb' check the settings
+    # endpoint uses, so the UI, the endpoint and the live reader share ONE rule.
+    QUESTION_DIALOG_COLOR_DEFAULT,
+    is_question_dialog_color,
 
     # --- MCP servers (2026-12) ---
     # Servers themselves are declared in CLIENT/config/mcp_servers.json and stay disabled
@@ -124,6 +124,7 @@ from .config import (
     # --- Agentic Loop ---
     AGENTIC_MAX_TOOL_ITERATIONS,
     AGENTIC_TOKEN_WARNING_THRESHOLD,
+    AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION,
     AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
     AGENTIC_ITERATION_TIMEOUT_SEC,
     AGENTIC_TOOL_OUTPUT_MAX_CHARS,

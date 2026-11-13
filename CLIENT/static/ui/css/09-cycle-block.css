@@ -253,14 +253,23 @@
 .cycle-row-consent[data-decision="explain"] .cycle-consent-line { color: var(--accent, #4f8cff); }
 .cycle-row-consent[data-decision="auto"] .cycle-consent-line { color: var(--success, #2ecc71); }
 .cycle-row-consent[data-decision="unanswered"] .cycle-consent-line { color: var(--warning, #f59e0b); }
-/* Question rows share the consent decision colours; the card itself is green (css/04). */
-.cycle-row-question[data-decision="unanswered"] .cycle-consent-line { color: var(--question-green, #5fae8b); }
-.cycle-row-question[data-decision="deny"] .cycle-consent-line { color: var(--danger, #e5534b); }
 .cycle-consent-settled { opacity: 0.85; }
-.cycle-row-consent .exec-approval-card, .cycle-row-question .exec-approval-card { margin: 4px 0 0; }
+.cycle-row-consent .exec-approval-card { margin: 4px 0 0; }
 
 /* ---- auto-allow grants ---- */
 .cycle-row-grant .cycle-consent-line { color: var(--success, #2ecc71); }
+
+/* ---- question rows (2026-12, tinted 2026-11-13) ----
+   The answer to a question the AI asked. Same tint as the card the user answered, so the
+   durable row and the transient card belong to each other at a glance. */
+.cycle-row-question {
+    border-left: 2px solid var(--question-accent, #22c55e);
+    padding-left: 8px;
+    background: var(--question-accent-soft, rgba(34, 197, 94, 0.06));
+}
+.cycle-row-question .cycle-consent-line { color: var(--question-accent, #22c55e); }
+.cycle-row-question[data-decision="deny"] .cycle-consent-line { color: var(--warning, #f59e0b); }
+.cycle-row-question[data-decision="allow_category_until_done"] .cycle-consent-line { color: var(--question-accent, #22c55e); }
 
 /* ---- steering rows (2026-11-08, user request) ----
    A message typed WHILE the turn runs is LOOP WORK, never a chat-level user message: it is
@@ -492,14 +501,9 @@
 .cycle-ai-seg .cycle-ai-thinking { border-left: none; padding: 0; }
 
 /* The final answer of the loop is the one that stays after the loop ends (the speech row
-   carries `final`, so the strip marks it - step 0 is never a real step number).
-   NO BLUE LEFT EDGE ON THE FINAL SEGMENT (user request 2026-11-12): the rule
-   `.cycle-ai-seg[data-final="1"] { border-left-color: var(--accent) }` used to recolour the
-   segment's left border once the turn settled - the answer streamed with the neutral edge the
-   user liked, then that edge turned into a blue vertical line at settle. The final answer is
-   already identifiable by its weight, so the recolour is gone and the edge stays exactly as
-   it looked while streaming. `data-final` is still set by the JS (it drives the weight). */
+   carries `final`, so the strip marks it - step 0 is never a real step number). */
 .cycle-ai-answer[data-final="1"] { font-weight: 500; }
+.cycle-ai-seg[data-final="1"] { border-left-color: var(--accent, #4f8cff); }
 
 /* ---- AI strip Copy buttons (2026-11-08, restored to the REPO shape) ----
    In the last repo version an AI answer was a .message-content bubble whose Copy chip

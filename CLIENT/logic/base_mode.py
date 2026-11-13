@@ -94,11 +94,7 @@ class BaseModeConfig:
     """Base configuration shared by both normal and agentic chat modes"""
     model: str = MODEL_NAME
     temperature: float = PROVIDER_DEFAULT_TEMPERATURE
-    # (2026-12 thinking) Either a legacy bool (show reasoning or not) or a canonical level
-    # "none"/"low"/"medium"/"high". A level is forwarded to the SERVER, which translates it
-    # into the serving model's own vocabulary (app/providers/llama/thinking.py). Keep the
-    # value as-is on every hop - coercing it with bool() would erase the level.
-    enable_thinking: Any = False
+    enable_thinking: bool = False
     provider: Optional[BaseProvider] = None
     agent_name: str = "Jack"
     dna_content: str = ""
@@ -249,7 +245,7 @@ def build_messages(
     # The boundary line sits immediately BEFORE the current prompt, every turn, so the
     # model always knows where background ends and the task begins. System role: it is
     # the runtime speaking, not user speech. Also `_protect` (a trim must not drop it)
-    # and `_loop_marker` (so loop-boundary logic still keys on the user prompt, not this line).
+    # and `_loop_marker` (so _loop_boundary still keys on the user prompt, not this line).
     messages.append(boundary_message())
     messages.append(current_message)
 

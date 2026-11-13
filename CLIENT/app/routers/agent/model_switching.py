@@ -39,13 +39,6 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
           - size: file size in bytes
           - on_disk: True
           - loaded: True if currently loaded in server
-          - thinking: what THIS model can be told about reasoning, discovered by the
-            SERVER from the serving node's chat template (ThinkingPolicy). Keys:
-            supported, can_disable, can_display, levels (canonical none/low/medium/high),
-            model_values (the model's own effort names), model_default, preserve, budget,
-            enforced, source, hint. `supported: false` is the fallback - no thinking keys
-            are sent to that model - and the UI chip then reads "Think: n/a" with `hint`
-            as the reason (ui-controls.js updateThinkingUI).
 
         ROLE-BASED FILTERING IS DONE ON THE SERVER: the provider's WS
         connection authenticates with the user's key, and the SERVER only

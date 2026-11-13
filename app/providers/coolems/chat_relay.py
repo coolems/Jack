@@ -13,7 +13,7 @@ Frame routing contract (unchanged from before the split):
 
 import json
 import logging
-from typing import Tuple, Type, Optional, Any
+from typing import Tuple, Type, Optional
 
 # Server is the single source of truth for the default generation temperature:
 # when a client request omits 'temperature', fall back to config LLAMA_SERVER_TEMP
@@ -192,7 +192,7 @@ def _estimate_prompt_chars(messages, tools):
 # ---------------------------------------------------------------------------
 
 async def run_chat_core(server_provider, provider, sink, *, model: str, messages: list,
-                        temperature: float = LLAMA_SERVER_TEMP, enable_thinking: Any = False,
+                        temperature: float = LLAMA_SERVER_TEMP, enable_thinking: bool = False,
                         conv_id: str = "", tools=None, stop_event=None,
                         context_window: Optional[int] = None):
     """Run one chat turn against *provider* and stream every frame through *sink*.
@@ -287,8 +287,6 @@ async def relay_chat_websocket_direct(server_provider, msg: dict, ws):
     model = msg.get("model", "")
     messages = msg.get("messages", [])
     temperature = msg.get("temperature", LLAMA_SERVER_TEMP)
-    # (2026-12 thinking) verbatim on purpose: a bool OR a canonical level
-    # ("none"/"low"/"medium"/"high"). bool() here would erase the user's level.
     enable_thinking = msg.get("enable_thinking", False)
     conv_id = msg.get("conv_id", "")
     tools = _filter_tools_by_profile(server_provider, getattr(ws, "_user_info", None),
@@ -327,7 +325,6 @@ async def relay_chat_websocket(server_provider, msg: dict, ws, user_info=None):
     model = msg.get("model", "")
     messages = msg.get("messages", [])
     temperature = msg.get("temperature", LLAMA_SERVER_TEMP)
-    # (2026-12 thinking) verbatim: bool OR canonical level, never coerced.
     enable_thinking = msg.get("enable_thinking", False)
     conv_id = msg.get("conv_id", "")
     tools = _filter_tools_by_profile(server_provider, user_info,

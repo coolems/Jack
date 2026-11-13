@@ -383,14 +383,6 @@ class LlamaServerInstance:
                     port? false = probe/attach only (an admin owns its lifecycle).
       api_key     - only meaningful for kind="strata" (Bearer token); None for llama.
       kind        - "llama" (llama-server) or "strata" (attach-only endpoint).
-      thinking    - OPTIONAL per-entry override of what this model's thinking controls are
-                    (2026-12). Normally the brain DISCOVERS them from the endpoint's baked
-                    chat template via /props; this pins the truth when a template is
-                    ambiguous or vendor-patched, e.g.
-                      "thinking": {"efforts": ["low","medium","xhigh"], "default": "medium",
-                                   "toggle": true, "preserve": true, "hint": "unsloth patch"}
-                    or the shorthand "thinking": ["low","medium","xhigh"].
-                    Anything not stated stays as discovered. See app/providers/llama/thinking.py.
     """
     name: str
     host: str
@@ -405,7 +397,6 @@ class LlamaServerInstance:
     extra_args: tuple = ()
     auto_start: bool = True
     kind: str = "llama"
-    thinking: Optional[dict] = None
 
     @property
     def api_url(self) -> str:
@@ -604,46 +595,7 @@ def _entry_to_instance(entry: dict, index: int, source: str, kind: str = "llama"
         auto_start=(entry.get("auto_start") if isinstance(entry.get("auto_start"), bool) else True)
                    if kind == "llama" else False,
         kind=kind,
-        thinking=_parse_thinking(entry, source, index),
     )
-
-
-def _parse_thinking(entry: dict, source: str, index: int) -> Optional[dict]:
-    """Validate an optional 'thinking' override on a server entry (2026-12).
-
-    Accepts the shorthand list ["low","medium","xhigh"] or an object
-    {efforts, default, toggle, preserve, budget, enforced, hint}. Bad input is said and
-    ignored - thinking is then whatever the endpoint's chat template says (discovery),
-    and a hand-edited file must never stop a boot.
-    """
-    raw = entry.get("thinking")
-    if raw is None:
-        return None
-    if isinstance(raw, (list, tuple)):
-        efforts = [str(e).strip().lower() for e in raw if str(e).strip()]
-        return {"efforts": efforts} if efforts else None
-    if not isinstance(raw, dict):
-        _logger.warning("[CONFIG] %s entry #%d has an invalid 'thinking' (%r) - ignored "
-                        "(expected a list of levels or an object)", source, index, raw)
-        return None
-    out: dict = {}
-    efforts = raw.get("efforts", raw.get("values"))
-    if isinstance(efforts, (list, tuple)):
-        cleaned = [str(e).strip().lower() for e in efforts if str(e).strip()]
-        if cleaned:
-            out["efforts"] = cleaned
-    elif efforts is not None:
-        _logger.warning("[CONFIG] %s entry #%d 'thinking.efforts' is not a list (%r) - ignored",
-                        source, index, efforts)
-    for key in ("default", "hint"):
-        val = raw.get(key)
-        if isinstance(val, str) and val.strip():
-            out[key] = val.strip().lower() if key == "default" else val.strip()
-    for key in ("toggle", "preserve", "budget", "enforced", "emit_only"):
-        val = raw.get(key)
-        if isinstance(val, bool):
-            out[key] = val
-    return out or None
 
 
 def _parse_extra_args(entry: dict, source: str, index: int) -> tuple:
@@ -764,10 +716,6 @@ def instance_to_entry(inst: "LlamaServerInstance") -> dict:
         "extra_args": list(inst.extra_args),
         "auto_start": bool(inst.auto_start),
     }
-    if inst.thinking:
-        # Round-trip the optional thinking override (2026-12) so an admin save through
-        # utils/start_llama_node never silently drops it.
-        entry["thinking"] = inst.thinking
     if inst.kind == "strata":
         entry["api_key"] = inst.api_key or ""
     return entry

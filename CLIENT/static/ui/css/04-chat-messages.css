@@ -116,19 +116,6 @@
 
 .thinking-content:empty { display: none; }
 
-/* (2026-12 thinking levels) The normal-mode panel is collapsible: the header is the toggle,
-   and 'done' is set once the answer starts streaming - reasoning is over, so the pulse that
-   meant "still working" stops. Agentic turns never use these classes (CycleBlock paints its
-   own .cycle-ai-thinking strip). */
-.thinking-block.done { animation: none; opacity: 1; }
-.thinking-block.collapsed .thinking-content { display: none; }
-.thinking-block.collapsed .thinking-header { border-bottom: none; }
-.thinking-header { cursor: pointer; user-select: none; }
-.thinking-header::after {
-    content: "▾"; margin-left: auto; font-size: 11px; opacity: 0.7;
-}
-.thinking-block.collapsed .thinking-header::after { content: "▸"; }
-
 .thinking-content::-webkit-scrollbar {
     width: 6px;
 }
@@ -293,53 +280,83 @@
 .exec-approval-icon { font-size: 15px; margin-right: 2px; }
 .exec-btn-explain:hover:not(:disabled) { background: rgba(59, 130, 246, 0.15); border-color: var(--accent); color: var(--accent); }
 
-/* ===== ASK_USER_QUESTION CARD (2026-12) =====
-   NOT a consent card: a question is not a rights gate, so no amber - the accent is
-   --question-green (published by runtime-settings.js from config.QUESTION_CARD_GREEN).
-   Shape: question -> options one line under another (first = starred recommendation)
-   -> free-text input at the end -> one status line. No other buttons. Filler option
-   lines are never rendered. Never auto-answered (backend pins kind 'question' to
-   manual). An unanswered card auto-closes only when Settings > Runtime sets a budget. */
-.exec-question-card {
-    border-color: var(--question-green, #5fae8b);
-    box-shadow: 0 0 0 1px rgba(95, 174, 139, 0.28);
-    background: linear-gradient(180deg, rgba(95, 174, 139, 0.05) 0%, var(--bg-secondary) 60%);
+/* ===== ASK_USER_QUESTION CARD (2026-12, recoloured 2026-11-13) =====
+   Same card shell as the consent kinds, but the payload is a QUESTION, not code: the
+   question text reads as prose, the numbered offers are buttons, and a free-text field is
+   always available. Never auto-answered (backend pins kind 'question' to manual).
+   The whole card is tinted with --question-accent, which Settings > Runtime sets live. */
+.exec-approval-card[data-kind="question"] {
+    border-color: var(--question-accent, #22c55e);
+    box-shadow: 0 0 0 1px var(--question-accent-soft, rgba(34, 197, 94, 0.35));
 }
-.exec-question-card .exec-approval-header { color: var(--question-green, #5fae8b); }
-.exec-question-card .exec-approval-status.pending { color: var(--question-green, #5fae8b); }
+.exec-approval-card[data-kind="question"] .exec-approval-header { color: var(--question-accent, #22c55e); }
+.exec-approval-card[data-kind="question"] .exec-approval-status.pending { color: var(--question-accent, #22c55e); }
+/* (2026-11-13) What the user actually asked, shown above the offers so every option can be
+   checked against it - the offers must all deliver THIS, not something else. */
+.exec-approval-asked {
+    display: flex; gap: 8px; align-items: baseline; margin: 0 0 8px 0;
+    padding: 6px 10px; border-radius: 6px; border: 1px solid var(--question-accent, #22c55e);
+    background: var(--question-accent-soft, rgba(34, 197, 94, 0.12));
+}
+.exec-approval-asked-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--question-accent, #22c55e); flex-shrink: 0;
+}
+.exec-approval-asked-text { font-size: 13px; color: var(--text-primary); word-break: break-word; }
 .exec-approval-question {
     font-size: 14px; line-height: 1.5; color: var(--text-primary);
     margin: 0 0 10px 0; white-space: pre-wrap; word-break: break-word;
 }
-/* Options: one line each, stacked vertically - not a row of buttons. */
-.exec-question-options {
-    display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px 0;
+/* The numbered OFFERS (concrete work the AI can do now), stacked so each one is readable. */
+.exec-approval-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.exec-btn-option {
+    display: flex; align-items: flex-start; gap: 10px; text-align: left; width: 100%;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
 }
-.exec-question-option {
-    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
-    padding: 7px 10px; border-radius: 6px; font-size: 13px; cursor: pointer;
-    background: var(--bg-tertiary); color: var(--text-primary);
-    border: 1px solid var(--border); transition: all 0.15s;
+.exec-option-no {
+    flex-shrink: 0; font-size: 12px; font-weight: 600; line-height: 1.4;
+    padding: 2px 7px; border-radius: 5px;
+    background: var(--question-accent-soft, rgba(34, 197, 94, 0.35));
+    color: var(--question-accent, #22c55e);
 }
-.exec-question-option:hover:not(:disabled) {
-    background: rgba(95, 174, 139, 0.12); border-color: var(--question-green, #5fae8b);
+.exec-option-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.exec-option-label { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.exec-option-detail { font-size: 12px; color: var(--text-secondary); }
+/* What the option actually produces ('Python game'), so the user can see that every offer
+   delivers the thing they asked for. */
+.exec-option-kind {
+    font-family: ui-monospace, monospace; font-size: 11px;
+    color: var(--question-accent, #22c55e); opacity: 0.85;
 }
-.exec-question-option:disabled { opacity: 0.45; cursor: default; }
-.exec-question-option-mark { flex-shrink: 0; color: var(--text-muted); font-size: 12px; }
-.exec-question-option-text { flex: 1; min-width: 0; word-break: break-word; }
-/* The AI's recommendation: starred, tinted, labelled. */
-.exec-question-option.recommended { border-color: rgba(95, 174, 139, 0.55); background: rgba(95, 174, 139, 0.09); }
-.exec-question-option.recommended .exec-question-option-mark { color: var(--question-green, #5fae8b); }
-.exec-question-option-tag {
-    flex-shrink: 0; font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase;
-    color: var(--question-green, #5fae8b); opacity: 0.85;
+.exec-btn-option:hover:not(:disabled) {
+    background: var(--question-accent-soft, rgba(34, 197, 94, 0.12));
+    border-color: var(--question-accent, #22c55e);
+    color: var(--question-accent, #22c55e);
+}
+/* The favourite (option 1): the candidate closest to what the user asked. It is painted
+   with the card tint so it stands out from the other offers without a separate colour. */
+.exec-btn-recommended {
+    border: 1px solid var(--question-accent, #22c55e);
+    background: var(--question-accent-soft, rgba(34, 197, 94, 0.14));
+}
+.exec-option-star {
+    flex-shrink: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.03em;
+    color: var(--question-accent, #22c55e); align-self: center;
 }
 .exec-approval-answer-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .exec-approval-answer-input {
     flex: 1; min-width: 0; padding: 7px 10px; border-radius: 6px; font-size: 13px;
     background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border);
 }
-.exec-approval-answer-input:focus { border-color: var(--question-green, #5fae8b); outline: none; }
+.exec-approval-answer-input:focus {
+    border-color: var(--question-accent, #22c55e); outline: none;
+    box-shadow: 0 0 0 2px var(--question-accent-soft, rgba(34, 197, 94, 0.2));
+}
+.exec-btn-free-answer:hover:not(:disabled) {
+    background: var(--question-accent-soft, rgba(34, 197, 94, 0.12));
+    border-color: var(--question-accent, #22c55e);
+    color: var(--question-accent, #22c55e);
+}
 
 /* ===== LIVE STEERING (2026-10-23; moved into the turn block 2026-11-08) =====
    A message typed WHILE an agentic turn runs is LOOP WORK, not a chat message, so it is

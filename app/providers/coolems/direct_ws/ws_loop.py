@@ -105,7 +105,6 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                     continue
 
                 from ..chat_relay import _filter_tools_by_profile
-                from app.providers.llama.thinking import level_or_bool
                 req = ChatRequest(
                     owner_key=f"{conn_id}|{conv_id}",
                     user_key=user_info.get("email") or str(conn_id),
@@ -114,9 +113,7 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                     model=msg.get("model", ""),
                     messages=msg.get("messages", []),
                     temperature=msg.get("temperature", LLAMA_SERVER_TEMP),
-                    # (2026-12 thinking) bool OR canonical level, normalized but never
-                    # coerced to bool - a level must survive to the provider.
-                    enable_thinking=level_or_bool(msg.get("enable_thinking")),
+                    enable_thinking=bool(msg.get("enable_thinking", False)),
                     conv_id=conv_id,
                     tools=_filter_tools_by_profile(server_provider, user_info,
                                                    msg.get("tools") if msg.get("tools") else None),

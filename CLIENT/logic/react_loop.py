@@ -27,7 +27,9 @@ from typing import List, Dict, Any, Tuple, Optional
 from config import (
     AGENTIC_MAX_TOOL_ITERATIONS,
     AGENTIC_TOKEN_WARNING_THRESHOLD,
+    AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION,
     AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
+    get_context_window,
 )
 
 
@@ -47,7 +49,7 @@ from utils.history_trimmer import safe_trim_history, get_token_count
 # history trimming. The old logic stays in place as dead code below - re-enable
 # by setting _LESSONS_INJECTION_ENABLED = True.
 # TODO(code-review C7, plan_20261102_2135_code_review.md): re-enable with the
-# lessons text counted into the system-prompt cost (it rides in the system message, so
+# lessons text counted into message_budget (it rides in the system message, so
 # it must be measured like the tool schema) before flipping the flag.
 # ============================================================
 _LESSONS_INJECTION_ENABLED = False
@@ -56,6 +58,10 @@ _LESSONS_INJECTION_ENABLED = False
 from .base_mode import push_token_stats, check_stop_event, build_session_stats, strip_turn_stats_lines
 from .provider_call import call_provider_with_retry
 from .tool_lock import tool_lock, SCREEN_BROWSER_TOOLS
+# (2026-11-07) Extensive context-budget diagnostics: every limit stage logs WHO holds
+# the tokens (per-role histogram, unremovable block, injected notices, per-tool schema
+# cost, top contributors) instead of a single percentage line.
+from .context_report import build_budget_report, log_budget
 
 
 logger = logging.getLogger("COOLEMS.Logic.ReactLoop")
@@ -105,6 +111,25 @@ _INTERRUPT_POLL_SEC = 0.25
 # A reply with neither text nor tool calls is a provider hiccup, not a thinking step:
 # ask again up to this many times, then deliver an honest fallback instead of spinning.
 MAX_EMPTY_REPLIES = 2
+
+
+def _loop_boundary(messages: List[Dict]) -> int:
+    """Index where the CURRENT loop begins: one past the protected user prompt.
+
+    An index captured at loop entry goes stale as soon as a trim rebuilds the list
+    (removals happen BEFORE the boundary, so every later index shifts down). The
+    boundary is therefore derived from the `_protect` tag that rides on the message
+    dict itself. Everything after that prompt is what this loop appended - assistant
+    replies, tool results, mid-run steering and notices - and is never trimmed.
+
+    (2026-11-30) The turn-boundary marker also carries `_protect` (a trim must never drop
+    it), so it is skipped here by `_loop_marker`: the boundary must stay ONE past the
+    current USER prompt, not past the marker that sits before it.
+    """
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and msg.get("_protect") is True and not msg.get("_loop_marker"):
+            return i + 1
+    return len(messages)
 
 
 def _has_pending_steers(config: Any) -> bool:
@@ -691,14 +716,21 @@ async def run_react_loop(
         - messages[0] (system prompt) is NEVER removed.
         - The CURRENT USER PROMPT (tagged `_protect` by build_messages) is NEVER
           removed - it must remain in the list at all times.
-        - Everything else is grouped into atomic units (a turn = user msg + the AI
-          reply that answered it + ALL its tool results) and only whole units are
+        - THE CURRENT LOOP IS NEVER REMOVED. `_loop_boundary(messages)` is the boundary:
+          boundary: everything appended after build_messages() - this loop's
+          assistant replies, tool_calls, tool results and mid-run steering - is the
+          working context and stays available for the whole run. Trimming eats only
+          the PREVIOUS turns of the session.
+        - Everything removable is grouped into atomic units (a turn = user msg + the
+          AI reply that answered it + ALL its tool results) and only whole units are
           ever removed, oldest first. An assistant message with `tool_calls` can
           therefore never be separated from its tool results.
-        - There is NO minimum-message floor: if the budget requires it, every
-          removable unit goes and only [system prompt + current user prompt]
-          remain. Per-message token counts are cached on the dicts by
-          estimate_message_tokens(), so trimming is a cheap sum of ints.
+        - When the loop alone cannot fit the budget, the trim is a no-op and the
+          context guardian fires: the AI writes plan_<...>_continue.md (in .temp/plans/) and stops, so
+          the NEXT loop resumes from user input + AI output + that plan. Only after
+          the guardian has spoken may a trim shrink the loop (allow_loop_trim=True),
+          to give the wrap-up answer room. Per-message token counts are cached on the
+          dicts by estimate_message_tokens(), so trimming is a cheap sum of ints.
     """
     func_start = time.time()
 
@@ -777,25 +809,51 @@ async def run_react_loop(
     notice_reopens = 0
 
     # CONTEXT-GUARDIAN BUDGET - how many times this run may inject the near-limit
-    # guardian message (fires at AGENTIC_TOKEN_WARNING_THRESHOLD of token_limit).
+    # guardian message. It fires at AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION of the FULL
+    # window AND only when trimming could not free any room (see stage 3 below).
     # The AI is told to finish its current work step and dump everything into a plan
     # file so the next work loop can pick up where this one left off.
+    #
+    # ARMING (2026-11-07 fix): the guardian fires on a CROSSING, not on a state. It is
+    # armed while usage sits below the threshold and disarmed the moment it injects, so a
+    # run cannot get a second "stop calling tools" notice 40s later while still sitting at
+    # the same percentage (the old code injected 1/3 then 2/3 back-to-back with no new
+    # information). A trim that brings usage back below the threshold re-arms it, so a
+    # genuinely re-grown context can still get a fresh notice.
     token_warning_sent = False  # console warning fires once per run at the safe-margin threshold
     context_guardian_injections = 0
+    guardian_armed = True
 
-    # SERVER-TRUTH TOKEN ANCHOR (2026-08-19 fix): after each provider call we remember the
-    # REAL prompt_tokens reported by llama.cpp via the server's token_stats frame. That is
-    # the authoritative "how much of the context window does the CURRENT message list cost"
-    # number - it includes system + history + tool schema exactly as sent. The client-side
-    # chars/4 estimate (get_token_count) can overcount by 10-30x on large payloads, which is
-    # what made the guardian fire at "1061%" while the server showed ~33% used and then wiped
-    # 90+ healthy messages. We trust the server number once we have one; the local estimate
-    # is only a fallback for iterations before any response has come back yet.
-    server_prompt_tokens = None      # real prompt_tokens from last provider call (None until first)
-    messages_len_at_last_stats = 0   # len(messages) when we last received stats — tracks which msgs are "new"
-    est_drift_logged = False         # log the local-vs-server estimate divergence once per run
+    # SERVER-TRUTH TOKEN ANCHOR (2026-08-19 fix, OVERHEAD form 2026-11-07): after each
+    # provider call we remember the REAL prompt_tokens llama.cpp reported for exactly the
+    # list we sent, and store it as an OFFSET against our own estimate:
+    #     anchor_overhead = server prompt_tokens - local estimate of that same list
+    #     current_tokens  = anchor_overhead + local estimate of the CURRENT list
+    # The chat-template markup the server counts but our chars/4 estimate does not is the
+    # overhead, so the server number stays authoritative while the local estimate still
+    # tracks every change - including a TRIM, which the old index-slice form could not
+    # represent (it kept the anchor high forever and re-counted messages the server had
+    # already counted, which is what made the guardian claim 96% while the UI showed
+    # 101K tokens free).
+    anchor_overhead = 0          # server prompt_tokens - local estimate at anchor time
+    anchor_set = False           # True once a real prompt_tokens has been received
+    est_drift_logged = False     # log a suspiciously large estimate gap once per run
+    stats_without_prompt_logged = False  # log "server sent no prompt_tokens" once per run
+
+    # PREVIOUS ITERATION'S COST (2026-11-07 diagnostics). The guardian log used to report
+    # only a percentage, so a run stuck at the limit could not say what grew or what could
+    # not be trimmed. Every budget stage now logs the full report (see logic/context_report.py)
+    # and this value makes the per-iteration JUMP visible.
+    prev_tokens = None
 
     token_limit = max_history_tokens()
+
+    # FULL context window as reported by the SERVER - the same number the UI status bar
+    # shows ("200K ctx"). The guardian threshold is measured against THIS, not against the
+    # 0.90 history budget, so a notice can never claim "nearly full" while the bar shows
+    # ~100K tokens still free. Read live: the SERVER rewrites CONTEXT_WINDOW_TOKENS on
+    # every auth handshake.
+    window_tokens = get_context_window() or token_limit
 
     # Output room is guaranteed SERVER-side now: streaming.py clamps
     # max_tokens to (context window - real prompt estimate), so llama.cpp can
@@ -871,85 +929,111 @@ async def run_react_loop(
             # Increment total loop call counter
             loop_tools += 1
             # TOKEN BUDGET CHAIN (checked EVERY iteration, in this order):
-            #   1. WARNING  - console warning when usage reaches the safe-margin
-            #      percentage (AGENTIC_TOKEN_WARNING_THRESHOLD of token_limit).
-            #   2. GUARDIAN - at that same threshold, inject a [SYSTEM NOTICE]
-            #      telling the AI to finish its current work and write a plan file
-            #      so we can continue in the next work loop (same pattern as the
-            #      max-thinking-iterations force-completion guardian).
-            #   3. TRIM     - when the budget is actually exceeded, remove oldest
+            #   1. WARNING  - console/UI warning when usage reaches the safe-margin
+            #      percentage of the MESSAGE-LIST budget (AGENTIC_TOKEN_WARNING_THRESHOLD
+            #      of token_limit) - the moment trimming is about to engage.
+            #   2. TRIM     - when the budget is actually exceeded, remove oldest
             #      atomic units from the list sent to the provider.
-            # SERVER-TRUTH ANCHOR (2026-08-19 fix): prefer the REAL prompt token count
-            # llama.cpp reported for the last request we sent. The message list only grows
-            # between iterations, so "server prompt_tokens + local estimate delta since that
-            # call" is a faithful current-usage figure - and it already includes the tool
-            # schema (the server counts exactly what was sent), which is why est_tools_tokens
-            # must NOT be added on top of it. The local chars/4 estimate stays only as a
-            # fallback for iterations before any response has come back yet, and drift from
-            # the server number is logged once so estimator problems remain diagnosable.
-            if server_prompt_tokens is not None:
-                _new_msgs = messages[messages_len_at_last_stats:]
-                current_tokens = server_prompt_tokens + sum(estimate_message_tokens(m) for m in _new_msgs)
-                local_est_now = get_token_count(messages) + est_tools_tokens
-                if not est_drift_logged and abs(local_est_now - current_tokens) > 5000:
+            #   3. GUARDIAN - only when trimming could NOT free room (nothing removable, or
+            #      still over budget afterwards) AND usage sits at AGENTIC_CONTEXT_GUARDIAN_
+            #      WINDOW_FRACTION of the FULL context window: inject a [SYSTEM NOTICE]
+            #      telling the AI to finish its current work and write a plan file so we can
+            #      continue in the next work loop. One notice per crossing; a trim that
+            #      lowers usage re-arms it.
+            # BUDGET EXPRESSION (2026-11 review fix A7) - defined ONCE per iteration and
+            # used by every stage below, so the check and the trim can never disagree:
+            #   current_tokens   = TOTAL prompt cost in SERVER units (local estimate of the
+            #                      list + tool schema + the server overhead). Compared against
+            #                      warn_limit / guardian_limit / token_limit by stages 1/2/3.
+            #   message_budget   = token_limit - est_tools_tokens = what the MESSAGE LIST
+            #                      alone may hold. Every safe_trim_history() call uses this,
+            #                      never the raw token_limit.
+            #   trim_budget      = message_budget - anchor_overhead = the same budget expressed
+            #                      in LOCAL-estimate units (safe_trim_history counts with our
+            #                      estimator). Without this subtraction a trim that "fits"
+            #                      locally still overflows the real window whenever the server
+            #                      counts more than chars/4 - the old 1061% failure mode.
+            # Deriving all three here (instead of re-spelling the arithmetic at each stage) is
+            # what keeps the schema counted exactly once: the overhead is measured WITH the
+            # schema included, and the trim budget subtracts it exactly once from the limit.
+            message_budget = max(1024, token_limit - est_tools_tokens)
+            local_est_now = get_token_count(messages) + est_tools_tokens
+            current_tokens = local_est_now + anchor_overhead
+            trim_budget = max(1024, min(token_limit, message_budget - anchor_overhead))
+            # guardian_limit is derived HERE (not inside stage 2) so stage 1 can quote the
+            # guardian margin in its report and every stage measures the same number.
+            guardian_limit = int(window_tokens * AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION)
+
+            # ROUTINE TRACE (2026-11-07): one line per iteration so the growth curve is
+            # visible in the normal log (INFO - the COOLEMS logger is INFO by default, so a
+            # DEBUG line would never be written). Cheap: no message scanning, just ints.
+            logger.info(
+                f"[CONTEXT-BUDGET] iter={tool_iteration} msgs={len(messages)} "
+                f"cost={current_tokens} (local {local_est_now} + overhead {anchor_overhead} + schema {est_tools_tokens}) "
+                f"| history_budget={token_limit} guardian_limit={guardian_limit} trim_budget={trim_budget} "
+                f"| window={window_tokens} left={max(0, window_tokens - current_tokens)} "
+                f"delta={current_tokens - (prev_tokens or 0)}"
+            )
+
+            if anchor_set:
+                if not est_drift_logged and abs(current_tokens - local_est_now) > 20000:
                     est_drift_logged = True
                     logger.warning(
-                        f"[AGENTIC.DEBUG] react_loop - TOKEN ESTIMATE DRIFT: local chars/4 estimate "
-                        f"{local_est_now} vs server-truth {current_tokens} tokens. Budget decisions use the "
-                        f"server number (authoritative) - this is why spurious 1061% guardian warnings are gone."
+                        f"[AGENTIC.DEBUG] react_loop - TOKEN ESTIMATE DRIFT: server-truth "
+                        f"{current_tokens} vs local chars/4 estimate {local_est_now} tokens "
+                        f"(overhead {anchor_overhead}). Budget decisions use the server number "
+                        f"(authoritative); the overhead is chat-template markup, not message text."
                     )
-            else:
-                current_tokens = get_token_count(messages) + est_tools_tokens
 
-            # ---- STAGE 1+2: safe-margin warning + context guardian (95%) ----
-            if current_tokens >= int(token_limit * AGENTIC_TOKEN_WARNING_THRESHOLD):
-                pct = round(100.0 * current_tokens / token_limit) if token_limit else 0
+            # ---- STAGE 1: safe-margin console/UI warning ----
+            # Fires once per run when the MESSAGE-LIST budget (max_history_tokens, i.e. 0.90
+            # of the window) is nearly full - that is the moment trimming is about to engage.
+            warn_limit = int(token_limit * AGENTIC_TOKEN_WARNING_THRESHOLD)
+            if current_tokens >= warn_limit and not token_warning_sent:
+                token_warning_sent = True
+                pct_hist = round(100.0 * current_tokens / token_limit) if token_limit else 0
+                logger.warning(
+                    f"[AGENTIC.DEBUG] react_loop - TOKEN SAFE-MARGIN WARNING: {current_tokens}/{token_limit} "
+                    f"history-budget tokens ({pct_hist}% of the budget, threshold "
+                    f"{round(100 * AGENTIC_TOKEN_WARNING_THRESHOLD)}%), {window_tokens} total window. "
+                    f"Trimming engages as soon as the budget is exceeded."
+                )
+                # Full state dump (2026-11-07): which messages hold the tokens, what is
+                # unremovable, how much the schema costs, how far from the guardian limit.
+                log_budget(logger, "safe-margin-warning", build_budget_report(
+                    "safe-margin-warning", window_tokens=window_tokens, token_limit=token_limit,
+                    message_budget=message_budget, trim_budget=trim_budget, warn_limit=warn_limit,
+                    guardian_limit=guardian_limit, local_est=local_est_now,
+                    current_tokens=current_tokens, anchor_overhead=anchor_overhead,
+                    anchor_set=anchor_set, est_tools_tokens=est_tools_tokens,
+                    prev_tokens=prev_tokens, messages=messages, tools=_tools_for_est,
+                    guardian_injections=context_guardian_injections,
+                    guardian_max=AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
+                    guardian_armed=guardian_armed, token_warning_sent=token_warning_sent))
+                if config.websocket:
+                    await config.websocket.send_text(json.dumps({
+                        "type": "system",
+                        "content": (f"History budget at {pct_hist}% ({current_tokens} sent, "
+                                    f"{max(0, window_tokens - current_tokens)} left of the "
+                                    f"{window_tokens} window). History will be trimmed automatically "
+                                    f"if it grows further.")
+                    }))
 
-                # Console warning - once per run, the moment we cross the threshold.
-                if not token_warning_sent:
-                    token_warning_sent = True
-                    logger.warning(
-                        f"[AGENTIC.DEBUG] react_loop - TOKEN SAFE-MARGIN WARNING: {current_tokens}/{token_limit} "
-                        f"tokens ({pct}% of safe budget, threshold {round(100*AGENTIC_TOKEN_WARNING_THRESHOLD)}%). "
-                        f"Trimming will engage as soon as the limit is exceeded."
-                    )
-                    if config.websocket:
-                        await config.websocket.send_text(json.dumps({
-                            "type": "system",
-                            "content": (f"Context window at {pct}% of the safe token budget. "
-                                        f"History will be trimmed automatically if it grows further.")
-                        }))
-
-                # Context guardian - same pattern as the max-thinking-iterations
-                # force-completion message: tell the AI to wrap up and leave a plan.
-                if context_guardian_injections < AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS:
-                    context_guardian_injections += 1
-                    logger.warning(
-                        f"[AGENTIC.DEBUG] react_loop - CONTEXT GUARDIAN {context_guardian_injections}/{AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS}: "
-                        f"{current_tokens}/{token_limit} tokens ({pct}%). Injecting finish-current-work + plan message."
-                    )
-                    context_guardian_msg = {
-                        "role": "user",
-                        "content": (
-                            f"[SYSTEM NOTICE] The context window is at {pct}% of its safe token budget. "
-                            "You MUST now finish the current work step and STOP calling tools. "
-                            "Write a plan file (plan_<YYYYMMDD_HHMM>_continue.md in the working folder) that captures: "
-                            "(1) what is already DONE, (2) the exact remaining steps to finish the task, and "
-                            "(3) any context/decisions needed to continue in the next work loop. "
-                            "Then end your response with 'Agentic AI: TASK DONE' so we can resume from that plan later."
-                        )
-                    }
-                    messages.append(context_guardian_msg)
-                    # Trim right away too - the guardian message itself costs tokens and
-                    # we want maximum room left for the AI's wrap-up + plan file.
-                    live_protected = [0]
-                    for _pi in range(len(messages) - 1, -1, -1):
-                        if messages[_pi].get("role") == "user":
-                            live_protected.append(_pi)
-                            break
-                    messages = safe_trim_history(messages, max(1024, token_limit - est_tools_tokens), live_protected)
-
-            # ---- STAGE 3: hard limit exceeded -> trim oldest atomic units ----
+            # ---- STAGE 2: hard limit exceeded -> trim oldest atomic units ----
+            # ORDER FIX (2026-11-07): the trim runs BEFORE the guardian. The old order
+            # injected "context nearly full, STOP calling tools" while the trimmer still had
+            # plenty of removable history - so a run that could have continued by trimming got
+            # told to wrap up instead. The guardian now only speaks when trimming CANNOT help.
+            #
+            # ROOT CAUSE of the reported "guardian fires immediately / lots of empty window":
+            # the committed code measured the guardian against token_limit
+            # (= max_history_tokens() = 0.90 x window) and quoted that as a percentage OF the
+            # budget, so it fired at 176561/184320 = "96%" while the UI status bar showed the
+            # SERVER's real window (204800) with thousands of tokens still free. The notice
+            # contradicted the UI and stopped productive work early.
+            stuck_at_limit = False
+            trim_removed = 0
+            before_trim_tokens = 0   # set by stage 2; the trim log quotes before -> after
             if current_tokens > token_limit:
                 logger.warning(f"[AGENTIC.DEBUG] react_loop - TOKEN LIMIT EXCEEDED! Trimming history...")
                 # Recompute protected indices live on every trim: each previous trim rebuilt
@@ -967,10 +1051,157 @@ async def run_react_loop(
                 # real prompt then hit the window with almost no output room left and
                 # llama.cpp truncated its own tool-call JSON mid-string ("Failed to parse
                 # tool call arguments" 500). See plan_20260817_trace_fix.md.
-                messages = safe_trim_history(messages, max(1024, token_limit - est_tools_tokens), live_protected)
-                after_trim_tokens = get_token_count(messages) + est_tools_tokens
-                logger.debug(f"[AGENTIC.DEBUG] react_loop - After trim: {len(messages)} messages, {after_trim_tokens} tokens (incl. tool schema)")
+                # trim_budget additionally subtracts the server overhead, so the trimmed list
+                # fits in SERVER units too - a trim that only "fits" in chars/4 units is what
+                # previously kept the real prompt over the window.
+                before_trim_tokens = current_tokens
+                # LOOP RULE (2026-11-08): trim only what sits BEFORE the current loop.
+                # The boundary is derived live from the `_protect` tag, so it stays correct
+                # after every rebuild the previous trim performed.
+                messages = safe_trim_history(
+                    messages, trim_budget, live_protected,
+                    loop_start=_loop_boundary(messages),
+                )
+                # Post-trim figure uses the SAME expression as the decision (local estimate +
+                # server overhead): the overhead form survives a rebuild of the list, so the
+                # number logged here is the real current cost, not a stale anchor. The trim
+                # also re-arms the guardian when usage drops back under its threshold.
+                current_tokens = get_token_count(messages) + est_tools_tokens + anchor_overhead
+                trim_removed = before_trim_tokens - current_tokens
+                if current_tokens < guardian_limit:
+                    guardian_armed = True
+                logger.warning(
+                    f"[AGENTIC.DEBUG] react_loop - After trim: {len(messages)} messages, "
+                    f"{before_trim_tokens} -> {current_tokens} tokens "
+                    f"(server overhead + local est, incl. tool schema), removed={trim_removed} tok "
+                    f"({round(100.0 * trim_removed / before_trim_tokens) if before_trim_tokens else 0}% of context), "
+                    f"message_budget={message_budget}, trim_budget={trim_budget}, "
+                    f"guardian_limit={guardian_limit}"
+                )
+                log_budget(logger, "hard-trim", build_budget_report(
+                    "hard-trim", window_tokens=window_tokens, token_limit=token_limit,
+                    message_budget=message_budget, trim_budget=trim_budget, warn_limit=warn_limit,
+                    guardian_limit=guardian_limit,
+                    local_est=get_token_count(messages) + est_tools_tokens,
+                    current_tokens=current_tokens, anchor_overhead=anchor_overhead,
+                    anchor_set=anchor_set, est_tools_tokens=est_tools_tokens,
+                    prev_tokens=prev_tokens, messages=messages, tools=_tools_for_est,
+                    guardian_injections=context_guardian_injections,
+                    guardian_max=AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
+                    guardian_armed=guardian_armed, token_warning_sent=token_warning_sent))
+                # STUCK LIMIT (2026-11-07, extended 2026-11-08 by the LOOP RULE): a trim that
+                # removed nothing means the budget is held entirely by messages the trimmer may
+                # never delete - system prompt + protected current user prompt + the CURRENT
+                # LOOP. Say it plainly: history trimming cannot help in that state, so the
+                # context guardian must ask for a continuation plan instead.
+                if current_tokens > token_limit:
+                    stuck_at_limit = True
+                    logger.warning(
+                        f"[AGENTIC.DEBUG] react_loop - TRIM NO-OP: still {current_tokens} > {token_limit} "
+                        f"after removing every removable unit OUTSIDE the current loop "
+                        f"(loop messages={max(0, len(messages) - _loop_boundary(messages))}). "
+                        f"The cost sits in UNREMOVABLE messages "
+                        f"(see 'unremovable total' in the report above) plus tool schema "
+                        f"({est_tools_tokens}) and server overhead ({anchor_overhead})."
+                    )
+                prev_tokens = current_tokens
 
+            # ---- STAGE 3: context guardian ----
+            # Fires when trimming CANNOT help this run: stuck_at_limit means the trim removed
+            # nothing, which with the LOOP RULE (2026-11-08) is exactly the state the user
+            # described - the budget is held by UNREMOVABLE material (system prompt + protected
+            # current user prompt + the CURRENT LOOP, which is the AI's working context and is
+            # never trimmed). The only correct response is a continuation plan: finish the work
+            # step, write plan_<...>_continue.md (in .temp/plans/), stop; the NEXT loop resumes from user input +
+            # AI output + that plan.
+            # A trim that discards half the context is NOT a stop condition: with the LOOP RULE
+            # it can only eat PREVIOUS turns, which is legitimate trimming - the trim log already
+            # shows the size of the pass (removed=N tok, before -> after).
+            # Percentages are quoted against the FULL window the UI shows, never against the
+            # 0.90 budget, so the notice and the status bar can never disagree.
+            if guardian_armed and stuck_at_limit:
+                pct = round(100.0 * current_tokens / window_tokens) if window_tokens else 0
+                left = max(0, window_tokens - current_tokens)
+                loop_msgs = max(0, len(messages) - _loop_boundary(messages))
+                reason = ("history trimming can no longer free room - the cost sits in "
+                          "UNREMOVABLE material: system prompt + the current user prompt + "
+                          f"the CURRENT LOOP ({loop_msgs} messages), which is your working "
+                          "context and is never trimmed")
+
+                # Context guardian - same pattern as the max-thinking-iterations
+                # force-completion message: tell the AI to wrap up and leave a plan.
+                if context_guardian_injections < AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS:
+                    context_guardian_injections += 1
+                    guardian_armed = False   # crossing consumed - re-arms only after a trim drops usage back
+                    logger.warning(
+                        f"[AGENTIC.DEBUG] react_loop - CONTEXT GUARDIAN {context_guardian_injections}/{AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS}: "
+                        f"{current_tokens}/{window_tokens} context tokens ({pct}% of window), {left} left, "
+                        f"history_budget={token_limit}, trim_removed={trim_removed} tok, stuck={stuck_at_limit}. "
+                        f"Reason: {reason}. Injecting finish-current-work + plan message."
+                    )
+                    # EXTENSIVE OBSERVATION (2026-11-07): the full picture at the moment the
+                    # guardian fires - limits, cost breakdown, the jump that crossed the
+                    # threshold, the unremovable block, injected notices, per-tool schema cost
+                    # and the most expensive messages. This is what answers "where did we hit
+                    # the big limit".
+                    log_budget(logger, "context-guardian-fire", build_budget_report(
+                        "context-guardian-fire", window_tokens=window_tokens, token_limit=token_limit,
+                        message_budget=message_budget, trim_budget=trim_budget, warn_limit=warn_limit,
+                        guardian_limit=guardian_limit, local_est=local_est_now,
+                        current_tokens=current_tokens, anchor_overhead=anchor_overhead,
+                        anchor_set=anchor_set, est_tools_tokens=est_tools_tokens,
+                        prev_tokens=prev_tokens, messages=messages, tools=_tools_for_est,
+                        guardian_injections=context_guardian_injections,
+                        guardian_max=AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
+                        guardian_armed=False, token_warning_sent=token_warning_sent))
+                    context_guardian_msg = {
+                        "role": "user",
+                        "content": (
+                            f"[SYSTEM NOTICE] The context window is at {pct}% ({current_tokens} tokens sent, "
+                            f"{left} left of {window_tokens}) and {reason}. "
+                            "You MUST now finish the current work step and STOP calling tools. "
+                            "Write a plan file (plan_<YYYYMMDD_HHMM>_continue.md - write_file with path='' puts it in .temp/plans/) that captures: "
+                            "(1) what is already DONE, (2) the exact remaining steps to finish the task, and "
+                            "(3) any context/decisions needed to continue in the next work loop. "
+                            "Then give your final answer as plain text so we can resume from that plan later."
+                        )
+                    }
+                    messages.append(context_guardian_msg)
+
+            # ---- STAGE 4: post-guardian last-resort trim (loop may shrink ONLY now) ----
+            # The guardian notice itself costs tokens, and with the LOOP RULE nothing removable
+            # is left, so the wrap-up call can exceed the FULL server window - which would make
+            # llama.cpp truncate the answer (and the plan file the AI is about to write). Since a
+            # continue plan has now been asked for, shrinking the loop is safe: remove the OLDEST
+            # loop units first, so the newest work - what the plan must describe - survives.
+            # This never runs before the guardian has spoken.
+            if context_guardian_injections > 0 and current_tokens > window_tokens:
+                logger.warning(
+                    f"[AGENTIC.DEBUG] react_loop - POST-GUARDIAN TRIM: {current_tokens} > "
+                    f"{window_tokens} full window. Guardian already fired (plan requested), so the "
+                    f"current loop may be shrunk - oldest loop units first, newest kept."
+                )
+                live_protected = [0]
+                for _pi in range(len(messages) - 1, -1, -1):
+                    if messages[_pi].get("role") == "user":
+                        live_protected.append(_pi)
+                        break
+                messages = safe_trim_history(
+                    messages, trim_budget, live_protected,
+                    loop_start=_loop_boundary(messages), allow_loop_trim=True,
+                )
+                current_tokens = get_token_count(messages) + est_tools_tokens + anchor_overhead
+                if current_tokens < guardian_limit:
+                    guardian_armed = True
+                logger.warning(
+                    f"[AGENTIC.DEBUG] react_loop - After post-guardian trim: {len(messages)} messages, "
+                    f"{current_tokens} tokens (window {window_tokens}), loop messages now "
+                    f"{max(0, len(messages) - _loop_boundary(messages))}"
+                )
+
+            # Remember this iteration's cost so the NEXT iteration's report shows the growth
+            # (the tool results + replies added since) instead of always comparing to zero.
+            prev_tokens = current_tokens
 
             # LEARNED LESSONS - injection skipped on purpose (dead code kept for a
             # later fix; see _LESSONS_INJECTION_ENABLED at module top). The block
@@ -1007,8 +1238,22 @@ async def run_react_loop(
                         if messages[_pi].get("role") == "user":
                             live_protected.append(_pi)
                             break
-                    aggressive_limit = max(1024, int(token_limit * 0.75) - est_tools_tokens)
-                    messages = safe_trim_history(messages, aggressive_limit, live_protected)
+                    # Same LOCAL-estimate units as the other trims: 0.75 of the history budget
+                    # minus the tool schema AND the server overhead, so the aggressive trim
+                    # really leaves room in what llama.cpp counts. LOOP RULE (2026-11-08): it
+                    # may shrink the CURRENT LOOP only after the guardian already spoke (a
+                    # continue plan exists) - otherwise it eats previous turns only.
+                    aggressive_limit = max(1024, int(token_limit * 0.75) - est_tools_tokens - anchor_overhead)
+                    messages = safe_trim_history(
+                        messages, aggressive_limit, live_protected,
+                        loop_start=_loop_boundary(messages),
+                        allow_loop_trim=context_guardian_injections > 0,
+                    )
+                    # Same re-arm rule as the other trims: the aggressive trim lowered the
+                    # real cost, so the guardian must not stay armed/disarmed on a stale figure.
+                    current_tokens = get_token_count(messages) + est_tools_tokens + anchor_overhead
+                    if current_tokens < guardian_limit:
+                        guardian_armed = True
                     recovery_notice = {"role": "user", "content": (
                         "[SYSTEM NOTICE] Your previous tool call was truncated because the context window ran out. "
                         "Continue the task with SMALLER payloads: split large code into multiple small calls "
@@ -1070,13 +1315,28 @@ async def run_react_loop(
                 # Cycle history: settle THIS reasoning step with the real provider counters.
                 await _rec(cycle.settle_step(stats, time.time() - iteration_start) if cycle else None)
 
-                # Refresh the SERVER-TRUTH anchor: this is the real cost of exactly the
-                # message list we just sent (system + history + tool schema, as counted by
-                # llama.cpp). We remember len(messages) at that moment so the next iteration
-                # can slice messages[len_at_last:] and only estimate tokens for NEW messages.
-                if stats.prompt_tokens and stats.prompt_tokens > 0:
-                    server_prompt_tokens = int(stats.prompt_tokens)
-                    messages_len_at_last_stats = len(messages)
+                # Refresh the SERVER-TRUTH anchor as an OVERHEAD: server prompt_tokens minus
+                # our estimate of exactly the list we just sent (system + history + tool
+                # schema). That difference is the chat-template markup the server counts and
+                # chars/4 does not; adding it to the estimate of the CURRENT list gives a
+                # faithful figure that also goes DOWN when history is trimmed.
+                #
+                # A missing/zero prompt_tokens is a real bug signal, not a no-op: silently
+                # skipping the anchor left the previous overhead in place forever, so the
+                # guardian kept counting messages the server had already counted. Log it once
+                # per run so the provider-side cause stays diagnosable.
+                prompt_tokens = int(getattr(stats, "prompt_tokens", 0) or 0)
+                if prompt_tokens > 0:
+                    anchor_overhead = prompt_tokens - (get_token_count(updated_messages) + est_tools_tokens)
+                    anchor_set = True
+                elif not stats_without_prompt_logged:
+                    stats_without_prompt_logged = True
+                    logger.warning(
+                        "[AGENTIC.DEBUG] react_loop - Provider stats carried NO prompt_tokens - "
+                        "the server-truth anchor cannot be refreshed; budget decisions fall back "
+                        "to the local chars/4 estimate. Check the provider's usage/usage-per-field "
+                        "reporting (this is what previously inflated the context-guardian count)."
+                    )
 
 
 
@@ -1280,7 +1540,6 @@ async def run_react_loop(
 
                         # Keep the partial in temp_thinking: final_response is built from ALL
                         # parts, so both halves of the split answer end up in history.
-                        # (This does NOT count as a thinking iteration for the max-thinking counter.)
                         temp_thinking.append(ai_response)
 
                         tool_iteration += 1

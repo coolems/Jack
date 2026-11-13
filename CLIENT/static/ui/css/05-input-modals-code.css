@@ -109,14 +109,6 @@ textarea {
 
 .think-toggle:hover { background: var(--bg-tertiary); color: var(--text-primary); }
 .think-toggle.active { background: var(--accent); border-color: var(--accent); color: white; }
-/* (2026-12 thinking) "Thinking not available": the model exposes no request knob (or its
-   capability has not been discovered yet), so the policy sends NO thinking keys and the chip
-   says so. Kept clickable on purpose - clicking explains the reason - hence aria-disabled
-   styling rather than :disabled. */
-.think-toggle.na { opacity: 0.55; border-style: dashed; }
-.think-toggle.na:hover { background: var(--bg-secondary); color: var(--text-secondary); }
-.think-toggle:disabled { opacity: 0.45; cursor: default; }
-.think-toggle:disabled:hover { background: var(--bg-secondary); color: var(--text-secondary); }
 
 /* ===== MODAL ===== */
 .modal {

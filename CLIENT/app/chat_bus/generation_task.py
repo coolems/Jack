@@ -108,34 +108,6 @@ async def _reject_pending_steers(channel, sink, message: str, code: str) -> int:
     return len(pending)
 
 
-async def _expire_open_questions(channel, sink) -> int:
-    """Close every question card still on screen when the turn ends.
-
-    Each open card is resolved with 'unanswered' (never an invented answer) and a
-    `cycle_question` frame tells the UI to remove it. Best-effort: a dead channel never
-    breaks the teardown.
-    """
-    try:
-        from app.chat_bus import get_chat_bus
-        bus = get_chat_bus()
-        ids = await bus.expire_open_questions(channel.conv_id) if bus is not None else []
-    except Exception as e:  # pragma: no cover - teardown must never raise
-        logger.debug(f"[CHATBUS] question expire failed for conv={channel.conv_id}: {e}")
-        return 0
-    turn_id = str(getattr(channel, "turn_id", "") or "")
-    for rid in ids:
-        try:
-            await sink.send_text(json.dumps({
-                "type": "cycle_question", "conv_id": channel.conv_id, "turn_id": turn_id,
-                "request_id": rid, "decision": "unanswered", "pending": False,
-            }))
-        except Exception:
-            pass  # UI gone - the card is gone with it
-    if ids:
-        logger.info(f"[CHATBUS] {len(ids)} unanswered question card(s) dismissed for conv={channel.conv_id}")
-    return len(ids)
-
-
 class _StatusSink:
     """Thin wrapper over ChannelWebSocket that keeps channel.status honest.
 
@@ -448,8 +420,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                     "The task was stopped before this steering message could be applied.",
                     "task_stopped",
                 )
-                # Unanswered cards fold as 'unanswered' before the block settles.
-                await _expire_open_questions(channel, sink)
                 # The block must settle BEFORE 'done': the UI clears the streaming state on
                 # 'done', so a cycle_end arriving after it would land in a closed block.
                 await _close_cycle(channel_ws.captured_text or "", stopped=True)
@@ -522,9 +492,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
             "task_ended",
         )
 
-        # No question card may outlive the turn.
-        await _expire_open_questions(channel, sink)
-
         # Settle the turn block BEFORE 'done' (same rule as the cancel path): the UI closes
         # the open block on 'done', so cycle_end must arrive first.
         await _close_cycle(final_response or "", stopped=False)
@@ -562,7 +529,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         # _close_cycle(), the turn's block must still settle (partial steps/tools/consent
         # are facts). Idempotent - a turn that already closed is a no-op.
         try:
-            await _expire_open_questions(channel, sink)   # no card left behind
             await _close_cycle(final_response if 'final_response' in locals() else "",
                                stopped=bool(stop_event.is_set()))
         except Exception as e:  # pragma: no cover - history must never break a turn

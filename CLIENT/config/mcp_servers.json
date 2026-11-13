@@ -21,15 +21,15 @@
   ],
   "servers": [
     {
-      "name": "blender",
-      "enabled": true,
+      "name": "example-stdio",
+      "enabled": false,
       "transport": "stdio",
-      "command": "uvx",
-      "args": ["mcp-for-blender"],
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Change\\Me\\folder"],
       "env": {},
       "cwd": "",
       "roles": ["*"],
-      "timeout_sec": 120
+      "timeout_sec": 30
     },
     {
       "name": "example-http",

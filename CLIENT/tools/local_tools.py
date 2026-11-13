@@ -14,7 +14,9 @@ Design rules baked into the descriptions:
   * subagent returns the child id IMMEDIATELY — the report arrives later as a notice;
   * job_output is the only way to read a job's stream, and the registry keeps the cursor;
   * ask_user_question never invents an answer: a timed question returns PENDING, which is
-    not a refusal.
+    not a refusal; it states what the user asked for and every option must deliver THAT -
+    options that ask for more input or deliver something else are dropped; and the card
+    offers only those candidates plus a free-text answer (no "let the AI decide" button).
 """
 
 import asyncio
@@ -22,17 +24,15 @@ import json
 import logging
 import re
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import (
     JOB_MAX_WAIT_TIMEOUT_SEC,
     JOB_WAIT_TIMEOUT_SEC,
     QUESTION_MAX_OPTIONS,
-    QUESTION_RECOMMENDED_INDEX,
     QUESTION_TIMEOUT_DEFAULT_SEC,
     SUBAGENT_MAX_CONCURRENT_PER_CONV,
     SUBAGENT_MAX_DEPTH,
-    get_question_card_timeout_sec,
 )
 
 logger = logging.getLogger("COOLEMS.LocalTools")
@@ -77,10 +77,7 @@ def set_local_context(loop, channel, websocket, conversation_id, ollama_tools,
         "conversation_id": conversation_id,
         "ollama_tools": ollama_tools or [],
         "generic_tool_prompt": generic_tool_prompt or "",
-        # (2026-12 thinking) kept as given: a bool means "show reasoning", a canonical level
-        # string ("none"/"low"/"medium"/"high") is an instruction to the model. bool() here
-        # would erase the level and a child would lose the parent's thinking choice.
-        "enable_thinking": enable_thinking if enable_thinking is not None else False,
+        "enable_thinking": bool(enable_thinking),
         "temperature": float(temperature or 0.6),
         "parent_history": parent_history or [],
         "session_timer": session_timer,
@@ -110,9 +107,7 @@ def _child_context() -> Dict[str, Any]:
     return {
         "ollama_tools": ctx.get("ollama_tools") or [],
         "generic_tool_prompt": ctx.get("generic_tool_prompt") or "",
-        # (2026-12 thinking) inherit the parent's choice verbatim - a bool or a canonical
-        # level. Coercing it would turn "low" into True and lose the level.
-        "enable_thinking": ctx.get("enable_thinking", False),
+        "enable_thinking": bool(ctx.get("enable_thinking")),
         "temperature": float(ctx.get("temperature") or 0.6),
         "history": ctx.get("parent_history") or [],
         "role": ctx.get("role"),
@@ -361,42 +356,136 @@ async def job_kill(job_id: str, reason: str = "") -> str:
 # ask_user_question (rides the shared consent dialog, kind='question')
 # ============================================================
 
-#: Outcome when the user never answered (card expired or the turn ended). Not a refusal.
-QUESTION_UNANSWERED = "unanswered"
-
-#: "The AI decides questions of this kind itself for the rest of this task."
-QUESTION_DECIDE_MYSELF = "allow_category_until_done"
-
-#: Option lines that only point at the card's free-text input ("Something else - I'll
-#: type it", "Other", ...) are not answers and are dropped. Mirrors _isPlaceholderOption()
-#: in static/ui/approval-dialog.js.
-_FILL_OPTION_RES = (
-    # starts with a filler phrase; a trailing " - I'll type it" is filler too
-    r"^\s*(?:[-*\u00b7\u2022]\s*)?(?:something else|some other(?:\s+(?:thing|option|answer))?"
-    r"|anything else|any other(?:\s+(?:one|option|answer))?|none of the (?:above|two|three|list)"
-    r"|custom(?:\s+answer)?|your own(?:\s+answer)?|type (?:your own|my own|it|something|your answer)"
-    r"|write (?:your own|my own|it)|fill in|free text)\b\s*"
-    r"(?:[-:!.,]?\s*(?:i(?:'ll| w+ill)?(?: will)? (?:type|write|say|enter).*"
-    r"|you(?:r)? (?:type|own).*|specify|specify (?:your own|it|something)|else)?)?\s*$",
-    # nothing but a filler word
-    r"^\s*(?:[-*\u00b7\u2022]\s*)?(?:other(?:\s+thing)?|n/a|none|custom|free text|-+)\s*[.!]*$",
-    # "Other - specify", "Other - I'll type it"
-    r"^\s*(?:[-*\u00b7\u2022]\s*)?other\s*[-:!.,]\s*(?:specify|specify (?:your own|it|something)"
-    r"|i(?:'ll| w+ill)?(?: will)? (?:type|write|say|enter).*|you(?:r)? (?:type|own).*|else)\s*[.!]*$",
-    # the whole line is just an intent to type
-    r"^\s*(?:[-*\u00b7\u2022]\s*)?i(?:'ll| w+ill)?(?: will)? (?:type|write|say|enter)"
-    r" (?:my own|my answer|it|something)\s*[.!]*$",
+#: An option is a CANDIDATE: something the AI can deliver the moment the user clicks it.
+#: An option that hands the work back to the user ("paste the code in the chat", "I'll
+#: describe it") is NOT a candidate - it asks a question inside an answer button, so the
+#: card answers nothing and the user still has to write the whole request. That is exactly
+#: what the user reported on 2026-11-13: "run a python code for me" produced
+#: "Paste the code / Run a file / A task I'll describe / Run the test suite" instead of
+#: concrete offers like "a simple game", "a small app", "a quiz".
+_META_OPTION_RE = re.compile(
+    r"\b(paste|type|describe|upload|provide|specify|tell me|your ?answer|free ?text|"
+    r"i'?ll ?describe|no ?preference|whatever)\b",
+    re.IGNORECASE,
 )
 
-def _is_fill_option(text: str) -> bool:
-    """True when an option line is only a placeholder for the card's free-text input."""
-    low = text.strip().lower()
-    return any(re.match(pat, low) for pat in _FILL_OPTION_RES)
+#: Bounds for one candidate as it reaches the card (a button is read in one glance).
+OPTION_LABEL_MAX_CHARS = 90
+OPTION_DETAIL_MAX_CHARS = 160
+OPTION_DELIVERABLE_MAX_CHARS = 60
+
+#: Words that carry no topic of their own, so a requirement match ignores them.
+_REQUIREMENT_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "you", "your", "me", "my", "please", "plz", "can",
+    "will", "would", "what", "which", "some", "any", "this", "that", "here", "now",
+    "make", "give", "have", "from", "into", "about", "just", "a", "an", "of", "to",
+    "in", "on", "it", "is", "do", "i", "as", "or", "be", "we", "us", "so", "if",
+})
+
+#: Technologies an option can name. When the user asked for one of them, an option that
+#: names a DIFFERENT one is off-topic and never reaches the card (user request 2026-11-13:
+#: "run Python code" must not offer "a JavaScript website" or "Snake in one HTML file").
+#: Ambiguous short words ('c', 'go') are left out on purpose - 'C:\\Transfer' or 'let's go'
+#: must not be read as a language.
+_TECH_WORDS = frozenset({
+    "python", "javascript", "typescript", "js", "html", "css", "java", "kotlin", "swift",
+    "rust", "golang", "cpp", "c++", "sql", "php", "ruby", "perl", "powershell", "bash",
+    "shell", "elixir", "dart", "scala", "matlab", "excel",
+})
+
+
+def _topic_tokens(text: str) -> set:
+    """Content words of *text* (lowercase, stopwords dropped)."""
+    return {w for w in re.findall(r"[a-z0-9+]+", str(text).lower()) if w not in _REQUIREMENT_STOPWORDS}
+
+
+def _tech_tokens(text: str) -> set:
+    """The technologies named in *text* (lowercase whole words only)."""
+    return {w for w in re.findall(r"[a-z0-9+]+", str(text).lower()) if w in _TECH_WORDS}
+
+
+def _is_off_topic(option: Dict[str, str], req_tech: set, req_tokens: set) -> bool:
+    """True when the option does not serve what the user asked for.
+
+    Two checks, both against the option's own words (deliverable, label, detail):
+
+      * it names a technology the user did not ask for ('HTML page' when they asked for
+        Python) - the mismatch the user complained about;
+      * it shares no content word with the requirement at all ('Order lunch'), so the card
+        never offers unrelated work.
+
+    An option that names the requested technology always passes, which is why every option
+    must state its deliverable ('Python game'). A variant of the same ask that shares a
+    word ('run its pytest suite') is kept.
+    """
+    text = option["deliverable"] + " " + option["label"] + " " + option["detail"]
+    if req_tech and _tech_tokens(text) - req_tech:
+        return True
+    if req_tokens and not (_topic_tokens(text) & req_tokens):
+        return True
+    return False
+
+
+def _normalize_options(options: Optional[list], requirement: str = "") -> Tuple[List[Dict[str, str]], List[str], List[str]]:
+    """Turn the model's options into numbered candidates for the card.
+
+    Accepts a plain string or ``{"label", "detail", "deliverable", "recommended"}`` per
+    option, so an older model (or an older recording) still renders. Returns
+    ``(kept, dropped, off_topic)``:
+
+      * kept       - candidates that serve *requirement*, deduped case-insensitively,
+                     capped at QUESTION_MAX_OPTIONS, each ``{"label", "detail",
+                     "deliverable", "recommended"}``. The recommended one - the option
+                     closest to what the user asked - is moved to position 1, and exactly
+                     one option is flagged, so the card always has one visible favourite.
+      * dropped    - options the user cannot act on (they ask for input instead of work).
+      * off_topic  - options that do not serve the requirement.
+    """
+    kept: List[Dict[str, str]] = []
+    dropped: List[str] = []
+    off_topic: List[str] = []
+    seen = set()
+    req_tech = _tech_tokens(requirement)
+    req_tokens = _topic_tokens(requirement)
+    for raw in (options or []):
+        if isinstance(raw, dict):
+            label = str(raw.get("label") or "").strip()
+            detail = str(raw.get("detail") or "").strip()
+            deliverable = str(raw.get("deliverable") or "").strip()
+            preferred = bool(raw.get("recommended"))
+        else:
+            label, detail, deliverable, preferred = str(raw or "").strip(), "", "", False
+        if not label:
+            continue
+        if _META_OPTION_RE.search(label):
+            dropped.append(label)
+            continue
+        option = {"label": label[:OPTION_LABEL_MAX_CHARS],
+                  "detail": detail[:OPTION_DETAIL_MAX_CHARS],
+                  "deliverable": deliverable[:OPTION_DELIVERABLE_MAX_CHARS],
+                  "recommended": preferred}
+        if _is_off_topic(option, req_tech, req_tokens):
+            off_topic.append(label)
+            continue
+        key = option["label"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(option)
+    kept = kept[:QUESTION_MAX_OPTIONS]
+    # The favourite sits first: the card reads top-down, and option 1 is the one the UI
+    # marks as the closest match to the user's request.
+    preferred_index = next((i for i, o in enumerate(kept) if o["recommended"]), None)
+    if preferred_index is not None and preferred_index != 0:
+        kept.insert(0, kept.pop(preferred_index))
+    for i, option in enumerate(kept):
+        option["recommended"] = (i == 0)
+    return kept, dropped, off_topic
 
 
 async def ask_user_question(question: str, options: Optional[list] = None,
                             context: str = "", mode: str = "blocking",
-                            timeout_sec: int = 0) -> str:
+                            timeout_sec: int = 0, requirement: str = "") -> str:
     """Ask the user a question on a card. Returns the answer, or PENDING in timed mode."""
     ctx = _ctx()
     conv_id = ctx.get("conversation_id")
@@ -412,21 +501,37 @@ async def ask_user_question(question: str, options: Optional[list] = None,
     if state is None:
         return _err("no approval state for this chat - the question cannot be asked now.")
 
-    opts = [str(o).strip() for o in (options or [])]
-    # Only real answers reach the card: blanks, duplicates, filler lines and the
-    # 'unanswered' outcome word itself are dropped.
-    seen = set()
-    opts = [o for o in opts
-            if o and o != QUESTION_UNANSWERED and not _is_fill_option(o)
-            and not (o in seen or seen.add(o))][:QUESTION_MAX_OPTIONS]
-    # One number for both halves: UI countdown and backend expiry.
-    card_timeout = float(get_question_card_timeout_sec() or 0)
-    payload = json.dumps({"question": question, "options": opts, "context": context},
+    opts, dropped, off_topic = _normalize_options(options, requirement)
+    if options and not opts:
+        # The card would offer nothing clickable, so do not show a hollow card: tell the
+        # model what a candidate is and let it re-issue the question with real offers.
+        parts = []
+        if dropped:
+            parts.append("asked the user for input: " + ", ".join(dropped))
+        if off_topic:
+            parts.append("names something the user did not ask for: " + ", ".join(off_topic))
+        why = " - " + "; ".join(parts) if parts else ""
+        return _err(
+            "none of your options is something the user can pick" + why + ". An option must be "
+            f"work YOU can do right now AND a way of satisfying what the user asked"
+            + (f" ({requirement})" if requirement else "") + ". Re-issue the question with 2-"
+            f"{QUESTION_MAX_OPTIONS} candidates that all deliver that, closest first with "
+            "recommended=true, and name each one's deliverable in the technology the user asked "
+            "for - for 'run some Python': 'A simple game - Snake, one Python file' "
+            "(deliverable 'Python game'), 'A todo app - terminal, saves to a file' "
+            "(deliverable 'Python terminal app'), 'A quiz - 10 questions, scored' "
+            "(deliverable 'Python terminal quiz'). The card already has a free-text field for "
+            "'tell me exactly what you want', so never add an option for that."
+        )
+
+    payload = json.dumps({"question": question, "options": opts, "context": context,
+                          "requirement": requirement or ""},
                          ensure_ascii=False)
     request_id = state.new_request_id()
     if channel is not None:
         channel.add_pending_question(request_id, {"question": question, "options": opts,
-                                                  "context": context, "mode": mode})
+                                                  "context": context, "mode": mode,
+                                                  "requirement": requirement or ""})
     try:
         await websocket.send_text(json.dumps({
             "type": "exec_approval_request",
@@ -435,11 +540,12 @@ async def ask_user_question(question: str, options: Optional[list] = None,
             "kind": "question",
             "code": payload,
             "description": context or "",
-            "dismiss_sec": int(card_timeout),   # shared by UI countdown + backend expiry
         }))
         if channel is not None:
+            # The durable row lists the candidate NAMES only - the details belong to the
+            # transient card, not to the turn ledger.
             await channel.record_runtime("question", request_id, question=question,
-                                         options=opts, pending=True)
+                                         options=[o["label"] for o in opts], pending=True)
     except Exception as e:
         if channel is not None:
             channel.drop_pending_question(request_id)
@@ -448,10 +554,6 @@ async def ask_user_question(question: str, options: Optional[list] = None,
     timer = ctx.get("session_timer")
     if timer is not None:
         timer.pause()   # the user deciding is not working time
-
-    # Backend-side expiry of the card, with the same budget as the UI countdown.
-    # 0 (default) = no expiry. Never shortens an explicit timed wait - it only closes
-    # the card when its own deadline comes first.
     try:
         if mode == "timed":
             wait = float(timeout_sec or QUESTION_TIMEOUT_DEFAULT_SEC)
@@ -459,30 +561,12 @@ async def ask_user_question(question: str, options: Optional[list] = None,
                 answer = await asyncio.wait_for(
                     state.wait_for_decision(request_id, kind="question"), timeout=wait)
             except asyncio.TimeoutError:
-                if card_timeout and wait >= card_timeout:
-                    # Nothing can answer it any more - close it and say so honestly.
-                    await _settle_unanswered(channel, conv_id, request_id)
-                    return (f"PENDING: the user has not answered within {int(wait)}s. This is NOT a "
-                            "refusal. The card has now been dismissed and the question is recorded "
-                            "as unanswered. Continue with independent work that does not depend on "
-                            "the answer; if it is still genuinely the user's decision, ask again "
-                            "later with a fresh question.")
                 # The card stays live: the answer arrives later as a notice / follow-up turn.
                 return (f"PENDING: the user has not answered within {int(wait)}s. This is NOT a "
                         "refusal - the card stays open. Continue with independent work that does "
                         "not depend on the answer; the answer will arrive as a runtime notice.")
         else:
-            try:
-                answer = await asyncio.wait_for(
-                    state.wait_for_decision(request_id, kind="question"),
-                    timeout=card_timeout if card_timeout else None)
-            except asyncio.TimeoutError:
-                if channel is not None:
-                    await _settle_unanswered(channel, conv_id, request_id)
-                return (f"UNANSWERED: the question card expired after {int(card_timeout)}s "
-                        "without an answer. This is NOT a refusal and NOT an answer - the user "
-                        "simply did not decide. Do not re-ask it; state the assumption you are "
-                        "making and continue, or report what you could not decide.")
+            answer = await state.wait_for_decision(request_id, kind="question")
     finally:
         if timer is not None:
             timer.resume()
@@ -490,41 +574,22 @@ async def ask_user_question(question: str, options: Optional[list] = None,
     if channel is not None:
         channel.drop_pending_question(request_id)
         try:
-            # answer= rides the frame so the row shows the verbatim choice.
-            await channel.record_runtime("question", request_id, question=question,
-                                         options=opts, decision=answer, answer=answer,
-                                         pending=False)
+            await channel.emit_frame({"type": "cycle_question", "conv_id": conv_id,
+                                      "turn_id": getattr(channel, "turn_id", "") or "",
+                                      "request_id": request_id, "decision": answer,
+                                      "pending": True})
         except Exception:
             pass
 
-    if answer in ("deny", "unavailable", QUESTION_UNANSWERED):
-        return ("USER DECISION: the question was declined, could not be answered, or was left "
-                "unanswered. Do not re-ask it; state the assumption you are making and continue, "
-                "or report what you could not decide.")
-    if answer == QUESTION_DECIDE_MYSELF:
+    if answer in ("deny", "unavailable"):
+        # The card has no Skip button, so this only happens when the card could not be
+        # answered (channel closed, stale request) - fail closed, never invent an answer.
+        return ("USER DECISION: the question could not be answered. Do not re-ask it; state "
+                "the assumption you are making and continue, or report what you could not decide.")
+    if answer == "allow_category_until_done":
         return ("USER DECISION: you may decide questions of this kind yourself for the rest of "
                 "this task. State each choice you make in your final answer.")
     return f"USER ANSWER: {answer}"
-
-
-async def _settle_unanswered(channel, conv_id: str, request_id: str) -> None:
-    """Close an expired question: drop the pending store, fold the row, remove the card.
-
-    Best-effort; never invents an answer - the row records 'unanswered'.
-    """
-    channel.drop_pending_question(request_id)
-    try:
-        await channel.record_runtime("question", request_id, decision=QUESTION_UNANSWERED,
-                                     answer=QUESTION_UNANSWERED, pending=False)
-    except Exception:
-        pass
-    try:
-        await channel.emit_frame({"type": "cycle_question", "conv_id": conv_id,
-                                  "turn_id": getattr(channel, "turn_id", "") or "",
-                                  "request_id": request_id,
-                                  "decision": QUESTION_UNANSWERED, "pending": False})
-    except Exception:
-        pass
 
 
 # ============================================================
@@ -702,40 +767,59 @@ TOOL_DEFINITIONS: Dict[str, Dict] = {
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask the USER a question on a card in the chat: one question whose options "
-                f"are listed one line under another (up to {QUESTION_MAX_OPTIONS}), and the "
-                "FIRST option is your recommended choice - the card marks it with a star and "
-                "an empty free-text answer submits it. Put the option you recommend first. "
-                "EVERY option must be a real answer you can act on: never a filler line like "
-                "'Something else - I'll type it' or 'Other' - the card already has a free-text "
-                "input at the end, so the user types their own answer there. Blank and "
-                "duplicate options are dropped. "
-                "mode 'blocking' waits for the user (the session clock pauses); the card "
-                "self-dismisses after the question-card timeout in Settings > Runtime "
-                "(0 = no limit, the default: it waits for the user forever), which comes "
-                "back as UNANSWERED - not a refusal, not an answer. mode 'timed' waits "
-                f"at most {QUESTION_TIMEOUT_DEFAULT_SEC}s and then returns PENDING - that is "
-                "NOT a refusal either. Use this when a decision genuinely belongs to the user; "
-                "never invent an answer."
+                "Ask the USER a question on a card in the chat: what they asked for, one "
+                f"question, up to {QUESTION_MAX_OPTIONS} numbered candidates, plus a free-text "
+                f"answer. mode 'blocking' waits for the user with no time limit (the session "
+                f"clock pauses). mode 'timed' waits at most {QUESTION_TIMEOUT_DEFAULT_SEC}s and "
+                "then returns PENDING - that is NOT a refusal: the card stays answerable, so "
+                "keep doing independent work and the answer arrives later as a runtime notice. "
+                "Use this when a decision genuinely belongs to the user; never invent an answer.\n\n"
+                "FIRST state 'requirement': what the user actually asked for, in one line. Then "
+                f"offer 2-{QUESTION_MAX_OPTIONS} candidates that ALL deliver that requirement - "
+                "if the user asked for Python code, every option is Python code, and an option "
+                "about something else is rejected. Each option is work YOU can do the moment it "
+                "is clicked ('A snake game - one Python file'), never a request for more input "
+                "('paste the code', 'describe it'), and each names its deliverable in the "
+                "technology the user asked for ('Python game'). Put the candidate closest to the "
+                "request first and set recommended=true on it: the card marks option 1 as the "
+                "favourite. Do not add an option like 'tell me what you want' - the card always "
+                "has a free-text field for that, and there is no skip button: the user picks or "
+                "types."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "requirement": {"type": "string",
+                                    "description": "What the user asked for, one line (e.g. 'run Python code for me'). Every option must satisfy this."},
                     "question": {"type": "string", "description": "The question, one sentence."},
-                    "options": {"type": "array", "items": {"type": "string"},
-                                "description": (f"Up to {QUESTION_MAX_OPTIONS} short answer options, "
-                                                "one per line in the card. Put your recommended "
-                                                "choice FIRST - it gets the star and is submitted "
-                                                "when the user sends an empty answer. Each entry "
-                                                "must be a real answer: no filler like 'Something "
-                                                "else' or 'Other' (the card has its own free-text "
-                                                "input for that).")},
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string",
+                                          "description": "What you will do, short: 'A snake game - one Python file'."},
+                                "detail": {"type": "string",
+                                          "description": "One line the user reads to choose: what they get."},
+                                "deliverable": {"type": "string",
+                                                "description": "The artifact you produce, named in the technology the user asked for: 'Python game', 'Python terminal quiz'."},
+                                "recommended": {"type": "boolean",
+                                                "description": "true on the candidate closest to the requirement; it is moved to position 1 and shown as the favourite."},
+                            },
+                            "required": ["label"],
+                            "additionalProperties": False,
+                        },
+                        "description": (
+                            f"2-{QUESTION_MAX_OPTIONS} candidates that all satisfy 'requirement', "
+                            "closest first (plain strings are accepted too). Never an option that "
+                            "asks the user for input or delivers something else."
+                        ),
+                    },
                     "context": {"type": "string", "description": "Why you are asking, one or two lines."},
                     "mode": {"type": "string", "enum": ["blocking", "timed"]},
-                    "timeout_sec": {"type": "integer",
-                                    "description": "timed mode wait bound (also capped by the card's own dismissal timeout)."},
+                    "timeout_sec": {"type": "integer", "description": "timed mode wait bound."},
                 },
-                "required": ["question"],
+                "required": ["requirement", "question"],
             },
         },
     },

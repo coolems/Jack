@@ -54,10 +54,7 @@ class ChatRequest:
     model: str = ""
     messages: list = field(default_factory=list)
     temperature: float = 0.7
-    # (2026-12 thinking) A bool (show reasoning) OR a canonical level string
-    # "none"/"low"/"medium"/"high" chosen from the serving model's capabilities. Kept
-    # verbatim to the provider, which translates it via ThinkingPolicy.
-    enable_thinking: Any = False
+    enable_thinking: bool = False
     conv_id: str = ""
     tools: Optional[list] = None
     stop_event: Any = None  # asyncio.Event (None tolerated for legacy direct calls)

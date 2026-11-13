@@ -93,7 +93,6 @@ def build_llama_payload(
     top_k: int = 20,
     min_p: float = 0.0,
     presence_penalty: float = 0.0,
-    thinking_kwargs: Dict = None,
 ) -> Dict:
     """
     Build an OpenAI-compatible /v1/chat/completions payload with official
@@ -110,10 +109,6 @@ def build_llama_payload(
         top_k: Top-k sampling limit (>=0, default 20 per Qwen3.6 docs).
         min_p: Minimum probability ratio (0.0-1.0, default 0.0 per Qwen3.6 docs).
         presence_penalty: Penalty for repeated tokens (0.0-2.0, default 0.0 to prevent workflow abandonment).
-        thinking_kwargs: Optional `chat_template_kwargs` for reasoning control, already
-            translated to THIS model's vocabulary by ThinkingPolicy (payload.py must never
-            invent a kwarg: a strict template raises on an undeclared variable). Empty/None
-            sends no thinking keys at all - the safe default for a model with no knobs.
 
     Returns:
         Dict ready to send as JSON to /v1/chat/completions.
@@ -156,13 +151,6 @@ def build_llama_payload(
 
     if tools:
         payload["tools"] = tools
-
-    # ---- Reasoning control (2026-12) ----
-    # Only what ThinkingPolicy produced, verbatim. An empty dict is deliberately NOT
-    # added: llama.cpp/Strata ignore unknown keys, but a strict GGUF template raises on an
-    # undeclared template variable, so a model without thinking knobs must get no keys.
-    if thinking_kwargs:
-        payload["chat_template_kwargs"] = dict(thinking_kwargs)
 
     # ---- Token Usage in SSE Chunks ----
     # Always request usage data from llama.cpp for streaming responses.

@@ -14,10 +14,16 @@
  *   call. The worker snaps values down to multiples of 32 and clamps them to the tier's
  *   max_pixels budget, so oversized values degrade gracefully instead of breaking.
  *
+ * Third setting (2026-11-13): QUESTION DIALOG COLOR for the ask_user_question card.
+ *   A palette of ready-made tints plus a free colour picker; saved as
+ *   'question_dialog_color' (#rrggbb) and applied live as the CSS variables
+ *   --question-accent / --question-accent-soft, so the pick recolours the question cards
+ *   already on screen without any restart.
+ *
  * Values live in settings.json via GET/POST /api/settings (keys: python_exec_auto_approve,
- * python_exec_auto_approve_seconds, image_gen_tier, image_gen_width, image_gen_height)
- * and are read LIVE by websocket.js / generate_image() on every use - so a save applies
- * immediately without any restart.
+ * python_exec_auto_approve_seconds, image_gen_tier, image_gen_width, image_gen_height,
+ * question_dialog_color) and are read LIVE by websocket.js / generate_image() on every
+ * use - so a save applies immediately without any restart.
  */
 
 // Live view of the saved values; websocket.js reads this when rendering an approval card.
@@ -35,11 +41,79 @@
 // (2026-12) 'question' is deliberately NOT in this list: ask_user_question is not a
 // permission gate, and an auto-answered question would invent an answer the user never
 // gave. The backend pins it to manual (config.CONSENT_NEVER_AUTO_KINDS), so there is no
-// auto-approve row for it here and no key is ever posted for it.
-// It DOES get its own row - QUESTION CARD - which only sets how long an UNANSWERED card
-// may stay on screen (default 0 = no limit). Never an auto-answer.
+// row for it here and no key is ever posted for it.
 const CONSENT_KINDS = ['python', 'url', 'file', 'network', 'subprocess', 'desktop'];
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, questionCardSeconds: 0, questionCardColor: '#5fae8b', approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess; (2026-11-07) desktop
+
+// --- Question dialog colour (2026-11-13) -------------------------------------------
+// The tint of the ask_user_question card. settings.json key 'question_dialog_color';
+// applied live as --question-accent (+ a derived soft tint), so a pick recolours every
+// card already on screen. Mirrors config.QUESTION_DIALOG_COLOR_DEFAULT.
+const QUESTION_COLOR_DEFAULT = '#22c55e';
+// Ready-made tints shown as a palette in Settings > Runtime. Greens first (the default
+// family), then the other card colours so a user can match a card to their own taste.
+const QUESTION_COLOR_PALETTE = [
+    '#22c55e', '#16a34a', '#2ecc71', '#4ade80', '#0d9488', '#3b82f6',
+    '#f59e0b', '#ef4444', '#a855f7', '#eab308', '#64748b', '#e6edf3'
+];
+const QUESTION_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** '#rrggbb' (lowercased) when *value* is a hex colour, else the default. */
+function _coerceQuestionDialogColor(value) {
+    const raw = String(value || '').trim();
+    return QUESTION_COLOR_RE.test(raw) ? raw.toLowerCase() : QUESTION_COLOR_DEFAULT;
+}
+
+/** Paint every question card with *hex*: the accent plus a soft tint for rings/fills. */
+function applyQuestionDialogColor(hex) {
+    const color = _coerceQuestionDialogColor(hex);
+    const root = document.documentElement;
+    if (!root) return color;
+    root.style.setProperty('--question-accent', color);
+    const r = parseInt(color.slice(1, 3), 16), g = parseInt(color.slice(3, 5), 16), b = parseInt(color.slice(5, 7), 16);
+    root.style.setProperty('--question-accent-soft', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.28)');
+    return color;
+}
+
+/** Fill the palette swatches once; the active one follows the current colour. */
+function renderQuestionColorPalette(activeColor) {
+    const row = document.getElementById('questionColorPalette');
+    if (!row) return;
+    row.innerHTML = '';
+    QUESTION_COLOR_PALETTE.forEach(function (hex) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'color-swatch' + (hex.toLowerCase() === _coerceQuestionDialogColor(activeColor) ? ' active' : '');
+        btn.style.background = hex;
+        btn.dataset.color = hex;
+        btn.title = hex;
+        btn.addEventListener('click', function () {
+            const picker = document.getElementById('questionDialogColor');
+            if (picker) picker.value = hex;
+            void saveRuntimeSettings();
+        });
+        row.appendChild(btn);
+    });
+    _markQuestionColorSwatch(activeColor);
+}
+
+/** Highlight the palette swatch matching *hex* (none is active for a custom picker value). */
+function _markQuestionColorSwatch(hex) {
+    const row = document.getElementById('questionColorPalette');
+    if (!row) return;
+    const color = _coerceQuestionDialogColor(hex);
+    row.querySelectorAll('.color-swatch').forEach(function (btn) {
+        btn.classList.toggle('active', String(btn.dataset.color).toLowerCase() === color);
+    });
+}
+
+/** Reset the question-card tint to the built-in green and save it. */
+async function resetQuestionDialogColor() {
+    const picker = document.getElementById('questionDialogColor');
+    if (picker) picker.value = QUESTION_COLOR_DEFAULT;
+    await saveRuntimeSettings();
+}
+
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, questionDialogColor: QUESTION_COLOR_DEFAULT, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess; (2026-11-07) desktop
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
 let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
@@ -90,13 +164,14 @@ async function refreshRuntimeSettingsFromApi() {
     let imgWidth = _coerceImageGenSize(data && data.image_gen_width, 600);
     let imgHeight = _coerceImageGenSize(data && data.image_gen_height, 400);
 
-    // Question card: auto-close seconds (0 = no limit) + accent.
-    const qSecs = _coerceQuestionCardSeconds(data && data.question_card_timeout_seconds, 0);
-    const qColor = _coerceQuestionCardColor(data && data.question_card_color);
+    // (2026-11-13) Question-card tint. Paint it as soon as it is known - the card may
+    // already be on screen, and a fresh page must show the saved colour before anyone
+    // opens Settings.
+    const questionColor = _coerceQuestionDialogColor(data && data.question_dialog_color);
+    applyQuestionDialogColor(questionColor);
 
-    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionCardSeconds: qSecs, questionCardColor: qColor, approvals: approvals };
+    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionDialogColor: questionColor, approvals: approvals };
     COOLEMS._runtimeSettingsLoaded = true;
-    _applyQuestionCardAccent(qColor);
 
     // Fill the Runtime tab controls when they are in the DOM (openSettings path).
     const manualRadio = document.getElementById('pyExecManual');
@@ -129,11 +204,12 @@ async function refreshRuntimeSettingsFromApi() {
         if (widthInput) widthInput.value = String(imgWidth);
         if (heightInput) heightInput.value = String(imgHeight);
 
-        // Fill the QUESTION CARD row (seconds + accent).
-        const qSecInput = document.getElementById('questionCardSeconds');
-        if (qSecInput) qSecInput.value = String(qSecs);
-        const qColorInput = document.getElementById('questionCardColor');
-        if (qColorInput) qColorInput.value = qColor;
+        // (2026-11-13) question tint: picker + hex readout + palette highlight.
+        const colorInput = document.getElementById('questionDialogColor');
+        if (colorInput) colorInput.value = questionColor;
+        const hexOut = document.getElementById('questionDialogColorHex');
+        if (hexOut) hexOut.textContent = questionColor;
+        renderQuestionColorPalette(questionColor);
 
         toggleRuntimeSecondsGroup(mode === 'auto');
     }
@@ -198,27 +274,6 @@ function _coerceImageGenSize(value, fallback) {
     const v = parseInt(value, 10);
     if (!Number.isFinite(v)) return fallback;
     return Math.min(4096, Math.max(32, v));
-}
-
-// Question-card auto-close seconds: int in 0..3600 (0 = no limit), else *fallback*.
-function _coerceQuestionCardSeconds(value, fallback) {
-    const v = parseInt(value, 10);
-    if (!Number.isFinite(v)) return fallback;
-    return Math.min(3600, Math.max(0, v));
-}
-
-// Question-card accent: a #rrggbb hex, else the default green.
-const QUESTION_CARD_GREEN_DEFAULT = '#5fae8b';
-function _coerceQuestionCardColor(value) {
-    const v = String(value || '').trim().toLowerCase();
-    return /^#[0-9a-f]{6}$/.test(v) ? v : QUESTION_CARD_GREEN_DEFAULT;
-}
-
-/** Publish the question-card accent as a CSS variable (config.QUESTION_CARD_GREEN ->
- *  /api/settings -> here), so the card's colour comes from one place. */
-function _applyQuestionCardAccent(color) {
-    try { document.documentElement.style.setProperty('--question-green', color); }
-    catch (e) { /* no DOM yet - the stylesheet default stands */ }
 }
 
 function toggleRuntimeSecondsGroup(show) {
@@ -294,14 +349,17 @@ async function saveRuntimeSettings() {
     if (widthInput) widthInput.value = String(imgWidth);
     if (heightInput) heightInput.value = String(imgHeight);
 
-    // Read the QUESTION CARD row: seconds (0 = no limit) + accent.
-    let qSecs = _coerceQuestionCardSeconds(document.getElementById('questionCardSeconds')
-        && document.getElementById('questionCardSeconds').value, 0);
-    const qSecInput = document.getElementById('questionCardSeconds');
-    if (qSecInput) qSecInput.value = String(qSecs);
-    const qColor = _coerceQuestionCardColor(document.getElementById('questionCardColor')
-        && document.getElementById('questionCardColor').value);
-    _applyQuestionCardAccent(qColor);
+    // (2026-11-13) Question tint: read the picker/palette value, apply it live BEFORE the
+    // save so the cards on screen change instantly, and never post a malformed hex. With no
+    // picker in the DOM, the LAST KNOWN GOOD colour is re-posted - a save must never reset
+    // a saved tint to the default.
+    const colorInput = document.getElementById('questionDialogColor');
+    const questionColor = applyQuestionDialogColor(
+        colorInput ? colorInput.value : (COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT));
+    if (colorInput && colorInput.value.toLowerCase() !== questionColor) colorInput.value = questionColor;
+    const hexOut = document.getElementById('questionDialogColorHex');
+    if (hexOut) hexOut.textContent = questionColor;
+    _markQuestionColorSwatch(questionColor);
 
     try {
         const response = await fetch('/api/settings', {
@@ -315,9 +373,7 @@ async function saveRuntimeSettings() {
                 image_gen_tier: imageGenTier,
                 image_gen_width: imgWidth,
                 image_gen_height: imgHeight,
-                // Question card: auto-close seconds + accent.
-                question_card_timeout_seconds: qSecs,
-                question_card_color: qColor
+                question_dialog_color: questionColor
             }, {
                     url_consent_auto_approve: approvalsNow.url.mode,
                     url_consent_auto_approve_seconds: approvalsNow.url.seconds,
@@ -337,12 +393,26 @@ async function saveRuntimeSettings() {
 
         // Silent by design: the Runtime tab shows no save feedback in the UI.
         if (response.ok) {
-            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionCardSeconds: qSecs, questionCardColor: qColor, approvals: readApprovalsFromControls() };
+            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionDialogColor: questionColor, approvals: readApprovalsFromControls() };
         } else {
             const errData = await response.json().catch(() => ({}));
             console.error('[RUNTIME SETTINGS] Save rejected:', errData.detail || 'Unknown error');
+            // The backend refused the value: repaint with the last known good colour so the
+            // cards on screen never keep a tint settings.json did not accept.
+            applyQuestionDialogColor(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
+            _markQuestionColorSwatch(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
         }
     } catch (e) {
         console.error('[RUNTIME SETTINGS] Failed to save:', e);
+        applyQuestionDialogColor(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
     }
 }
+
+// (2026-11-13) Paint the question cards at page load, before anyone opens Settings:
+// the default green first (so a card rendered in the first seconds is never amber),
+// then the saved colour from the one /api/settings sync.
+document.addEventListener('DOMContentLoaded', function () {
+    applyQuestionDialogColor(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
+    renderQuestionColorPalette(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
+    void ensureRuntimeSettingsLoaded().catch(() => { /* keep the default tint */ });
+});

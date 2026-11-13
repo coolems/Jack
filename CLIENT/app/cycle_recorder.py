@@ -296,24 +296,18 @@ class CycleRecorder:
 
     async def question(self, request_id: str, *, question: str = "",
                        options: Optional[list] = None, decision: str = "",
-                       pending: bool = True, answer: str = "") -> None:
+                       pending: bool = True) -> None:
         """One ask_user_question card. The card is transient (like a consent card); this
-        row is the durable fact, and the answer folds into the SAME row.
-
-        `answer` is the user's verbatim choice (or 'unanswered') - it rides the frame and
-        the row so the block shows what was decided, never a paraphrase."""
+        row is the durable fact, and the answer folds into the SAME row."""
         if not request_id:
             return
         row = self.log.add_question(request_id, question=question,
                                     options=list(options or []), decision=decision,
-                                    pending=pending, answer=answer or "")
-        # Open card -> cycle_question_pending; settled -> cycle_question (UI removes the card).
-        await self._send({"type": "cycle_question_pending" if row["pending"] else "cycle_question",
-                          "conv_id": self.conv_id,
+                                    pending=pending)
+        await self._send({"type": "cycle_question", "conv_id": self.conv_id,
                           "turn_id": self.turn_id, "request_id": request_id,
                           "question": row["question"], "options": row["options"],
-                          "decision": row["decision"], "answer": row.get("answer", ""),
-                          "pending": row["pending"],
+                          "decision": row["decision"], "pending": row["pending"],
                           "step_no": row["step_no"], "at_ts": row["at_ts"]})
 
     async def announce_final(self, step_no: int) -> None:
