@@ -32,7 +32,7 @@ from config import load_search_engines
 
 # Only send_error remains: every other frame type (system, content, done, provider/execution
 # errors, ...) is emitted by the ChatBus channel while the turn runs in its background task.
-from app.websocket.message_types import send_error
+from app.websocket.message_types import send_error, send_history_replaced
 # Assistant-message persistence is owned by the ChatBus; user messages are still saved here
 # in stage 2 before the turn is submitted.
 from app.websocket.db_ops import save_user_message
@@ -271,11 +271,31 @@ def create_websocket_handler(
         # agent_mode on their own.
         requires_tools, _tool_types = detect_tool_requirement(user_msg)
         # --- Save user message ---
-        save_user_message(
-            db_path, cid, user_msg,
-            media_urls=media_files,
-            file_contents=file_contents,
-        )
+        # (2026-11-13) An edited prompt carries edit_from_index: the rows it replaces are
+        # removed in THIS transaction, together with the new prompt. There is no window
+        # where the workspace has no prompt - the old flow deleted the rows through a
+        # separate REST call and then hoped this frame would store the replacement, so a
+        # frame that failed validation destroyed the prompt and saved nothing.
+        cut_index = payload.edit_from_index
+        try:
+            save_user_message(
+                db_path, cid, user_msg,
+                media_urls=media_files,
+                file_contents=file_contents,
+                cut_index=cut_index,
+            )
+        except Exception as e:
+            # Nothing was written (the save rolls back), so the history on screen is still
+            # correct. Do not run a turn on top of a half-applied edit.
+            ctx["response_in_progress"] = False
+            logger.warning(f"[EDIT] could not apply edit for conversation {cid}: {e}")
+            await send_error(ws, f"Could not apply your edit: {e}", code=400)
+            return None
+
+        if cut_index is not None:
+            # The rows on screen are gone: rebuild this workspace from the DB before the
+            # turn streams, so the new prompt and the surviving history land in order.
+            await send_history_replaced(ws, cid, cut_index)
 
         # --- Reload and trim history ---
         ctx["history"] = load_history_from_db(cid)

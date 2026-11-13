@@ -57,6 +57,19 @@ async def send_error(websocket: Any, content: str, code: Optional[int] = None):
         msg["code"] = code
     await websocket.send_text(json.dumps(msg))
 
+async def send_history_replaced(websocket: Any, conv_id: str, index: int):
+    """Tell the UI that this workspace's history was replaced from `index` (2026-11-13).
+
+    A prompt edit removes rows AND stores the new prompt in one transaction, so the DOM on
+    screen no longer matches the database. This frame arrives BEFORE the turn streams, so
+    the UI rebuilds from the DB first and the live answer lands in the rebuilt view.
+    """
+    await websocket.send_text(json.dumps({
+        "type": "history_replaced",
+        "conversation_id": conv_id,
+        "index": index
+    }))
+
 async def send_provider_error(websocket: Any, error_type: str, content: str):
     """Send a provider-level error (connection, timeout, etc.)."""
     await websocket.send_text(json.dumps({

@@ -22,7 +22,8 @@ from fastapi import APIRouter, Request, HTTPException, Query
 
 from app.helpers import get_client_ip
 from app.db_manager import get_db_connection, close_db_connection
-from app.websocket.turn_ops import delete_conversation_rows, truncate_turn_logs, load_turn_logs
+from app.websocket.turn_ops import delete_conversation_rows, load_turn_logs
+from app.websocket.db_ops import cut_chat_history
 import logging
 
 logger = logging.getLogger("COOLEMS")
@@ -270,39 +271,42 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
     @router.delete("/{conv_id}/messages/truncate")
     async def truncate_messages(conv_id: str, data: Dict, request: Request):
+        """Remove the history from a chat-level index. Nothing is stored here.
+
+        A prompt EDIT does not use this endpoint: an edited prompt travels over the
+        WebSocket with `edit_from_index`, and app/websocket/db_ops.py removes the tail it
+        replaces in the SAME transaction as the new prompt. Cutting here and storing the
+        replacement somewhere else is what lost the prompt when the second step failed.
+
+        The index counts the same chat-level items the UI does (db_ops.cut_chat_history).
+        """
         current_ip = get_client_ip(request)
         message_index = data.get("message_index", 0)
+        if not isinstance(message_index, int) or isinstance(message_index, bool) or message_index < 0:
+            raise HTTPException(status_code=400,
+                                detail="message_index must be a non-negative integer")
 
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT id, timestamp FROM messages WHERE conversation_id = ? "
-                "ORDER BY timestamp, rowid",
-                (conv_id,)
-            )
-            rows = cursor.fetchall()
-
-            deleted_count = 0
-            pruned_turn_logs = 0
-            if message_index < len(rows):
-                ids_to_delete = [row[0] for row in rows[message_index:]]
-                deleted_count = len(ids_to_delete)
-                placeholders = ",".join("?" * deleted_count)
-                cursor.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", ids_to_delete)
-                # Cycle rows belong to the CONVERSATION, not to the answer they describe:
-                # without this prune, a reload rebuilds cycle blocks for answers that are gone.
-                pruned_turn_logs = truncate_turn_logs(
-                    cursor, conv_id, ids_to_delete, rows[message_index][1]
-                )
+            try:
+                deleted_count, pruned_turn_logs = cut_chat_history(cursor, conv_id, message_index)
                 conn.commit()
-                logger.info(
-                    f"Client {current_ip} truncated {deleted_count} messages from "
-                    f"conversation {conv_id} (turn_logs={pruned_turn_logs})"
-                )
+            except ValueError as e:
+                # A bad index writes nothing.
+                conn.rollback()
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"Failed to truncate conversation {conv_id}: {e}")
+                raise HTTPException(status_code=500, detail="Failed to truncate workspace")
         finally:
             close_db_connection(conn)
+
+        logger.info(
+            f"Client {current_ip} truncated {deleted_count} messages from "
+            f"conversation {conv_id} (turn_logs={pruned_turn_logs})"
+        )
         return {"status": "truncated", "deleted_count": deleted_count,
                 "remaining_count": message_index, "deleted_turn_logs": pruned_turn_logs}
 

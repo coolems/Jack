@@ -520,11 +520,15 @@ class JobRegistry:
                 rec.hooks.cancel(reason or "cancelled by the agent")
         except Exception as exc:  # a throwing cancel propagates as a failed job
             logger.warning(f"[JOBS] cancel({job_id}) raised {exc!r}")
+            # Build the message NOW, not inside the lambda: CPython deletes `exc` when
+            # the except block ends, so a closure over it only survives because
+            # _schedule() invokes the factory eagerly. Do not depend on that - capture
+            # the text first, so the settle is safe under any scheduling strategy.
+            detail = f"cancel raised: {exc}"
             # Settlement work, so it goes in the awaited bucket: a teardown must not
             # return with this job's terminal state still unwritten.
-            self._schedule(lambda: self._settle(
-                rec, JobOutcome("failed", detail=f"cancel raised: {exc}")),
-                bucket=self._announce_tasks)
+            self._schedule(lambda: self._settle(rec, JobOutcome("failed", detail=detail)),
+                           bucket=self._announce_tasks)
         return "requested"
 
     def remove(self, job_id: str, caller: Optional[str] = None) -> None:

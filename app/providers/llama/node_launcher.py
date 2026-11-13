@@ -786,7 +786,9 @@ async def reconcile(inst: LlamaServerInstance, allow_override: bool = False,
 
     ready, message, ready_props = await _wait_ready(inst, model_path, proc)
     if not ready:
-        _write_state(desired="unknown", pid=None, last_error=message)
+        # Keyed by the entry's NAME (like every other _write_state call here) - a bare
+        # kwargs call would raise TypeError and lose the failure record for this config.
+        _write_state(inst.name, desired="unknown", pid=None, last_error=message)
         _emit(f"[NODE] ERROR: {message}")
         tail = _tail(log_path)
         if tail:

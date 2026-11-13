@@ -431,6 +431,17 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
 
+    // (2026-11-13) The server replaced this workspace's history: an edited prompt removes the
+    // tail it replaces AND stores the new prompt in one transaction, so what is on screen is
+    // stale. Rebuild from the DB - this frame arrives before the turn streams, so the answer
+    // lands in the rebuilt view.
+    if (data.type === 'history_replaced') {
+        if (typeof rebuildWorkspaceView === 'function') {
+            void rebuildWorkspaceView(convId).catch(e => console.error('[WS] view rebuild failed:', e));
+        }
+        return;
+    }
+
     // ===== LOOP-HISTORY BLOCKS (2026-11-08) ===========================================
     // An agentic turn is ONE collapsed block, not a stream of bubbles. Every frame below
     // resolves its block through _cycleTarget(), which refuses a turn_id owned by another

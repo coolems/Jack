@@ -373,9 +373,13 @@ async function sendMessage() {
     // (2026-10-23 live steering) remember whether THIS turn can be steered
     COOLEMS.streamingAgentMode = !!COOLEMS.agentMode;
     COOLEMS.isStreaming = true; COOLEMS.streamingBuffer = ''; setButtonState(true);
+    const _modelSel = document.getElementById('modelSelector');
     const payload = {
         message,
-        model: document.getElementById('modelSelector').value,
+        // An empty picker (models not loaded yet, or no llama node serving) must send null,
+        // NOT '': the server schema rejects '' ("Model name contains invalid characters") and
+        // the whole turn dies - the prompt stays unsaved. null means "use the configured model".
+        model: (_modelSel && _modelSel.value) ? _modelSel.value : null,
         agent_mode: COOLEMS.agentMode,
         media_files: COOLEMS.selectedFiles.map(f => f.url),
         enable_thinking: COOLEMS.enableThinking
@@ -458,11 +462,12 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
     const messageDiv = document.createElement('div');
     messageDiv.className = role === 'user' ? 'cycle-user' : 'message assistant';
     if (streaming) messageDiv.dataset.streaming = 'true';
-    // (2026-11-08) THE INDEX CONTRACT for edit/resend: the index sent to
-    // DELETE /messages/truncate must be the position among CHAT-LEVEL items, and the server
-    // counts the same set - every DB row EXCEPT a '[STEER]' marker (folded into the block).
-    // So the count must include a turn block (.cycle-block = one DB answer row), otherwise
-    // an edit after a turn would cut the history at the wrong row.
+    // (2026-11-13) THE INDEX CONTRACT for edit/resend: the index sent as edit_from_index
+    // must be the position among CHAT-LEVEL items, and the server counts the same set - every
+    // DB row EXCEPT a steering marker ([STEER]) or a runtime notice, both of which live inside
+    // the turn's block (app/websocket/db_ops.py cut_chat_history). So the count must include a
+    // turn block (.cycle-block = one DB answer row), otherwise an edit after a turn would cut
+    // the history at the wrong row.
     messageDiv.dataset.messageIndex =
         container.querySelectorAll('.cycle-user, .message, .cycle-block').length;
     let mediaHtml = '';

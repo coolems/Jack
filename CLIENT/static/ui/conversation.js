@@ -332,6 +332,8 @@ async function loadConversation(id) {
         // FAST PATH: a stashed view exists and is safe to reattach. A mid-stream stash may only
         // be reused while the turn is still live; if it finished while away, the final answer is
         // in the DB -> slow path shows the complete bubble instead of a truncated one.
+        // (2026-11-13) An EMPTY view is never stashed at all (workspace-view.js), so a blank
+        // snapshot can never shadow a workspace whose rows exist in the DB.
         const _fastOk = !!_stash && (!_stash.midStream || _liveStatus === 'generating' || _liveStatus === 'queued');
 
         if (_fastOk) {
@@ -615,126 +617,110 @@ async function editAndResend(messageIndex, newContent) {
     setButtonState(false);
 
     try {
-        // STEP 1: Truncate conversation on server
-        const truncateResponse = await fetch(
-            `/api/conversations/${COOLEMS.currentConversation}/messages/truncate`,
-            {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message_index: messageIndex })
-            }
-        );
-
-        if (!truncateResponse.ok) {
-            const errorText = await truncateResponse.text();
-            throw new Error(`Server truncate failed: ${truncateResponse.status} ${errorText}`);
-        }
-
-        const truncateData = await truncateResponse.json();
-        log('[EDIT] Truncated:', truncateData.deleted_count, 'messages deleted,', 
-            truncateData.remaining_count, 'messages remain');
-
-        // STEP 2: The socket STAYS OPEN (multi-chat pool) — no close/reconnect dance needed.
-        // Any in-flight session for this chat is stopped so the rebuild starts clean.
-        fetch(`/api/stop/${COOLEMS.currentConversation}`, { method: 'POST' }).catch(() => {});
-
-        // STEP 3: Reload entire conversation from server
-        log('[EDIT] Reloading conversation from server...');
-
-        const response = await fetch(`/api/conversations/${COOLEMS.currentConversation}/messages`);
-        if (!response.ok) {
-            throw new Error(`Failed to load workspace: ${response.status}`);
-        }
-        const data = await response.json();
-
-        // STEP 4: COMPLETELY REBUILD UI from fresh data
-        const container = document.getElementById('chatContainer');
-        const welcome = document.getElementById('welcome');
-        if (welcome) welcome.style.display = 'none';
-
-        container.innerHTML = '';
-
-        if (!document.getElementById('welcome')) {
-            const newWelcome = document.createElement('div');
-            newWelcome.id = 'welcome';
-            newWelcome.className = 'welcome';
-            newWelcome.style.display = 'none';
-            newWelcome.innerHTML = '<h1>COOLEMS</h1><p>AI Agent Interface. Powered by local LLM models.</p>';
-            container.appendChild(newWelcome);
-        }
-
-        // (2026-11-08) the truncate already pruned this turn's turn_log rows server-side, so the
-        // rebuild shows only the surviving history. Release the workspace's blocks + turn_id
-        // ownership BEFORE wiping, or rebuild() would see the dead nodes as "already rendered".
-        if (typeof CycleBlock !== 'undefined') CycleBlock.clear(COOLEMS.currentConversation);
-        const hist = await _renderHistory(COOLEMS.currentConversation, data);
-
-        log('[EDIT] UI rebuilt with', hist.messages, 'messages,', hist.blocks, 'turn block(s)');
-
-        // (2026-09-08 multi-chat UI fix) the rebuild is DB-authoritative: leave replay mode
-        // and reset the baseline so the incoming live stream renders into one fresh bubble.
-        COOLEMS._inReplay = false;
-        COOLEMS._baselineAssistant = _countAssistantBubbles();
-
-        // STEP 5: Append the edited user message as a NEW message
-        await appendMessage('user', newContent, false);
-        log('[EDIT] Appended edited message to UI');
-
-        // STEP 6: Make sure this chat's pooled socket is open (it was never closed — ensure() reuses it)
+        // The edited prompt travels over this chat's own socket with edit_from_index. The
+        // server removes the tail it replaces AND stores the prompt in ONE transaction
+        // (app/websocket/db_ops.py), so there is no step that can fail after a deletion:
+        // if this frame never reaches the server, nothing was deleted and the workspace is
+        // exactly as it was.
         ChatSocketPool.ensure(COOLEMS.currentConversation);
         const _editWs = () => {
             const e = ChatSocketPool.sockets[COOLEMS.currentConversation];
             return e ? e.ws : null;
         };
+        if (!_editWs()) throw new Error('No socket for this workspace');
 
-        let retries = 0;
-        const maxRetries = 20;
+        // No stop POST here on purpose: this function refuses to run while a turn is
+        // streaming (checked above), so there is nothing to stop. The old fire-and-forget
+        // POST /api/stop raced with the frame below - it could land AFTER the new turn had
+        // started and abort it, which is what showed "Generation stopped" on an edit.
+        const modelSelector = document.getElementById('modelSelector');
+        const payload = {
+            message: newContent,
+            // An empty picker means "use the configured model", never model: '' - a blank
+            // value is what made the server reject the frame and discard the prompt.
+            model: (modelSelector && modelSelector.value) ? modelSelector.value : null,
+            agent_mode: COOLEMS.agentMode,
+            media_files: [],
+            enable_thinking: COOLEMS.enableThinking,
+            edit_from_index: messageIndex
+        };
 
-        while ((!_editWs() || _editWs().readyState !== WebSocket.OPEN) && retries < maxRetries) {
-            log('[EDIT] WebSocket not open, waiting...', retries + 1, '/', maxRetries);
-            await new Promise(resolve => setTimeout(resolve, 100));
-            retries++;
-        }
-
-        if (!_editWs() || _editWs().readyState !== WebSocket.OPEN) {
-            throw new Error('WebSocket not connected after waiting');
-        }
-
-        // STEP 7: Send the edited message to AI over this chat's own socket
         COOLEMS.isStreaming = true;
         COOLEMS.streamingAgentMode = !!COOLEMS.agentMode;   // (2026-10-23 live steering)
         COOLEMS.streamingBuffer = '';
         setButtonState(true);
 
-        const modelSelector = document.getElementById('modelSelector');
-
-        const payload = {
-            message: newContent,
-            model: modelSelector ? modelSelector.value : null,
-            agent_mode: COOLEMS.agentMode,
-            media_files: [],
-            enable_thinking: COOLEMS.enableThinking
-        };
-
         _editWs().send(JSON.stringify(payload));
-        log('[EDIT] Message sent to AI');
+        log('[EDIT] Message sent to AI at index', messageIndex);
+        // The view is rebuilt by the server's history_replaced frame, which arrives before
+        // the answer streams, so the surviving history and the new prompt land in order.
         showNotification('Message edited. AI responding from this point.', 'success');
 
     } catch (error) {
         console.error('[EDIT] Failed:', error);
-            showNotification('Failed to edit message: ' + error.message, 'error');
-            COOLEMS.isStreaming = false;
-            COOLEMS.streamingAgentMode = false;
-            setButtonState(false);
+        COOLEMS.isStreaming = false;
+        COOLEMS.streamingAgentMode = false;
+        setButtonState(false);
+        // Nothing was deleted: the edit is applied server-side in one transaction, so a
+        // failed send leaves the history untouched.
+        showNotification('Edit failed - your history is unchanged: ' + error.message, 'error');
+    }
+}
 
-        log('[EDIT] Attempting to recover by reloading conversation');
-        try {
-            // (2026-09-08 multi-chat) the socket stays open — just reload the view.
-            await loadConversation(COOLEMS.currentConversation);
-        } catch (reloadError) {
-            console.error('[EDIT] Recovery failed:', reloadError);
-            showNotification('Please refresh the page to continue', 'error');
+// (2026-11-13) Rebuild the workspace on screen from the DB after the server replaced its
+// history. An edited prompt is applied in ONE transaction, so the DOM on screen no longer
+// matches the database; the 'history_replaced' frame arrives before the turn streams, and
+// this puts the surviving history plus the new prompt back in order.
+async function rebuildWorkspaceView(convId) {
+    if (!convId || convId !== COOLEMS.currentConversation) return;
+
+    // Frames of the new turn may arrive while the container is being wiped: suspend this
+    // workspace so they queue (chat-socket-pool.js) and are replayed after the rebuild
+    // instead of rendering into the DOM that is about to be replaced.
+    WorkspaceViews.suspend(convId);
+    try {
+        const response = await fetch(`/api/conversations/${convId}/messages`);
+        if (!response.ok) {
+            showNotification('Could not reload this workspace after the edit', 'error');
+            return;
         }
+        const data = await response.json();
+
+        const container = document.getElementById('chatContainer');
+        // Release blocks + turn_id ownership BEFORE wiping, or rebuild() would treat the
+        // dead nodes as "already rendered".
+        if (typeof CycleBlock !== 'undefined') CycleBlock.clear(convId);
+        container.innerHTML = '';
+
+        let welcome = document.getElementById('welcome');
+        if (!welcome) {
+            welcome = document.createElement('div');
+            welcome.id = 'welcome';
+            welcome.className = 'welcome';
+            welcome.style.display = 'none';
+            welcome.innerHTML = '<h1>COOLEMS</h1><p>AI Agent Interface. Powered by local LLM models.</p>';
+            container.appendChild(welcome);
+        }
+        welcome.style.display = 'none';
+
+        const hist = await _renderHistory(convId, data);
+        log('[EDIT] Workspace rebuilt from DB:', hist.messages, 'messages,', hist.blocks, 'turn block(s)');
+
+        // The view is DB-authoritative: clear the stream state so the live answer of the
+        // edited turn streams into one fresh bubble instead of appending to a removed one.
+        const st = (typeof ChatStreamState !== 'undefined') ? ChatStreamState.get(convId) : null;
+        if (st) {
+            st.inReplay = false;
+            st.streamingBuffer = '';
+            st.baselineAssistant = _countAssistantBubbles();
+        }
+        COOLEMS._inReplay = false;
+        COOLEMS._baselineAssistant = _countAssistantBubbles();
+
+        await loadConversations();
+    } finally {
+        WorkspaceViews.resume(convId);
+        WorkspaceViews.flushFrames(convId);
     }
 }
 
@@ -752,6 +738,7 @@ window.getCurrentConversationId = function() {
 window.getChatSessionStatus = getChatSessionStatus;
 window._countAssistantBubbles = _countAssistantBubbles;
 window.editAndResend = editAndResend;
+window.rebuildWorkspaceView = rebuildWorkspaceView;
 window.loadConversation = loadConversation;
 window.loadConversations = loadConversations;
 window.deleteConversation = deleteConversation;

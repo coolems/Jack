@@ -85,6 +85,15 @@ const WorkspaceViews = {
         const node = document.createElement('div');   // holder keeps the subtree out of layout
         while (container.firstChild) node.appendChild(container.firstChild);
 
+        // (2026-11-13) An EMPTY view is never parked. A snapshot showing no chat-level item
+        // would win over the database on the next switch and render a blank workspace even
+        // though its rows exist — which is how a prompt disappeared from view after its rows
+        // changed server-side. Discarding the detached DOM here means the next switch rebuilds
+        // from the DB instead.
+        if (!node.querySelector('.cycle-user, .message, .cycle-block')) {
+            return;
+        }
+
         this.views[convId] = {
             node: node,
             streamingBuffer: _st ? (_st.streamingBuffer || '') : '',
