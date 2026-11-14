@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -76,6 +77,9 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Node")
 STATE_REL = os.path.join("config", ".llama_node_state.json")
 LOG_DIR_REL = "logs"
 
+# ANSI escape sequences, stripped before anything reaches the log file.
+_ANSI = re.compile(r"\033\[[0-9;]*m")
+
 # Presets offered by the wizard. "ctx_per_slot": None means CONTEXT_WINDOW_TOKENS.
 PRESETS = {
     "default": {"concurrency": 1, "ctx_per_slot": None,
@@ -100,8 +104,12 @@ def _emit(message: str) -> None:
     """
     print(message, flush=True)
     # Most call sites already carry the [NODE] tag; strip it before logging so the log
-    # file never shows "[NODE] [NODE] ...".
-    logger.info("[NODE] %s", message[6:].lstrip() if message.startswith("[NODE]") else message)
+    # file never shows "[NODE] [NODE] ...". ANSI codes are dropped too, so the log holds
+    # exactly the lines the console shows - one ordered stream, no per-page variant.
+    plain = _ANSI.sub("", message)
+    if plain.startswith("[NODE]"):
+        plain = plain[6:].lstrip()
+    logger.info("[NODE] %s", plain)
 
 
 # ---------------------------------------------------------------------------
@@ -1009,11 +1017,9 @@ def list_summary() -> int:
     if os.name == "nt" and sys.stdout.isatty():
         os.system("")
 
-    def _line(text: str) -> None:
-        """Console line for the list page; the log gets a color-stripped copy."""
-        print(text, flush=True)
-        logger.info("[NODE] %s", text.replace("\033[92m", "").replace("\033[0m", ""))
-
+    # Every line of this page goes through _emit - the ONE writer this module has. A
+    # second local writer would order console and log differently, which is exactly how
+    # the SHADOWED marker used to land under the wrong entry.
     for i, inst in enumerate(entries, 1):
         healthy = results[i - 1]
         # One line per config: name, address, state and the model FILE NAME only (no path).
@@ -1023,7 +1029,7 @@ def list_summary() -> int:
         mark = f"{'RUNNING' if healthy else 'DOWN':<8}"
         if healthy and sys.stdout.isatty():
             mark = "\033[92m" + mark + "\033[0m"
-        _line(f"  {i:2d}) {inst.name:<14} {inst.api_url:<24} {mark} model={model}")
+        _emit(f"  {i:2d}) {inst.name:<14} {inst.api_url:<24} {mark} model={model}")
         if inst.name in shadow_of:
             _emit(f"      SHADOWED : same host:port as '{shadow_of[inst.name]}' - the runtime "
                   f"keeps only the FIRST entry per address, so this one is not reachable by name")
