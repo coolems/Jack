@@ -34,7 +34,12 @@ VALID_COLORS = [
 ]
 
 def create_conversations_router(db_path: str, model_name: str, agent) -> APIRouter:
-    """Factory function that returns a configured conversations router."""
+    """Factory function that returns a configured conversations router.
+
+    db_path is accepted for API compatibility only - NEVER read. Every endpoint here
+    gets its connection from app.db_manager.get_db_connection(), whose own initialized
+    path is the single source of truth (same shape as app/websocket/db_ops.py).
+    """
     router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
     @router.post("")
@@ -177,9 +182,10 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         straight from the ChatBus channel, so a chat switch can restore the
         generation indicator and send/stop button color even when no frames are
         currently flowing (e.g. the turn finished while the user was elsewhere).
-        """
-        current_ip = get_client_ip(request)
 
+        No client-IP lookup here: the answer is bus state, not stored data, and the
+        conversation-existence check below is what gates the lookup.
+        """
         conn = get_db_connection()
         try:
             cursor = conn.cursor()

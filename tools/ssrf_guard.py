@@ -46,9 +46,9 @@ FAIL-CLOSED CONTRACT (no fallbacks)
 
 DELIVERY NOTE (server/client split)
     This file is the single source of truth and is delivered to CLIENTs with every
-    tools_response (see app/providers/coolems/tool_scanner/shared_sources.py::get_all_shared_sources
-    and tools_server/local_tool_scanner.py -- 'ssrf_guard' MUST stay in both lists,
-    ordered BEFORE 'ssrf_defense'). The old name tools/ssrf_defense.py remains as a
+    tools_response (see app/providers/coolems/tool_scanner/shared_sources.py::
+    get_all_shared_sources -- 'ssrf_guard' MUST stay in that list, ordered BEFORE
+    'ssrf_defense'). The old name tools/ssrf_defense.py remains as a
     thin deprecation shim so already-delivered tool code keeps working.
 
 CLIENT usage requires aiohttp (listed in CLIENT/requirements.txt). Browser navigation

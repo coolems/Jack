@@ -52,7 +52,7 @@ async def send_tool_request(provider, req_type: str, recv_timeout: float = 15.0,
     except websockets.exceptions.ConnectionClosedError as e:
         logger.error(f"[CLIENT] send_tool_request CONNECTION CLOSED ({req_type}): code={e.code}, reason='{e.reason}'")
         return None
-    except websockets.exceptions.ConnectionClosedOK as e:
+    except websockets.exceptions.ConnectionClosedOK:
         logger.warning(f"[CLIENT] send_tool_request connection closed OK ({req_type})")
         return None
     except OSError as e:

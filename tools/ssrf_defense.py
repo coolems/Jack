@@ -15,10 +15,9 @@ This shim exists so code written against the old module keeps working unchanged:
   * CLIENT-delivered tool code          -- 'from tools.ssrf_defense import X' rewrites
     by the loader to this module's symbols, which are re-exports of ssrf_guard's.
 
-DELIVERY NOTE: keep BOTH keys in the shared-source lists on the SERVER
-(app/providers/coolems/tool_scanner/shared_sources.py::get_all_shared_sources and
-tools_server/local_tool_scanner.py::_load_shared_modules), ordered 'ssrf_guard' BEFORE
-'ssrf_defense' -- this module imports from it at exec time.
+DELIVERY NOTE: keep this key in the shared-source list on the SERVER
+(app/providers/coolems/tool_scanner/shared_sources.py::get_all_shared_sources),
+ordered AFTER 'ssrf_guard' -- this module imports from it at exec time.
 
 The old pinned_getaddrinfo() context manager is NOT re-exported: its replacement is the
 transport-level pin (safe_session()/PinnedConnector). If any delivered code still calls

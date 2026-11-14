@@ -279,12 +279,21 @@ def build_budget_report(stage: str, *,
     return "\n".join(lines)
 
 
+#: Stages that mean the run is genuinely at/near the limit - these log at WARNING.
+#: Any other stage is the routine pass and logs at DEBUG (see log_budget).
+_WARN_STAGES = frozenset({"safe-margin-warning", "hard-trim", "context-guardian-fire"})
+
+
 def log_budget(logger_obj: Any, stage: str, report: str) -> None:
     """Emit the report at WARNING for real limit stages, DEBUG for the routine pass.
 
+    ``stage`` decides the level: the names in ``_WARN_STAGES`` are the real limit
+    stages; anything else is a routine pass and must not shout in the log.
+
     Defensive by design: diagnostics must never abort an agentic run.
     """
+    level = logging.WARNING if stage in _WARN_STAGES else logging.DEBUG
     try:
-        logger_obj.warning(report)
+        logger_obj.log(level, report)
     except Exception as exc:  # pragma: no cover - logging must never break the loop
         logger.debug(f"[CONTEXT-BUDGET] report emission failed: {exc}")

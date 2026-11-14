@@ -1410,6 +1410,10 @@ async def run_react_loop(
 
 
                 iteration_elapsed = time.time() - iteration_start
+                logger.debug(
+                    f"[AGENTIC.DEBUG] tool iteration {tool_iteration} took "
+                    f"{iteration_elapsed:.2f}s"
+                )
                 continue
             else:
                 # No tool calls - check if task is truly done

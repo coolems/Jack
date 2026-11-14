@@ -45,8 +45,6 @@ async def call_provider_with_retry(config: Any, messages: List[Dict]) -> Tuple[A
                 stop_event=config.stop_event,
             )
 
-            provider_call_elapsed = time.time() - provider_call_start
-
             if isinstance(result, dict):
                 logger.info(f"[AGENTIC.DEBUG] Provider returned dict with keys: {list(result.keys())}")
 

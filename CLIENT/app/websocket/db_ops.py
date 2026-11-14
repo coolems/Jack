@@ -181,7 +181,9 @@ def save_user_message(
     Save a user message to the database.
 
     Args:
-        conn_path: Path to the SQLite database (kept for API compatibility).
+        conn_path: Accepted for API compatibility only - NEVER read. The connection
+            comes from app.db_manager.get_db_connection(), whose own initialized path
+            is the single source of truth for every write in this module.
         conv_id: Conversation ID.
         content: Message text.
         media_urls: Optional list of media file URLs.
@@ -268,7 +270,11 @@ def save_assistant_message(
     conv_id: str,
     content: str,
 ):
-    """Save an assistant (AI) response to the database."""
+    """Save an assistant (AI) response to the database.
+
+    conn_path is accepted for API compatibility only - NEVER read; the connection
+    comes from app.db_manager.get_db_connection() (see save_user_message).
+    """
     msg_id = str(uuid.uuid4())
     conn = get_db_connection()
     try:
@@ -303,6 +309,9 @@ def save_search_result(
     """
     Save both user and assistant messages for a /search command result.
     Used by search_handler.py.
+
+    conn_path is accepted for API compatibility only - NEVER read; the connection
+    comes from app.db_manager.get_db_connection() (see save_user_message).
     """
     conn = get_db_connection()
     try:
@@ -338,6 +347,9 @@ def save_partial_response(
     """
     Save a partial response when the user disconnects mid-generation.
     Appends '[Generation stopped by user]' marker.
+
+    conn_path is accepted for API compatibility only - NEVER read; the connection
+    comes from app.db_manager.get_db_connection() (see save_user_message).
     """
     content = partial_response + "\n\n_[Generation stopped by user]_"
     msg_id = str(uuid.uuid4())

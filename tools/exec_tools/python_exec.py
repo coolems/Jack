@@ -286,7 +286,6 @@ def _spawn_background_job(wrapped_code, working_dir, effective_timeout,
         except Exception as exc:
             return ("failed", f"python_exec background job failed: {type(exc).__name__}: {exc}", "")
         stdout = _clean_output(proc.stdout or "")
-        stderr = _clean_output(proc.stderr or "")
         if proc.returncode != 0:
             return ("failed", _format_failure(code, proc.returncode, proc.stdout or "",
                                               proc.stderr or ""), stdout)

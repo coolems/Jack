@@ -22,7 +22,7 @@ def clear_logs():
             try:
                 log_file.unlink()
             except Exception as e:
-                logger.debug("Non-critical exception caught at CLIENT/utils/clear_logs.py:21")
+                logger.debug(f"Non-critical exception at CLIENT/utils/clear_logs.py:23: {e!r}")
     else:
         pass
 

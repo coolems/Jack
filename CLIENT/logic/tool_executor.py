@@ -703,8 +703,6 @@ class ToolExecutor:
                     cycle=self.cycle
                 )
 
-        exec_elapsed = time.time() - exec_start
-
         # (2026-08-24) EXTRACT TOOL-VIEWED IMAGES BEFORE SANITIZATION: tools like
         # view_image / screenshots return a dict containing 'image_base64'. The string
         # form gets sanitized out of history below (to protect the context window), so

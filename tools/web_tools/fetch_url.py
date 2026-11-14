@@ -165,7 +165,7 @@ async def fetch_url(url: str) -> str:
         # -> hard stop, no fallback.
         logger.error(f"SSRF protection triggered in fetch_url: {e}")
         return "Error: Access blocked for security."
-    except asyncio.TimeoutError as e:
+    except asyncio.TimeoutError:
         return f"Timeout: The website took too long to respond. URL: {url}"
     except aiohttp.ClientError as e:
         msg = str(e) or type(e).__name__

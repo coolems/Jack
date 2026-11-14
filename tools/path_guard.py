@@ -207,25 +207,35 @@ def is_safe_path(
     """Check whether *filepath* is safe (inside *working_root*).
 
     Returns ``(True, abs_path)`` or ``(False, error_message)``.
-    When ``for_write=True`` the check is stricter (must be inside working_root).
     Uses ``realpath`` to resolve symlinks before validation.
+
+    ``for_write=True`` is STRICTER: the target's DIRECTORY must resolve inside
+    *working_root* too, so a directory-level write (a target that IS the root
+    itself) and any path whose containing directory lands outside the root is
+    refused - the containment check alone would let those through.
     """
     if working_root is None:
         return False, "working_root not provided"
     allowed = [working_root]
     normed = os.path.normpath(filepath)
 
+    real_path = os.path.realpath(filepath)
+
     # Provide explicit error message for paths containing ".." segments
-    if ".." in normed.split(os.sep):
-        real_path = os.path.realpath(normed)
-        if _is_path_inside_allowed(real_path, allowed):
-            return True, real_path
+    if ".." in normed.split(os.sep) and not _is_path_inside_allowed(real_path, allowed):
         return False, "Path traversal not allowed -- resolves outside working root"
 
-    real_path = os.path.realpath(filepath)
-    if _is_path_inside_allowed(real_path, allowed):
-        return True, real_path
-    return False, f"Path must be within the working root directory ({working_root})"
+    if not _is_path_inside_allowed(real_path, allowed):
+        return False, f"Path must be within the working root directory ({working_root})"
+
+    if for_write:
+        parent = os.path.realpath(os.path.dirname(real_path))
+        if not _is_path_inside_allowed(parent, allowed):
+            return False, (
+                f"Write target's directory ({parent}) is outside the working root "
+                f"({working_root})"
+            )
+    return True, real_path
 
 
 # ---------------------------------------------------------------------------

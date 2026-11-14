@@ -154,6 +154,8 @@ async def stream_ollama(
     Now pushes TokenStats to the UI via WebSocket after the call.
 
     Args:
+        timeout: Deprecated and ignored in CLIENT mode. The provider owns request
+            timeouts (BaseProvider.chat_stream takes no timeout parameter).
         ollama_url: Deprecated and ignored in CLIENT mode. Kept for API compatibility.
     """
     from config import PROVIDER_DEFAULT_TEMPERATURE
@@ -187,6 +189,8 @@ async def call_ollama_non_streaming(
     Uses the provided provider or falls back to ProviderManager active provider.
 
     Args:
+        timeout: Deprecated and ignored in CLIENT mode. The provider owns request
+            timeouts (BaseProvider.chat_non_streaming takes no timeout parameter).
         ollama_url: Deprecated and ignored in CLIENT mode. Kept for API compatibility.
     """
     from config import PROVIDER_DEFAULT_TEMPERATURE

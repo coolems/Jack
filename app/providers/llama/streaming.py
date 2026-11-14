@@ -520,13 +520,19 @@ async def chat_stream(
                 logger.error(f"llama.cpp HTTP 500 body: {err_text[:2000]}")
                 raise RuntimeError(f"llama.cpp server error: {err_text.strip()[:300]}")
             elif response.status_code == 400:
-                    # Read the actual error body from llama.cpp for debugging
-                    error_body = (await response.aread()).decode("utf-8", errors="replace")
-                    logger.error(f"llama.cpp HTTP 400 Bad Request - body: {error_body[:500]}")
-                    raise RuntimeError(f"llama.cpp returned HTTP 400: {error_body.strip()[:300]}")
+                # Read the actual error body from llama.cpp for debugging
+                error_body = (await response.aread()).decode("utf-8", errors="replace")
+                logger.error(f"llama.cpp HTTP 400 Bad Request - body: {error_body[:500]}")
+                raise RuntimeError(f"llama.cpp returned HTTP 400: {error_body.strip()[:300]}")
             elif response.status_code != 200:
-                error_text = await response.aread()
-                raise RuntimeError(f"llama.cpp returned HTTP {response.status_code}")
+                # Same shape as the 400/500 branches above: the server's own reason is
+                # the actionable part, so it goes in the log AND in the raised message
+                # (truncated so a large body cannot poison logs and history).
+                error_text = (await response.aread()).decode("utf-8", errors="replace")
+                logger.error(f"llama.cpp HTTP {response.status_code} body: {error_text[:500]}")
+                raise RuntimeError(
+                    f"llama.cpp returned HTTP {response.status_code}: {error_text.strip()[:300]}"
+                )
 
             # Effective stall timeout scales with prompt size so a legitimate
             # long prefill of a near-full context is not mistaken for a freeze.

@@ -709,6 +709,9 @@ class JobRegistry:
                                  name=f"job-{handle.id}").start()
 
                 def _cancel(reason):
+                    # The producer's cancel channel is a plain threading.Event, so the
+                    # reason cannot travel to it - the registry keeps it in rec.detail
+                    # (kill() writes it there), which is what the model and the ledger read.
                     cancel.set()
 
                 return JobHooks(_cancel, fut)

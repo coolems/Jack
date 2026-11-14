@@ -52,18 +52,20 @@ def get_all_shared_sources(tools_dir):
             sources[mod_name] = _read_text(path)
 
     # --- tool_bootstrap package (tools/tool_bootstrap/) - the flat facade ships as
-        # 'tool_bootstrap' above; its submodules ship under dot keys so the CLIENT installs them
-        # in sys.modules BEFORE the facade execs 'from .tool_bootstrap import ...'. ---
-        tb_dir = os.path.join(tools_dir, "tool_bootstrap")
+    # 'tool_bootstrap' above; its submodules ship under dot keys so the CLIENT installs
+    # them in sys.modules BEFORE the facade execs 'from .tool_bootstrap import ...'.
+    # NOTE (2026-11-14 fix): this block used to be indented INSIDE the core-module loop
+    # above, so it re-read every submodule once per core module (5x the file reads).
+    tb_dir = os.path.join(tools_dir, "tool_bootstrap")
 
-        if os.path.isdir(tb_dir):
-            for sub_name in ('setup_progress', 'pip_parse', 'streaming', 'runtime_paths',
-                             'bootstrap'):
-                path = os.path.join(tb_dir, f"{sub_name}.py")
-                if os.path.exists(path):
-                    sources[f'tool_bootstrap.{sub_name}'] = _read_text(path)
+    if os.path.isdir(tb_dir):
+        for sub_name in ('setup_progress', 'pip_parse', 'streaming', 'runtime_paths',
+                         'bootstrap'):
+            path = os.path.join(tb_dir, f"{sub_name}.py")
+            if os.path.exists(path):
+                sources[f'tool_bootstrap.{sub_name}'] = _read_text(path)
 
-        # --- web_interact subpackage shared modules ---
+    # --- web_interact subpackage shared modules ---
     wi_dir = os.path.join(tools_dir, "web_interact")
 
     if os.path.isdir(wi_dir):

@@ -302,16 +302,24 @@ def deny_call(tool_name: str, args, conversation_id: str) -> bool:
 
 
 def revoke_app(app_identity: str, conversation_id: str = "") -> int:
-    """Withdraw one app's access from every conversation (mirrors the dep)."""
+    """Withdraw one app's access (mirrors the dep, same API surface).
+
+    conversation_id='' (default) revokes EVERY conversation and clears the
+    process-wide denial mark. A conversation_id revokes ONLY that conversation -
+    the process-wide denial stays intact, because clearing it would silently
+    re-open the app for other conversations (fail-closed by design).
+    """
     key = _norm_identity(app_identity)
     st = _state()
     _load_once()
+    targets = [conversation_id] if conversation_id else list(st.decisions)
     with st.lock:
         removed = 0
-        for conv in list(st.decisions):
-            if st.decisions[conv].pop(key, None) is not None:
+        for conv in targets:
+            if st.decisions.get(conv, {}).pop(key, None) is not None:
                 removed += 1
-        st.denied.discard(key)
+        if not conversation_id:
+            st.denied.discard(key)
     _save()
     return removed
 

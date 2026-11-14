@@ -185,14 +185,14 @@ async def _authenticate_direct_client(ws, server_provider, peer):
             logger.debug(f"[SERVER] Direct WS close failed for {peer} after auth failure: {close_err}")
         return None, None, None
     # Expected connection drops during model switch - log at INFO, not ERROR
-    except (ws_exc.ConnectionClosed, ws_exc.ConnectionClosedError) as e:
+    except (ws_exc.ConnectionClosed, ws_exc.ConnectionClosedError):
         logger.info(f"[SERVER] Direct WS client {peer} disconnected during auth (expected during model reload)")
         try:
             await ws.close()
         except Exception as close_err:  # already-dropped socket; log for diagnostics, never mask the real cause
             logger.debug(f"[SERVER] Direct WS close failed for {peer} after auth failure: {close_err}")
         return None, None, None
-    except ConnectionAbortedError as e:
+    except ConnectionAbortedError:
         logger.info(f"[SERVER] Direct WS client {peer} connection aborted during auth (expected)")
         try:
             await ws.close()

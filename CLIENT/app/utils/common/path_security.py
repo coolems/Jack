@@ -184,8 +184,21 @@ def resolve_path_for_move(
     filename: Optional[str] = None,
     label: str = "Path",
 ) -> Tuple[str, Optional[str]]:
-    """Alias for ``resolve_path_in_working_root`` — used by move_file tool."""
-    return resolve_path_in_working_root(working_root, path, filename)
+    """Resolve a move/rename target inside *working_root*.
+
+    Same resolution as ``resolve_path_in_working_root``; *label* only names the
+    denial message (e.g. "Source path '...' is outside..."), so a failed move says
+    which side of the move was rejected.
+    """
+    try:
+        return resolve_path_in_working_root(working_root, path, filename)
+    except ValueError as exc:
+        message = str(exc)
+        for prefix in ("Path '", "Resolved file path '"):
+            if message.startswith(prefix):
+                message = message.replace(prefix, f"{label} '", 1)
+                break
+        raise ValueError(message) from None
 
 
 def resolve_path_to_dir(
@@ -226,7 +239,13 @@ def is_safe_path(
     """Check whether *filepath* is safe (inside *working_root*).
 
     Returns ``(True, abs_path)`` or ``(False, error_message)``.
-    When ``for_write=True`` the check is stricter (must be inside working_root).
+
+    ``allowed_write_dirs``: extra roots accepted besides working_root
+    (default: working_root only).
+    ``for_write=True`` is STRICTER: the target's DIRECTORY must resolve inside an
+    allowed root too, so a directory-level write (a target that IS a root itself)
+    and any path whose containing directory lands outside every allowed root is
+    refused - the containment check alone would let those through.
 
     CRITICAL FIX: Relative paths are now resolved against working_root first,
     NOT against the process CWD. This prevents attacks where CWD != working_root.
@@ -234,19 +253,8 @@ def is_safe_path(
     from .working_root import get_working_root
 
     wr = get_working_root()
-    allowed = [wr]
+    allowed = [wr, *(allowed_write_dirs or [])]
     normed = os.path.normpath(filepath)
-
-    # Quick rejection of obvious traversal attempts
-    if ".." in normed.split(os.sep):
-        # Resolve relative paths against working_root, not CWD
-        if not os.path.isabs(filepath):
-            resolved = os.path.realpath(os.path.join(wr, filepath))
-        else:
-            resolved = os.path.realpath(filepath)
-        if _is_path_inside_allowed(resolved, allowed):
-            return True, resolved
-        return False, "Path traversal not allowed — resolves outside working root"
 
     # Resolve relative paths against working_root, NOT CWD
     if not os.path.isabs(filepath):
@@ -254,9 +262,21 @@ def is_safe_path(
     else:
         abs_path = os.path.realpath(filepath)
 
-    if _is_path_inside_allowed(abs_path, allowed):
-        return True, abs_path
-    return False, f"Path must be within the working root directory ({wr})"
+    # Quick rejection of obvious traversal attempts
+    if ".." in normed.split(os.sep) and not _is_path_inside_allowed(abs_path, allowed):
+        return False, "Path traversal not allowed — resolves outside working root"
+
+    if not _is_path_inside_allowed(abs_path, allowed):
+        return False, f"Path must be within the working root directory ({wr})"
+
+    if for_write:
+        parent = os.path.realpath(os.path.dirname(abs_path))
+        if not _is_path_inside_allowed(parent, allowed):
+            return False, (
+                f"Write target's directory ({parent}) is outside the allowed roots "
+                f"({allowed})"
+            )
+    return True, abs_path
 
 
 # ---------------------------------------------------------------------------
