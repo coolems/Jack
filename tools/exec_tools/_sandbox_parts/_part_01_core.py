@@ -98,7 +98,11 @@ def _jps_setup():
         except Exception:
             return False
         for r in roots:
-            if rp == r or rp.startswith(r + _jps_os.sep):
+            # Separator-anchored prefix, rstrip'd so a drive root ('C:\') does not
+            # become 'C:\\' + sep (which would deny every child of that drive).
+            # Same semantics as tools/path_guard.py::_is_path_inside_allowed.
+            prefix = r.rstrip(_jps_os.sep) + _jps_os.sep
+            if rp == r or rp.startswith(prefix):
                 return True
         return False
 

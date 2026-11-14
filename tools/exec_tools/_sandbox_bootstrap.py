@@ -39,7 +39,10 @@ CONTAINMENT SEMANTICS  *** SYNC NOTE: keep identical to tools/path_guard.py::_is
 ------------------------------------------------------------------
 * A path is "inside" a root iff ``normcase(realpath(path))`` equals the root or starts
   with ``root + os.sep`` (separator-anchored -- prevents prefix attacks like
-  working_root+"Evil"). realpath resolves symlinks, UNC and .. sequences.
+  working_root+"Evil"; the root is rstrip'd first so a drive root 'C:\' does not
+  become 'C:\\' + sep). realpath resolves symlinks, UNC and .. sequences, and
+  normcase folds Windows case on BOTH sides -- so a case-different spelling of
+  working_root and a symlink/junction working_root contain their own files.
 * WRITE operations (open w/a/x/+, os.open write flags, nt.open write flags,
   remove/rename/mkdir/..., shutil copy/move/copytree/rmtree destinations, archive
   extraction targets) are allowed ONLY inside working_root. No exceptions.
@@ -340,7 +343,11 @@ def _jps_setup():
         except Exception:
             return False
         for r in roots:
-            if rp == r or rp.startswith(r + _jps_os.sep):
+            # Separator-anchored prefix, rstrip'd so a drive root ('C:\') does not
+            # become 'C:\\' + sep (which would deny every child of that drive).
+            # Same semantics as tools/path_guard.py::_is_path_inside_allowed.
+            prefix = r.rstrip(_jps_os.sep) + _jps_os.sep
+            if rp == r or rp.startswith(prefix):
                 return True
         return False
 

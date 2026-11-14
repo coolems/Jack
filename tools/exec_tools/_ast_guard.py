@@ -741,8 +741,10 @@ def run_path_scope_check(code, working_root):
     """Pre-execution guardrail: block path literals used OUTSIDE working_root.
 
     Only strings that are arguments of a filesystem API (or of a path-named
-    keyword) are considered. Each candidate is resolved with os.path.abspath/
-    normcase and compared to *working_root*; a ".." full-segment traversal is
+    keyword) are considered. Each candidate is resolved with os.path.realpath/
+    normcase and compared to *working_root* (both sides realpath'd, so a
+    symlink/junction working_root and a case-different spelling of it compare
+    correctly -- 2026-11-14 review fix A5); a ".." full-segment traversal is
     always reported. See the block comment above for the rationale.
 
     Args:
@@ -764,7 +766,7 @@ def run_path_scope_check(code, working_root):
     if not working_root or not isinstance(working_root, str):
         return True, ["path-scope guardrail has no configured working_root -- refusing to run (fail-closed)"]
 
-    root_norm = os.path.normcase(os.path.abspath(working_root))
+    root_norm = os.path.normcase(os.path.realpath(working_root))
     violations = []
     seen = set()
 
@@ -775,8 +777,16 @@ def run_path_scope_check(code, working_root):
             reason = ("'..' path traversal -- the child process cwd is working_root, "
                       "so '..' climbs out of it")
         elif _is_path_candidate(s):
-            resolved = os.path.normcase(os.path.abspath(s))
-            if resolved != root_norm and not resolved.startswith(root_norm + os.sep):
+            # REALPATH on BOTH sides (2026-11-14 review fix A5, same class as
+            # tools/path_guard.py): abspath() leaves a working_root that is a
+            # symlink/junction unresolved, so code reading a file genuinely inside
+            # a junction root was reported as OUTSIDE and the run was blocked.
+            # realpath is also the fail-CLOSED direction here: a literal that goes
+            # through a symlink pointing out of the root now resolves outside and
+            # is denied (the runtime sandbox blocks it anyway -- this layer is UX).
+            resolved = os.path.normcase(os.path.realpath(s))
+            prefix = root_norm.rstrip(os.sep) + os.sep
+            if resolved != root_norm and not resolved.startswith(prefix):
                 reason = (f"path resolves to {resolved} which is OUTSIDE "
                           f"working_root ({working_root})")
         if not reason:

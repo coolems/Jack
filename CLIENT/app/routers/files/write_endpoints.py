@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, UploadFile, Query, HTTPException, Request
 
 
 from app.utils.common import is_text_file, is_image_file, read_text_file, MAX_FILE_SIZE
-from .middleware import _safe_relative_path, _get_working_root_dir, logger
+from .middleware import _safe_relative_path, _is_root_itself, _get_working_root_dir, logger
 
 from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
 
@@ -53,6 +53,12 @@ def register_write_endpoints(router: APIRouter):
             safe_path = _safe_relative_path(working_root_dir, path)
             if safe_path is None:
                 raise HTTPException(status_code=400, detail="Invalid path")
+            # SECURITY (2026-11-02): reject the root itself. _safe_relative_path accepts
+            # the root on purpose (listing/uploading at the root is valid), but rel='.',
+            # ' ', './.', 'sub/../' resolve to it and would reach the rmtree() below -
+            # a recursive delete of the whole workspace. Only a real child may be deleted.
+            if _is_root_itself(working_root_dir, safe_path):
+                raise HTTPException(status_code=400, detail="Cannot delete the working root itself")
             if not os.path.exists(safe_path):
                 raise HTTPException(status_code=404, detail="Path not found")
             if os.path.isdir(safe_path):
