@@ -210,7 +210,7 @@ class LocalToolScanner:
             definition=definition,
             source_code=source_code,
             dependencies=dependencies,
-            manifest=self._load_manifest(folder_path),
+            manifest=self._load_manifest(filepath.parent),
         )
         self._registry[name] = tool
         logger.debug("Registered tool: %s from %s/%s", name, folder, filename)
