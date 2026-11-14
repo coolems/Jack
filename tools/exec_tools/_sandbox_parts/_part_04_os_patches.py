@@ -27,6 +27,9 @@
                     s = _p
                 else:
                     continue
+                if _is_consent_decision(s):
+                    # rename/replace/move onto a decision file = self-approval escape.
+                    _deny_decision_write(nm, s)
                 if not _inside(s, [ROOT]):
                     _fs_deny(nm + " (write)", s)
             return orig(path, *a, **k)
@@ -174,7 +177,7 @@
                     return _orig_getsize(f)
                 _op.getsize = _path_getsize
         except Exception as _jps_mod_exc:
-            _jps_log_exc("os.path meta patch: %s" % repr(_jps_mod_exc))
+            _jps_fail("os.path meta patch: %s" % repr(_jps_mod_exc))
 
         try:
             _jps_log("B2c: os.path wrappers patched")
@@ -227,12 +230,18 @@
                 orig = getattr(_jps_Path, nm)
                 def wrapped(self, *a, **k):
                     s = _path_str(self)
-                    if s is not None and not _inside(s, [ROOT]):
-                        _fs_deny("Path." + nm + " (write)", s)
+                    if s is not None:
+                        if _is_consent_decision(s):
+                            _deny_decision_write("Path." + nm, s)
+                        if not _inside(s, [ROOT]):
+                            _fs_deny("Path." + nm + " (write)", s)
                     for _x in a:
                         xs = _path_str(_x)
-                        if xs is not None and not _inside(xs, [ROOT]):
-                            _fs_deny("Path." + nm + " target (write)", xs)
+                        if xs is not None:
+                            if _is_consent_decision(xs):
+                                _deny_decision_write("Path." + nm + " target", xs)
+                            if not _inside(xs, [ROOT]):
+                                _fs_deny("Path." + nm + " target (write)", xs)
                     return orig(self, *a, **k)
                 wrapped.__name__ = nm
                 return wrapped
@@ -252,7 +261,7 @@
                 return _orig_sym(self, target, *a, **k)
             _jps_Path.symlink_to = _symlink_to
         except Exception as _jps_mod_exc:
-            _jps_log_exc("pathlib patch: %s" % repr(_jps_mod_exc))
+            _jps_fail("pathlib patch: %s" % repr(_jps_mod_exc))
 
         try:
             _jps_log("B2d: pathlib patched")
@@ -273,6 +282,8 @@
             is_write = bool(flags & wf)
             if _is_devnull(s) or _is_dev_or_pipe(s):
                 return _orig_open(path, flags, *a, **k)  # device name (nul) -- let the OS handle it
+            if is_write and _is_consent_decision(s):
+                _deny_decision_write("os.open(write)", s)
             if not _inside(s, [ROOT] if is_write else READ_ROOTS):
                 _fs_deny("os.open" + ("(write)" if is_write else ""), s)
             return _orig_open(path, flags, *a, **k)
@@ -284,7 +295,7 @@
             pass
 
     except Exception as _jps_stage_exc:
-        _jps_log_exc("stage 2 (os patches): %s" % repr(_jps_stage_exc))
+        _jps_fail("stage 2 (os patches): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B2: os/pathlib/os.open patching done")

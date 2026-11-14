@@ -1,6 +1,8 @@
 # _part_05_subprocess_policy.py -- PROVENANCE FRAGMENT of _sandbox_bootstrap.SANDBOX_BOOTSTRAP
 #
 # STAGE 3 -- child-process EXEC POLICY patches: Popen.__init__, os.system/popen/spawn*/exec*/fork (second net over the hook)
+# 2026-11-14 addition: _check_cwd inside Popen.__init__ (keyword cwd= or positional slot) -- the wrapper sees
+# the caller's own cwd, which the audit event cannot show for a closure-extracted original __init__.
 # Legacy source: lines 914-1053 of the pre-split single-file SANDBOX_BOOTSTRAP string.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
@@ -31,12 +33,21 @@
                 seq = [t.decode("utf-8", "replace") if isinstance(t, (bytes, bytearray)) else str(t)
                        for t in args]
                 _check_prog_base(_jps_basename(seq[0]) if seq else "", args)
+                _check_cmd_paths(seq, args)  # absolute-path args (2026-11-14)
             if executable is not None:
                 _check_prog_base(
                     _jps_basename(executable.decode("utf-8", "replace")
                                   if isinstance(executable, bytes) else str(executable)),
                     "executable=" + repr(str(executable))[:60],
                 )
+            # cwd= (2026-11-14 containment): the wrapper binds args/bufsize/executable/
+            # stdin/stdout/stderr explicitly, so the leftover positional tail is
+            # (preexec_fn, close_fds, shell, cwd, env, ...) -- cwd is a[3]. Keyword form
+            # is k["cwd"]. The wrapper sees the CALLER's own cwd value -- exactly what the
+            # audit event cannot show for a caller that extracts the original __init__
+            # from this wrapper's closure.
+            _cwd = k.get("cwd") if "cwd" in k else (a[3] if len(a) > 3 else None)
+            _check_cwd(_cwd)
             return _orig_popen_init(
                 self, args, bufsize=bufsize, executable=executable,
                 stdin=stdin, stdout=stdout, stderr=stderr, *a, **k
@@ -44,7 +55,7 @@
 
         _jps_subprocess.Popen.__init__ = _popen_init
     except Exception as _jps_stage_exc:
-        _jps_log_exc("stage 3 (subprocess patch): %s" % repr(_jps_stage_exc))
+        _jps_fail("stage 3 (subprocess patch): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B3a: subprocess.Popen exec policy installed")
@@ -145,7 +156,7 @@
                 return pid
             _real_os2.fork = _fork
     except Exception as _jps_stage_exc:
-        _jps_log_exc("stage 3b (os exec policy): %s" % repr(_jps_stage_exc))
+        _jps_fail("stage 3b (os exec policy): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B3: child-process exec policy done (shells/interpreters/network denied)")

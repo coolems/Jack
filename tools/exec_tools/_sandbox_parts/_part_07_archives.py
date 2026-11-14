@@ -1,7 +1,11 @@
 # _part_07_archives.py -- PROVENANCE FRAGMENT of _sandbox_bootstrap.SANDBOX_BOOTSTRAP
 #
-# STAGE 5 -- archive + compressed-file writers (zipfile/tarfile member traversal, gzip/bz2/lzma mode-aware open)
+# STAGE 5 -- archive + compressed-file writers (zipfile/tarfile member traversal, gzip/bz2/lzma mode-aware open);
+# 2026-11-14: tarfile extractall validates self.getmembers() when members is None (was validating nothing)
+# and rejects filter='fully_trusted'; every mod-level failure now calls _jps_fail (exit 3) instead of
+# swallowing and continuing unsandboxed.
 # Legacy source: lines 1165-1301 of the pre-split single-file SANDBOX_BOOTSTRAP string.
+# Current literal: lines 1380-1528 of the embedded literal.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
 # disk reads at import time -- the CLIENT execs that source in-memory where no repo
@@ -64,7 +68,7 @@
         _jps_zipfile.ZipFile.extract = _extract
 
     except Exception as _jps_stage_exc:
-        _jps_log_exc("stage 5 (zipfile): %s" % repr(_jps_stage_exc))
+        _jps_fail("stage 5 (zipfile): %s" % repr(_jps_stage_exc))
 
     try:
         import tarfile as _jps_tarfile
@@ -97,9 +101,21 @@
             ps = (p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p))
             if not _inside(ps, [ROOT]):
                 _fs_deny("tarfile extractall destination", ps)
-            for m in members or []:
+            # ZIP uses `members or self.namelist()`; tar used `members or []`, which
+            # validated NOTHING when members is None -- the DEFAULT case. A tar carrying
+            # '../x' (or a deeper traversal) then extracted straight out of working_root
+            # (verified). Validate every member of the archive when the caller did not
+            # pass a list, exactly like zipfile does.
+            checked = members if members is not None else self.getmembers()
+            for m in checked:
                 nm = m.name if hasattr(m, "name") else m
                 _tar_member_ok(nm)
+            # 'fully_trusted' disables CPython's own member filtering entirely; the
+            # sandbox's own traversal check above still runs, but a blanket-trusted
+            # extraction is never legitimate inside a containment sandbox -> deny.
+            filt = k.get("filter") if "filter" in k else (a[0] if a and isinstance(a[0], str) else None)
+            if filt == "fully_trusted":
+                _deny("tarfile extractall filter='fully_trusted'", ps)
             return _orig_textractall(self, path, members, *a, **k)
         _jps_tarfile.TarFile.extractall = _textractall
 
@@ -115,7 +131,7 @@
         _jps_tarfile.TarFile.extract = _textract
 
     except Exception as _jps_stage_exc:
-        _jps_log_exc("stage 5b (tarfile): %s" % repr(_jps_stage_exc))
+        _jps_fail("stage 5b (tarfile): %s" % repr(_jps_stage_exc))
 
     # gzip / bz2 / lzma .open -- mode-aware (write => ROOT only).
     for _modname in ("gzip", "bz2", "lzma"):
@@ -139,7 +155,7 @@
                     return wrapped
                 setattr(_m, "open", _make_comp_guard(_orig_co, _modname))
         except Exception as _jps_mod_exc:
-            _jps_log_exc("compressed writer (%s): %s" % (_modname, repr(_jps_mod_exc)))
+            _jps_fail("compressed writer (%s): %s" % (_modname, repr(_jps_mod_exc)))
 
     try:
         _jps_log("B4: shutil/archive/compressed-file guards done")

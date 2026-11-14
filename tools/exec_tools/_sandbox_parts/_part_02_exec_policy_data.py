@@ -1,7 +1,12 @@
 # _part_02_exec_policy_data.py -- PROVENANCE FRAGMENT of _sandbox_bootstrap.SANDBOX_BOOTSTRAP
 #
-# STAGE 0 -- child-process EXEC POLICY data + helpers (denylists, tokenizers, _check_cmd, interpreter detection)
+# STAGE 0 -- child-process EXEC POLICY data + helpers (denylists, tokenizers, _check_cmd, interpreter detection);
+# 2026-11-14 additions: _winapi_is_write, _is_consent_decision/_deny_decision_write (parent-owned consent
+# decisions), _jps_fail (fail-closed stages), _SHELL_SUFFIXES (renamed shells), _check_cmd_paths (argv paths),
+# _SPAWN_TOKEN (one-use token for raw CreateProcess with executable=None), _check_cwd (spawn directory must
+# resolve inside working_root -- the verified cwd=C:\Windows leak)
 # Legacy source: lines 436-539 of the pre-split single-file SANDBOX_BOOTSTRAP string.
+# Current literal: lines 305-583 of the embedded literal.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
 # disk reads at import time -- the CLIENT execs that source in-memory where no repo
@@ -83,14 +88,80 @@
                     return True
         return b == "java"
 
+    # Renamed-shell detection (2026-11-14, verified escape): cmd.exe copied to
+    # 'mycmd.exe' ran '/c echo hi' with rc=0 -- the exact-name denylist never saw 'cmd'.
+    # A shell binary renamed by the payload is still recognisable by its SUFFIX, so shell
+    # stems are matched as suffixes too. Suffix (not substring) on purpose: 'copy'/'py'
+    # style names must not false-positive. 'ssh' ends in 'sh' -> denied, which is correct
+    # (it is a network transfer tool anyway).
+    _SHELL_SUFFIXES = ("cmd", "cmd.exe", "powershell", "pwsh", "wscript", "cscript",
+                       "conhost", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "ash")
+
     def _is_denied_prog(base):
         b = base[:-4] if base.endswith(".exe") else base
-        return (base in _DENY_PROGS or b in _DENY_PROGS) or _is_interpreter(b)
+        if base in _DENY_PROGS or b in _DENY_PROGS or _is_interpreter(b):
+            return True
+        return any(b.endswith(s) for s in _SHELL_SUFFIXES)
 
     def _check_prog_base(base, ctx):
         if base and _is_denied_prog(base):
             # (2026-10-24) consentable: asks the local user when a UI relay is live.
             _exec_gate("program %r is a shell/interpreter/network tool" % base, ctx)
+
+    # ARGUMENT PATH POLICY (2026-11-14, verified escape). The exec policy used to inspect
+    # ONLY argv[0]'s basename, so arguments were completely unchecked: `findstr localhost
+    # C:\Windows\System32\drivers\etc\hosts` printed the system HOSTS file (rc=0), and a
+    # copy of cmd.exe renamed to mycmd.exe ran `/c echo hi` (rc=0) -- the denylist never
+    # saw 'cmd'. Now every ABSOLUTE path argument a spawned program is given must resolve
+    # inside working_root or a legitimate read root (Python home / sys.path / PATH dir);
+    # anything else is consentable, exactly like an out-of-sandbox file open. Relative
+    # args resolve against the child's cwd (= working_root), so they stay inside by
+    # construction -- no false positives on URLs, git refs, regexes or bare words.
+    def _check_cmd_paths(seq, ctx):
+        for tok in seq[1:]:
+            if not isinstance(tok, str) or not tok:
+                continue
+            if not _jps_os.path.isabs(tok):
+                continue
+            if _is_devnull(tok) or _is_dev_or_pipe(tok):
+                continue
+            if _inside(tok, READ_ROOTS) or _in_path_dirs(tok):
+                continue
+            _exec_gate("absolute path argument outside working_root", ctx)
+
+    # CWD POLICY (2026-11-14, verified escape). Every spawn route accepts cwd=, and CPython
+    # passes it to the audit event as args[2] of "subprocess.Popen" (Lib/subprocess.py:1534
+    # Windows, :1823 POSIX) -- but the exec policy inspected only the COMMAND, so a spawn
+    # with cwd outside working_root ran the grandchild THERE. The grandchild is an OS-level
+    # unsandboxed process, and _check_cmd_paths() cannot see this: with cwd=C:\Windows the
+    # arguments are RELATIVE, so no absolute path appears in argv at all. Verified live:
+    #   subprocess.run(["findstr","16-bit","win.ini"], cwd=r"C:\Windows") -> rc=0, printed
+    #   '; for 16-bit app support'  (content of C:\Windows\win.ini)
+    #   subprocess.run("findstr 16-bit win.ini", cwd=r"C:\Windows")       -> rc=0, same leak
+    # So cwd is a containment decision, not a cosmetic argument: it must resolve inside
+    # working_root. Relative cwd strings resolve against the child's cwd (= working_root),
+    # so they stay inside by construction; an earlier os.chdir() to an outside directory
+    # makes a relative cwd resolve OUTSIDE and _norm() (realpath) catches that. An int cwd
+    # is a file descriptor (os.fsdecode keeps it as an int) -- fds can only be created
+    # through the checked open primitives above, so it passes through like elsewhere here.
+    # Askable through the FILE consent gate (_fs_deny): the card shows the exact directory.
+    def _check_cwd(cwd):
+        if cwd is None:
+            # No explicit cwd: the grandchild INHERITS this process's cwd, which user code
+            # may have moved outside working_root with os.chdir() -- the same escape with
+            # one step removed. Check the inherited value too (os.getcwd() fires no audit
+            # event, so it is safe to call from the hook).
+            try:
+                cwd = _jps_os.getcwd()
+            except Exception:
+                cwd = ""  # undeterminable -> _inside() answers False -> fail closed
+        s = _path_str(cwd)
+        if s is None:
+            return  # int fd / exotic shape -> let CPython handle it (fd came from a checked open)
+        if _is_devnull(s) or _is_dev_or_pipe(s):
+            return
+        if not _inside(s, [ROOT]):
+            _fs_deny("subprocess cwd", s)
 
     def _check_cmd(cmdline, shell_ctx=False):
         """Validate one command for spawning. `cmdline` is a list or a string."""
@@ -110,11 +181,13 @@
                     _exec_gate("shell operator in command (token %r)" % tok, cmdline)
             toks = _jps_tokens(cmdline)
             _check_prog_base(_jps_basename(toks[0]) if toks else "", cmdline)
+            _check_cmd_paths(toks, cmdline)
         else:
             seq = [t.decode("utf-8", "replace") if isinstance(t, (bytes, bytearray)) else str(t)
                    for t in cmdline]
             prog = seq[0] if seq else ""
             _check_prog_base(_jps_basename(prog), cmdline)
+            _check_cmd_paths(seq, cmdline)
 
     # ---- OUT-OF-SANDBOX SUBPROCESS CONSENT GATE (2026-10-24) ------------------
     # A denied child-process spawn (shell / interpreter / network tool, or a shell
@@ -201,4 +274,23 @@
             "python_exec sandbox: child-process spawn NOT allowed -- %s (%s). The local "
             "user denied it or did not answer in time. Shells, interpreters and network "
             "tools are blocked from python_exec by default." % (what, str(detail)[:120]))
+
+    # ONE-SPAWN TOKEN (2026-11-14): the audit args of _winapi.CreateProcess do not expose
+    # the command line (verified: arg1 is a 1-char internal marker), so a raw
+    # CreateProcess(executable=None) call cannot be inspected at the audit level.
+    # subprocess is the legitimate route: its Popen event and patched __init__ run BEFORE
+    # CreateProcess. Each authorised Popen therefore issues a SINGLE-USE token that the
+    # CreateProcess(exe=None) branch consumes -- a raw smuggled call with no preceding
+    # authorised spawn finds no token and is denied, and a second smuggled call cannot
+    # piggyback on an already-consumed one.
+    _SPAWN_TOKEN = [0]
+
+    def _spawn_authorized():
+        if _SPAWN_TOKEN[0]:
+            _SPAWN_TOKEN[0] = 0  # consume -- one CreateProcess per authorised Popen
+            return True
+        return False
+
+    def _grant_spawn():
+        _SPAWN_TOKEN[0] += 1
 

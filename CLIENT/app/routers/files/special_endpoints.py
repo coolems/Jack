@@ -1,6 +1,5 @@
 """Special file endpoints (complex operations: zip download, folder open, file execution)."""
 
-import asyncio
 import os
 import io
 import sys
@@ -12,6 +11,13 @@ from fastapi.responses import StreamingResponse
 from .middleware import _safe_relative_path, _get_working_root_dir, logger
 
 from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
+
+# Sandboxed execution seam (SECURITY 2026-11-14): /api/run-file runs INSIDE the python_exec
+# runtime sandbox (both the captured branch and the GUI/console branch) instead of a bare
+# subprocess.run(). Fail-closed: if the sandbox cannot be resolved the endpoint refuses (403).
+from .sandbox_runner import (
+    run_sandboxed_file, run_sandboxed_detached, SandboxUnavailable, _unavailable_detail,
+)
 
 
 def register_special_endpoints(router: APIRouter):
@@ -87,7 +93,16 @@ def register_special_endpoints(router: APIRouter):
 
     @router.post("/api/run-file")
     async def run_file(data: Dict):
-        """Run a Python file. GUI apps (pygame, tkinter) launch in new terminal window.
+        """Run a Python file. GUI apps (pygame, tkinter) launch in a new terminal window.
+
+        SECURITY (2026-11-14): BOTH branches now run INSIDE the python_exec runtime
+        sandbox (app/routers/files/sandbox_runner.py). The previous implementation spawned
+        ``subprocess.run([python_exe, safe_path])`` (and CREATE_NEW_CONSOLE for GUI apps)
+        with NO containment, so any uploaded .py could read/write the whole machine and
+        reach the network. The sandbox pins filesystem/spawn/socket decisions to
+        working_root; if it cannot be resolved the request is REFUSED (403) - there is no
+        unsandboxed fallback. The GUI branch keeps its own console window but carries the
+        same bootstrap prefix and env pins.
 
         SERVER-side limitation gate (2026-10-01): before spawning any child process the CLIENT
         checks whether SUBPROCESS execution is allowed by the limitations the SERVER delivered for
@@ -109,7 +124,6 @@ def register_special_endpoints(router: APIRouter):
                 raise HTTPException(status_code=400, detail="Invalid path")
             if not os.path.isfile(safe_path):
                 raise HTTPException(status_code=404, detail="File not found")
-            python_exe = sys.executable or "python"
             try:
                 with open(safe_path, "r", encoding="utf-8", errors="ignore") as fcheck:
                     file_content = fcheck.read(4096)
@@ -117,34 +131,26 @@ def register_special_endpoints(router: APIRouter):
                 file_content = ""
             gui_keywords = ["pygame", "tkinter", "PyQt", "wxPython", "pyside"]
             is_gui_app = any(kw in file_content.lower() for kw in gui_keywords)
-            if sys.platform == "win32":
+            try:
                 if is_gui_app:
-                    # (2026-10-01) Direct Popen instead of a temp .bat + cmd.exe /c: the bat embedded
-                    # the path in a batch file where cmd metacharacters are live - a filename with a
-                    # double quote (" is NOT an escape for cmd, only ^ is) terminated the quoted arg
-                    # and let "& calc.py"-style names run arbitrary batch. argv elements go to
-                    # CreateProcess verbatim: no shell, nothing to escape.
-                    subproc.Popen([python_exe, safe_path], creationflags=subproc.CREATE_NEW_CONSOLE,
-                                  cwd=os.path.dirname(safe_path))  # replaces the bat's 'cd /d'
-                    return {"status": "launched", "stdout": f"GUI application launched in new terminal window.\nFile: {os.path.basename(safe_path)}\nCheck your desktop for the game window.", "stderr": "", "returncode": 0}
-                else:
-                    startup_info = subproc.STARTUPINFO()
-                    startup_info.dwFlags |= subproc.STARTF_USESHOWWINDOW
-                    startup_info.wShowWindow = subproc.SW_HIDE
-                    try:
-                        # FIX (2026-08-29): blocking subprocess off the event loop - it used to freeze
-                        # all HTTP endpoints (incl. /api/tree -> "Error loading files") for up to 30s.
-                        result = await asyncio.to_thread(subproc.run, [python_exe, safe_path], capture_output=True, text=True, timeout=30, startupinfo=startup_info, cwd=os.path.dirname(safe_path))
-                    except subproc.TimeoutExpired as e:
-                        return {"stdout": (e.stdout or "").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "stderr": (e.stderr or "Execution timed out after 30 seconds").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "Execution timed out after 30 seconds"), "returncode": -1, "status": "timeout"}
-                    return {"stdout": result.stdout or "", "stderr": result.stderr or "", "returncode": result.returncode}
-            else:
+                    # GUI apps need a real console window: detached spawn, SAME sandbox
+                    # prefix and env pins as the captured branch (2026-11-14).
+                    launched = await run_sandboxed_detached(safe_path, working_root_dir)
+                    return {"status": "launched",
+                            "stdout": f"GUI application launched in new terminal window.\nFile: {os.path.basename(safe_path)}\nCheck your desktop for the game window.",
+                            "stderr": "", "returncode": 0, "pid": launched.get("pid")}
                 try:
-                    # FIX (2026-08-29): blocking subprocess off the event loop.
-                    result = await asyncio.to_thread(subproc.run, [python_exe, safe_path], capture_output=True, text=True, timeout=30, cwd=os.path.dirname(safe_path))
+                    # Blocking child off the event loop (2026-08-29 fix: a blocking spawn
+                    # froze every HTTP endpoint for up to 30s).
+                    result = await run_sandboxed_file(safe_path, working_root_dir, timeout_sec=30)
                 except subproc.TimeoutExpired as e:
-                    return {"stdout": (e.stdout or "").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "stderr": (e.stderr or "Execution timed out after 30 seconds").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "Execution timed out after 30 seconds"), "returncode": -1, "status": "timeout"}
-                return {"stdout": result.stdout or "", "stderr": result.stderr or "", "returncode": result.returncode}
+                    return {"stdout": (e.stdout or "").decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""),
+                            "stderr": (e.stderr or "Execution timed out after 30 seconds").decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "Execution timed out after 30 seconds"),
+                            "returncode": -1, "status": "timeout"}
+                return {"stdout": result["stdout"] or "", "stderr": result["stderr"] or "",
+                        "returncode": result["returncode"]}
+            except SandboxUnavailable as e:
+                raise HTTPException(status_code=403, detail=_unavailable_detail(e))
         except HTTPException:
             raise
         except Exception as e:

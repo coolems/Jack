@@ -206,13 +206,106 @@ def _jps_setup():
             pass
         return False
 
-    # Named-pipe / device namespace exemption (2026-09-17): asyncio subprocess
-    # transports create stdio pipes via _winapi.CreateFile on '\\' .\\pipe\\...' names,
-    # which are NOT filesystem paths. Exempt the whole \\.\ device/pipe namespace from
-    # containment (same class as the devnull exemption). Residual: raw volume/device
-    # handles (\\.\PHYSICALDRIVE0) stay reachable -- documented, not a file path.
+    # Named-pipe / device namespace exemption (2026-09-17; NARROWED 2026-11-14): asyncio
+    # subprocess transports create stdio pipes via _winapi.CreateFile on '\\.\pipe\...'
+    # names, which are NOT filesystem paths, so the PIPE namespace must stay exempt.
+    # The old rule exempted the WHOLE \\.\ namespace, which also covers raw volume and
+    # device handles (\\.\PHYSICALDRIVE0, \\.\HarddiskVolume1, ...) -- real OS objects
+    # outside containment. Now only \\.\pipe\* plus the classic console device names
+    # (nul/con/prn/aux/com1..9, also handled by _is_devnull) are exempt.
     def _is_dev_or_pipe(p):
         s = p.decode("utf-8", "replace") if isinstance(p, (bytes, bytearray)) else str(p)
-        b = s.strip().lower()
-        return b.startswith('\\\\.\\') or b.startswith('//./')
+        b = s.strip().lower().replace("/", "\\")
+        if b.startswith('\\\\.\\pipe\\') or b.startswith('//./pipe/'):
+            return True
+        return b in ("nul", "con", "prn", "aux", "com1", "com2", "com3", "com4",
+                     "com5", "com6", "com7", "com8", "com9")
+
+    # Path-string helper used by the audit hook AND the raw-Win32 wrappers (defined here,
+    # before both, so the hook never hits a NameError on a non-Windows build where the
+    # stage-6 block does not run).
+    def _path_str(x):
+        """Best-effort path string (str/bytes/os.PathLike); None otherwise."""
+        if isinstance(x, bytes):
+            return x.decode("utf-8", "replace")
+        if isinstance(x, str):
+            return x
+        try:
+            return _jps_os.fspath(x)
+        except Exception:
+            return None
+
+    # Write policy for _winapi.CreateFile (Windows), used by the AUDIT hook AND the stage-6
+    # wrapper. Two independent signals decide "write":
+    #   * the ACCESS mask contains any write bit -- GENERIC_WRITE (0x40000000),
+    #     FILE_GENERIC_WRITE (0x120116), DELETE (0x00010000);
+    #   * the CREATION DISPOSITION creates or truncates -- CREATE_NEW (1),
+    #     CREATE_ALWAYS (2), TRUNCATE_EXISTING (5).
+    # Reading only the access mask was a verified miss (2026-11-14): FILE_GENERIC_WRITE
+    # contains DELETE but no GENERIC_WRITE bit, and the disposition slot was never looked
+    # at, so a write handle opened with a create disposition slipped past the check.
+    # _winapi exposes only OPEN_EXISTING/GENERIC_*/FILE_GENERIC_*, so the disposition and
+    # DELETE values are Win32 API constants (stable across versions).
+    _WACC_MASK = 0
+    _WCREATIONS = frozenset((1, 2, 5))  # CREATE_NEW, CREATE_ALWAYS, TRUNCATE_EXISTING
+    if _jps_os.name == "nt":
+        _wapi_pre = _jps_sys.modules.get("_winapi")
+        for _c, _fallback in (("GENERIC_WRITE", 0x40000000), ("FILE_GENERIC_WRITE", 0x120116)):
+            try:
+                _WACC_MASK |= getattr(_wapi_pre, _c)
+            except Exception:
+                _WACC_MASK |= _fallback
+        _WACC_MASK |= 0x00010000  # DELETE access
+
+    def _winapi_is_write(access, creation):
+        if isinstance(access, int) and (access & _WACC_MASK) != 0:
+            return True
+        if isinstance(creation, int) and creation in _WCREATIONS:
+            return True
+        # Undetermined access AND undetermined disposition -> fail closed as a write.
+        return not isinstance(access, int) and not isinstance(creation, int)
+
+    # CONSENT-DECISION WRITE LOCK (2026-11-14, verified escape). The three out-of-sandbox
+    # consent gates (network / file / subprocess) read the parent's answer from
+    # <root>/.temp/.jack_netreq/<id>.decision.json -- a folder INSIDE working_root, which
+    # the child can write. Without this lock a thread inside the payload wrote its own
+    # {"decision":"allow"} and socket.connect + open(outside) both passed the gate.
+    # Decision files are PARENT-OWNED: any write to one is denied outright, and never
+    # asked (asking the user about the ask would be circular). Reads stay legal -- the
+    # gates themselves read them. Covers every write route: open/flags, os.open, nt.open,
+    # _winapi.CreateFile, and mutation ops that could REPLACE a decision file.
+    def _is_consent_decision(p):
+        s = _path_str(p)
+        if s is None:
+            return False
+        b = s.strip().lower().replace("/", "\\")
+        # The folder is '.jack_netreq' (leading dot) -- match the directory component,
+        # not a bare '\jack_netreq\' which the dotted name does not contain.
+        parts = b.split("\\")
+        base = parts[-1]
+        parent = parts[-2] if len(parts) >= 2 else ""
+        return base.endswith(".decision.json") and parent == ".jack_netreq"
+
+    def _deny_decision_write(what, p):
+        raise PermissionError(
+            "python_exec sandbox: %s of '%s' is blocked -- consent DECISION files under "
+            ".temp/.jack_netreq are written by the parent process only. Code running "
+            "inside python_exec must not answer its own approval request (fail-closed)."
+            % (what, p)
+        )
+
+    # FAIL-CLOSED CONTRACT for setup stages (2026-11-14). Every containment stage used to
+    # swallow its exception and continue: a child whose audit hook or patch stage failed to
+    # install ran FULLY UNSANDBOXED with rc=0 (verified -- addaudithook raising left
+    # os.listdir/open outside the root wide open). A guard that did not install is a
+    # security failure, not a warning: log it, then exit 3 before any user code runs.
+    def _jps_fail(where):
+        _jps_log_exc(where)
+        try:
+            print("python_exec sandbox INIT FAILED: %s -- containment could not be "
+                  "installed; refusing to run unsandboxed (fail-closed)." % where,
+                  file=_jps_sys.stderr, flush=True)
+        except Exception:
+            pass
+        _jps_os._exit(3)
 
