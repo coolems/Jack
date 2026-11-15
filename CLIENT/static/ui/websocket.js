@@ -607,6 +607,25 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
 
+    // ===== CONSENT CARD TRANSPORT (2026-11-15) =====================================
+    // 'exec_approval_ack' confirms that the decision the user clicked actually reached the
+    // backend (the answer now rides this chat's own WebSocket). Without an ack the card
+    // re-enables its buttons and asks for a retry instead of dying on "Failed to fetch".
+    if (data.type === 'exec_approval_ack') {
+        ApprovalDialog.handleAck(data);
+        return;
+    }
+    if (data.type === 'consent_cancelled') {
+        // The turn ended with this card unanswered: withdraw it (and settle its block row as
+        // 'unanswered') instead of leaving a card that can never be answered.
+        if (typeof ChatSocketPool !== 'undefined') ChatSocketPool._removePendingCard(convId, data.request_id);
+        const block = _cycleTarget(convId, data);
+        if (!block || !CycleBlock.settleCard(block, data.request_id, 'unanswered')) {
+            ApprovalDialog.cancelCard(data.request_id);
+        }
+        return;
+    }
+
     // ===== LIVE STEERING (2026-10-23; block rows since 2026-11-08) ==================
     // A steering message is LOOP WORK: it never paints as a chat-level user message.
     // These three ack frames settle the ROW inside the running turn's block

@@ -93,6 +93,6 @@ def test_real_write_file_source_transforms_and_compiles():
 
 if __name__ == "__main__":
     for name in sorted(n for n in globals() if n.startswith("test_")):
-        getattr(globals()[name])()
+        globals()[name]()
         print(f"PASS {name}")
     print("ALL PASS")

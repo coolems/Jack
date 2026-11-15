@@ -234,4 +234,15 @@ def expected_flag_signatures(model_file: str, enable_mtp: bool,
             f"--spec-draft-n-max {LLAMA_SERVER_SPEC_DRAFT_N_MAX}",
             f"--spec-draft-p-split {LLAMA_SERVER_SPEC_DRAFT_P_SPLIT}",
         ])
+    # The list above is hand-written next to the command it must mirror, so it CAN
+    # drift when a flag changes in _build_server_cmd(). Checked against the real
+    # command instead of trusted: a signature that our own launcher would not emit
+    # would silently accept a foreign server we should have restarted.
+    joined = " ".join(cmd)
+    for sig in sigs:
+        if sig not in joined:
+            logger.warning(
+                "expected_flag_signatures: '%s' is not emitted by _build_server_cmd() - "
+                "the signature list drifted from the real launch command", sig,
+            )
     return sigs

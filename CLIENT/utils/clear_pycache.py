@@ -32,21 +32,21 @@ def clear_pycache():
     for pycache_dir in pycache_dirs:
         try:
             shutil.rmtree(pycache_dir)
-        except Exception as e:
+        except Exception:
             logger.debug("Cleanup/delete non-critical error at CLIENT/utils/clear_pycache.py:32")
     
     # Remove .pyc files
     for pyc_file in pyc_files:
         try:
             pyc_file.unlink()
-        except Exception as e:
+        except Exception:
             logger.debug("Cleanup/delete non-critical error at CLIENT/utils/clear_pycache.py:39")
     
     # Remove .pyo files
     for pyo_file in pyo_files:
         try:
             pyo_file.unlink()
-        except Exception as e:
+        except Exception:
             logger.debug("Cleanup/delete non-critical error at CLIENT/utils/clear_pycache.py:46")
     
 

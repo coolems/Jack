@@ -73,6 +73,10 @@ pytz==2024.1
   License: MIT
   Copyright holder: Steven D'Aprano and contributors
 
+ruff==0.17.5
+  License: MIT
+  Copyright holder: Charles Marsh and Ruff contributors
+
 requests==2.31.0
   License: Apache-2.0
   Copyright holder: Kenneth Reitz and contributors

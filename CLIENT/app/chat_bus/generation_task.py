@@ -479,6 +479,27 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         except Exception as e:  # pragma: no cover - history must never break a turn
             logger.debug(f"[CHATBUS] cycle settle in finally failed for conv={conv_id}: {e}")
 
+        # (2026-11-15 consent-card lifetime) Drop every card this turn never got an answer
+        # for and tell the UI to withdraw it. cancel_all() existed but was never called, so
+        # a card could outlive its future: the user clicked it, the backend had nothing to
+        # resolve, and the click was silently lost. Fail-closed: each waiter gets 'deny'.
+        try:
+            _state = getattr(channel, "exec_approval", None)
+            if _state is not None:
+                for _rid, _kind in _state.cancel_all():
+                    try:
+                        await sink.send_text(json.dumps({
+                            "type": "consent_cancelled",
+                            "conv_id": conv_id,
+                            "turn_id": str(getattr(channel, "turn_id", "") or ""),
+                            "request_id": _rid,
+                            "kind": _kind,
+                        }))
+                    except Exception:
+                        pass  # UI gone - the card is dead either way
+        except Exception as e:  # pragma: no cover - cleanup must never break the turn
+            logger.debug(f"[CHATBUS] consent cleanup in finally failed for conv={conv_id}: {e}")
+
 
 def register_stop_event(stop_events: dict, conv_id: str, event: asyncio.Event) -> None:
     """Keep the legacy stop_events dict in sync so /api/stop/{conv_id} keeps working."""

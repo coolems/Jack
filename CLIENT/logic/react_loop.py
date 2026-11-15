@@ -997,7 +997,6 @@ async def run_react_loop(
                 tool_iteration += 1
 
 
-                iteration_elapsed = time.time() - iteration_start
                 continue
             else:
                 # No tool calls - check if task is truly done

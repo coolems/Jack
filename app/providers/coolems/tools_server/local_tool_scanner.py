@@ -94,8 +94,8 @@ class LocalToolScanner:
 
     def _load_shared_modules(self):
         """Load ALL root-level .py files from tools/ as shared modules.
-        
-        This includes utils.py, path_guard.py, shared_browser.py, etc.
+
+        This includes utils.py, path_guard.py, ssrf_guard.py, etc.
         These are the modules that tool code imports via 'from tools.XXX import YYY'.
         They get sent to CLIENT and installed in-memory (never on disk).
         """
@@ -107,12 +107,15 @@ class LocalToolScanner:
         known_shared_modules = [
             'utils',           # get_working_root, resolve_path_to_dir, validate_filename, etc.
             'path_guard',      # guard_path_inside_working_root, secure_find_file, is_safe_path, etc.
-            'shared_browser',  # shared browser instance for web tools
             'ssrf_guard',      # SSRF defense v2 (2026-09): policy + PinnedConnector/safe_session
                                 # MUST stay before ssrf_defense (the shim imports from it)
             'ssrf_defense',    # DEPRECATED shim re-exporting tools.ssrf_guard (legacy tool code)
             'tool_bootstrap',  # generic self-unpacking runtime bootstrap (venv + worker) for content-gen tools
         ]
+        # 'shared_browser' was dropped from this list (2026-11-15): tools/shared_browser.py
+        # does not exist and no tool imports it - the shared browser instance is delivered
+        # as 'web_interact.shared_instance' below. Keeping the entry only produced a
+        # "CLIENT tools that need it will fail" warning on every SERVER boot.
 
         for mod_name in known_shared_modules:
             module_path = self.tools_dir / f"{mod_name}.py"
@@ -210,7 +213,7 @@ class LocalToolScanner:
             definition=definition,
             source_code=source_code,
             dependencies=dependencies,
-            manifest=self._load_manifest(folder_path),
+            manifest=self._load_manifest(filepath.parent),
         )
         self._registry[name] = tool
         logger.debug("Registered tool: %s from %s/%s", name, folder, filename)

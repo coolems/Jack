@@ -528,7 +528,13 @@ async def chat_stream(
                     raise RuntimeError(f"llama.cpp returned HTTP 400: {error_body.strip()[:300]}")
             elif response.status_code != 200:
                 error_text = await response.aread()
-                raise RuntimeError(f"llama.cpp returned HTTP {response.status_code}")
+                # Same contract as the 500/400 branches above: the body carries the
+                # actual llama.cpp reason, so a bare status code would hide it. Keep
+                # the message short - the raw body can be large.
+                body = error_text.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(
+                    f"llama.cpp returned HTTP {response.status_code}: {body[:300]}"
+                )
 
             # Effective stall timeout scales with prompt size so a legitimate
             # long prefill of a near-full context is not mistaken for a freeze.

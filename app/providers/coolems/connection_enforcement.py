@@ -271,7 +271,6 @@ class TokenBucketLimiter:
 
     async def get_remaining_tokens(self, api_key: str) -> float:
         """Get remaining tokens for an API key (for monitoring/debugging)."""
-        now = time.monotonic()
         async with self._lock:
             bucket = self._buckets.get(api_key)
             if not bucket:

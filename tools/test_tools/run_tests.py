@@ -1,68 +1,42 @@
-"""Run Tests Tool - Execute a test suite against the ACTIVE project root.
+"""Run Tests Tool - lint + test suite of the ACTIVE project root.
 
-This tool runs all tests found in ``<root>/tests/`` and returns a summary of
-results. Use this after any code changes to verify nothing is broken.
+Runs the static linter (ruff) and the test suite of the project currently being
+worked on, then reports both. Use it after any code change.
 
 Usage:
-    run_tests()                                  - Run the suite for the active project
-    run_tests(test_file="test_python_exec")      - Run one specific test file
-    run_tests(project_root="C:\\path\\to\\proj") - Explicitly target another project root
+    run_tests()                                  - lint + full suite of the active project
+    run_tests(test_file="test_python_exec")      - one specific test file (lint still runs)
+    run_tests(lint=False)                        - tests only
+    run_tests(project_root="C:\\path\\to\\proj") - explicitly target another project root
 
-PER-PROJECT TESTS (2026-10-06)
-------------------------------
-The runner always targets the PROJECT that is currently being worked on, i.e.
-the working root set in the CLIENT UI ("Working Folder" field), NOT whatever
-tree this module happens to be imported from:
+PROJECT SCOPING (invariant)
+---------------------------
+Discovery is scoped to the working root set in the CLIENT UI - the root itself,
+its immediate parent, then its direct children - and fails loudly when none of
+them holds a suite. It never falls through to the CWD/module path while a working
+root is configured: that used to run THIS repo's suite against another project
+and report a green light for code that was never executed. The CWD/module anchors
+apply only when no working root exists (pure local dev / SERVER). Because this
+tool is delivered to CLIENTs and exec'd there, __file__ may be a sentinel, so
+_resolve_project_root() locates the root from several anchors instead.
 
-  * Put a ``tests/`` folder with test files inside your project (inside the
-    working root) and call run_tests() - it will discover and run exactly that
-    suite, in that folder. Each project therefore keeps its own test suite
-    right next to its code (your idea, implemented).
-  * A fresh project WITHOUT tests gets a loud [FAIL] explaining where to add
-    them - the runner NEVER silently switches over to some other tree (e.g.
-    Jack's own repo) just because one exists on disk or under the CWD.
+SUITE LAYOUT: 'tests/' (the documented per-project layout) or 'tools/test_tools/'
+(this repo's own suite). A file named test_*.py that defines no test is not a
+suite member, so ./tests/ may hold throwaway live-service scripts safely.
 
-RUNNERS (2026-10-06): pytest is preferred (it collects both plain ``def test_*``
-functions and unittest.TestCase classes, with no package/import quirks); when
-the target interpreter has no pytest installed the runner transparently falls
-back to ``python -m unittest discover``. Both output formats are parsed.
+RUNNERS: pytest preferred (collects plain ``def test_*`` and unittest.TestCase
+classes); ``python -m unittest discover`` only when the target interpreter has no
+pytest. Both output formats are parsed. Children run with NO_COLOR=1 and explicit
+UTF-8, so output is byte-stable for parsing and a test printing non-Latin text
+cannot kill the reader thread.
 
-FIX HISTORY
------------
-2026-08-23: NO_COLOR + elapsed fixes. Both subprocess calls now run with
-NO_COLOR=1 in the child env - byte-stable, ANSI-free output for reliable parsing
-(verified: this does NOT bypass _colorama_workaround's colorama import; that chain
-only bites sandboxed python_exec children running pytest.main() directly).
-`elapsed` is now computed right after execution so the early-return paths can
-never reach `_parse_test_results` with it unbound; the rc==5 early-return block
-(mis-indented relative to its parent) was reindented to match.
-
-2026-10-06: path-artifact fix. Previously, when the configured working root had
-no tests/, discovery fell through to a CWD/module-path walk-up that could land
-on Jack's own repo (which DOES have tests/) - so with working_root set to
-another project the runner "succeeded" against the wrong tree while the user's
-project files were invisible ("its failure is a path artifact, not a code
-issue"). Now: when a working root IS configured, discovery stays scoped to it
-(working root itself -> its immediate parent -> its direct children) and fails
-loudly instead of falling through. The CWD/module fallback applies ONLY when no
-working root is configured at all (pure local dev / SERVER). An explicit
-``project_root`` argument was added to target any project on demand.
-
-2026-10-06: "NO TESTS RAN" fix. Jack's own test files are pytest-style plain
-functions, which ``unittest discover`` does not collect (and in this venv it
-silently found nothing) - the tool reported 0 tests while the suite existed.
-pytest-first execution with a unittest fallback makes discovery reliable for
-both styles; ``tests/__init__.py`` was also added so unittest-style packages
-import cleanly everywhere.
-
-2026-08-24: project-root resolution was hardcoded as three dirname() calls off
-__file__. That only works when the module is imported from disk. When this tool
-is delivered to the CLIENT over WS and exec'd by the dynamic loader, __file__ is
-a sentinel ('<remote_tool_run_tests>') that abspath()'s against CWD (the CLIENT
-dir), so the computed root pointed at a folder with no tests/ -> "Tests
-directory not found" for BOTH the full run and a specific test_file.
-_resolve_project_root() now locates the real project root from several anchors,
-which works identically on disk (SERVER / local dev) and in the CLIENT sandbox.
+LINT (added 2026-11-15, code review finding "no linter")
+--------------------------------------------------------
+Defect-only ruff rules, run BEFORE the tests so every early-return path still
+reports lint. The project's own ruff.toml/pyproject.toml is honoured when present
+(per-file ignores included); otherwise the built-in rule set below is applied
+explicitly. ruff is a SERVER-side dev dependency: when no ruff is reachable (the
+CLIENT sandbox), lint reports an explicit [SKIP] - never a fake pass.
 """
 
 import ast
@@ -78,9 +52,10 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "run_tests",
-        "description": "Run the test suite of the ACTIVE project (its tests/ folder, or an "
-                      "explicit project_root). pytest- or unittest-style both work. Use after "
-                      "any code change. Returns pass/fail status, timing and failure details.",
+        "description": "Lint (ruff) and run the test suite of the ACTIVE project (its tests/ "
+                      "folder, or an explicit project_root). pytest- or unittest-style both "
+                      "work. Use after any code change. Returns lint findings plus pass/fail "
+                      "status, timing and failure details.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -98,6 +73,12 @@ __tool_description__ = {
                     "type": "boolean",
                     "description": "Whether to include detailed output for each test. Default: true.",
                     "default": True
+                },
+                "lint": {
+                    "type": "boolean",
+                    "description": "Run the ruff lint pass before the tests. Default: true; it is "
+                                 "reported separately and marked [SKIP] when ruff is not installed.",
+                    "default": True
                 }
             },
             "required": []
@@ -112,6 +93,159 @@ _TEST_MARKER_FILES = [
 
 # Hard cap for a single test-suite run (seconds).
 _TEST_TIMEOUT = 120
+
+# --- Lint (2026-11-15, code review finding "no linter") -----------------------
+# Defect-only ruff rules - the same set as the repo's ruff.toml. Style/typing
+# rules are deliberately NOT selected here: this runs on ANY project the user
+# works in, and a style wall would bury real defects. A project that ships its
+# own ruff config keeps it (rules are ADDED with --extend-select, never
+# replaced), so its per-file ignores and excludes still apply.
+_LINT_RULES = "E9,F821,F811,F601,F841,B006"
+# E9 syntax errors, F821 undefined name (NameError), F811 redefinition of a live
+# binding, F601 repeated dict key, F841 unused local (dropped computation),
+# B006 mutable default argument.
+_LINT_TIMEOUT = 60
+_LINT_MAX_LINES = 60
+# Config files ruff discovers on its own. A project WITH one of these gets its own
+# rules/ignores/excludes honoured; a project WITHOUT one is linted --isolated,
+# because ruff otherwise walks UP the tree and inherits an ancestor repo's config
+# (verified: a nested folder inside this repo reported "All checks passed!" only
+# because the ancestor ruff.toml excludes that path).
+_LINT_CONFIG_FILES = ("ruff.toml", ".ruff.toml")
+
+
+def _project_has_ruff_config(root: str) -> bool:
+    """True when *root* declares its own ruff configuration."""
+    for name in _LINT_CONFIG_FILES:
+        if os.path.isfile(os.path.join(root, name)):
+            return True
+    pp = os.path.join(root, "pyproject.toml")
+    try:
+        if os.path.isfile(pp):
+            with open(pp, "r", encoding="utf-8", errors="replace") as fh:
+                return "[tool.ruff" in fh.read()
+    except OSError:
+        return False
+    return False
+
+
+def _lint_cmd(cmd_prefix: list, root: str) -> list:
+    """Rule-selection flags for *root*: its own config wins, else our defect set.
+
+    With a project config we only --extend-select (add the defect rules on top of
+    whatever the project chose - never replace them, and its per-file ignores and
+    excludes stay in force). Without one we --isolated --select so an ancestor
+    repo's config cannot silently decide what gets linted.
+    """
+    tail = ["--no-cache", "--output-format", "concise", "."]
+    if _project_has_ruff_config(root):
+        return cmd_prefix + tail[:1] + ["--extend-select", _LINT_RULES] + tail[1:]
+    return cmd_prefix + tail[:1] + ["--isolated", "--select", _LINT_RULES] + tail[1:]
+
+
+def _ruff_candidates(root: str) -> list:
+    """ruff launch candidates for *root*, best isolation first.
+
+    1. <project>/venv/Scripts/ruff.exe (or bin/ruff on POSIX) - the project's own
+       pinned ruff, isolated from whatever is on PATH.
+    2. <project>/venv/.../python.exe -m ruff - same venv, no separate binary.
+    3. sys.executable -m ruff - the interpreter running this tool (SERVER venv).
+    4. bare "ruff" - PATH install.
+
+    Absolute candidates are skipped when the file is missing (an exact venv path
+    is a fact, not a guess); the rest are probed with --version by the caller.
+    """
+    scripts = ["Scripts", "bin"]
+    out = []
+    for sub in ("venv", ".venv"):
+        base = os.path.join(root, sub)
+        if not os.path.isdir(base):
+            continue
+        for sdir in scripts:
+            bindir = os.path.join(base, sdir)
+            if not os.path.isdir(bindir):
+                continue
+            exe = os.path.join(bindir, "ruff.exe" if os.name == "nt" else "ruff")
+            if os.path.isfile(exe):
+                out.append([exe, "check"])
+            py = os.path.join(bindir, "python.exe" if os.name == "nt" else "python")
+            if os.path.isfile(py):
+                out.append([py, "-m", "ruff", "check"])
+    if sys.executable:
+        out.append([sys.executable, "-m", "ruff", "check"])
+    out.append(["ruff", "check"])
+    return out
+
+
+def _resolve_ruff(root: str):
+    """First candidate that actually runs ruff, or None when ruff is unreachable.
+
+    Probed with `--version`: that reads no config and touches no project file, so
+    a broken ruff.toml cannot make lint look unavailable (rc >= 2 from the real
+    run is reported as a lint failure instead).
+    """
+    for cand in _ruff_candidates(root):
+        probe = cand[:-1] + ["--version"]
+        try:
+            r = subprocess.run(probe, cwd=root, capture_output=True, text=True,
+                               timeout=20, encoding="utf-8", errors="replace")
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            continue  # not executable / no such file / bad interpreter
+        if r.returncode == 0:
+            return cand, (r.stdout or "").strip()
+    return None, ""
+
+
+def _run_lint(root: str):
+    """Static lint of *root*. Returns (status, engine, body) with status in
+    {'pass', 'fail', 'skip', 'error'} - 'skip' only when ruff is genuinely
+    unreachable, so lint can never report a false green.
+    """
+    cmd_prefix, version = _resolve_ruff(root)
+    if not cmd_prefix:
+        return "skip", "", ("ruff not found in the project venv, the interpreter running this "
+                            "tool, or PATH. Install it with: pip install ruff==0.17.5 "
+                            "(dev-only; nothing at runtime needs it).")
+
+    mode = "project config + defect rules" if _project_has_ruff_config(root) else "built-in defect rules (isolated)"
+    engine = f"{version} | {mode}"
+    cmd = _lint_cmd(cmd_prefix, root)
+    try:
+        res = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                             timeout=_LINT_TIMEOUT, encoding="utf-8", errors="replace",
+                             env={**os.environ, "NO_COLOR": "1"})
+    except subprocess.TimeoutExpired:
+        return "error", engine, f"lint timed out after {_LINT_TIMEOUT}s (ruff stuck on this tree?)."
+    except Exception as e:
+        return "error", engine, f"could not run ruff: {e}"
+
+    out = (res.stdout or "").strip()
+    err = (res.stderr or "").strip()
+    # ruff exit codes: 0 = clean, 1 = findings, >=2 = its own error (bad config,
+    # unreadable path). A config error must never read as a pass.
+    if res.returncode == 0:
+        return "pass", engine, out or "All checks passed!"
+    if res.returncode == 1:
+        lines = out.splitlines()
+        if len(lines) > _LINT_MAX_LINES:
+            lines = lines[:_LINT_MAX_LINES] + [f"... ({len(lines) - _LINT_MAX_LINES} more findings)"]
+        return "fail", engine, "\n".join(lines)
+    return "error", engine, f"ruff exited with code {res.returncode}: {err or out}"
+
+
+def _lint_section(status: str, engine: str, body: str) -> list:
+    """Rendered lint block for the report (markdown, same shape as the summary)."""
+    label = {"pass": "[PASS]", "fail": "[FAIL]", "skip": "[SKIP]", "error": "[FAIL]"}[status]
+    parts = ["## Lint Results", "", f"**Status:** {label}", f"**Rules:** {_LINT_RULES}"]
+    if engine:
+        parts.append(f"**Engine:** {engine}")
+    parts.append("")
+    if status == "fail":
+        parts.append(f"**Findings:**\n```\n{body}\n```")
+    else:
+        parts.append(body)
+    parts.append("")
+    return parts
 
 
 def _cleanup_test_artifacts():
@@ -410,9 +544,10 @@ def _runner_kind(runner: str) -> str:
     return "pytest" if runner.startswith("pytest") else "unittest"
 
 
-def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = None, verbose: bool = True) -> str:
+def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = None,
+              verbose: bool = True, lint: bool = True) -> str:
     """
-    Run the test suite of the active project and return results.
+    Lint and test the active project, returning one combined report.
 
     Args:
         test_file: Optional specific test file to run (with or without .py extension).
@@ -421,12 +556,14 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
                      tests/ folder with test files. Defaults to the configured working
                      root - so each project keeps its own suite inside itself.
         verbose: Whether to include detailed per-test output.
+        lint: Run the ruff pass before the tests (default True). Reported separately;
+              [SKIP] when no ruff is reachable, never a silent pass.
 
     Returns:
-        String with test results summary including pass/fail count, execution time,
-        and failure details. When no legitimate target exists, a [FAIL] message
-        explaining exactly what is missing (never silently runs the wrong project's
-        suite).
+        Markdown report: lint findings, then test results (pass/fail counts, execution
+        time, failure details), then the combined verdict. When no legitimate target
+        exists, a [FAIL] message explaining exactly what is missing (never silently
+        runs the wrong project's suite).
     """
     root, how, suite_dir = _resolve_project_root(project_root)
     if not root:
@@ -443,6 +580,31 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
 
     # Clean up any leftover artifacts from previous runs
     _cleanup_test_artifacts()
+
+    # Lint FIRST: static defects are cheap and independent of the runner, and doing
+    # it here means the early-return paths below (no tests collected, timeout,
+    # runner exception) still report the lint verdict instead of losing it.
+    if lint:
+        lint_status, lint_engine, lint_body = _run_lint(root)
+    else:
+        lint_status, lint_engine, lint_body = "disabled", "", "Lint not requested (lint=False)."
+
+    # 'skip' (no ruff reachable) does not fail the run - it is reported loudly so a
+    # missing linter is visible, but a project without ruff is not a defect.
+    lint_ok = lint_status in ("pass", "disabled", "skip")
+
+    def _assemble(test_parts: list, tests_ok: bool) -> str:
+        """Lint block + test block + one combined verdict line."""
+        parts = []
+        if lint_status == "disabled":
+            parts.extend(["## Lint Results", "", "**Status:** [DISABLED]", "", lint_body, ""])
+        else:
+            parts.extend(_lint_section(lint_status, lint_engine, lint_body))
+        parts.extend(test_parts)
+        parts.append("")
+        parts.append(f"**Overall:** {'[PASS]' if (tests_ok and lint_ok) else '[FAIL]'}"
+                     f" (lint: {lint_status}, tests: {'pass' if tests_ok else 'fail'})")
+        return "\n".join(parts)
 
     python_exe = sys.executable if sys.executable else "python"
     start_time = time.time()
@@ -486,10 +648,13 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
         # otherwise be reported as 0 tests / [PASS]-adjacent noise. A suite that ran
         # zero tests is not a green light (mirrors the NO TESTS RAN warning for unittest).
         if runner.startswith("pytest") and result.returncode == 5:
-            return ("[FAIL] No tests were collected - pytest exited with code 5 "
-                    f"(no test_*.py files found under {os.path.join(root, suite_dir)}, or none of them "
-                    "define collectable tests). Add test functions/classes to the project's "
-                    f"{suite_dir}/ folder.")
+            return _assemble([
+                "## Test Results", "",
+                f"[FAIL] No tests were collected - pytest exited with code 5 "
+                f"(no test_*.py files found under {os.path.join(root, suite_dir)}, or none of them "
+                "define collectable tests). Add test functions/classes to the project's "
+                f"{suite_dir}/ folder.",
+            ], False)
 
         # Combine output for parsing
         full_output = result.stdout + result.stderr
@@ -532,16 +697,17 @@ def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = Non
             response_parts.extend(lines[-30:])  # Last 30 lines
             response_parts.append("```")
 
-        return "\n".join(response_parts)
+        return _assemble(response_parts, not has_failures)
 
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
-        return (
+        return _assemble([
+            "## Test Results", "",
             f"[FAIL] Tests timed out after {_TEST_TIMEOUT} seconds (ran for {elapsed:.1f}s). "
-            f"A test may be hanging — check for infinite loops or blocking operations."
-        )
+            f"A test may be hanging — check for infinite loops or blocking operations.",
+        ], False)
     except Exception as e:
-        return f"[FAIL] Failed to run tests: {str(e)}"
+        return _assemble(["## Test Results", "", f"[FAIL] Failed to run tests: {str(e)}"], False)
     finally:
         # Always clean up artifacts after runs
         _cleanup_test_artifacts()

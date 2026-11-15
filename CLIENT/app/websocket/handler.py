@@ -102,6 +102,10 @@ def create_websocket_handler(
     # every disconnect. app.auth has no imports back into this module, so no circular import.
     from app.auth import authenticate_websocket, release_websocket_session
 
+    # (2026-11-15 consent answer channel) the shared delivery path of ExecApprovalState,
+    # used by the 'exec_approval_decision' frame handled in websocket_chat below.
+    from app.chat_bus.exec_approval import handle_decision_frame
+
     # (2026-08-23 fix, DEFECT A): broadcast-registry imports at FACTORY level so both
     # _authenticate_and_setup (register) and websocket_chat's finally-block (unregister)
     # can see them — a name bound only inside one nested function would raise NameError
@@ -358,6 +362,23 @@ def create_websocket_handler(
                 except json.JSONDecodeError as e:
                     logger.warning(f"[WS] Invalid JSON from client {client_ip}: {e}")
                     await send_error(websocket, f"Invalid JSON: {str(e)}", code=400)
+                    continue
+
+                # ============================================================
+                # (2026-11-15 consent answer channel) A consent-card decision is NOT a chat
+                # message: it carries no text, so it is routed BEFORE the WebSocketChatMessage
+                # validation (which would reject it with 422). The UI sends it on the SAME
+                # socket that delivered the card: the old one-shot HTTP POST died whenever the
+                # page was torn down or the workspace was switched ("Failed to fetch"), the
+                # click was lost and the turn stayed parked on the pending future forever.
+                # conv_id comes from THIS socket, never from the payload.
+                # ============================================================
+                if isinstance(raw_payload, dict) and raw_payload.get("type") == "exec_approval_decision":
+                    ack = handle_decision_frame(bus, conv_id, raw_payload)
+                    try:
+                        await websocket.send_text(json.dumps(ack))
+                    except Exception:
+                        logger.debug("[EXEC-APPROVAL] ws ack could not be delivered (UI socket gone)")
                     continue
 
                 # Step 2: Validate with Pydantic

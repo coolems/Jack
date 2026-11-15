@@ -171,8 +171,6 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         generation indicator and send/stop button color even when no frames are
         currently flowing (e.g. the turn finished while the user was elsewhere).
         """
-        current_ip = get_client_ip(request)
-
         conn = get_db_connection()
         try:
             cursor = conn.cursor()

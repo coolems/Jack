@@ -6,8 +6,10 @@ an honest success when there is nothing live to abort (the UI contract: clicking
 ALWAYS clears the red state).
 
 EXEC APPROVAL (2026-09-24): POST /api/exec-approval/{conv_id}/{request_id} resolves the
-pending asyncio.Future owned by this chat's ExecApprovalState. Same uvicorn event loop
-as the generation task, so a plain set_result is safe - no cross-thread plumbing."""
+pending asyncio.Future owned by this chat's ExecApprovalState. Since 2026-11-15 the UI
+answers over the chat's own WebSocket instead (app/websocket/handler.py) and this endpoint
+is the fallback; both go through app.chat_bus.exec_approval.deliver_decision(). Same
+uvicorn event loop as the generation task, so a plain set_result is safe."""
 
 from typing import Dict
 
@@ -71,58 +73,37 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         logger.info(f"Stop requested for conversation {conv_id}: no active generation - nothing to stop")
         return {"status": "ok", "message": "No active generation - already stopped"}
 
-    # ===== PYTHON_EXEC USER APPROVAL ENDPOINT (2026-09-24) ======================
-    # The chat UI's approval card posts the user's decision here. It resolves the
-    # pending asyncio.Future owned by this chat's ExecApprovalState (see
-    # app/chat_bus/exec_approval.py). Same uvicorn event loop as the generation
-    # task, so a plain set_result is safe - no cross-thread plumbing.
+    # ===== CONSENT CARD DECISION ENDPOINT (2026-09-24) ============================
+    # FALLBACK transport of a consent-card decision. The PRIMARY path since 2026-11-15 is
+    # the 'exec_approval_decision' frame on the chat's own WebSocket (app/websocket/
+    # handler.py): a one-shot POST dies when the page is torn down or the workspace is
+    # switched, which is how a click could be lost with "Failed to fetch". This endpoint
+    # stays for non-UI callers and old clients; both transports funnel through
+    # app.chat_bus.exec_approval.deliver_decision() so they cannot drift apart.
 
     @router.post("/api/exec-approval/{conv_id}/{request_id}")
     async def exec_approval_decision(conv_id: str, request_id: str, data: Dict):
-        """Resolve a pending python_exec approval for one chat.
+        """Resolve a pending consent card for one chat (fallback transport).
 
-        Body: {"decision": "allow" | "deny" | "allow_category_until_done"}
-          - allow   : run this ONE piece of code
+        Body: {"decision": "allow" | "deny" | "allow_category_until_done" | "explain"}
+          - allow   : run this ONE piece of code / open this ONE target
           - deny    : do NOT run it (the AI is told the user declined)
-          - allow_category_until_done : "run until task done" - every python_exec of THIS agentic
-                      run executes without asking; resets on the next loop run
+          - allow_category_until_done : "run until task done" - every card of THIS agentic
+                      run's kind executes without asking; resets on the next loop run
 
-        409 when the request id is unknown or already answered (e.g. the user was
-        too slow and it timed out, or the turn was stopped in between).
+        409 when the request id is unknown or already answered (e.g. the turn was stopped
+        in between), 400 on an unknown decision.
         """
         from app.chat_bus import get_chat_bus
+        from app.chat_bus.exec_approval import deliver_decision
 
-        decision = str((data or {}).get("decision", "")).strip().lower()
-        # (2026-07-18 unified consent dialog) 'explain' = the user clicked "Explain request"
-        # on ANY card kind: nothing is allowed; the AI answers in its required format and
-        # re-issues the tool call, which renders a fresh card.
-        if decision not in ("allow", "deny", "allow_category_until_done", "explain"):
-            return JSONResponse(
-                status_code=400,
-                content={"status": "error",
-                         "message": "decision must be one of: allow, deny, allow_category_until_done, explain"}
-            )
-
-        bus = get_chat_bus()
-        channel = bus.channels.get(conv_id) if bus is not None else None
-        state = getattr(channel, "exec_approval", None) if channel is not None else None
-        if state is None or not hasattr(state, "resolve"):
-            logger.info(f"[EXEC-APPROVAL] no live approval state for conv={conv_id} - nothing to resolve")
-            return JSONResponse(
-                status_code=409,
-                content={"status": "error",
-                         "message": "No pending python_exec approval for this workspace."}
-            )
-
-        resolved, _newly_granted = state.resolve(request_id, decision)  # per-kind grant flag set inside resolve()
+        resolved, message = deliver_decision(get_chat_bus(), conv_id, request_id,
+                                             (data or {}).get("decision", ""), source="http")
         if not resolved:
-            return JSONResponse(
-                status_code=409,
-                content={"status": "error",
-                         "message": "That approval was already answered or expired."}
-            )
-        logger.info(f"[EXEC-APPROVAL] conv={conv_id} request={request_id} -> {decision}")
-        return {"status": "ok", "decision": decision}
+            status = 400 if message.startswith("decision must be") else 409
+            return JSONResponse(status_code=status,
+                                content={"status": "error", "message": message})
+        return {"status": "ok", "decision": str((data or {}).get("decision", "")).strip().lower()}
 
 
 

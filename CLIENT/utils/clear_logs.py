@@ -21,7 +21,7 @@ def clear_logs():
         for log_file in log_files:
             try:
                 log_file.unlink()
-            except Exception as e:
+            except Exception:
                 logger.debug("Non-critical exception caught at CLIENT/utils/clear_logs.py:21")
     else:
         pass

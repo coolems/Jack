@@ -98,7 +98,6 @@ def parse_pip_progress_line(line: str):
             got = float(m.group(1)); total = float(m.group(2))
         except ValueError:
             return None
-        mult = _PIP_UNIT_MULT.get((m.group(3) or "").upper(), 1)
         pct = min(100, int(round(got / total * 100))) if total > 0 else 0
         speed = _pip_speed_bytes_per_sec(m.group(4), m.group(5))
         return {"percent": pct, "speed_bps": speed, "eta_sec": _parse_eta(m.group(6))}

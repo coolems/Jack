@@ -40,6 +40,32 @@ const ChatSocketPool = {
     attention: {},        // convId -> 'dialog' | 'done'
     _attentionTimers: {}, // convId -> setTimeout handle for the temporary 'done' flash
 
+    // (2026-11-15 consent-card lifetime) convId -> Set of request_ids whose card is still
+    // unanswered. A chat parked on a consent card is LIVE WORK: the turn is blocked on that
+    // decision, so its socket must never be LRU-evicted (and its stashed view neither) —
+    // otherwise the card the user still has to answer loses its transport.
+    pendingCards: {},
+
+    /** True when this conversation still has an unanswered consent card on screen. */
+    hasPendingCard(convId) {
+        const s = this.pendingCards[convId];
+        return !!(s && s.size);
+    },
+
+    _addPendingCard(convId, requestId) {
+        if (!convId) return;
+        let s = this.pendingCards[convId];
+        if (!s) { s = new Set(); this.pendingCards[convId] = s; }
+        s.add(requestId || '');
+    },
+
+    _removePendingCard(convId, requestId) {
+        const s = this.pendingCards[convId];
+        if (!s) return;
+        s.delete(requestId || '');
+        if (!s.size) delete this.pendingCards[convId];
+    },
+
     /** Open (or reuse) the socket for one conversation. NEVER closes other chats' sockets. */
     ensure(convId) {
         if (!convId) return null;
@@ -83,6 +109,10 @@ const ChatSocketPool = {
 
         try { entry.ws.close(); } catch (e) { logError('[ChatSocketPool] close error:', e); }
 
+        // (2026-11-15) this chat's transport is gone deliberately (delete / LRU / unload), so
+        // its pending-card bookkeeping goes with it — nothing can be answered on it any more.
+        delete this.pendingCards[convId];
+
         if (COOLEMS.currentConversation === convId && !this.sockets[convId]) {
             COOLEMS.ws = null;   // keep the legacy alias honest
         }
@@ -100,13 +130,16 @@ const ChatSocketPool = {
         this.order.push(convId);   // most recently used at the end
     },
 
-    /** Oldest socket that is safe to evict: not current, and NOT generating/queued. */
+    /** Oldest socket that is safe to evict: not current, NOT generating/queued, no pending card. */
     _findEvictable() {
         for (const id of this.order) {
             if (!this.sockets[id]) continue;
             if (id === COOLEMS.currentConversation) continue;
             const st = this.statuses[id];
             if (st === 'generating' || st === 'queued') continue;   // never kill a live session
+            // (2026-11-15) a chat waiting on a consent card is live work: closing this socket
+            // would leave the user's card with no transport to deliver the answer on.
+            if (this.hasPendingCard(id)) continue;
             return id;
         }
         return null;
@@ -225,6 +258,19 @@ const ChatSocketPool = {
     _trackStatus(convId, msg) {
         const t = msg && msg.type;
 
+        // (2026-11-15 consent-card lifetime) track unanswered cards for EVERY chat, visible
+        // or not: eviction safety depends on this, and frames for a hidden workspace arrive
+        // here too (they are queued for render, never skipped).
+        if (t === 'exec_approval_request' || t === 'cycle_consent_pending') {
+            this._addPendingCard(convId, msg.request_id);
+        } else if (t === 'cycle_consent' || t === 'consent_cancelled') {
+            this._removePendingCard(convId, msg.request_id);
+        } else if (t === 'done' || t === 'error' || t === 'cancelled' ||
+                   t === 'provider_error' || t === 'execution_fail' || t === 'cycle_end') {
+            // The turn is over: no card of it can be answered any more.
+            delete this.pendingCards[convId];
+        }
+
         // (2026-10-09 attention markers) A BACKGROUND workspace needs the user's eye:
         //  * a decision card appeared -> blinking 'dialog' badge until answered/visited;
         //  * a real turn just ended   -> temporary green 'done' flash (~30 s);
@@ -238,7 +284,8 @@ const ChatSocketPool = {
                         (prev === 'generating' || prev === 'queued')) {
                 this.setAttention(convId, 'done');
             } else if ((t === 'queue_start' || t === 'content' || t === 'thinking' ||
-                        t === 'tool_start' || t === 'tool_end' || t === 'cycle_consent') &&
+                        t === 'tool_start' || t === 'tool_end' || t === 'cycle_consent' ||
+                        t === 'consent_cancelled') &&
                         this.attention[convId] === 'dialog') {
                 this.clearAttention(convId);   // the dialog was answered - turn resumed
             }
@@ -376,6 +423,7 @@ const ChatSocketPool = {
             clearTimeout(this._attentionTimers[id]); delete this._attentionTimers[id];
         }
         this.attention = {};
+        this.pendingCards = {};
         COOLEMS.ws = null;
     },
 };

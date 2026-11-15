@@ -106,13 +106,16 @@ const WorkspaceViews = {
         }
     },
 
-    /** Oldest stash that is safe to evict: not current, and NOT generating/queued. */
+    /** Oldest stash that is safe to evict: not current, NOT generating/queued, no pending card. */
     _findEvictable() {
         for (const id of this.order) {
             if (!this.views[id]) continue;
             if (id === COOLEMS.currentConversation) continue;
             const st = (typeof ChatSocketPool !== 'undefined') ? (ChatSocketPool.statuses[id] || 'idle') : 'idle';
             if (st === 'generating' || st === 'queued') continue;   // never kill a live view
+            // (2026-11-15) a card the user still has to answer is live work: dropping the
+            // stashed DOM would destroy the only card they can click.
+            if (typeof ChatSocketPool !== 'undefined' && ChatSocketPool.hasPendingCard(id)) continue;
             return id;
         }
         return null;

@@ -55,6 +55,10 @@ LICENSE_TABLE = {
     "python-multipart":  ("Apache-2.0",          "Andrew Dunham et al. (verified: python_multipart-0.0.32.dist-info/licenses/LICENSE.txt)"),
     "pytz":              ("MIT",                 "Steven D'Aprano and contributors"),
     "requests":          ("Apache-2.0",          "Kenneth Reitz and contributors"),
+    # Verified 2026-11-15 against ruff-0.17.5.dist-info in venv/ (License-Expression
+    # 'MIT' + licenses/LICENSE). Dev-only lint tool: never imported by runtime code,
+    # but it is a pinned direct dependency, so it must carry a verified licence entry.
+    "ruff":              ("MIT",                 "Charles Marsh and Ruff contributors"),
     "starlette":         ("BSD-3-Clause",        "Encode OSS Ltd."),
     "urllib3":           ("MIT",                 "Andrey Petrov and contributors"),
     "uvicorn":           ("BSD-3-Clause",        "Mangodream and contributors (extras: httptools, watchfiles, websockets, uvloop, python-dotenv — all permissive)"),

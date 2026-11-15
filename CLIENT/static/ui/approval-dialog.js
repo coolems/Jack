@@ -204,6 +204,9 @@ const ApprovalDialog = {
         const tickTimer = setInterval(() => {
             // The card is gone (answered, auto-approved, or the block was cleared) - stop touching it.
             if (card.dataset.answered === '1' || !card.isConnected) { clearInterval(tickTimer); return; }
+            // (2026-11-15) A manual click that FAILED to deliver re-enables the buttons so the
+            // user can retry. The countdown must never fire 'allow' over that intent.
+            if (card._userDecided) { clearInterval(tickTimer); return; }
             const allowBtn = card.querySelector('.exec-btn[data-decision="allow"]');
             // Any button click disables all buttons immediately - once that happens the user
             // has decided and the countdown must stop touching the dialog (no status overwrite).
@@ -237,6 +240,8 @@ const ApprovalDialog = {
         if (!card) return;
         card.dataset.answered = '1';
         card.dataset.decision = decision || 'answered';
+        // A late ack for a card that is already gone must not touch it again.
+        if (card.dataset.requestId) delete ApprovalDialog._acks[card.dataset.requestId];
         card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
         const mount = card.closest('.cycle-card-mount');
         const target = mount || card.closest('.message') || card;
@@ -248,30 +253,151 @@ const ApprovalDialog = {
         target.remove();
     },
 
-    /** Post one decision (allow / deny / allow_category_until_done / explain) for a card. */
+    /**
+     * Deliver one decision (allow / deny / allow_category_until_done / explain) for a card.
+     *
+     * (2026-11-15 consent answer channel) PRIMARY transport = the chat's OWN WebSocket frame
+     * 'exec_approval_decision' — the same socket that delivered this card, so the answer
+     * survives a page reload, a workspace switch and a background workspace. The HTTP POST
+     * is kept as a fallback for when that socket is not open. The old design had ONLY the
+     * POST: a rejected fetch ("⚠ Failed to fetch") lost the click, and the card was already
+     * marked answered with its buttons disabled — the user was left with a dead card and the
+     * turn stayed parked on the pending future.
+     *
+     * The card is marked answered ONLY on a confirmed delivery. On failure the buttons are
+     * re-enabled and the status line asks for a retry.
+     */
     submitDecision(data, clickedBtn) {
         const card = clickedBtn.closest('.exec-approval-card');
         if (!card || card.dataset.answered === '1') return;
-        card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
-        const statusEl = card.querySelector('.exec-approval-status');
         const decision = clickedBtn.dataset.decision;
+        const statusEl = card.querySelector('.exec-approval-status');
         const convId = data.conv_id || COOLEMS.currentConversation;
-        fetch('/api/exec-approval/' + encodeURIComponent(convId) + '/' + encodeURIComponent(data.request_id), {
+        card._userDecided = true;              // stops the auto-approve countdown for good
+        card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
+        if (statusEl) { statusEl.className = 'exec-approval-status pending'; statusEl.textContent = '\u23F3 Sending your decision...'; }
+
+        const retry = (msg) => {
+            delete card.dataset.answered;       // the user may click again
+            // _userDecided stays true: once the user touched a button, the auto-approve
+            // countdown must never fire 'allow' over their intent - even after a failed send.
+            card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = false; });
+            if (statusEl) {
+                statusEl.className = 'exec-approval-status done-error';
+                statusEl.textContent = '\u26A0 ' + msg + ' - click a button again.';
+            }
+        };
+
+        const viaHttp = () => fetch('/api/exec-approval/' + encodeURIComponent(convId) + '/' + encodeURIComponent(data.request_id), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ decision: decision })
         })
-            .then(response => response.json().catch(() => ({})).then(d => ({ ok: response.ok, d })))
+            .then(r => r.json().catch(() => ({})).then(d => ({ ok: r.ok, d })))
             .then(({ ok, d }) => {
-                card.dataset.answered = '1';
-                if (!ok) throw new Error((d && d.message) || ('HTTP ' + (d && d.detail ? JSON.stringify(d.detail) : '')));
-                // The decision reached the backend - the dialog is done, so it disappears.
-                // (A failed POST keeps the card on screen with the error, so the user can retry.)
+                if (!ok) {
+                    const msg = (d && d.message) || ('HTTP ' + (d && d.detail ? JSON.stringify(d.detail) : ''));
+                    // "already answered or expired" = this card's future is gone: withdraw it
+                    // instead of inviting a click that can never succeed. Anything else (400,
+                    // a 5xx) is a real failure the user can retry.
+                    if (/already answered|expired|No pending/i.test(msg)) this.cancelCard(data.request_id);
+                    else retry(msg);
+                    return;
+                }
+                card.dataset.answered = '1';    // the backend answered - the card is done
                 this.dismissCard(card, decision);
             })
             .catch(err => {
-                card.dataset.answered = '1';
-                if (statusEl) { statusEl.className = 'exec-approval-status done-error'; statusEl.textContent = '\u26A0 ' + err.message; }
+                // (2026-11-15) the old build marked the card answered here, so a rejected
+                // fetch ("Failed to fetch") left a dead card and a lost click. Retry instead.
+                retry(err && err.message ? err.message : 'Could not deliver your decision');
             });
+
+        const ws = this._socketFor(convId);
+        if (!ws) return viaHttp();             // no live socket for this chat: HTTP fallback
+
+        let settled = false;
+        const ackTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            void viaHttp();                    // no ack: the socket is gone or too old - fall back
+        }, 4000);
+
+        // The ack is correlated by request_id, so two cards on screen never cross-settle.
+        ApprovalDialog._acks[data.request_id] = (ok, message) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(ackTimer);
+            if (ok) {
+                card.dataset.answered = '1';
+                this.dismissCard(card, decision);
+            } else if (/already answered|expired|No pending/i.test(message || '')) {
+                this.cancelCard(data.request_id);   // its future is gone - withdraw the card
+            } else {
+                retry(message || 'The backend refused this decision');
+            }
+        };
+
+        try {
+            ws.send(JSON.stringify({ type: 'exec_approval_decision', request_id: data.request_id, decision: decision }));
+        } catch (e) {
+            settled = true;
+            clearTimeout(ackTimer);
+            delete ApprovalDialog._acks[data.request_id];
+            return viaHttp();
+        }
+        return undefined;
+    },
+
+    /** The pooled socket of a conversation, or null when it is not open. */
+    _socketFor(convId) {
+        const entry = (typeof ChatSocketPool !== 'undefined' && convId)
+            ? ChatSocketPool.sockets[convId] : null;
+        const ws = entry ? entry.ws : (typeof COOLEMS !== 'undefined' ? COOLEMS.ws : null);
+        return (ws && ws.readyState === WebSocket.OPEN) ? ws : null;
+    },
+
+    /** One card's ack arrived (called by websocket.js). Settles the card or asks for a retry. */
+    handleAck(data) {
+        const rid = data && data.request_id;
+        if (!rid) return false;
+        const cb = ApprovalDialog._acks[rid];
+        if (!cb) return false;
+        delete ApprovalDialog._acks[rid];
+        cb(!!data.ok, data.message || '');
+        return true;
+    },
+
+    /**
+     * The backend withdrew a card (turn ended / stopped while it was unanswered).
+     * A card whose future is gone can never be answered, so it must leave the screen and
+     * settle as 'unanswered' in its turn block instead of inviting a click that does nothing.
+     */
+    cancelCard(requestId) {
+        if (!requestId) return;
+        delete ApprovalDialog._acks[requestId];
+        const sel = '.exec-approval-card[data-request-id="' + (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(requestId) : requestId) + '"]';
+        for (const card of Array.from(document.querySelectorAll(sel))) {
+            card.dataset.answered = '1';
+            card.dataset.decision = 'unanswered';
+            card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
+            const mount = card.closest('.cycle-card-mount');
+            const target = mount || card.closest('.message') || card;
+            for (const el of [target, card, card.closest('.message')]) {
+                if (el && el._autoTimer) { clearInterval(el._autoTimer); el._autoTimer = null; }
+            }
+            const statusEl = card.querySelector('.exec-approval-status');
+            if (statusEl) {
+                statusEl.className = 'exec-approval-status done-error';
+                statusEl.textContent = '\u26A0 This request is closed - the turn ended before you answered.';
+            }
+            target.remove();
+        }
+        for (const mount of Array.from(document.querySelectorAll('.cycle-card-mount'))) {
+            if (mount.dataset.requestId === requestId && !mount.querySelector('.exec-approval-card')) mount.remove();
+        }
     }
 };
+
+/** request_id -> ack callback, set while a decision waits for its 'exec_approval_ack'. */
+ApprovalDialog._acks = {};

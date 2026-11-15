@@ -387,7 +387,7 @@ for _i, _ch in enumerate("abcdefghijklmnopqrstuvwxyz"):
     CHAR_VK_PLAIN[_ch] = 0x41 + _i          # VK_A..VK_Z (no shift = lowercase)
 for _i, _ch in enumerate("0123456789"):
     CHAR_VK_PLAIN[_ch] = 0x30 + _i          # VK_0..VK_9
-CHAR_VK_PLAIN.update({" ": 0x20, "\n": 0x0D, "\r": 0x0D, "\t": 0x09, "\t": 0x09})
+CHAR_VK_PLAIN.update({" ": 0x20, "\n": 0x0D, "\r": 0x0D, "\t": 0x09})
 # physical key -> (unshifted char, shifted char); code is the same VK for both.
 _OEM_KEYS = {
     0xBD: ("-", "_"),   # VK_OEM_MINUS   main-row minus

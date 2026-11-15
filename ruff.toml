@@ -1,0 +1,69 @@
+# COOLEMS "Jack" - ruff configuration (added 2026-11-15, code-review finding: "no linter").
+#
+# HOW TO RUN
+#   venv\Scripts\ruff.exe check .                 # lint (this file is picked up automatically)
+#   venv\Scripts\ruff.exe check --select F .      # ad-hoc wider probe, config still applied
+#   venv\Scripts\ruff.exe check --fix <one file>  # fix ONE file, then read `git diff`
+#
+# SCOPE POLICY (deliberate, Phase 1)
+#   Only rules that find DEFECTS are selected. Style/typing/import-order rules
+#   (UP006, UP045, I001, BLE001, S110, ...) exist in this repo in bulk - 2,898
+#   findings on default rules - and each is a separate, reviewable commit later.
+#   Widening the list is Phase 2; do not "fix" the noise blindly.
+#
+# DO NOT run `ruff format` on this repo yet: a dry run showed 304 files would be
+# rewritten (~1 MB diff), including the SERVER/CLIENT byte-identity pairs that
+# tools/test_tools/test_shared_copies_identical.py pins. Formatting here is
+# manual and intentional.
+
+line-length = 120
+target-version = "py312"
+
+# Lint everything we own, gitignore or not (tests/ is gitignored on the dev PC but
+# still needs checking). Heavy/generated trees are listed explicitly below.
+respect-gitignore = false
+# force-exclude: the excludes below also apply when a path is passed explicitly
+# (`ruff check tools/exec_tools/_sandbox_parts`), so the fragments below cannot be
+# linted - and therefore cannot be "fixed" - by accident.
+force-exclude = true
+
+exclude = [
+    "venv",
+    "CLIENT/venv",
+    ".venv",
+    ".git",
+    ".temp",
+    "__pycache__",
+    "llama_server",
+    "CLIENT/tools/runtimes",
+    # Provenance fragments: each _part_NN is a slice of _sandbox_bootstrap.py kept
+    # for audit/attribution and is NOT valid standalone Python (module-level code
+    # with indentation from inside a function). tools/test_tools/
+    # test_sandbox_bootstrap_embed.py pins them byte-for-byte, so they must never
+    # be "fixed" - excluding them is the only correct handling.
+    "tools/exec_tools/_sandbox_parts",
+]
+
+[lint]
+select = [
+    "E9",     # syntax errors + definite runtime errors
+    "F821",   # undefined name -> NameError at runtime
+    "F811",   # redefinition of a live binding (dead/duplicate import or assignment)
+    "F601",   # repeated key in a dict literal (silently drops a value)
+    "F841",   # local assigned but never used (usually a dropped computation)
+    "B006",   # mutable default argument
+]
+
+[lint.per-file-ignores]
+# Re-export facades: these imports ARE the public API, "unused" here is a lie.
+# Kept for when F401 joins the rule set in Phase 2.
+"__init__.py" = ["F401"]
+# Return annotations are quoted strings and the real classes are imported lazily
+# inside the function bodies to break a circular import chain, so the names are
+# genuinely undefined at module scope. Intentional - see lines 65-66 / 128-129.
+"CLIENT/logic/config_builder.py" = ["F821"]
+# Tool sources exec'd in the CLIENT sandbox with symbols injected by the loader
+# (TOOL_MANIFEST, IMAGE_SUBPROCESS_TIMEOUT, CHROME_CDP_PORT...). They carry
+# inline `# noqa: F821`; these ignores cover the same names repo-wide.
+"tools/generate_tool/generate_image.py" = ["F821"]
+"tools/web_interact/__init__.py" = ["F821"]

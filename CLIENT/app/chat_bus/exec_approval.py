@@ -7,7 +7,9 @@ This module gives the local user veto power over every such execution:
     this agentic run — emits an ``exec_approval_request`` frame to the UI carrying the
     exact code that would be executed (see build_approval_frame()).
   * The generation task then AWAITs a user decision delivered by the UI through
-    POST /api/exec-approval/{conv_id}/{request_id} -> ExecApprovalState.resolve().
+    deliver_decision() -> ExecApprovalState.resolve(). Two transports feed that one
+    function: the chat's own WebSocket frame 'exec_approval_decision' (primary, 2026-11-15)
+    and POST /api/exec-approval/{conv_id}/{request_id} (fallback).
   * "Allow until task done" sets that card kind's flag (e.g. ``allow_python_till_task_done``,
     one per category: python / url / file / network) on the run's state: every subsequent
     consent request of THAT KIND in THIS agentic run is allowed without asking. The state is created fresh
@@ -23,9 +25,12 @@ with an explanatory message.
 
 Pending decisions live in ONE ExecApprovalState per agentic run, stored on the
 ChatChannel as ``channel.exec_approval``. Futures are created on the running event loop
-and resolved by the HTTP endpoint on the SAME uvicorn loop, so no cross-thread plumbing
-is needed. Cancellation (user Stop / superseded turn) propagates through wait_for_decision
-as a normal CancelledError and its finally-block drops the pending entry — nothing leaks.
+and resolved on the SAME uvicorn loop by whichever transport delivers the answer, so no
+cross-thread plumbing is needed. Cancellation (user Stop / superseded turn) propagates
+through wait_for_decision as a normal CancelledError and its finally-block drops the
+pending entry — nothing leaks. When a turn ends with a card still unanswered,
+run_generation_turn calls cancel_all() and emits 'consent_cancelled' so the UI withdraws
+the dead card instead of leaving it on screen.
 """
 
 import asyncio
@@ -74,6 +79,55 @@ ALLOW_TILL_TASK_DONE_KINDS = ("python", "url", "file", "network", "subprocess", 
 def _flag_name(kind: str) -> str:
     """Attribute name of a kind's per-run grant flag (e.g. 'allow_python_till_task_done')."""
     return f"allow_{kind}_till_task_done"
+
+
+#: Every decision a card may deliver (the same set the HTTP endpoint accepts).
+DECISIONS = ("allow", "deny", "allow_category_until_done", "explain")
+
+
+def deliver_decision(bus, conv_id: str, request_id: str, decision: str,
+                     source: str = "http") -> tuple[bool, str]:
+    """Deliver one card decision to that chat's live ExecApprovalState.
+
+    ONE resolve path for BOTH transports — the chat's own WebSocket frame
+    'exec_approval_decision' (primary) and POST /api/exec-approval/... (fallback) — so
+    they can never drift apart, and every attempt leaves exactly one log line. The
+    2026-11-15 "Failed to fetch" bug was undiagnosable because the delivery attempt left
+    no trace at all.
+
+    Returns (resolved, message): resolved=False with an explanatory message when the chat
+    has no live approval state, or the request id is already answered/expired.
+    """
+    d = str(decision or "").strip().lower()
+    if d not in DECISIONS:
+        return False, ("decision must be one of: " + ", ".join(DECISIONS))
+    channel = getattr(bus, "channels", {}).get(conv_id) if bus is not None else None
+    state = getattr(channel, "exec_approval", None) if channel is not None else None
+    if state is None or not hasattr(state, "resolve"):
+        logger.info(f"[EXEC-APPROVAL] {source} conv={conv_id} request={request_id} "
+                    f"decision={d} -> no live approval state, nothing to resolve")
+        return False, "No pending consent request for this workspace."
+    resolved, _granted = state.resolve(request_id, d)  # per-kind grant flag set inside resolve()
+    if not resolved:
+        logger.warning(f"[EXEC-APPROVAL] {source} conv={conv_id} request={request_id} "
+                       f"decision={d} -> already answered or expired")
+        return False, "That approval was already answered or expired."
+    logger.info(f"[EXEC-APPROVAL] {source} conv={conv_id} request={request_id} -> {d}")
+    return True, ""
+
+
+def handle_decision_frame(bus, conv_id: str, payload: dict) -> dict:
+    """Route one inbound 'exec_approval_decision' frame and build its ack frame.
+
+    Used by the UI WebSocket receive loop (app/websocket/handler.py). conv_id comes from
+    the socket that received the frame, never from the payload, so a card can only ever be
+    answered on the chat that owns it.
+    """
+    rid = str((payload or {}).get("request_id") or "")
+    dec = str((payload or {}).get("decision") or "")
+    ok, message = deliver_decision(bus, conv_id, rid, dec, source="ws")
+    return {"type": "exec_approval_ack", "request_id": rid, "decision": dec,
+            "ok": ok, "message": message}
 
 
 class ExecApprovalState:
@@ -176,9 +230,19 @@ class ExecApprovalState:
                     + (" (auto-run active until this task ends)" if decision == "allow_category_until_done" else ""))
         return True, newly_granted
 
-    def cancel_all(self) -> None:
-        """Drop every pending request (turn ended/stopped). Defensive cleanup only —
-        the normal path is cancellation of the awaiting task itself."""
+    def pending_requests(self) -> list:
+        """Live pending request ids as [(request_id, kind)] — what the UI still shows."""
+        return [(rid, self._request_kind.get(rid, "python")) for rid in list(self._pending)]
+
+    def cancel_all(self) -> list:
+        """Drop every pending request (turn ended/stopped) and report what was dropped.
+
+        Returns the dropped cards as [(request_id, kind)] so the caller can emit one
+        'consent_cancelled' frame per card: a card whose future is gone can never be
+        answered, and leaving it on screen invites a click that does nothing.
+        Fail-closed: each waiter gets 'deny'.
+        """
+        dropped = self.pending_requests()
         for rid, fut in list(self._pending.items()):
             if not fut.done() and not fut.cancelled():
                 try:
@@ -187,3 +251,8 @@ class ExecApprovalState:
                     pass
             self._pending.pop(rid, None)
         self._request_kind.clear()
+        if dropped:
+            logger.warning(f"[EXEC-APPROVAL] turn ended with {len(dropped)} unanswered "
+                           f"card(s): {[r for r, _k in dropped]}")
+        return dropped
+

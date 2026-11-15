@@ -194,8 +194,6 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info("=" * 60)
 
         if agent is not None:
-            agent_identity = agent.get_identity()
-            first_line = agent_identity.split("\n")[0] if agent_identity else agent.get_name()
             logger.info(f"DNA loaded: AI name is {agent.get_name()}.")
         else:
             logger.info("DNA: loading in background (setup mode - delivered by SERVER after key auth)")

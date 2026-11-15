@@ -362,7 +362,7 @@ async def connect_to_web_relay(server_provider):
 
 
 
-                logger.info(f"[SERVER] Connected to web relay as brain server (role={brain_user_info['role']})")
+                logger.info(f"[SERVER] Connected to web relay as brain server (role={brain_user_info['role']}, rate_limit={max_rate}/s)")
 
 
 

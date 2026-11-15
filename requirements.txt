@@ -37,6 +37,13 @@ pydantic==2.13.3
 pytest==9.0.3
 python-multipart==0.0.32
 pytz==2024.1
+
+# ruff: static linter/formatter (dev tool, not imported by runtime code). Pinned so
+# `pip install -r requirements.txt` gives every machine the same rule set - lint
+# results must be reproducible like everything else here. Config lives in ruff.toml
+# at the repo root; run it with: venv\Scripts\ruff.exe check .
+ruff==0.17.5
+
 requests==2.31.0
 starlette==1.6.0
 urllib3==2.6.3
