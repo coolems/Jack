@@ -131,6 +131,10 @@ const CycleBlock = {
             rows: [],            // {kind, step_no, at_ts, el} kept in at_ts order
             consents: {},        // request_id -> row element
             steerRows: {},       // steer_id -> {el, state} (ONE row per steering message)
+            // ONE row per question card, settled from its frames - the same discipline as
+            // steerRows: a late frame never duplicates.
+            questionRows: {},    // request_id -> row element (the card itself is transient)
+            questionCards: {},   // request_id -> mounted once (a replayed frame must not double-mount)
             toolNoOf: {},        // call_id -> 1-based tool number (one row per call)
             toolEls: {},         // call_id -> row element
             // ONE segment per REASONING STEP (user request 2026-11-08): step_no -> {thinkingEl,
@@ -232,6 +236,14 @@ const CycleBlock = {
         for (const rid of Object.keys(block.consents)) {
             const el = block.consents[rid];
             if (el && el.dataset.decision === 'pending') this.settleCard(block, rid, 'unanswered');
+        }
+        // A question row the answer frame never reached is settled the same way, so the
+        // block never claims a card is still open after its turn ended.
+        for (const rid of Object.keys(block.questionRows || {})) {
+            const el = block.questionRows[rid];
+            if (el && el.dataset.pending === '1') this.setQuestion(block, {
+                request_id: rid, decision: 'unanswered', pending: false,
+            });
         }
         block.node.classList.add('settled');
         if (stopped) block.node.classList.add('stopped');
@@ -465,6 +477,17 @@ const CycleBlock = {
     addCard(block, data) {
         if (!block || !block.open) return null;
         if (data.request_id && block.consents[data.request_id]) return block.consents[data.request_id];
+        // A question card gets NO consent row - its durable fact is the 'question' row,
+        // so a consent row would print the card twice. Mount only.
+        if ((data.kind || '') === 'question') {
+            block.questionCards = block.questionCards || {};
+            if (data.request_id) {
+                if (block.questionCards[data.request_id]) return null;   // already mounted
+                block.questionCards[data.request_id] = true;
+            }
+            CycleShell.mountCard(block, data);
+            return null;
+        }
         const el = this.addRow(block, 'consent', {
             step_no: block.counts.turns, at_ts: Date.now() / 1000,
             kind: data.kind || 'python', decision: 'pending', payload: data.code || '',
@@ -544,6 +567,38 @@ const CycleBlock = {
         if (!el) return null;
         if (steerId) block.steerRows[steerId] = { el, state };
         this.bump(block, 'steers');
+        return el;
+    },
+
+    /** cycle_question: the durable row for a question card. The card itself is transient
+     *  (like a consent card) — this row is the fact. */
+    setQuestion(block, d) {
+        if (!block) return null;
+        const requestId = d.request_id || '';
+        if (!requestId) return null;
+        const existing = block.questionRows[requestId];
+        if (existing) {
+            // A settled row is never downgraded: a cancel frame that arrives after the
+            // answer was folded in must not rewrite the decision the user actually gave.
+            const settled = existing.dataset.decision && existing.dataset.decision !== 'pending';
+            if (settled && (d.decision || '') === 'unanswered') return existing;
+            if (d.decision) {
+                existing.dataset.decision = d.decision;
+                existing.dataset.pending = '0';
+                const line = existing.querySelector('.cycle-consent-line');
+                if (line) line.textContent = _questionLabel(d.decision, false);
+            }
+            return existing;
+        }
+        const el = this.addRow(block, 'question', {
+            step_no: block.counts.turns, at_ts: d.at_ts || (Date.now() / 1000),
+            request_id: requestId, question: d.question || '',
+            options: d.options || [], decision: d.decision || '',
+            pending: d.pending !== false && !d.decision,
+        }, true);
+        if (!el) return null;
+        block.questionRows[requestId] = el;
+        this.bump(block, 'consents');
         return el;
     },
 

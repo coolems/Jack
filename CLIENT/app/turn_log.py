@@ -1,24 +1,12 @@
-"""Cycle-history record for one agentic turn (client side).
+"""Cycle-history record for one agentic turn.
 
 A "cycle" is one turn: every reasoning step, tool call, consent dialog, steer and
-notice that happened while the turn ran, plus every AI text and the final answer. The
-record is sent live as frames and persisted as one row in the `turn_log` table, so a
-workspace reload rebuilds the collapsed turn block exactly as it looked on screen.
+notice, plus every AI text and the final answer. Sent live as frames and persisted as
+one `turn_log` row, so a reload rebuilds the turn block as it looked on screen.
 
-THE IDENTITY CONTRACT (why this exists): a `turn_id` is minted by the chat bus when the
-turn starts and is carried on EVERY frame and inside the payload. The UI keys its blocks
-by (conv_id, turn_id) and refuses a turn_id that another conversation already owns, so a
-frame of workspace A can never land in workspace B's block - on a live push, a background
-replay or a DB reload.
-
-Why a plain dict payload: the row is stored as JSON text and handed straight to the UI.
-No dataclasses, no schema drift - `parse_payload()` is the only reader.
-
-NOTE (workspace deletion): `turn_log.conversation_id` is a CHILD of
-`conversations.id` (foreign key) and app/db_manager enforces foreign keys on every
-connection, so a workspace delete must clear these rows FIRST. See
-app/websocket/turn_ops.delete_conversation_rows().
-"""
+THE IDENTITY CONTRACT: `turn_id` is minted at turn start and carried on every frame and
+inside the payload; the UI keys blocks by (conv_id, turn_id) and refuses a turn_id
+another conversation owns. The payload is a plain dict, read only by parse_payload()."""
 
 import json
 import re
@@ -100,12 +88,9 @@ _ARG_TARGET_FIELD = {
 def format_args(name: str, args: Any) -> str:
     """Readable text for a tool's INPUT frame.
 
-    Content tools (edit_file / write_file / python_exec) print their payload as real lines,
-    so indentation survives and the frame reads like a file instead of one glued line.
-    A tool with several content fields (edit_file) gets one short label line per field -
-    that is information (which block is old, which is new), not chrome.
-    Any other tool keeps the previous compact JSON.
-    """
+    Content tools (edit_file / write_file / python_exec) print their payload as real lines
+    so indentation survives; edit_file gets one label line per field. Any other tool keeps
+    compact JSON."""
     fields = _ARG_TEXT_FIELDS.get(name)
     if fields and isinstance(args, dict):
         parts: List[str] = []
@@ -167,9 +152,7 @@ def _dedupe_feedback(rows: List[Dict]) -> List[Dict]:
 def _normalize_legacy_grant_lines(data: Dict) -> Dict:
     """Turn an old grant MESSAGE line into a `grants` row (once per consent row).
 
-    Only payloads that have NO grant rows are rebuilt - a payload that already carries
-    them keeps them untouched, so a new row is never duplicated or reordered.
-    """
+    Only payloads with no grant rows are rebuilt, so a new row is never duplicated."""
     consents = data.get("consents") or []
     feedback = data.get("feedback") or []
 
@@ -192,24 +175,21 @@ def _normalize_legacy_grant_lines(data: Dict) -> Dict:
                         if not str(f.get("text", "")).startswith(LEGACY_GRANT_FEEDBACK_PREFIX)]
 
     data["feedback"] = _dedupe_feedback(feedback)
+    # A row written before the question lane has no key -
+    # backfill it so the reader never KeyErrors and old turns simply show no cards.
+    if not data.get("questions"):
+        data["questions"] = []
     if not data.get("speech"):
         data["speech"] = []
     return data
 
 
 def _normalize_legacy_tool_rows(data: Dict) -> Dict:
-    """Rebuild the input frame of rows written BEFORE the 2026-11-08 input formatter.
+    """Rebuild the input frame of rows written before the input formatter.
 
-    Those rows store `args` as `json.dumps(...)`, so a multi-line payload (edit_file /
-    write_file / python_exec) reads as ONE glued line with literal `\n` printed in it, and
-    they carry no `target`, so the tool's row line shows no file. That is why the user saw
-    "no changes": a settled turn is rebuilt from its persisted row, not from live frames.
-
-    Only the three content tools are rebuilt (every other tool already printed the same
-    compact JSON). A row that already has `target` is a new-build row - untouched. A legacy
-    args string clipped by `_clip()` is not valid JSON: it stays exactly as stored rather
-    than being guessed at.
-    """
+    Those rows store `args` as json.dumps(...), so a multi-line payload reads as one glued
+    line and carries no `target`. Only the three content tools are rebuilt; a row with
+    `target` is untouched, and a clipped args string stays exactly as stored."""
     for row in data.get("tools") or []:
         if "target" in row or not isinstance(row.get("args"), str):
             continue
@@ -231,8 +211,7 @@ def parse_payload(raw: Any) -> Optional[Dict]:
     """Parse a stored payload. Never raises - bad/empty data means 'no history'.
 
     Legacy rows (grant message lines, repeated notices, missing speech, pre-formatter tool
-    rows) are normalized here, so the UI reader sees the same shape for old rows and new ones.
-    """
+    rows) are normalized so the UI reader sees one shape."""
     if not raw:
         return None
     try:
@@ -248,13 +227,16 @@ def parse_payload(raw: Any) -> Optional[Dict]:
 
 
 def counts_of(data: Dict) -> Dict[str, int]:
-    """The summary-line counters, derived from the rows (single source of truth)."""
+    """The summary-line counters, derived from the rows (single source of truth).
+
+    'consents' counts every card the user had to answer - consent cards and
+    ask_user_question cards - so the head line reads the same live and after a reload."""
     tools = data.get("tools") or []
     return {
         "turns": len(data.get("steps") or []),
         "tools": len(tools),
         "tools_ok": sum(1 for t in tools if t.get("ok")),
-        "consents": len(data.get("consents") or []),
+        "consents": len(data.get("consents") or []) + len(data.get("questions") or []),
         "grants": len(data.get("grants") or []),
         "steers": len(data.get("steers") or []),
         "notices": len(data.get("feedback") or []),
@@ -286,6 +268,8 @@ class TurnLog:
         self.steers: List[Dict] = []
         self.grants: List[Dict] = []
         self.feedback: List[Dict] = []
+        # Question cards of this turn, one row per request id.
+        self.questions: List[Dict] = []
         self.speech: List[Dict] = []
         self.final: Optional[Dict] = None
         self.final_step: int = 0
@@ -399,9 +383,7 @@ class TurnLog:
                   at_ts: Optional[float] = None) -> Dict:
         """A consent auto-allow timer / category grant that skipped the card.
 
-        ONE row PER KIND: a later auto-approved call of the same kind is the same fact,
-        so it must not print a second unlock row. The FIRST row (first request_id) wins.
-        """
+        ONE row PER KIND - the first request_id wins, so a repeat never prints a second row."""
         existing = next((g for g in self.grants if g["kind"] == kind), None)
         if existing is not None:
             return existing
@@ -417,11 +399,8 @@ class TurnLog:
                   at_ts: Optional[float] = None, steer_id: str = "") -> Dict:
         """A steering message the loop actually injected.
 
-        `at_ts` is WHEN THE USER TYPED it (never the injection instant), so the UI places the
-        row inside the turn block at that moment - between the tool rows of that step.
-        `steer_id` correlates the row with the steer_received / steer_applied frames, so one
-        steer is ONE row and its status line settles instead of duplicating.
-        """
+        `at_ts` is WHEN THE USER TYPED it, so the UI places the row inside the turn block at
+        that moment. `steer_id` correlates it with the ack frames: one steer, one row."""
         row = {"step_no": int(step_no), "text": text or "", "seq": int(seq or 0),
                "applied": True, "reason": "", "steer_id": steer_id or "",
                "at_ts": at_ts if at_ts is not None else time.time()}
@@ -430,8 +409,8 @@ class TurnLog:
 
     def add_feedback(self, step_no: int, text: str,
                      at_ts: Optional[float] = None) -> Dict:
-        """A loop notice. The same text inside the SAME step is recorded once - the loop
-        can re-emit one notice (retry path) and the block must not show it twice."""
+        """A loop notice. The same text inside the SAME step is recorded once - the loop can
+                re-emit one notice on a retry path and the block must not show it twice."""
         existing = next((f for f in self.feedback
                          if f["step_no"] == int(step_no) and f["text"] == (text or "")), None)
         if existing is not None:
@@ -441,16 +420,34 @@ class TurnLog:
         self.feedback.append(row)
         return row
 
+    # ===== ask_user_question cards =====
+
+    def add_question(self, request_id: str, question: str = "",
+                     options: Optional[List[str]] = None, decision: str = "",
+                     pending: bool = True, at_ts: Optional[float] = None) -> Dict:
+        """One ask_user_question card. The card itself is transient (like a consent card);
+        this row is the durable fact. An answer folds into the SAME row."""
+        existing = next((q for q in self.questions if q["request_id"] == request_id), None)
+        if existing is None:
+            row = {"step_no": self.final_step or len(self.steps), "request_id": request_id,
+                   "question": question or "", "options": list(options or []),
+                   "decision": decision or "", "pending": bool(pending and not decision),
+                   "at_ts": at_ts if at_ts is not None else time.time()}
+            self.questions.append(row)
+            return row
+        if decision:
+            existing["decision"] = decision
+            existing["pending"] = False
+        return existing
+
     # ===== AI text =====
 
     def add_speech(self, step_no: int, text: str, kind: str = "answer") -> Optional[Dict]:
-        """One AI text block of one reasoning step. `kind` is 'thinking' (reasoning
-        stream) or 'answer' (content stream).
+        """One AI text block of one reasoning step: 'thinking' (reasoning stream) or
+                'answer' (content stream).
 
-        The text is scrubbed first (see `scrub_ai_text`): protocol lines are facts of the
-        loop, not speech, and they must never sit in the AI response strip. A chunk that is
-        pure noise records NOTHING, so the strip only ever grows with real words.
-        """
+        Scrubbed first (see `scrub_ai_text`) - protocol lines are loop facts, not speech. A
+        chunk of pure noise records NOTHING."""
         visible = scrub_ai_text(text)
         if not visible:
             return None
@@ -467,12 +464,18 @@ class TurnLog:
     # ===== payload =====
 
     def payload(self, elapsed_sec: float) -> Dict:
-        """The persisted/frames payload. Cards nobody answered are settled here -
-        a pending card must not survive into history as 'pending'."""
+        """The persisted/frames payload. Cards nobody answered are settled here - a pending
+                card must not survive into history as 'pending'."""
         for c in self.consents:
             if c["pending"]:
                 c["decision"] = UNANSWERED_DECISION
                 c["pending"] = False
+        # A question the user never answered is a fact too: record it as
+        # unanswered, never leave the row claiming the card is still open.
+        for q in self.questions:
+            if q["pending"]:
+                q["decision"] = UNANSWERED_DECISION
+                q["pending"] = False
 
         speeds = [s["speed_tps"] for s in self.steps if s["speed_tps"]]
         avg_speed = round(sum(speeds) / len(speeds), 1) if speeds else 0.0
@@ -494,6 +497,9 @@ class TurnLog:
             "consents": self.consents,
             "grants": self.grants,
             "feedback": self.feedback,
+            # Question cards asked in this turn; the answer is
+            # folded into the same row, so a reload shows question + answer together.
+            "questions": self.questions,
             "final": self.final or {"text": "", "stopped": False},
         }
         data["counts"] = counts_of(data)

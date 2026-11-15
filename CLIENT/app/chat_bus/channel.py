@@ -1,18 +1,14 @@
-"""ChatChannel — one chat conversation's persistent session state (2026-09-08 multi-chat, Phase 3).
+"""ChatChannel - one chat conversation's persistent session state.
 
-A ChatChannel outlives any single UI WebSocket. When a chat is generating and the user
-switches to another chat, the generation task keeps running inside its channel: frames are
-pushed live while a UI socket is attached, otherwise they are buffered (bounded) so a
-re-attaching client can replay the tail. The final answer is always persisted by the bus.
+A ChatChannel outlives any UI WebSocket: a generating chat keeps running inside its
+channel, pushing frames live while a socket is attached and buffering them (bounded)
+when none is. The final answer is always persisted by the bus.
 
-One job per attribute — deliberately small:
-  * status        — where this chat's session is right now (drives the sidebar dot)
-  * stop_event    — cancellation, owned HERE instead of the handler's local state
-  * frame buffer  — bounded deque for background frames (CHAT_BACKGROUND_FRAME_BUFFER)
-  * subscribers   — UI WebSockets currently attached to this conversation
-      * steer queue   — (2026-10-23) user messages typed WHILE the agent runs, drained by the
-                        ReAct loop at its next safe boundary (never a new turn, never a stop)
-    """
+  status        where the session is right now (drives the sidebar dot)
+  stop_event    cancellation
+  frame buffer  bounded deque for background frames
+  subscribers   UI WebSockets attached to this conversation
+  steer queue   messages typed WHILE the agent runs, drained at the next safe boundary"""
 
 import asyncio
 import json
@@ -55,6 +51,10 @@ class ChatChannel:
         # block (static/ui/cycle-block.js keys blocks by (conv_id, turn_id)). "" when no turn
         # is running or the turn has no cycle history (normal one-shot mode).
         self.turn_id: str = ""
+        # The live turn's CycleRecorder, set by run_generation_turn. The
+        # question card records through record_runtime() so it lands as a row of THIS turn's
+        # block; with no live turn the frame goes out as a plain frame instead.
+        self.cycle = None
         # Messages typed by the user DURING a run. Drained by the ReAct loop at its next safe
         # boundary (before a provider call / before pending tool calls), never as a new turn.
         self._steer_queue: deque[dict] = deque(maxlen=max(1, CHAT_STEER_QUEUE_MAX))
@@ -62,6 +62,9 @@ class ChatChannel:
         # applied EXACTLY once: the loop can drain twice (stop / teardown race), so applied
         # ids are remembered and never handed out again by drain_steer().
         self._applied_steers: set[str] = set()
+        # Unanswered question cards, keyed by request id, so a
+        # follow-up turn can say "still pending" and a UI reload can re-render the card.
+        self._pending_questions: dict[str, dict] = {}
         # (2026-08-23 session stats) duration of the PREVIOUS completed turn, in ACTIVE seconds
         # (approval-menu pauses excluded - see logic.base_mode.SessionTimer). The next turn's
         # config reads this so the UI status bar can show "last session" time. 0 = no previous
@@ -85,12 +88,8 @@ class ChatChannel:
     def queue_steer(self, text: str, steer_id: str | None = None) -> dict:
         """Queue one mid-run user message for the CURRENT agentic turn.
 
-        Returns the queued item (with the id echoed to the UI). A deque with a bounded
-        length is used on purpose: if a client floods the queue the OLDEST unapplied
-        message is dropped instead of growing memory forever. The item is NOT persisted
-        here - persistence happens only when the loop actually applies it, so a message
-        that never reached the model does not pollute the conversation history.
-        """
+        Returns the queued item. The queue is bounded: a flooding client drops the oldest
+        unapplied message. Nothing is persisted here - only when the loop applies it."""
         item = {
             "id": steer_id or uuid.uuid4().hex,
             "text": text,
@@ -110,9 +109,8 @@ class ChatChannel:
     def drain_steer(self) -> list[dict]:
         """Remove and return every steering message the loop has NOT injected yet (FIFO).
 
-        Already-applied items are dropped from the queue instead of returned: they were
-        injected once already, so handing them out again would duplicate the user turn.
-        """
+        Already-applied items are dropped instead of returned, so a steer is never injected
+        twice."""
         pending = [item for item in self._steer_queue
                    if item.get("id") not in self._applied_steers]
         self._steer_queue.clear()
@@ -123,10 +121,8 @@ class ChatChannel:
     def mark_steer_applied(self, steer_id: str | None) -> None:
         """Record that ONE steering message reached the model. Idempotent.
 
-        An applied steer must never be drained again: the loop can drain twice (stop /
-        teardown race), and re-injecting the same text would duplicate the user turn and
-        the history row. drain_steer() therefore drops anything already marked applied.
-        """
+        The loop can drain twice (stop / teardown race), so an applied steer must never be
+        handed out again."""
         if not steer_id:
             return
         self._applied_steers.add(str(steer_id))
@@ -136,12 +132,31 @@ class ChatChannel:
         return len(self._applied_steers)
 
     def has_unapplied_steer(self) -> bool:
-        """True when a queued steer has NOT been injected yet.
-
-        This is the gate the ReAct loop uses: has_pending_steer() alone would keep
-        firing for a steer that was already applied but not yet removed from the queue.
-        """
+        """True when a queued steer has NOT been injected yet - the gate the ReAct loop uses."""
         return any(item.get("id") not in self._applied_steers for item in self._steer_queue)
+
+    # --- pending questions (ask_user_question, timed mode) -------------------------
+    # A question card the AI asked that is still unanswered. Lives on the channel so a
+    # follow-up turn can tell the model "still pending, keep working" and so the UI can
+    # re-render the card on a reload. Answers arrive through the question endpoint.
+    def add_pending_question(self, request_id: str, payload: dict) -> dict:
+        item = {"id": request_id, "payload": payload or {}, "asked_at": time.time()}
+        self._pending_questions[request_id] = item
+        self.last_activity = time.time()
+        return item
+
+    def pending_questions(self) -> list[dict]:
+        return list(self._pending_questions.values())
+
+    def has_pending_question(self, request_id: str | None = None) -> bool:
+        if request_id is None:
+            return bool(self._pending_questions)
+        return request_id in self._pending_questions
+
+    def drop_pending_question(self, request_id: str | None) -> None:
+        if request_id:
+            self._pending_questions.pop(request_id, None)
+
     # --- subscribers (UI sockets attached to this chat) ---------------------------
 
     def attach(self, ws) -> None:
@@ -160,9 +175,8 @@ class ChatChannel:
     async def emit_frame(self, frame: dict) -> None:
         """Route one provider frame to every attached UI socket; buffer if nobody listens.
 
-        Never raises — a dead subscriber is dropped silently (the bus re-attaches on
-        reconnect). The raw JSON string is what gets buffered so replay is byte-identical.
-        """
+        Never raises - a dead subscriber is dropped silently. The raw JSON string is buffered
+        so replay is byte-identical."""
         text = json.dumps(frame)
         self.last_activity = time.time()
         live = [ws for ws in list(self.subscribers)]
@@ -196,23 +210,42 @@ class ChatChannel:
             except Exception:
                 self.subscribers.discard(ws)
 
+    async def record_runtime(self, entity_kind: str, entity_id: str, **data) -> None:
+        """Record one runtime entity of THIS chat: an ask_user_question card.
+
+        `entity_kind` is not named `kind`: a payload key called `kind` would collide with the
+        argument and raise at call time, so the row would never paint.
+
+        With a live CycleRecorder the frame goes through it - one row of that turn's block,
+        persisted in the turn_log payload. With no live turn it is emitted under the turn id it
+        was launched with. Never raises."""
+        cycle = getattr(self, "cycle", None)
+        recorder = getattr(cycle, entity_kind, None)
+        # turn_id is frame plumbing, not an entity field: the recorder already stamps its
+        # own turn id. Keep it for the fallback frame so a settlement that arrives AFTER the
+        # turn ended still lands in the block that launched it.
+        launch_turn_id = data.pop("turn_id", None)
+        if recorder is not None:
+            try:
+                await recorder(entity_id, **data)
+                return
+            except Exception:
+                pass  # fall through to the plain frame so the UI still gets the fact
+        id_key = "request_id" if entity_kind == "question" else f"{entity_kind}_id"
+        frame = {"type": f"cycle_{entity_kind}", "conv_id": self.conv_id,
+                 "turn_id": launch_turn_id or getattr(self, "turn_id", "") or "",
+                 id_key: entity_id}
+        frame.update(data)
+        await self.emit_frame(frame)
+
 
 class ChannelWebSocket:
-    """Provider-facing WebSocket bound to a channel (2026-09-08 multi-chat).
+    """Provider-facing WebSocket bound to a channel.
 
-    Replaces the per-connection _ContentCapturingWebSocket for background sessions.
-    The AI provider streams through this object exactly like it did through a UI socket:
-
-      * send_text(data) - parses JSON; content/thinking chunks are captured into
-        captured_text (so partial persistence still works on cancel) AND every frame is
-        routed through channel.emit_frame() -> live push to attached UI sockets, or the
-        bounded background buffer when nobody is looking at this chat.
-      * any other attribute - forwarded to an attached UI socket when one exists
-        (defensive pass-through, same contract as the old capturing proxy).
-
-    A dead subscriber never breaks generation: emit_frame() drops it silently and the
-    channel keeps buffering for whoever re-attaches next.
-    """
+    send_text() parses JSON, captures content/thinking chunks into captured_text (partial
+    persistence on cancel) and routes every frame through channel.emit_frame() - live push
+    or the bounded background buffer. Any other attribute is forwarded to an attached UI
+    socket. A dead subscriber never breaks generation."""
 
     def __init__(self, channel):
         self._channel = channel

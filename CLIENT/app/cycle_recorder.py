@@ -1,31 +1,16 @@
-"""Live cycle-history recorder for one agentic turn (client side).
+"""Live cycle-history recorder for one agentic turn.
 
-`TurnLog` holds the rows; this class is the wire side: it emits one frame per event
-so the UI can build the collapsed turn block while the turn runs, and hands the SAME
-payload to the persistence path so the DB row and the final frame always agree.
+TurnLog holds the rows; this class is the wire side: one frame per event so the UI
+builds the turn block live, and the SAME payload to persistence so the DB row and the
+final frame always agree.
 
-Frame types (all carry `conv_id` AND `turn_id`):
-    cycle_start            turn began (last_turn_sec = previous turn's active time)
-    cycle_step             one reasoning step settled (token/speed counters)
-    cycle_speech           one AI text block of a step (thinking | answer)
-    cycle_tool             one tool call finished (ok flag + clipped input/output)
-    cycle_consent_pending  a consent card appeared on screen
-    cycle_consent          a consent card was answered ("pending": True tells the UI
-                           to REMOVE the card - the card itself is transient)
-    cycle_grant            a per-kind "Allow until task done" unlock (once per kind)
-    cycle_steer            a steering message was injected (at_ts = when the user typed it)
-    cycle_feedback         a loop notice (deduped, never the removed steer notice)
-    cycle_final            the answer row opened (step_no of the final answer)
-    cycle_end              the settled payload (identical to the persisted row)
+Frames (all carry `conv_id` AND `turn_id`): cycle_start, cycle_step, cycle_speech,
+cycle_tool, cycle_consent_pending, cycle_consent, cycle_grant, cycle_steer,
+cycle_feedback, cycle_question, cycle_final, cycle_end.
 
-THE IDENTITY RULE: `turn_id` is minted by the chat bus at turn start and travels on
-every frame. The UI refuses to render a frame whose (conv_id, turn_id) pair is not the
-block it owns, so frames of one workspace can never land in another workspace's view.
-
-Every send is best-effort: a dead socket must never break the loop, so all sends go
-through `_send()` which swallows any exception. Recording is likewise best-effort -
-ToolExecutor wraps every recorder call, and this class never raises.
-"""
+THE IDENTITY RULE: `turn_id` is minted at turn start and travels on every frame; the UI
+refuses a frame whose (conv_id, turn_id) is not the block it owns. Every send is
+best-effort - `_send()` swallows exceptions."""
 
 import json
 import logging
@@ -104,10 +89,8 @@ class CycleRecorder:
     def capture(self, text: str, kind: str = "answer") -> None:
         """Buffer one streamed AI chunk of the current step (thinking | answer).
 
-        Chunks are buffered RAW (a marker can be split across them) and scrubbed once at
-        flush time, when the whole block of text is assembled - scrubbing per chunk would
-        let half a marker through.
-        """
+        Chunks are buffered RAW and scrubbed once at flush time - scrubbing per chunk would let
+        a split marker through."""
         if not text:
             return
         self._speech_buf.append((self._step_no, text, kind))
@@ -115,10 +98,8 @@ class CycleRecorder:
     def _flush_speech_rows(self) -> List[Dict]:
         """Turn the buffered chunks into rows (sync). Empty buffer = no rows.
 
-        Chunks of the SAME (step, kind) are joined into one row before scrubbing, so a
-        split protocol marker is recognised and the strip gets one coherent text block
-        instead of a row per socket flush.
-        """
+        Chunks of the same (step, kind) are joined before scrubbing, so a split marker is
+        recognised and the strip gets one coherent block."""
         if not self._speech_buf:
             return []
         rows = []
@@ -196,10 +177,9 @@ class CycleRecorder:
 
     async def steer(self, text: str, seq: int = 0, at_ts: Optional[float] = None,
                     steer_id: str = "") -> None:
-        """A steering message was injected. `at_ts` is WHEN THE USER TYPED it, not when
-        the loop injected it - the UI places the row in the block at that moment.
-        `steer_id` correlates this row with the steer_received/steer_applied ack frames,
-        so one steer is ONE row whose status line settles instead of duplicating."""
+        """A steering message was injected. `at_ts` is WHEN THE USER TYPED it, not when the
+                loop injected it, so the UI places the row at that moment. `steer_id` correlates
+                this row with the ack frames, so one steer is ONE row."""
         row = self.log.add_steer(self._step_no, text, seq, at_ts, steer_id=str(steer_id or ""))
         await self._send({"type": "cycle_steer", "conv_id": self.conv_id,
                           "text": row["text"], "seq": row["seq"],
@@ -217,10 +197,26 @@ class CycleRecorder:
         await self._send({"type": "cycle_feedback", "text": row["text"],
                           "step_no": row["step_no"], "at_ts": row["at_ts"]})
 
+    async def question(self, request_id: str, *, question: str = "",
+                       options: Optional[list] = None, decision: str = "",
+                       pending: bool = True) -> None:
+        """One ask_user_question card. The card is transient (like a consent card); this
+        row is the durable fact, and the answer folds into the SAME row."""
+        if not request_id:
+            return
+        row = self.log.add_question(request_id, question=question,
+                                    options=list(options or []), decision=decision,
+                                    pending=pending)
+        await self._send({"type": "cycle_question", "conv_id": self.conv_id,
+                          "turn_id": self.turn_id, "request_id": request_id,
+                          "question": row["question"], "options": row["options"],
+                          "decision": row["decision"], "pending": row["pending"],
+                          "step_no": row["step_no"], "at_ts": row["at_ts"]})
+
     async def announce_final(self, step_no: int) -> None:
-        """Open the answer row. Once per turn - a reply to a steer and the real answer
-        are identical content frames, so the UI needs this signal to tell them apart.
-        The step's AI text is flushed FIRST so the answer text arrives before the marker."""
+        """Open the answer row, once per turn - a reply to a steer and the real answer are
+                identical content frames, so the UI needs this signal to tell them apart. The
+                step's AI text is flushed FIRST so the answer arrives before the marker."""
         if self._final_announced:
             return
         self._final_announced = True
@@ -238,11 +234,8 @@ class CycleRecorder:
                    elapsed_sec: Optional[float] = None) -> Dict:
         """Settle the turn SYNCHRONOUSLY and idempotently.
 
-        A turn stuck inside a consent card is HARD-cancelled by the bus backstop, so the
-        graceful settle never runs - this is the path that still folds the card as
-        'unanswered'. Every later caller (persist + the cycle_end frame) gets the SAME
-        payload object, so nobody re-settles or changes the numbers.
-        """
+        A turn stuck in a consent card is hard-cancelled by the bus backstop, so this is the
+        path that still folds the card as 'unanswered'. Every later caller gets the SAME payload."""
         if self._payload is not None:
             return self._payload
         if elapsed_sec is None:

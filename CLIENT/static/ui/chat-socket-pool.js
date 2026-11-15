@@ -263,7 +263,8 @@ const ChatSocketPool = {
         // here too (they are queued for render, never skipped).
         if (t === 'exec_approval_request' || t === 'cycle_consent_pending') {
             this._addPendingCard(convId, msg.request_id);
-        } else if (t === 'cycle_consent' || t === 'consent_cancelled') {
+        } else if (t === 'cycle_consent' || t === 'consent_cancelled' ||
+                   (t === 'cycle_question' && msg.pending === false)) {
             this._removePendingCard(convId, msg.request_id);
         } else if (t === 'done' || t === 'error' || t === 'cancelled' ||
                    t === 'provider_error' || t === 'execution_fail' || t === 'cycle_end') {

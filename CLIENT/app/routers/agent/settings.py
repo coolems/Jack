@@ -1,5 +1,5 @@
 """Settings endpoints: GET/POST /api/settings (connection mode, relay host/port,
-server address(es), runtime-tab fields). Verbatim move from the original flat agent.py."""
+server address(es), runtime-tab fields)."""
 
 from typing import Dict
 
@@ -13,7 +13,7 @@ logger = logging.getLogger("COOLEMS")
 
 def register(router: APIRouter, provider, model_name: str, api_timeout: int,
              agent, stop_events) -> None:
-    """Attach this endpoint group to *router* (verbatim move from the original flat file)."""
+    """Attach this endpoint group to *router*."""
     # ===== SETTINGS ENDPOINT =====
     @router.get("/api/settings")
     async def get_settings():
@@ -61,6 +61,10 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
             settings["image_gen_width"] = runtime["image_gen_width"]
             settings["image_gen_height"] = runtime["image_gen_height"]
 
+            # Runtime tab: the ask_user_question card tint. Always returned,
+            # even when never saved, so the colour picker starts from the default green.
+            settings["question_dialog_color"] = runtime["question_dialog_color"]
+
             # Return both values:
             # 1. current_server_address - the value active at startup (module-level cached)
             # 2. resolved_server_address - freshly re-resolved NOW (reflects latest settings.json changes)
@@ -76,34 +80,18 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
     async def save_settings(data: Dict):
         """Save client settings to settings.json.
 
-        Supported fields:
-          - connection_mode: "direct" (default) | "web_relay" — how the CLIENT talks to
-            the SERVER. web_relay routes through the public web_server_relay (single-file PHP relay).
-          - relay_host: str hostname/IP of the relay (required for web_relay mode)
-          - relay_port: int 1-65535 (optional; WEB_RELAY_DEFAULT_PORT applies when empty)
-          - server_address: str (IP:port format, e.g., "192.168.1.100:8080")
-          - server_addresses: list[str] ordered failover addresses; index 0 is tried
-            FIRST (put localhost there so local wins), the rest only when unreachable
+        Connection: connection_mode ("direct" | "web_relay"), relay_host, relay_port,
+        server_address, server_addresses (ordered failover; index 0 tried FIRST).
 
-        Runtime tab fields (2026-10-02):
-          - python_exec_auto_approve: "manual" (default) | "auto" — python_exec dialog behavior
-          - python_exec_auto_approve_seconds: int 1..3600 — auto-approve delay in seconds
+        Runtime tab: python_exec_auto_approve + _seconds, image_gen_tier, image_gen_width,
+        image_gen_height (32..4096, snapped to 32 and clamped to the tier's max_pixels),
+        question_dialog_color ("#rrggbb" - the ask_user_question card tint, live as
+        --question-accent).
 
-        Runtime tab fields (2026-10-03):
-          - image_gen_tier: "auto" (default) | "high" | "mid" | "low" — which model line
-            generate_image() uses. 'auto' = classify by probed GPU VRAM; the others pin that
-            tier (same semantics as SERVER config IMAGE_GEN_TIER_OVERRIDE, but per-machine).
-          - image_gen_width / image_gen_height: int pixels 32..4096 — the DEFAULT resolution
-            generate_image() uses when no explicit size is passed. The worker snaps values down
-            to multiples of 32 and clamps them to the tier's max_pixels budget, so oversized
-            values degrade gracefully instead of breaking generation.
-
-        NOTE: Changes to server address(es) apply from the NEXT connection onward
-        (the failover list is re-read on every connect); boot-time display values
-        refresh on CLIENT restart.
-        """
+        Address changes apply from the NEXT connection onward."""
         try:
-            from config import _load_settings, _save_settings, WEB_RELAY_UI_ENABLED
+            from config import (_load_settings, _save_settings, WEB_RELAY_UI_ENABLED,
+                                is_question_dialog_color)
 
             # Load existing settings and merge with new values
             current = _load_settings()
@@ -206,6 +194,18 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                     if not (32 <= size_val <= 4096):
                         return JSONResponse(status_code=400, content={"detail": f"{_size_key} must be between 32 and 4096 pixels"})
                     current[_size_key] = size_val
+
+            # Runtime tab field: the ask_user_question card tint. The UI's
+            # palette / colour picker writes it here; the frontend applies it live as the
+            # CSS variable --question-accent, so a pick recolours every card on screen.
+            if "question_dialog_color" in data:
+                color = str(data.get("question_dialog_color") or "").strip()
+                if not is_question_dialog_color(color):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "question_dialog_color must be a #rrggbb colour (e.g. #22c55e)"}
+                    )
+                current["question_dialog_color"] = color.lower()
 
             if "relay_port" in data:
                 raw_port = str(data.get("relay_port") or "").strip()

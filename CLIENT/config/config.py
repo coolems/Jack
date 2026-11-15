@@ -1,17 +1,9 @@
-"""
-COOLEMS CLIENT configuration.
-All client-side values set here. NO server secrets (no API keys, no auth profiles).
+"""COOLEMS CLIENT configuration. All client-side values set here. NO server secrets.
 
-CRITICAL: CLIENT ONLY supports 'coolems_client' provider.
-All requests MUST go through the SERVER via WebSocket relay.
-Direct LLM access is BLOCKED in CLIENT code.
-
-Remote PC Setup:
-  Configure via the Settings UI (gear icon) -> Server Address field.
-  This writes directly to settings.json which is the SINGLE SOURCE OF TRUTH.
-
-For server config with secrets, see root config/config.py (NEVER included in CLIENT distribution).
-"""
+CLIENT ONLY supports the 'coolems_client' provider: every request goes through the
+SERVER via WebSocket relay, direct LLM access is BLOCKED in CLIENT code. Server address
+comes from the Settings UI -> settings.json, the SINGLE SOURCE OF TRUTH. Server config
+with secrets lives in root config/config.py, never in the CLIENT distribution."""
 
 import logging
 import os
@@ -51,7 +43,7 @@ _SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setti
 
 
 def _load_settings() -> dict:
-    """Load settings from settings.json. Returns empty dict on failure."""
+    """Load settings from settings.json. Returns {} on failure."""
     import json
     try:
         if os.path.exists(_SETTINGS_FILE):
@@ -117,9 +109,7 @@ def _validate_engine_entry(engine) -> str | None:
 def load_search_engines() -> list:
     """Read the engine list from search_engines.json (fresh on every call).
 
-    Returns data["engines"] as-is. On missing/corrupt file: logs an error and
-    returns [] - NO fallback engines are invented anywhere in the codebase.
-    """
+    Missing/corrupt file: logs an error and returns [] - no fallback engines anywhere."""
     import json
     try:
         with open(_SEARCH_ENGINES_FILE, "r", encoding="utf-8") as f:
@@ -137,11 +127,9 @@ def load_search_engines() -> list:
 
 
 def save_search_engines(engines) -> None:
-    """Validate and write the engine list back to search_engines.json (pretty-printed).
+    """Validate and write the engine list to search_engines.json (pretty-printed).
 
-    Raises ValueError with a human-readable message when validation fails -
-    the file is left untouched in that case.
-    """
+    Raises ValueError when validation fails; the file is left untouched."""
     import json
 
     if not isinstance(engines, list) or not engines:
@@ -166,11 +154,9 @@ _COOLEMS_DEFAULT_PORT: int = 8080
 
 
 def _get_local_lan_ip() -> str:
-    """Auto-detect the primary LAN IP address of this machine.
+    """Auto-detect this machine's primary LAN IP ('192.168.x.x'), else 'localhost'.
 
-    Returns an IP like '192.168.x.x' or '10.x.x.x'. Falls back to 'localhost'.
-    Uses a UDP socket trick to find the outgoing interface IP without actually connecting.
-    """
+    UDP socket trick: finds the outgoing interface IP without connecting."""
     import socket
     try:
         # Create a UDP socket and connect to a dummy address to discover local IP
@@ -224,20 +210,12 @@ def _normalize_server_addresses(raw) -> list[str]:
 
 
 def get_server_address_list() -> list[str]:
-    """Fresh read of the ordered SERVER address failover list from settings.json.
+    """Fresh read of the ordered SERVER failover address list from settings.json.
 
-    Order = try order: index 0 is tried FIRST (put 'localhost:8080' there so local
-    always wins), and each next address is only attempted when the previous one is
-    unreachable. This makes the CLIENT folder portable across machines - ship it with
-    ["localhost:8080", "<LAN-IP>:8080"] and it works on the SERVER machine itself AND
-    on any other LAN machine without edits.
-
-    Both settings.json shapes are accepted:
-      "server_addresses": ["localhost:8080", "192.168.1.50:8080"]    (preferred)
-      "server_address":   "localhost:8080"                            (legacy single)
-    When both are present the list wins; a legacy singular value not already in the
-    list is appended at the end.
-    """
+    Index 0 is tried FIRST (put 'localhost:8080' there), the rest only when the previous is
+    unreachable, so the folder is portable across machines. Both shapes are accepted:
+    "server_addresses" (preferred) and "server_address"; the list wins and a singular value
+    not already in it is appended."""
     settings = _load_settings()
     addrs = _normalize_server_addresses(settings.get("server_addresses"))
     for a in _normalize_server_addresses(settings.get("server_address")):
@@ -249,11 +227,7 @@ def get_server_address_list() -> list[str]:
 def get_good_server() -> str | None:
     """Return the last CONFIRMED-GOOD server address, or None.
 
-    (2026-09-01 sticky failover) The coolems protocol layer remembers which address
-    actually answered a connection and persists it here under the legacy singular
-    'server_address' key - that key is already merged into get_server_address_list()
-    by every reader, so nothing else needs to change to consume this value.
-    """
+    Persisted under 'server_address', which every reader already merges into the list."""
     try:
         settings = _load_settings()
     except Exception:
@@ -271,13 +245,9 @@ def get_good_server() -> str | None:
 
 
 def _remember_good_server(addr: str) -> None:
-    """Persist *addr* as the known-good server (sticky failover, 2026-09-01).
+    """Persist *addr* as the known-good server, so a reboot goes straight to it.
 
-    Written to settings.json under 'server_address' so it survives CLIENT restarts:
-    after a reboot the client goes straight to the address that worked last time and
-    only scans the rest of the list if THAT one is dead. No-op on failure - memory-only
-    stickiness (in-process) still works without the file write.
-    """
+    No-op on failure - in-process stickiness still works without the file write."""
     import logging
     try:
         addr = str(addr).strip()
@@ -296,19 +266,9 @@ def _remember_good_server(addr: str) -> None:
 def _resolve_client_server_address() -> str:
     """Resolve the PRIMARY server address from settings.json (SINGLE SOURCE OF TRUTH).
 
-    Returns the known-good address when one is recorded and still in the list, else
-    the FIRST entry of get_server_address_list(). The full ordered failover list is
-    read fresh by every connection via get_server_address_list(); this function exists
-    for boot-time caching and UI display.
-
-    Logic:
-      1. Read settings.json (server_addresses list, legacy server_address fallback).
-      2. If empty/missing -> auto-detect local LAN IP, WRITE it to settings.json, return it.
-      3. No env var overrides. No crappy fallbacks. settings.json is THE source of truth.
-
-    Called once at module import time to set COOLEMS_CLIENT_SERVER_ADDRESS.
-    Also callable at runtime via _resolve_client_server_address() for fresh reads.
-    """
+    The known-good address when recorded and still listed, else the first entry of
+    get_server_address_list(). Empty/missing -> auto-detect the LAN IP, write it, return it.
+    No env overrides, no fallbacks. Called once at import for boot caching and UI display."""
     import logging
     logger = logging.getLogger("COOLEMS")
 
@@ -373,13 +333,10 @@ WEB_RELAY_UI_ENABLED: bool = False
 
 
 def get_connection_mode() -> str:
-    """'direct' | 'web_relay' — how the CLIENT talks to the SERVER (2026-09-23).
+    """'direct' | 'web_relay' - how the CLIENT talks to the SERVER.
 
-    settings.json is the SINGLE SOURCE OF TRUTH ('connection_mode', written by the
-    Settings UI via POST /api/settings); env vars override for non-UI deploys.
-    DEFAULT IS DIRECT: a missing/unknown value always means direct LAN mode, so an
-    untouched CLIENT behaves exactly like before this option existed.
-    """
+    settings.json is the source of truth ('connection_mode'); env vars override for non-UI
+    deploys. A missing/unknown value means direct LAN mode."""
     if not WEB_RELAY_UI_ENABLED:
         return "direct"  # hard kill switch - relay option disabled by CLIENT config
 
@@ -396,10 +353,8 @@ def get_connection_mode() -> str:
 def get_web_relay_address() -> Optional[str]:
     """Relay address 'host[:port]' from settings.json, or None when not configured.
 
-    Settings UI fields relay_host + relay_port are the source of truth; env vars
-    COOLEMS_RELAY_HOST / COOLEMS_RELAY_PORT override for non-UI deploys. A bare host
-    (no port) is valid - WEB_RELAY_DEFAULT_PORT applies at connect time.
-    """
+    relay_host + relay_port are the source of truth; COOLEMS_RELAY_HOST/PORT override. A
+    bare host is valid - WEB_RELAY_DEFAULT_PORT applies at connect time."""
     host = os.environ.get("COOLEMS_RELAY_HOST", "").strip() or \
         str(_load_settings().get("relay_host") or "").strip()
     if not host:
@@ -459,7 +414,11 @@ IMAGE_GEN_SIZE_MIN, IMAGE_GEN_SIZE_MAX = 32, 4096
 #: handle, listing running apps, capturing a window, or sending input. It is the only
 #: kind whose payload is an APP identity rather than code/URL/path/socket, because the
 #: thing being approved is "may this AI drive that application?".
-CONSENT_KINDS = ("python", "url", "file", "network", "subprocess", "desktop")  # (2026-10-24) subprocess; (2026-11-07) desktop
+#: 'question' is the ask_user_question card: a QUESTION + options, answered with
+#: free text. It is listed here so every kind-driven loop stays complete, but it has NO
+#: UI row in Settings > Runtime and its pair is pinned to 'manual' - auto-answering a
+#: question would invent an answer the user never gave.
+CONSENT_KINDS = ("python", "url", "file", "network", "subprocess", "desktop", "question")
 #: settings.json key names per kind (python keeps its historical python_exec_* keys).
 CONSENT_SETTING_KEYS = {
     "python":  ("python_exec_auto_approve",        "python_exec_auto_approve_seconds"),
@@ -468,22 +427,44 @@ CONSENT_SETTING_KEYS = {
     "network": ("network_consent_auto_approve",    "network_consent_auto_approve_seconds"),
     "subprocess": ("subprocess_consent_auto_approve", "subprocess_consent_auto_approve_seconds"),  # (2026-10-24)
     "desktop": ("desktop_consent_auto_approve",    "desktop_consent_auto_approve_seconds"),  # (2026-11-07)
+    "question": ("question_consent_auto_approve",  "question_consent_auto_approve_seconds"),  # pinned manual
 }
+#: Kinds that can NEVER be auto-answered, whatever settings.json says (fail-closed).
+CONSENT_NEVER_AUTO_KINDS = frozenset({"question"})
 CONSENT_AUTO_APPROVE_DEFAULT = "manual"
 CONSENT_AUTO_APPROVE_SECONDS_DEFAULT = 5
+
+#: The ask_user_question card is tinted with its OWN colour, so a question
+#: reads apart from the amber consent cards. Settings > Runtime stores it in settings.json
+#: as 'question_dialog_color' (#rrggbb); the UI applies it live as the CSS variable
+#: --question-accent, so a pick recolours every card on screen without a restart.
+QUESTION_DIALOG_COLOR_DEFAULT = "#22c55e"
+#: The one accepted shape: '#' + exactly six hex digits.
+QUESTION_DIALOG_HEX_LEN = 6
+_HEX_DIGITS = "0123456789abcdefABCDEF"
+
+
+def is_question_dialog_color(raw) -> bool:
+    """True when *raw* is exactly '#rrggbb'. POST /api/settings rejects anything else."""
+    s = str(raw or "").strip()
+    return (len(s) == 1 + QUESTION_DIALOG_HEX_LEN and s[0] == "#"
+            and all(c in _HEX_DIGITS for c in s[1:]))
+
+
+def _coerce_question_dialog_color(value) -> str:
+    """A stored question-card colour lowercased, or the default when it is not #rrggbb.
+
+    Hand-checked, so config.py stays import-light and a corrupt settings.json never paints
+    an unreadable colour (fail-closed)."""
+    return str(value).strip().lower() if is_question_dialog_color(value) else QUESTION_DIALOG_COLOR_DEFAULT
 
 
 def get_runtime_settings() -> dict:
     """Return the live Runtime-tab values from settings.json with safe defaults.
 
-    Always returns exactly five keys so callers never hit a missing key:
-      {"python_exec_auto_approve": "manual"|"auto",
-       "python_exec_auto_approve_seconds": int,
-       "image_gen_tier": "auto"|"high"|"mid"|"low",
-       "image_gen_width": int (default 600),
-       "image_gen_height": int (default 400)}
-    Bad/corrupt stored values fall back to the defaults (fail-closed = manual/auto).
-    """
+    Always exactly six keys: python_exec_auto_approve, python_exec_auto_approve_seconds,
+    image_gen_tier, image_gen_width, image_gen_height, question_dialog_color. Bad stored
+    values fall back to the defaults (fail-closed = manual/auto)."""
     settings = _load_settings()
 
     mode = str(settings.get("python_exec_auto_approve") or "").strip().lower()
@@ -506,6 +487,9 @@ def get_runtime_settings() -> dict:
     width = _coerce_image_gen_size(settings.get("image_gen_width"), IMAGE_GEN_WIDTH_DEFAULT)
     height = _coerce_image_gen_size(settings.get("image_gen_height"), IMAGE_GEN_HEIGHT_DEFAULT)
 
+    # Question-card tint. A bad/absent value falls back to the default green,
+    # so a corrupt settings.json can never paint the card with an unreadable colour.
+    question_color = _coerce_question_dialog_color(settings.get("question_dialog_color"))
 
     # (2026-07-18 unified consent dialog) per-kind auto-approve settings, fully detached:
     # approvals[kind] = {"mode": "manual"|"auto", "seconds": int 1..3600} for all four
@@ -521,6 +505,10 @@ def get_runtime_settings() -> dict:
         _mode = str(settings.get(_mode_key) or "").strip().lower()
         if _mode not in ("manual", "auto"):
             _mode = _def_mode
+        # 'question' is pinned manual no matter what settings.json says: an
+        # auto-answered question would invent an answer the user never gave.
+        if _kind in CONSENT_NEVER_AUTO_KINDS:
+            _mode = "manual"
         try:
             _sec = int(str(settings.get(_sec_key) or "").strip())
         except (TypeError, ValueError):
@@ -534,6 +522,8 @@ def get_runtime_settings() -> dict:
         "image_gen_tier": tier,
         "image_gen_width": width,
         "image_gen_height": height,
+        # Question-card tint, read live so the UI recolours on the next card.
+        "question_dialog_color": question_color,
         # (2026-07-18) per-kind consent auto-approve settings (see CONSENT_SETTING_KEYS).
         "approvals": approvals,
     }
@@ -542,9 +532,7 @@ def get_runtime_settings() -> dict:
 def _coerce_image_gen_size(value, default: int) -> int:
     """Coerce a stored image-gen dimension to an int inside IMAGE_GEN_SIZE_MIN..MAX.
 
-    (2026-10-03) Used by get_runtime_settings() - any non-int / out-of-range value in
-    settings.json degrades to the default instead of propagating into generation.
-    """
+    A non-int or out-of-range value degrades to the default instead of reaching generation."""
     try:
         v = int(str(value or "").strip())
     except (TypeError, ValueError):
@@ -644,7 +632,15 @@ CLIENT_MAX_OPEN_CHAT_WS: int = 6          # UI LRU cap on simultaneously open pe
 # safe step (never as a new turn, never stopping the current task). Bounded so a stuck
 # keyboard cannot grow memory without limit; oldest entries are dropped first.
 CHAT_STEER_QUEUE_MAX: int = 32
-    
+
+# --- ask_user_question ---
+# The card the AI asks the human with. 'blocking' waits with no time limit (the session
+# clock pauses); 'timed' waits at most QUESTION_TIMEOUT_DEFAULT_SEC, closes the card and
+# returns TIMEOUT - not a refusal, the AI decides and states its assumption.
+QUESTION_TIMEOUT_DEFAULT_SEC: int = 120
+#: Candidates the card may show. More than this cannot be read in one glance.
+QUESTION_MAX_OPTIONS: int = 6
+
 # --- Model (fetched from SERVER at runtime) ---
 MODEL_NAME: str = ""  # Auto-detected from SERVER loaded models at runtime do not hardcode here
 
@@ -722,10 +718,8 @@ TOOLS_BOOTSTRAP_TIMEOUT_SEC: int = 10800                # Max wait (s) for a sel
 def get_api_url() -> str:
     """Return the API URL for the configured provider.
 
-    For 'coolems_client' this is always empty - the client talks to the SERVER
-    over WebSocket, not a local HTTP API. Any other provider raises ValueError
-    because the CLIENT distribution supports only coolems_client.
-    """
+    Always empty for 'coolems_client' (the CLIENT talks to the SERVER over WebSocket); any
+    other provider raises ValueError."""
     if PROVIDER == "coolems_client":
         return ""  # Client connects via WebSocket, no local API URL needed
     raise ValueError(f"CLIENT cannot use provider '{PROVIDER}'. Only 'coolems_client' is supported.")
@@ -737,12 +731,9 @@ def get_provider_name() -> str:
     
 
 def max_history_tokens() -> int:
-    """Get max history tokens from SERVER-provided context window.
+    """Max history tokens from the SERVER-provided context window.
 
-    Raises RuntimeError if CONTEXT_WINDOW_TOKENS has not been set yet
-    (i.e., CLIENT has not received auth_ok from SERVER).
-    No fallback to hardcoded values allowed.
-    """
+    Raises RuntimeError when CONTEXT_WINDOW_TOKENS has not arrived yet - no hardcoded value."""
     if CONTEXT_WINDOW_TOKENS is None:
         raise RuntimeError(
             "CONTEXT_WINDOW_TOKENS not set - SERVER handshake not completed. "
@@ -753,12 +744,9 @@ def max_history_tokens() -> int:
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate for a string using CHARS_PER_TOKEN.
+    """Rough token estimate using CHARS_PER_TOKEN - budgeting/trimming only.
 
-    Used only for budgeting/trimming heuristics - the authoritative context
-    window always comes from the SERVER (CONTEXT_WINDOW_TOKENS).
-    Never returns 0 (empty text counts as 1 token).
-    """
+    Never returns 0 (empty text counts as 1 token)."""
     if not text:
         return 1
     return max(1, round(len(text) / CHARS_PER_TOKEN))

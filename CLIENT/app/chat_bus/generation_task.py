@@ -1,15 +1,9 @@
-"""Background generation turn runner (2026-09-08 multi-chat, Phase 3).
+"""Background generation turn runner.
 
-Extracted from CLIENT/app/websocket/handler.py: everything that used to run INLINE in the
-UI WebSocket receive loop (dispatch → retry → post-processing) now runs as an independent
-asyncio task owned by a ChatChannel. That is what makes "switch chat, keep generating" work:
-the UI socket can come and go while this task streams through its ChannelWebSocket into the
-channel (live push or bounded background buffer).
-
-The flow mirrors the pre-refactor handler exactly:
-  build dispatch closure (agentic | normal) → retry_with_backoff (20 min budget) →
-  cancel handling / error frames / assistant persistence / search suggestion / done.
-"""
+The turn work (dispatch -> retry -> post-processing) runs here as an independent
+asyncio task owned by a ChatChannel, not inline in the UI WebSocket receive loop. That
+is what makes "switch chat, keep generating" work: the UI socket can come and go while
+the task streams into the channel (live push or bounded background buffer)."""
 
 import asyncio
 import json
@@ -46,7 +40,7 @@ logger = logging.getLogger("COOLEMS.ChatBus")
 
 
 def _is_user_cancelled(error) -> bool:
-    """Check if an error/result is a user-initiated cancellation (same rules as the old handler)."""
+    """True when an error/result is a user-initiated cancellation."""
     if not isinstance(error, BaseException):
         return False
     name = type(error).__name__
@@ -60,13 +54,10 @@ def _is_user_cancelled(error) -> bool:
 
 
 async def _reject_pending_steers(channel, sink, message: str, code: str) -> int:
-    """Settle any steering message the loop never reached (2026-10-23).
+    """Settle any steering message the loop never reached.
 
-    A steer that is still queued when the turn ends can never be applied. The turn's
-    loop-history row for it must not stay stuck on "queued", so we drain the channel and
-    tell attached clients why. Best-effort: a dead channel must never break the turn
-    teardown.
-    """
+    A steer still queued when the turn ends can never be applied, so its row must not stay
+    on "queued": drain the channel and tell attached clients why. Best-effort."""
     try:
         pending = channel.drain_steer()
     except Exception:
@@ -109,15 +100,10 @@ async def _reject_pending_steers(channel, sink, message: str, code: str) -> int:
 class _StatusSink:
     """Thin wrapper over ChannelWebSocket that keeps channel.status honest.
 
-    The SERVER tells us when a queued request actually starts (queue_start frame) and the
-    turn ends (done/error/cancelled); mapping those onto ChannelStatus drives the sidebar
-    dot without any extra protocol work on the UI side.
-
-    `cycle` (2026-11-08): when set, every streamed content/thinking chunk is ALSO captured
-    into this turn's CycleRecorder, so the AI text of each reasoning step lands inside the
-    turn block (thinking + speech) instead of only in a chat bubble. The recorder swallows
-    its own errors, so capture can never affect delivery.
-    """
+    queue_start / done / error / cancelled map onto ChannelStatus, driving the sidebar dot
+    without extra protocol work. With `cycle` set, every streamed chunk is also captured
+    into the turn's CycleRecorder, so step text lands inside the turn block; the recorder
+    swallows its own errors."""
 
     def __init__(self, channel, inner: ChannelWebSocket, cycle=None):
         self._channel = channel
@@ -156,10 +142,8 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                               stop_events: dict, prepared: dict, api_timeout: int):
     """Run ONE chat turn to completion in the background.
 
-    *prepared* is exactly what the old handler's _prepare_user_message() returned; this
-    function owns everything after that point (dispatch + retry + persistence). Never
-    raises — every failure becomes a frame on the channel plus a log line.
-    """
+    *prepared* is what the message preparation returned; this owns everything after it
+    (dispatch + retry + persistence). Never raises - a failure becomes a frame and a log line."""
     conv_id = channel.conv_id
     stop_event = channel.stop_event
     sink = _StatusSink(channel, channel_ws)
@@ -203,14 +187,9 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     async def _persist_applied_steer(item) -> None:
         """Record one applied steering message in the conversation history.
 
-        Called by logic.react_loop ONLY after the loop actually injected the text into the
-        provider message list. Raw text is stored (no injection header) and flagged
-        `is_steer`, so:
-          * the model still sees the correction when a LATER turn loads history,
-          * the UI never paints it as a chat-level user message - the user sees it as a row
-            of the turn's loop-history block (turn_log `steers`), which is where a steering
-            message belongs (user request 2026-11-08).
-        """
+        Called by logic.react_loop only after the text was injected. Stored raw and flagged
+        `is_steer`: the model sees the correction in later turns, while the UI paints it as a
+        row of the turn's loop-history block, never as a chat message."""
         text = item.get("text", "") if isinstance(item, dict) else str(item or "")
         if not text.strip():
             return
@@ -247,6 +226,9 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                               turn_started_at=time.time(), last_turn_sec=last_session_sec)
         # The id of the running turn is the identity steering frames must carry.
         channel.turn_id = cycle.turn_id
+        # The live turn's recorder, so the ask_user_question tool can
+        # record its card row into THIS turn's block (channel.record_runtime).
+        channel.cycle = cycle
         # The sink captures streamed AI text into the recorder (speech rows), so the block
         # shows everything the AI said during this loop, not just the final answer.
         sink.cycle = cycle
@@ -256,12 +238,10 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
             logger.debug(f"[CHATBUS] cycle_start failed for conv={conv_id}: {e}")
 
     async def _close_cycle(final_text: str, stopped: bool) -> None:
-        """Settle + persist + announce this turn's cycle history EXACTLY ONCE.
+        """Settle, persist and announce this turn's cycle history EXACTLY ONCE.
 
-        Idempotent: settle_now() memoizes the payload, so a graceful finish and a hard
-        cancel cannot produce two rows or two cycle_end frames. History is best-effort -
-        a failure here must never change what the user got from the turn.
-        """
+        Idempotent: settle_now() memoizes the payload, so a graceful finish and a hard cancel
+        cannot produce two rows or two frames. History is best-effort."""
         nonlocal _cycle_closed
         if cycle is None or _cycle_closed:
             return
@@ -460,6 +440,11 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         _own_turn_id = cycle.turn_id if cycle is not None else ""
         if _own_turn_id and channel.turn_id == _own_turn_id:
             channel.turn_id = ""
+        # Same ownership rule for the recorder: a settlement that arrives
+        # after this turn ends must NOT record into a newer turn's block, so the channel only
+        # keeps the recorder that belongs to the turn that set it.
+        if cycle is not None and getattr(channel, "cycle", None) is cycle:
+            channel.cycle = None
         # (2026-08-23 session stats) settle this turn's ACTIVE time on EVERY exit path
         # (done / cancel / error - the early 'return' after a user Stop included) and hand it
         # to the NEXT turn as 'last session'. Paused time (approval menus) is excluded.
@@ -479,14 +464,16 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         except Exception as e:  # pragma: no cover - history must never break a turn
             logger.debug(f"[CHATBUS] cycle settle in finally failed for conv={conv_id}: {e}")
 
-        # (2026-11-15 consent-card lifetime) Drop every card this turn never got an answer
-        # for and tell the UI to withdraw it. cancel_all() existed but was never called, so
-        # a card could outlive its future: the user clicked it, the backend had nothing to
-        # resolve, and the click was silently lost. Fail-closed: each waiter gets 'deny'.
+        # Drop every card this turn never got an answer for and tell the UI to withdraw
+        # it. Fail-closed: each waiter gets 'deny'. A question card also leaves the
+        # channel's pending store, or /api/runtime would keep advertising a card whose
+        # future is gone and a reload would re-render one that can never be answered.
         try:
             _state = getattr(channel, "exec_approval", None)
             if _state is not None:
                 for _rid, _kind in _state.cancel_all():
+                    if _kind == "question":
+                        channel.drop_pending_question(_rid)
                     try:
                         await sink.send_text(json.dumps({
                             "type": "consent_cancelled",
@@ -507,7 +494,7 @@ def register_stop_event(stop_events: dict, conv_id: str, event: asyncio.Event) -
 
 
 def unregister_stop_event(stop_events: dict, conv_id: str, event: asyncio.Event) -> None:
-    """Remove the entry ONLY when it still holds THIS channel's event (CANCEL FIX 2026-09-07)."""
+    """Remove the entry ONLY when it still holds THIS channel's event."""
     entry = stop_events.get(conv_id)
     if entry is not None:
         ev = entry.get("event") if isinstance(entry, dict) else entry

@@ -1,12 +1,8 @@
-"""
-COOLEMS Client Configuration Package.
+"""COOLEMS Client Configuration Package.
 
-Client-only config - NO server secrets (no API keys, no auth profiles).
-For server config with secrets, see root config/config.py.
-
-Import everything from this package:
-    from config import MODEL_NAME, PROVIDER_DEFAULT_TIMEOUT, get_api_url
-"""
+Client-only config - NO server secrets. For server config with secrets see root
+config/config.py. Import everything from here:
+    from config import MODEL_NAME, PROVIDER_DEFAULT_TIMEOUT, get_api_url"""
 
 from .config import (
     # --- Context / Token Limits ---
@@ -54,6 +50,14 @@ from .config import (
     CHAT_BACKGROUND_FRAME_BUFFER,   # (2026-09-08 multi-chat) background frame buffer per chat
     CLIENT_MAX_OPEN_CHAT_WS,        # (2026-09-08 multi-chat) UI LRU cap on open per-chat sockets
     CHAT_STEER_QUEUE_MAX,           # (2026-10-23 live steering) max queued mid-run user messages
+
+    # --- ask_user_question ---
+    QUESTION_TIMEOUT_DEFAULT_SEC,
+    QUESTION_MAX_OPTIONS,
+    # Question-card tint: default + the strict '#rrggbb' check the settings
+    # endpoint uses, so the UI, the endpoint and the live reader share ONE rule.
+    QUESTION_DIALOG_COLOR_DEFAULT,
+    is_question_dialog_color,
 
     MODEL_NAME,
 

@@ -27,11 +27,8 @@ _TOOL_COMPILATION_ERROR_RESOLVED = False
 def _get_tool_compilation_error():
     """Get the ToolCompilationError class (lazy import, resolved ONCE).
 
-    (2026-11 review fix B8) The old version re-ran the import on EVERY exception,
-    so a hot error path paid two failed imports per occurrence. The class is a
-    constant: resolve it once and cache the result (including the "not available"
-    result), so repeated calls are a dict-free attribute read.
-    """
+    A constant: resolved once and cached (including "not available"), so a hot error path
+    is an attribute read."""
     global _TOOL_COMPILATION_ERROR, _TOOL_COMPILATION_ERROR_RESOLVED
     if _TOOL_COMPILATION_ERROR_RESOLVED:
         return _TOOL_COMPILATION_ERROR
@@ -68,47 +65,21 @@ async def agentic_mode(
     enhanced_message: str,
     media_files: List[str] = None
 ) -> str:
-    """
-    Run agentic chat mode with tool orchestration and ReAct loop.
-    
-    HISTORY MANAGEMENT:
-    - Full conversation history is preserved during the entire task.
-    - ONLY when the token limit is exceeded, oldest ATOMIC UNITS are removed.
-      A unit = a user turn + the AI reply that answered it (assistant text and/or
-      tool_calls) + ALL its tool results. Units are never split, so an assistant
-      tool_calls message can never be orphaned from its tool results.
-    - The system prompt is NEVER removed.
-    - The CURRENT USER PROMPT is NEVER removed (tagged `_protect` by build_messages,
-      passed to the loop as a protected id) - it must remain at all times.
-    - THE CURRENT LOOP IS NEVER REMOVED (2026-11-08): everything the running loop appends
-      after build_messages() - its assistant replies, tool_calls, tool results and mid-run
-      steering - is the AI's working context. Trimming eats only the PREVIOUS turns of the
-      session. When the loop alone cannot fit, the trim is a no-op and the guardian fires
-      (continue plan + stop), so the next loop resumes from user input + AI output + plan.
-    - No minimum-message floor for the removable part: in a long run only
-      [system + current user prompt + current loop] may remain, and that is fine.
-    - Usage is measured in SERVER units: the real prompt_tokens llama.cpp reported for the
-      last request, kept as an OVERHEAD on top of our chars/4 estimate, so the figure tracks
-      new messages AND trims instead of going stale (2026-11-07 fix).
-    - At 95% of the history budget a console/UI warning fires once per run ("trimming is
-      about to engage"). At AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION of the FULL context
-      window a context-guardian [SYSTEM NOTICE] tells the AI to finish its current work step,
-      write a plan_<...>_continue.md file (in .temp/plans/) with what is done / remaining so we can resume in
-      the next work loop, and end with TASK DONE. One notice per crossing; a trim that brings
-      usage back under the threshold re-arms it. The notice quotes sent/left against the same
-      window the UI status bar shows, so guardian and UI can never disagree.
-    - Per-message token lengths are cached on the message dicts (`_est_tokens`)
-      so trimming never re-tokenizes history every iteration.
+    """Run agentic chat mode with tool orchestration and ReAct loop.
 
-    ROLE-BASED PERMISSIONS:
-    - Passes API key to ToolExecutor for permission checking
-    - Tools not allowed by the user's role will be blocked
-    
-    TOKEN STATISTICS:
-    - Token stats are sent to UI after EVERY provider call
-    - This includes both intermediate tool calls AND final responses
-    - The UI updates the status bar with real-time token usage
-    """
+    HISTORY: kept whole; only past the token limit are the oldest ATOMIC UNITS removed - a
+    unit is a user turn + its reply + all tool results, never split. The system prompt, the
+    CURRENT USER PROMPT (`_protect`) and THE CURRENT LOOP (everything appended after
+    build_messages) are never removed, so trimming eats only previous turns; if the loop
+    alone cannot fit, the trim is a no-op and the guardian fires. Usage is SERVER units: the
+    last request's prompt_tokens as an OVERHEAD on the chars/4 estimate, cached per message
+    in `_est_tokens`. At 95% of the history budget one warning fires; at
+    AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION of the full window a [SYSTEM NOTICE] asks the
+    AI to finish its step, write plan_<...>_continue.md in .temp/plans/ and end with
+    TASK DONE - once per crossing, re-armed by a trim.
+
+    PERMISSIONS: the API key goes to ToolExecutor; tools the role forbids are blocked.
+    TOKEN STATS: sent to the UI after EVERY provider call."""
     
     logger.info("="*60)
 
@@ -178,6 +149,9 @@ RULES:
             api_key=config.api_key,
             session_timer=getattr(config, "session_timer", None),  # (2026-08-23) pause clock while user menus are open
             cycle=getattr(config, "cycle", None),  # (2026-11-08) loop history: tools + consent cards land in this turn's block
+            # The CLIENT-LOCAL tool needs THIS turn's channel:
+            # the pending question card store, the turn's recorder and the timer pause.
+            channel=getattr(config, "steer_source", None),
         )
 
     # (2026-10-09) Per-workspace working root: resolve THIS conversation's folder from

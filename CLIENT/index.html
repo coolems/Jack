@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261115a">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261115q">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -535,6 +535,28 @@
                                 </div>
                             </div>
 
+                        <!-- Question Dialog Color - the tint of the ask_user_question
+                             card. Saved to settings.json via POST /api/settings and applied live
+                             as the CSS variable --question-accent, so the pick recolours every
+                             question card on screen immediately (no restart). Palette swatches are
+                             rendered by runtime-settings.js; the picker accepts any #rrggbb. -->
+                        <div class="form-group" style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+                            <label>&#128172; Question Dialog Color</label>
+                            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                                The card where the AI asks you a question gets its own colour, so it reads apart from the amber approval cards. Pick one from the palette or use the colour picker - it applies to every question card immediately.
+                            </p>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <input type="color" id="questionDialogColor" class="color-picker-input" value="#22c55e" onchange="saveRuntimeSettings()" title="Pick any colour (#rrggbb)">
+                                <span id="questionDialogColorHex" class="color-hex">#22c55e</span>
+                                <button type="button" onclick="resetQuestionDialogColor()"
+                                        style="padding: 6px 12px; background: var(--bg-tertiary); color: var(--text-secondary);
+                                               border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 13px;">
+                                    Reset to default
+                                </button>
+                            </div>
+                            <div id="questionColorPalette" class="color-swatch-row"></div>
+                        </div>
+
                         <!-- (2026-10-03) Image Generator - model line + default resolution for generate_image().
                              Saved to settings.json via POST /api/settings and read LIVE by the tool on
                              every generation, so a save applies to the very next image - no restart. -->
@@ -610,16 +632,16 @@
     </script>
     <!-- Loop-history UI (2026-11-08): rows -> shell -> block, loaded before the
          modules that call into them (conversation.js / websocket.js / message.js). -->
-    <script src="/static/ui/cycle-rows.js?v=20261108m"></script>
-    <script src="/static/ui/cycle-shell.js?v=20261109c"></script>
-    <script src="/static/ui/cycle-block.js?v=20261109c"></script>
+    <script src="/static/ui/cycle-rows.js?v=20261115q"></script>
+    <script src="/static/ui/cycle-shell.js?v=20261115q"></script>
+    <script src="/static/ui/cycle-block.js?v=20261115q"></script>
     <script src="/static/ui/conversation-manager.js?v=20261108a">
     </script>
-    <script src="/static/ui/conversation.js?v=20261108c">
+    <script src="/static/ui/conversation.js?v=20261115q">
     </script>
     <script src="/static/ui/workspace-view.js?v=20261108a"></script>
-    <script src="/static/ui/chat-socket-pool.js?v=20261108b"></script>
-    <script src="/static/ui/websocket.js?v=20261108r">
+    <script src="/static/ui/chat-socket-pool.js?v=20261115q"></script>
+    <script src="/static/ui/websocket.js?v=20261115q">
     </script>
     <script src="/static/ui/message.js?v=20261108e">
     
@@ -684,8 +706,8 @@
     <script src="/static/ui/files/files-panel.js?v=20260918a"></script>
     <script src="/static/ui/search-engine-settings.js?v=20260827e">
     </script>
-    <script src="/static/ui/runtime-settings.js?v=20261124b"></script>
-    <script src="/static/ui/approval-dialog.js?v=20261108b"></script>
+    <script src="/static/ui/runtime-settings.js?v=20261115q"></script>
+    <script src="/static/ui/approval-dialog.js?v=20261115q"></script>
     <script src="/static/ui/ui-controls.js?v=20260827e">
     
     </script>

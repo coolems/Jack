@@ -87,6 +87,18 @@ const APPROVAL_DIALOG_CONFIG = {
         statusAllow: '\u2705 Allowed - the AI may read/drive that app now (nothing is launched, activated or closed).',
         statusRunAll: '\u26A1 Allow-until-task-done enabled: desktop access requests will be approved without asking until this task ends.',
         statusDeny: '\u274C Blocked - that app was not read or touched, and the AI was told not to work around it.'
+    },
+    /**
+     * NOT a permission gate: the payload is what the user ASKED FOR plus numbered
+     * offers, and the answer is free text (body: _questionCardBody()). Never
+     * auto-approved - the backend pins this kind to 'manual'. Tinted by
+     * --question-accent (Settings > Runtime). No Skip / You-decide buttons.
+     */
+    question: {
+        icon: '\u{1F4AC}',                    // 💬 (the AI asking the human)
+        title: 'Question from the AI',
+        statusAllow: '\u2705 Answered - the AI has your answer.',
+        statusDeny: '\u274C The question could not be answered - the AI was told to state its assumption.'
     }
 };
 
@@ -130,7 +142,6 @@ const ApprovalDialog = {
             ? '<div class="exec-approval-desc">' + escapeHtml(descText) + '</div>'
             : '';
 
-        const codeHtml = escapeHtml(String(data.code || ''));
         const card = document.createElement('div');
         card.className = 'message assistant';
 
@@ -142,6 +153,21 @@ const ApprovalDialog = {
         body.className = 'message-content exec-approval-card';
         if (data.request_id) body.setAttribute('data-request-id', data.request_id);
         body.dataset.kind = kind;
+
+        // A QUESTION card is not a permission gate: the payload is
+        // {requirement, question, options, context} JSON, answered with an offer or free
+        // text - no allow/deny buttons, no auto-approve countdown for this kind.
+        if (kind === 'question') {
+            body.innerHTML = this._questionCardBody(data, headerHtml, descHtml);
+            card.appendChild(inner);
+            card.appendChild(body);
+            container.appendChild(card);
+            this._wireQuestionCard(card, data);
+            if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
+            return;
+        }
+
+        const codeHtml = escapeHtml(String(data.code || ''));
         body.innerHTML =
             '<div class="exec-approval-header">' + headerHtml + '</div>' +
             descHtml +
@@ -170,8 +196,154 @@ const ApprovalDialog = {
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
     },
 
+    /** Body of an ask_user_question card: what the user asked for, the question, numbered
+     *  offer buttons (option 1 = the favourite, the closest candidate) and a free-text
+     *  answer that is ALWAYS there. The payload is JSON from the tool; the backend already
+     *  dropped off-topic and meta options. No Skip / You-decide button. */
+    _questionCardBody(data, headerHtml, descHtml) {
+        let q = { question: String(data.code || ''), options: [], context: '', requirement: '' };
+        try {
+            const parsed = JSON.parse(String(data.code || ''));
+            if (parsed && typeof parsed === 'object') {
+                q = {
+                    question: String(parsed.question || ''),
+                    options: Array.isArray(parsed.options) ? parsed.options : [],
+                    context: String(parsed.context || ''),
+                    requirement: String(parsed.requirement || ''),
+                };
+            }
+        } catch (e) { /* payload was plain text - use it as the question */ }
+
+        // The requirement is shown so the offers can be checked against it at a glance.
+        const askedHtml = q.requirement
+            ? '<div class="exec-approval-asked"><span class="exec-approval-asked-label">What you asked</span>'
+              + '<span class="exec-approval-asked-text">' + escapeHtml(q.requirement) + '</span></div>'
+            : '';
+        const contextHtml = q.context
+            ? '<div class="exec-approval-desc">' + escapeHtml(q.context) + '</div>'
+            : (descHtml || '');
+
+        // Accept both payload shapes, then drop empty labels so the numbering stays dense.
+        const candidates = q.options
+            .map(function (opt) {
+                if (typeof opt === 'string') {
+                    return { label: opt, detail: '', deliverable: '', recommended: false };
+                }
+                return {
+                    label: String((opt && opt.label) || ''),
+                    detail: String((opt && opt.detail) || ''),
+                    deliverable: String((opt && opt.deliverable) || ''),
+                    recommended: !!(opt && opt.recommended),
+                };
+            })
+            .filter(function (c) { return c.label.length > 0; });
+        // The favourite is ALWAYS option 1: the backend moves it there, and an older
+        // payload with no flag still gets the mark on the first offer.
+        if (candidates.length && !candidates.some(function (c) { return c.recommended; })) {
+            candidates[0].recommended = true;
+        }
+
+        const optionHtml = candidates.length
+            ? '<div class="exec-approval-options">' + candidates.map(function (c, i) {
+                // escapeHtml() leaves quotes alone, so an attribute value needs the extra
+                // step: a label containing '"' must not be able to close the attribute.
+                return '<button type="button" class="exec-btn exec-btn-option'
+                     + (c.recommended ? ' exec-btn-recommended' : '') + '" '
+                     + 'data-answer="' + escapeHtml(c.label).replace(/"/g, '&quot;') + '">'
+                     + '<span class="exec-option-no">' + (i + 1) + '</span>'
+                     + '<span class="exec-option-body">'
+                     + '<span class="exec-option-label">' + escapeHtml(c.label) + '</span>'
+                     + (c.detail ? '<span class="exec-option-detail">' + escapeHtml(c.detail) + '</span>' : '')
+                     + (c.deliverable ? '<span class="exec-option-kind">' + escapeHtml(c.deliverable) + '</span>' : '')
+                     + '</span>'
+                     + (c.recommended ? '<span class="exec-option-star" title="Closest to what you asked">&#9733; favourite</span>' : '')
+                     + '</button>';
+            }).join('') + '</div>'
+            : '';
+
+        return '<div class="exec-approval-header">' + headerHtml + '</div>' +
+            askedHtml +
+            contextHtml +
+            '<div class="exec-approval-question">' + escapeHtml(q.question) + '</div>' +
+            optionHtml +
+            '<div class="exec-approval-answer-row">' +
+                '<input type="text" class="exec-approval-answer-input" placeholder="Or tell me exactly what you want\u2026" />' +
+                '<button type="button" class="exec-btn exec-btn-free-answer">&#10003; Send answer</button>' +
+            '</div>' +
+            '<span class="exec-approval-status pending">' +
+                (candidates.length
+                    ? 'Pick one of the offers above, or type your own - answer whenever you are ready'
+                    : 'Waiting for your answer (no time limit - answer whenever you are ready)') +
+            '</span>';
+    },
+
+    /** Wire one question card: option buttons + free-text answer post to /api/question. */
+    _wireQuestionCard(card, data) {
+        const input = card.querySelector('.exec-approval-answer-input');
+        card.querySelectorAll('.exec-btn-option').forEach(btn => {
+            btn.addEventListener('click', () => this.submitAnswer(data, btn.dataset.answer, btn));
+        });
+        const freeBtn = card.querySelector('.exec-btn-free-answer');
+        if (freeBtn) {
+            freeBtn.addEventListener('click', () => {
+                const text = (input && input.value) ? input.value.trim() : '';
+                if (!text) { if (input) input.focus(); return; }
+                this.submitAnswer(data, text, freeBtn);
+            });
+        }
+        if (input) {
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const text = input.value.trim();
+                    if (text) this.submitAnswer(data, text, freeBtn || input);
+                }
+            });
+        }
+        // No Skip / "You decide" buttons: the answer is a picked offer or typed text, so
+        // this card has no data-decision path to wire.
+        if (input) input.focus();
+    },
+
+    /** Post a free-text or option ANSWER for one question card. */
+    submitAnswer(data, answer, clickedBtn) {
+        const card = clickedBtn.closest('.exec-approval-card');
+        if (!card || card.dataset.answered === '1') return;
+        card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = true; });
+        const statusEl = card.querySelector('.exec-approval-status');
+        const convId = data.conv_id || COOLEMS.currentConversation;
+        // A click that never reached the backend must stay clickable: a dead card would
+        // silently lose the answer the user just typed.
+        const retry = (msg) => {
+            card.querySelectorAll('.exec-btn').forEach(b => { b.disabled = false; });
+            if (statusEl) { statusEl.className = 'exec-approval-status done-error'; statusEl.textContent = '\u26A0 ' + msg + ' - try again'; }
+        };
+        fetch('/api/question/' + encodeURIComponent(convId) + '/' + encodeURIComponent(data.request_id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ answer: answer })
+        })
+            .then(response => response.json().catch(() => ({})).then(d => ({ ok: response.ok, d })))
+            .then(({ ok, d }) => {
+                if (!ok) {
+                    const msg = (d && d.message) || 'The backend refused this answer';
+                    // "already answered" = this card's future is gone: withdraw it instead of
+                    // inviting a click that can never succeed. Anything else is retryable.
+                    if (/already answered/i.test(msg)) this.cancelCard(data.request_id);
+                    else retry(msg);
+                    return;
+                }
+                card.dataset.answered = '1';
+                this.dismissCard(card, 'answered');
+            })
+            .catch(err => retry(err && err.message ? err.message : 'Could not deliver your answer'));
+    },
+
     /** Generic per-kind auto-approve timer - reads THAT kind's saved mode/seconds. */
     async startAutoApproveCountdown(card, data) {
+        // A question card is never auto-answered - an invented answer is worse than a
+        // waiting card. Belt and braces with the backend's manual pin.
+        if (this.resolveKind(data) === 'question') return;
         // Saved settings first (one /api/settings sync per page session; instant afterwards).
         if (typeof ensureRuntimeSettingsLoaded === 'function') {
             try { await ensureRuntimeSettingsLoaded(); } catch (e) { /* keep current values */ }

@@ -105,6 +105,16 @@ async function _renderHistory(convId, data) {
     // (2026-11-09) so a reload shows, per loop: my message, the turns block, that loop's LAST
     // AI message - not the whole run.
     if (blocks) CycleBlock.refreshAiVisibility(convId);
+    // An UNANSWERED question is a live fact, not history: the tool call is still waiting
+    // on it. Re-render those cards so a reload never hides a question the user can still
+    // answer. Best-effort: a failed probe just shows no cards.
+    try {
+        const rt = await fetch(`/api/runtime/${convId}`);
+        if (rt.ok) {
+            const body = await rt.json();
+            CycleShell.restoreOpenCards(convId, body.pending_questions || []);
+        }
+    } catch (e) { /* no runtime probe - the live frames still carry the card */ }
     return { messages: (data.messages || []).length, blocks };
 }
 

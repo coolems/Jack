@@ -1,11 +1,11 @@
 /**
- * runtime-settings.js - Settings > Runtime tab (2026-10-02).
+ * runtime-settings.js - Settings > Runtime tab.
  *
  * First setting: PYTHON DIALOG BEHAVIOR for the python_exec approval dialog.
- *   manual (default) -> the dialog waits until the user decides (original behavior, no timeout).
+ *   manual (default) -> the dialog waits until the user decides (no timeout).
  *   auto             -> the dialog still opens, but after N seconds it approves itself and runs.
  *
- * Second setting (2026-10-03): IMAGE GENERATOR for generate_image().
+ * Second setting: IMAGE GENERATOR for generate_image().
  *   Model line: auto (default) -> classify by probed GPU VRAM (high / mid / low);
  *               high | mid | low -> pin that model line (falls back to the auto tier if
  *               the card can't afford it).
@@ -14,10 +14,16 @@
  *   call. The worker snaps values down to multiples of 32 and clamps them to the tier's
  *   max_pixels budget, so oversized values degrade gracefully instead of breaking.
  *
+ * Third setting: QUESTION DIALOG COLOR for the ask_user_question card.
+ *   A palette of ready-made tints plus a free colour picker; saved as
+ *   'question_dialog_color' (#rrggbb) and applied live as the CSS variables
+ *   --question-accent / --question-accent-soft, so the pick recolours the question cards
+ *   already on screen without any restart.
+ *
  * Values live in settings.json via GET/POST /api/settings (keys: python_exec_auto_approve,
- * python_exec_auto_approve_seconds, image_gen_tier, image_gen_width, image_gen_height)
- * and are read LIVE by websocket.js / generate_image() on every use - so a save applies
- * immediately without any restart.
+ * python_exec_auto_approve_seconds, image_gen_tier, image_gen_width, image_gen_height,
+ * question_dialog_color) and are read LIVE by websocket.js / generate_image() on every
+ * use - so a save applies immediately without any restart.
  */
 
 // Live view of the saved values; websocket.js reads this when rendering an approval card.
@@ -32,8 +38,82 @@
 // (2026-11-07) 'desktop' added: the Computer Use gate (tools/computer_use/*) asks for
 // permission to READ or DRIVE an application on this machine. Manual by default - the
 // safest kind, since it moves the user's real pointer/keyboard.
+// 'question' is deliberately NOT in this list: ask_user_question is not a permission
+// gate, and an auto-answered question would invent an answer the user never gave. The
+// backend pins it to manual (config.CONSENT_NEVER_AUTO_KINDS), so there is no row for it
+// here and no key is ever posted for it.
 const CONSENT_KINDS = ['python', 'url', 'file', 'network', 'subprocess', 'desktop'];
-COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };  // (2026-10-24) subprocess; (2026-11-07) desktop
+
+// --- Question dialog colour ---------------------------------------------------------
+// The tint of the ask_user_question card. settings.json key 'question_dialog_color';
+// applied live as --question-accent (+ a derived soft tint), so a pick recolours every
+// card already on screen. Mirrors config.QUESTION_DIALOG_COLOR_DEFAULT.
+const QUESTION_COLOR_DEFAULT = '#22c55e';
+// Ready-made tints shown as a palette in Settings > Runtime. Greens first (the default
+// family), then the other card colours so a user can match a card to their own taste.
+const QUESTION_COLOR_PALETTE = [
+    '#22c55e', '#16a34a', '#2ecc71', '#4ade80', '#0d9488', '#3b82f6',
+    '#f59e0b', '#ef4444', '#a855f7', '#eab308', '#64748b', '#e6edf3'
+];
+const QUESTION_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** '#rrggbb' (lowercased) when *value* is a hex colour, else the default. */
+function _coerceQuestionDialogColor(value) {
+    const raw = String(value || '').trim();
+    return QUESTION_COLOR_RE.test(raw) ? raw.toLowerCase() : QUESTION_COLOR_DEFAULT;
+}
+
+/** Paint every question card with *hex*: the accent plus a soft tint for rings/fills. */
+function applyQuestionDialogColor(hex) {
+    const color = _coerceQuestionDialogColor(hex);
+    const root = document.documentElement;
+    if (!root) return color;
+    root.style.setProperty('--question-accent', color);
+    const r = parseInt(color.slice(1, 3), 16), g = parseInt(color.slice(3, 5), 16), b = parseInt(color.slice(5, 7), 16);
+    root.style.setProperty('--question-accent-soft', 'rgba(' + r + ', ' + g + ', ' + b + ', 0.28)');
+    return color;
+}
+
+/** Fill the palette swatches once; the active one follows the current colour. */
+function renderQuestionColorPalette(activeColor) {
+    const row = document.getElementById('questionColorPalette');
+    if (!row) return;
+    row.innerHTML = '';
+    QUESTION_COLOR_PALETTE.forEach(function (hex) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'color-swatch' + (hex.toLowerCase() === _coerceQuestionDialogColor(activeColor) ? ' active' : '');
+        btn.style.background = hex;
+        btn.dataset.color = hex;
+        btn.title = hex;
+        btn.addEventListener('click', function () {
+            const picker = document.getElementById('questionDialogColor');
+            if (picker) picker.value = hex;
+            void saveRuntimeSettings();
+        });
+        row.appendChild(btn);
+    });
+    _markQuestionColorSwatch(activeColor);
+}
+
+/** Highlight the palette swatch matching *hex* (none is active for a custom picker value). */
+function _markQuestionColorSwatch(hex) {
+    const row = document.getElementById('questionColorPalette');
+    if (!row) return;
+    const color = _coerceQuestionDialogColor(hex);
+    row.querySelectorAll('.color-swatch').forEach(function (btn) {
+        btn.classList.toggle('active', String(btn.dataset.color).toLowerCase() === color);
+    });
+}
+
+/** Reset the question-card tint to the built-in green and save it. */
+async function resetQuestionDialogColor() {
+    const picker = document.getElementById('questionDialogColor');
+    if (picker) picker.value = QUESTION_COLOR_DEFAULT;
+    await saveRuntimeSettings();
+}
+
+COOLEMS.runtimeSettings = { mode: 'manual', seconds: 5, imageGenTier: 'auto', imageGenWidth: 600, imageGenHeight: 400, questionDialogColor: QUESTION_COLOR_DEFAULT, approvals: { python: { mode: 'manual', seconds: 5 }, url: { mode: 'manual', seconds: 5 }, file: { mode: 'manual', seconds: 5 }, network: { mode: 'manual', seconds: 5 }, subprocess: { mode: 'manual', seconds: 5 }, desktop: { mode: 'manual', seconds: 5 } } };
 COOLEMS._runtimeSettingsLoaded = false;   // true once a /api/settings sync succeeded this page session
 let _runtimeRefreshInFlight = null;       // in-flight promise guard (no duplicate concurrent fetches)
 
@@ -84,7 +164,12 @@ async function refreshRuntimeSettingsFromApi() {
     let imgWidth = _coerceImageGenSize(data && data.image_gen_width, 600);
     let imgHeight = _coerceImageGenSize(data && data.image_gen_height, 400);
 
-    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, approvals: approvals };
+    // Question-card tint: paint it as soon as it is known - the card may already be on
+    // screen, and a fresh page must show the saved colour before anyone opens Settings.
+    const questionColor = _coerceQuestionDialogColor(data && data.question_dialog_color);
+    applyQuestionDialogColor(questionColor);
+
+    COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: tier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionDialogColor: questionColor, approvals: approvals };
     COOLEMS._runtimeSettingsLoaded = true;
 
     // Fill the Runtime tab controls when they are in the DOM (openSettings path).
@@ -117,6 +202,13 @@ async function refreshRuntimeSettingsFromApi() {
         const heightInput = document.getElementById('imgGenHeight');
         if (widthInput) widthInput.value = String(imgWidth);
         if (heightInput) heightInput.value = String(imgHeight);
+
+        // Question tint: picker + hex readout + palette highlight.
+        const colorInput = document.getElementById('questionDialogColor');
+        if (colorInput) colorInput.value = questionColor;
+        const hexOut = document.getElementById('questionDialogColorHex');
+        if (hexOut) hexOut.textContent = questionColor;
+        renderQuestionColorPalette(questionColor);
 
         toggleRuntimeSecondsGroup(mode === 'auto');
     }
@@ -256,6 +348,18 @@ async function saveRuntimeSettings() {
     if (widthInput) widthInput.value = String(imgWidth);
     if (heightInput) heightInput.value = String(imgHeight);
 
+    // Question tint: read the picker/palette value, apply it live BEFORE the save so the
+    // cards on screen change instantly, and never post a malformed hex. With no picker in
+    // the DOM, the LAST KNOWN GOOD colour is re-posted - a save must never reset a saved
+    // tint to the default.
+    const colorInput = document.getElementById('questionDialogColor');
+    const questionColor = applyQuestionDialogColor(
+        colorInput ? colorInput.value : (COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT));
+    if (colorInput && colorInput.value.toLowerCase() !== questionColor) colorInput.value = questionColor;
+    const hexOut = document.getElementById('questionDialogColorHex');
+    if (hexOut) hexOut.textContent = questionColor;
+    _markQuestionColorSwatch(questionColor);
+
     try {
         const response = await fetch('/api/settings', {
             method: 'POST',
@@ -267,7 +371,8 @@ async function saveRuntimeSettings() {
                 python_exec_auto_approve_seconds: seconds,
                 image_gen_tier: imageGenTier,
                 image_gen_width: imgWidth,
-                image_gen_height: imgHeight
+                image_gen_height: imgHeight,
+                question_dialog_color: questionColor
             }, {
                     url_consent_auto_approve: approvalsNow.url.mode,
                     url_consent_auto_approve_seconds: approvalsNow.url.seconds,
@@ -287,12 +392,26 @@ async function saveRuntimeSettings() {
 
         // Silent by design: the Runtime tab shows no save feedback in the UI.
         if (response.ok) {
-            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, approvals: readApprovalsFromControls() };
+            COOLEMS.runtimeSettings = { mode: mode, seconds: seconds, imageGenTier: imageGenTier, imageGenWidth: imgWidth, imageGenHeight: imgHeight, questionDialogColor: questionColor, approvals: readApprovalsFromControls() };
         } else {
             const errData = await response.json().catch(() => ({}));
             console.error('[RUNTIME SETTINGS] Save rejected:', errData.detail || 'Unknown error');
+            // The backend refused the value: repaint with the last known good colour so the
+            // cards on screen never keep a tint settings.json did not accept.
+            applyQuestionDialogColor(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
+            _markQuestionColorSwatch(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
         }
     } catch (e) {
         console.error('[RUNTIME SETTINGS] Failed to save:', e);
+        applyQuestionDialogColor(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
     }
 }
+
+// Paint the question cards at page load, before anyone opens Settings: the default green
+// first (so a card rendered in the first seconds is never amber), then the saved colour
+// from the one /api/settings sync.
+document.addEventListener('DOMContentLoaded', function () {
+    applyQuestionDialogColor(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
+    renderQuestionColorPalette(COOLEMS.runtimeSettings.questionDialogColor || QUESTION_COLOR_DEFAULT);
+    void ensureRuntimeSettingsLoaded().catch(() => { /* keep the default tint */ });
+});

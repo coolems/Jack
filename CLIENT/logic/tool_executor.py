@@ -1,14 +1,9 @@
-"""
-Tool execution logic for agentic mode.
+"""Tool execution logic for agentic mode.
 
-Handles:
-- ToolExecutor class with permission checking and memory management
-- Silent mode for tools that handle their own UI (e.g., transcribe_image)
-- Supports both sync (local) and async orchestrator execute_tool methods
-
-FIXED (2026-08): Sanitizes image base64 data from tool results before adding to history.
-  Prevents context window explosion when tools return large images (~939K tokens per screenshot).
-"""
+ToolExecutor: permission checking, consent gating and cycle-history recording; silent
+mode for tools that handle their own UI; sync and async orchestrators alike. Base64
+image data in a result is replaced by a reference before it enters history, so a
+screenshot cannot blow up the context window."""
 
 import json
 import logging
@@ -45,26 +40,11 @@ _LESSONS_INJECTION_ENABLED = False
 
 
 def _sanitize_image_result(result_text: str) -> str:
-    """Sanitize tool result by replacing base64 image data with lightweight reference.
+    """Replace base64 image data in a tool result with a lightweight reference.
 
-    Tools like full_desktop_screenshot, browser_screenshot return dicts containing
-    'image_base64' keys with massive base64 strings (2-5MB). When converted to string
-    and added to conversation history, these consume ~939K tokens per image --
-    completely destroying the context window.
-
-    CRITICAL: Python str(dict) uses SINGLE quotes ('), not double quotes (").
-              json.dumps() uses DOUBLE quotes (").
-    The regex must match BOTH formats since tool results may come as either.
-
-    Uses manual string scanning to properly consume the ENTIRE key:value pair including
-    all base64 characters, not just the key name.
-
-    Args:
-        result_text: String representation of tool result (may contain base64).
-
-    Returns:
-        Sanitized string with base64 data replaced by references.
-    """
+    Screenshot results carry 2-5MB base64 (~939K tokens in history). The regex matches BOTH
+    quote styles - str(dict) uses single quotes, json.dumps double - and scans manually so
+    the ENTIRE key:value pair is consumed, not just the key."""
     BASE64_THRESHOLD = 10000
 
     # Pattern finds: 'image_base64': ' or "image_base64": "
@@ -139,18 +119,11 @@ IMAGE_TOOLS = frozenset({"generate_image"})
 
 
 def result_is_error(result: Any) -> bool:
-    """Decide whether a tool result counts as a FAILED call for the cycle history.
+    """True when a tool result counts as a FAILED call for the cycle history.
 
-    Tools report failures with a leading `ERROR:` / `Error:` / `error:` marker (the
-    orchestrator's permission block, tool-level errors, sandbox refusals). Repo-wide the
-    LOWERCASE form is by far the most common (96 sites vs 3 uppercase), so matching only
-    `ERROR:` recorded genuine failures as `ok: true` - the turn block would have shown a
-    red-free summary for a run that actually failed.
-
-    Anything else - including None and a long multi-line report that merely mentions the
-    word somewhere in the body - is a successful call, so the ok flag stays honest without
-    parsing every tool's wording. Only the HEAD of the result is inspected for that reason.
-    """
+    A leading `ERROR:` / `Error:` / `error:` marker (permission block, tool error, sandbox
+    refusal) - all three forms, lowercase being the common one. Anything else, including a
+    report that merely mentions the word, is a success. Only the HEAD is inspected."""
     if not isinstance(result, str):
         return False
     head = result.lstrip()
@@ -175,11 +148,8 @@ URL_CONSENT_TOOLS = frozenset({"goto", "check_url", "download_file"})
 def _extract_image_payloads(tool_result):
     """Pull viewable-image payloads out of a tool result (dict or list/tuple).
 
-    A payload qualifies when it is a dict with status == 'ok' and an
-    'image_base64' string >= 100 chars. Returns a list of dicts shaped for the
-    'image_generated' UI frame: image_base64, filename, file_path, width, height.
-    Non-image tools / error results (image_base64 is None) yield [].
-    """
+    Qualifies as a dict with status == 'ok' and an 'image_base64' string >= 100 chars;
+    returned shaped for the 'image_generated' frame. Non-image tools yield []."""
     payloads = []
     if tool_result is None:
         return payloads
@@ -237,10 +207,8 @@ DESKTOP_ENUMERATE_KEY = "desktop:enumerate"
 def _desktop_payload(tool_name: str, tool_args: Dict) -> tuple:
     """(app_identity, description) shown on the desktop consent card.
 
-    The identity comes from tools._consent.call_identity(), which resolves handles,
-    windows and snapshots to the SAME app the tool will verify the grant against - so the
-    card can never name an app different from the one the Allow covers.
-    """
+    From tools._consent.call_identity(), which resolves to the SAME app the tool verifies
+    the grant against, so card and grant can never name different apps."""
     store = _desktop_consent_store()
     identity = ""
     if store is not None:
@@ -278,9 +246,8 @@ def _desktop_payload(tool_name: str, tool_args: Dict) -> tuple:
 def _desktop_consent_store():
     """The tools._consent store (the single source of desktop grants), or None.
 
-    install_shared_deps() registers each same-package dep as sys.modules['tools.<dep>'],
-    so the CLIENT reaches the SAME object the tool files read - one store, two writers.
-    """
+    install_shared_deps() registers each dep as sys.modules['tools.<dep>'], so the CLIENT
+    and the tool files read the SAME object."""
     import sys as _sys
     mod = _sys.modules.get("tools._consent")
     if mod is None:
@@ -306,19 +273,18 @@ class _DesktopConsent:
 
 
 class ToolExecutor:
-    """Wrapper for executing tools with proper context and permission checking.
+    """Wrapper for executing tools with context and permission checking.
 
-    Supports both:
-      - Sync orchestrators (current ToolOrchestrator) -- execute_tool() returns str directly
-      - Async orchestrators (RemoteToolOrchestrator) -- execute_tool() is coroutine, may fetch from SERVER
-    """
+    Sync orchestrators return str from execute_tool(); async ones (RemoteToolOrchestrator)
+    are awaited and may fetch from the SERVER."""
 
     def __init__(self, orchestrator: Any, lesson_manager: Any = None,
                  provider: BaseProvider = None,
                  current_model: str = MODEL_NAME,
                  api_key: str = None,
                  session_timer=None,  # (2026-08-23) active-time timer; paused while user menus are open
-                 cycle=None):  # (2026-11-07) app.cycle_recorder.CycleRecorder for THIS turn
+                 cycle=None,  # app.cycle_recorder.CycleRecorder for THIS turn
+                 channel=None):  # this chat's ChatChannel - CLIENT-LOCAL tools need it
         self.orchestrator = orchestrator
         self.lesson_manager = lesson_manager
         self.provider = provider
@@ -329,6 +295,9 @@ class ToolExecutor:
         # goes through _rec(), which swallows errors: history is best-effort and must never
         # break a tool call.
         self.cycle = cycle
+        # This chat's ChatChannel (None when there is none). ask_user_question
+        # needs it: the pending card store, the turn's recorder and the session-timer pause.
+        self.channel = channel
 
         # Detect if orchestrator uses async execute_tool (RemoteToolOrchestrator)
         self._is_async_orchestrator = inspect.iscoroutinefunction(
@@ -342,9 +311,8 @@ class ToolExecutor:
     async def _rec(self, method: str, *args, **kwargs) -> None:
         """Call one CycleRecorder method, swallowing every error.
 
-        History is a display feature: a dead recorder, a dead socket or a recorder
-        without the method must NEVER stop an approved tool call.
-        """
+        History is a display feature: a dead recorder or socket must never stop an approved
+        tool call."""
         rec = getattr(self, "cycle", None)
         if rec is None:
             return
@@ -365,13 +333,9 @@ class ToolExecutor:
                                        kind: str = "python", payload: Any = "") -> None:
         """Fold the card's answer into its row (the card itself is transient).
 
-        A row is folded when a card actually appeared (a real request_id) OR when the
-        answer is NOT an auto-allow: 'deny' / 'explain' / 'unavailable' mean the user saw
-        a card or the ask could not be answered at all - both belong in the history. The
-        auto-allow paths ('allow' / 'allow_category_until_done' from a per-kind grant)
-        answer without a card, so they add no consent row; the grant row records them
-        once per kind (deduped in TurnLog).
-        """
+        Folded when a card appeared (a real request_id) or the answer is not an auto-allow -
+        'deny' / 'explain' / 'unavailable' all belong in history. Auto-allow paths add no
+        consent row; the grant row records them once per kind."""
         if request_id or decision not in ("allow", "allow_category_until_done"):
             await self._rec("consent", kind, decision, request_id, payload)
         if decision == "allow_category_until_done":
@@ -393,22 +357,15 @@ class ToolExecutor:
         live_messages: list = None,
         conversation_id: str = None
     ) -> Tuple[str, str]:
-        """
-        Execute a tool with permission checking.
+        """Execute a tool with permission checking.
 
-        live_messages (2026-08-24): the ReAct loop's LIVE message list. When a tool
-        result carries image_base64 (view_image / screenshots), those pixels are
-        attached to the protected current-user prompt in *live_messages* so the NEXT
-        provider call actually sees them. Falls back to conversation_history when
-        live_messages is not provided.
-        conversation_id (2026-09-24): identifies this chat's ChatBus channel so a
-        python_exec call can be gated on the local user's approval ('allow' / 'deny'
-        / 'allow_category_until_done' = run until task done). See _ask_user_for_python_exec().
-
+        live_messages: the ReAct loop's live list - image pixels from a result are attached to
+        the protected current-user prompt so the NEXT provider call sees them (falls back to
+        conversation_history). conversation_id: this chat's channel, so python_exec can be
+        gated on the user's approval.
 
         Returns:
-            Tuple of (tool_result, agent_lessons)
-        """
+            Tuple of (tool_result, agent_lessons)"""
         exec_start = time.time()
         # (2026-11-08 loop history) One id per execution. `tool_start`, `tool_end` and the
         # recorded cycle row all carry it, so the UI's LIVE per-tool timer (started on
@@ -554,10 +511,26 @@ class ToolExecutor:
                 "conv_id": conversation_id or "",
             }))
 
-        # Execute the tool -- handle both sync and async orchestrators
-        # `cycle` travels with the call context so SERVER-side tools (and the python_exec
-        # sandbox relay) can record their OWN consent cards on this turn's recorder.
-        if self._is_async_orchestrator:
+        # ============================================================
+        # CLIENT-LOCAL TOOL DISPATCH (ask_user_question)
+        # ask_user_question owns a consent card and an asyncio Future on THIS machine, so
+        # it is never fetched from the SERVER nor run in a worker thread: it is awaited
+        # here, on the event-loop thread, before ensure_tool_loaded / the remote dispatch.
+        # ============================================================
+        try:
+            from tools.local_ask_registry import is_local_tool, call as _local_call
+        except Exception:
+            is_local_tool = None
+            _local_call = None
+
+        if is_local_tool is not None and is_local_tool(tool_name):
+            tool_result = await _local_call(
+                tool_name, tool_args or {},
+                channel=self.channel, websocket=websocket,
+                conversation_id=conversation_id, session_timer=self.session_timer,
+                role=role,
+            )
+        elif self._is_async_orchestrator:
             # RemoteToolOrchestrator -- execute_tool is a coroutine (may fetch from SERVER)
             tool_result = await self.orchestrator.execute_tool(
                 tool_name,
@@ -738,17 +711,10 @@ class ToolExecutor:
                                         conversation_id: str = None):
         """Ask the local user whether this python_exec code may run on THIS machine.
 
-        Thin wrapper over the shared consent dialog (app/chat_bus/consent_dialog.py,
-        kind='python') - ONE code path for all four card kinds. Returns a ConsentResult:
-          allowed=True              -> execute ('allow', or 'allow_category_until_done' grant active)
-          decision == 'explain'     -> user clicked Explain request; caller returns the
-                                       instruction text (nothing executed)
-          anything else             -> fail-closed, do NOT execute
-
-        There is NO timeout on the question: it blocks until the user answers (or the
-        turn is stopped). The per-run state lives on the chat's ChatChannel (fresh each
-        turn), so a "run until task done" grant lasts exactly one agentic run.
-        """
+        Thin wrapper over the shared consent dialog (kind='python'). ConsentResult:
+        allowed=True -> execute; decision=='explain' -> return the instruction, nothing ran;
+        anything else -> fail closed. No timeout; the per-run state lives on the ChatChannel,
+        so a grant lasts exactly one agentic run."""
         from app.chat_bus import ConsentDialog, ConsentResult
 
         code = (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else ""
@@ -785,15 +751,10 @@ class ToolExecutor:
                                          websocket: Any, conversation_id: str = None):
         """Ask the local user before a Computer Use tool touches an application.
 
-        Fail-closed everywhere: no consent store, no approval state, or an undeliverable
-        frame means the call does NOT run. The grant is recorded in the SAME store the
-        tool reads (tools._consent), under the exact key the tool will verify - so the
-        card, the grant and the tool can never disagree about which app is allowed.
-
-        'Allow until task done' grants the desktop kind only (per-kind flags): later
-        desktop calls in THIS run still need the app to be named on the card, but the
-        dialog is skipped for an app already granted in this conversation.
-        """
+        Fail-closed everywhere (no store, no state, undeliverable frame -> the call does NOT
+        run). The grant goes into the SAME store the tool reads, under the exact key it
+        verifies. 'Allow until task done' grants the desktop kind only, skipping the dialog for
+        an app already granted in this conversation."""
         store = _desktop_consent_store()
         if store is None:
             logger.warning("[DESKTOP-CONSENT] tools._consent not installed - failing closed")
@@ -861,22 +822,14 @@ class ToolExecutor:
                                      conversation_id: str = None):
         """Decide whether a URL-bearing browser tool may proceed to *url*.
 
-        Returns a ConsentResult. allowed=True when the SSRF guard already accepts the
-        URL (normal public web - no user interaction at all) or after an explicit user
-        Allow / active run-all grant for a CONSENTABLE target -- in that case a one-shot
-        exact-match grant is registered so the tool's own ensure_url_not_ssrff() passes.
-        decision=='explain' means the user clicked Explain request (nothing opened;
-        caller returns the instruction). Everything else fails closed. Never raises.
+        Returns a ConsentResult: allowed=True when the SSRF guard already accepts the URL, or
+        after a user Allow / run-all grant for a CONSENTABLE target - then a one-shot
+        exact-match grant is registered so the tool's ensure_url_not_ssrff() passes.
+        decision=='explain' -> nothing opened; everything else fails closed. Never raises.
 
-        Consentable categories (2026-10-23: extended beyond local-only so the USER
-        decides what is ok for him): file:// inside working root, loopback http(s) and
-        private/reserved IP targets (LAN / link-local metadata / CGNAT / ...). The card's
-        description line names the exact target + class from classify_blocked_url().
-
-        "Allow until task done" on a URL consent card grants the url kind only (2026-07-18 rev4):
-            every later consentable target of THIS agentic run passes without asking;
-        unclassifiable targets stay hard-blocked even under auto-consent.
-        """
+        Consentable (the USER decides): file:// inside the working root, loopback http(s),
+        private/reserved IPs - named on the card from classify_blocked_url(). "Allow until task
+        done" grants the url kind only; unclassifiable targets stay blocked."""
         from app.chat_bus import ConsentDialog, ConsentResult
 
         try:

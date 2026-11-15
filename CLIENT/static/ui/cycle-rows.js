@@ -309,6 +309,25 @@ const CycleRows = {
         this._detail(el).appendChild(text);
     },
 
+    /** The answer to a question the AI asked. The card itself is transient, like
+     *  a consent card: this row is the durable fact. */
+    question(el, d) {
+        el.dataset.requestId = d.request_id || '';
+        el.dataset.pending = d.pending ? '1' : '0';
+        const line = document.createElement('div');
+        line.className = 'cycle-consent-line';
+        line.textContent = _questionLabel(d.decision, d.pending);
+        this._line(el, d, { kind: 'question', extra: line, text: d.question || '' });
+        if (d.options && d.options.length) {
+            const opts = document.createElement('div');
+            opts.className = 'cycle-runtime-meta';
+            opts.textContent = 'options: ' + d.options.map(function (o) {
+                return (o && typeof o === 'object') ? (o.label || '') : String(o);
+            }).filter(function (s) { return s.length; }).join(' | ');
+            this._detail(el).appendChild(opts);
+        }
+    },
+
     /**
      * A steering message the user typed WHILE this turn was running.
      * It is loop work, never a chat-level user message: the row sits inside the block at
@@ -440,6 +459,18 @@ window._steerStatusLabel = _steerStatusLabel;
 /** Status order for one steering row: a late ack must never downgrade a settled row. */
 const _STEER_STATE_RANK = { sending: 0, received: 1, applied: 2, rejected: 2 };
 window._STEER_STATE_RANK = _STEER_STATE_RANK;
+
+/** The question row's decision label (the card itself is transient, like a consent card). */
+function _questionLabel(decision, pending) {
+    if (pending) return '\u23F3 waiting for your answer';
+    switch (String(decision || '')) {
+        case 'deny': return '\u274C skipped \u2014 the AI decides';
+        case 'allow_category_until_done': return '\u26A1 you decided \u2014 no more questions this task';
+        case 'unanswered': return '\u26A0 unanswered';
+        default: return '\u2713 answered';
+    }
+}
+window._questionLabel = _questionLabel;
 
 window.CycleRows = CycleRows;
 window._fmtMs = _fmtMs;

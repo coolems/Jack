@@ -259,6 +259,25 @@
 /* ---- auto-allow grants ---- */
 .cycle-row-grant .cycle-consent-line { color: var(--success, #2ecc71); }
 
+/* ---- question rows ----
+   The answer to a question the AI asked. Same tint as the card the user answered, so the
+   durable row and the transient card belong to each other at a glance. */
+.cycle-row-question {
+    border-left: 2px solid var(--question-accent, #22c55e);
+    padding-left: 8px;
+    background: var(--question-accent-soft, rgba(34, 197, 94, 0.06));
+}
+.cycle-row-question .cycle-consent-line { color: var(--question-accent, #22c55e); }
+.cycle-row-question[data-decision="deny"] .cycle-consent-line { color: var(--warning, #f59e0b); }
+.cycle-row-question[data-decision="allow_category_until_done"] .cycle-consent-line { color: var(--question-accent, #22c55e); }
+/* The candidate names listed in the row's detail. */
+.cycle-runtime-meta {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-muted, #7d8797);
+    margin-top: 4px;
+}
+
 /* ---- steering rows (2026-11-08, user request) ----
    A message typed WHILE the turn runs is LOOP WORK, never a chat-level user message: it is
    a row of THIS block, placed at the moment the user typed it (at_ts = received_at), so it

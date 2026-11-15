@@ -509,6 +509,14 @@ function handleWebSocketMessage(data, ownerConvId) {
         if (typeof handleSteerFrame === 'function') handleSteerFrame(data, convId);
         return;
     }
+    // ===== ask_user_question =========================================================
+    // A question card is transient (like a consent card); this frame is its durable row
+    // inside the turn's block - the card itself arrives as 'exec_approval_request'.
+    if (data.type === 'cycle_question') {
+        const block = _cycleTarget(convId, data);
+        if (block) CycleBlock.setQuestion(block, data);
+        return;
+    }
     if (data.type === 'cycle_final') {
         // The answer row opened - the final AI response is being delivered. The last-tool
         // strip is live-work only, so it is REMOVED here (user rule 2026-11-08, revised:
@@ -620,6 +628,12 @@ function handleWebSocketMessage(data, ownerConvId) {
         // 'unanswered') instead of leaving a card that can never be answered.
         if (typeof ChatSocketPool !== 'undefined') ChatSocketPool._removePendingCard(convId, data.request_id);
         const block = _cycleTarget(convId, data);
+        if (data.kind === 'question') {
+            if (block) CycleBlock.setQuestion(block, { request_id: data.request_id,
+                                                       decision: 'unanswered', pending: false });
+            ApprovalDialog.cancelCard(data.request_id);
+            return;
+        }
         if (!block || !CycleBlock.settleCard(block, data.request_id, 'unanswered')) {
             ApprovalDialog.cancelCard(data.request_id);
         }

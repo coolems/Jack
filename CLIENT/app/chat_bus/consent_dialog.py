@@ -1,37 +1,23 @@
-"""Unified consent dialog (2026-07-18) - ONE shared code path for ALL four consent cards.
+"""Unified consent dialog - ONE shared code path for every consent card kind.
 
-The four categories are the SAME dialog with different inputs:
+    kind        what it gates                                          payload
+    python      AI runs Python code on THIS machine                    the source code
+    url         a browser tool going to a local/private target         the URL
+    file        sandboxed python_exec outside working_root             op + path line
+    network     sandboxed python_exec connecting outside this machine  socket call line
+    subprocess  sandboxed python_exec spawning a shell/tool            the command
+    desktop     a Computer Use tool driving an application             app + description
+    question    an ask_user_question card (not a permission gate)      the question JSON
 
-    kind      what it gates                                    payload in the frame
-    -------   ---------------------------------------------    -------------------------
-    python    AI wants to run Python code on THIS machine      the exact source code
-    url       browser tool (goto/check_url/download_file) to a local target  the URL
-    file      sandboxed python_exec touching a path OUTSIDE working_root     op + path line
-    network   sandboxed python_exec connecting OUTSIDE this machine          socket call line
-    subprocess  sandboxed python_exec SPAWNING a shell/interpreter/network tool (2026-10-24)  the command
-
-Everything funnels through ONE frame builder (:func:`build_frame`) and ONE ask flow
-(:class:`ConsentDialog.ask`): build frame -> send -> await the per-run future owned by
-the chat's ExecApprovalState (created fresh each turn in run_generation_turn) -> return.
-The UI renders every card from a single kind->config table (CLIENT/static/ui/
-approval-dialog.js), so header icon/title, button labels and the auto-approve timer are
+One frame builder (build_frame), one ask flow (ConsentDialog.ask); the UI renders every
+card from a kind->config table (static/ui/approval-dialog.js), so wording and timers are
 per-kind data, not per-kind code.
 
-Decisions: 'allow' | 'deny' | 'allow_category_until_done' ("Allow until task done" - on EVERY card; 2026-07-18 rev4:
-    the grant is PER KIND and covers only later consent cards of that same kind) plus the (2026-07-18) 'explain': the user clicked
-    "Explain request". The card is answered and nothing is allowed; the caller returns :func:`explain_instruction` to the AI so it
-creates/updates a continuation plan, answers in the required two-part format and re-issues
-the SAME tool call - which renders a fresh card.
-
-Per-kind auto-approve timers live in settings.json as fully detached key pairs
-(<kind>_consent_auto_approve[_seconds]; python keeps its historical python_exec_* keys) -
-see config.get_runtime_settings()['approvals']. The FRONTEND starts the countdown; this
-module only documents the contract. Fail-closed everywhere: no state / undeliverable
-frame => 'unavailable', which callers map to "not allowed".
-
-Kept in its own file + class on purpose (2026-07-18): debug/extend the dialog HERE, not
-inside tool_executor.py or python_exec.py.
-"""
+Decisions: 'allow' | 'deny' | 'allow_category_until_done' (per KIND, this run only) |
+'explain' (nothing allowed - the caller returns explain_instruction() and re-asks).
+Auto-approve timers are settings.json pairs <kind>_consent_auto_approve[_seconds],
+counted down by the FRONTEND. Fail-closed: no state or an undeliverable frame =>
+'unavailable'."""
 
 import json
 import logging
@@ -43,7 +29,11 @@ logger = logging.getLogger("COOLEMS.ChatBus.ConsentDialog")
 #: Canonical card kinds - every frame built by build_frame() carries one of these.
 #: 'desktop' (2026-11-07) gates Computer Use: the payload is the app identity the AI
 #: wants to read/drive, not code, a URL or a path.
-KINDS = ("python", "url", "file", "network", "subprocess", "desktop")  # (2026-10-24) subprocess; (2026-11-07) desktop
+#: 'question' is NOT a permission gate: the payload is a question + options the
+#: AI asks the human, and the answer is free text. It has no auto-approve setting on
+#: purpose - auto-answering a question would invent an answer the user never gave, so the
+#: UI never starts a countdown for this kind (see static/ui/approval-dialog.js).
+KINDS = ("python", "url", "file", "network", "subprocess", "desktop", "question")
 
 #: Every kind's card offers the "Allow until task done" (allow_category_until_done) button. 2026-07-18 rev4:
 #: grants are PER KIND - clicking it on a python card only unlocks later python cards; url /
@@ -52,12 +42,10 @@ ALLOW_TILL_TASK_DONE_KINDS = frozenset(KINDS)
 
 
 def resolve_kind(kind=None, title=None) -> str:
-    """Normalize a frame's kind marker to one of KINDS (legacy-safe).
+    """Normalize a frame's kind marker to one of KINDS.
 
-    Old frames carry no 'kind': python_exec ones have no title, URL-consent ones were
-    marked by their title alone - so (no kind + title) maps to 'url', everything else
-    defaults to 'python'. New frames always pass an explicit kind.
-    """
+    No 'kind' and no title -> 'python'; a frame marked by its title alone -> 'url'. New
+    frames always pass an explicit kind."""
     k = str(kind or "").strip().lower()
     if k in KINDS:
         return k
@@ -70,11 +58,8 @@ def build_frame(conv_id: str, request_id: str, payload: str, kind: str = "python
                 description: str | None = None) -> dict:
     """The SINGLE canonical 'exec_approval_request' frame builder for all consent cards.
 
-    *payload* is whatever the user must approve (code / URL / op line). The UI renders
-    header icon + short title from its own kind->config table; *description* is an extra
-    context line shown under the header when provided. Old frames without 'kind' keep
-    rendering via resolve_kind()'s legacy fallback, so this is backward compatible.
-    """
+    *payload* is what the user must approve (code / URL / op line). The UI takes header
+    icon and title from its kind->config table; *description* is an extra context line."""
     frame = {
         "type": "exec_approval_request",
         "conv_id": conv_id,
@@ -104,10 +89,8 @@ def get_approval_state(bus, conv_id):
 def explain_instruction(kind: str, title: str) -> str:
     """Agent-facing instruction returned when the user clicks 'Explain request'.
 
-    Nothing was allowed/denied - the AI must create/update a continuation plan for what
-    is done so far (planning protocol), then answer in the exact two-part format and
-    re-issue the SAME tool call so a fresh approval card appears.
-    """
+    Nothing was allowed: the AI writes a continuation plan, answers in the required
+    two-part format and re-issues the SAME tool call, which renders a fresh card."""
     return (
         "USER ASKED FOR AN EXPLANATION of this pending consent request ("
         f"{title}; kind: {kind}). Nothing was allowed or denied - the action did NOT happen.\n"
@@ -136,13 +119,10 @@ class ConsentResult:
 
 
 class ConsentDialog:
-    """One shared ask flow for every consent card kind (2026-07-18).
+    """One shared ask flow for every consent card kind.
 
     Usage::
 
-        from app.chat_bus import get_chat_bus, ConsentDialog
-
-        bus = get_chat_bus()
         result = await ConsentDialog("python").ask(
             websocket=ws, conv_id=conv_id, payload=code, session_timer=session_timer)
         if result.decision == "explain":
@@ -150,11 +130,8 @@ class ConsentDialog:
         if not result.allowed:
             ...fail closed...
 
-    *session_timer* is optional (the sandbox relay has none); it is paused while the user
-    decides so approval waits never count as working time. NO timeout on the question
-    itself - manual mode waits until the user clicks; auto-approve countdowns are started
-    by the FRONTEND per kind from settings.json and simply submit 'allow' for the user.
-    """
+    *session_timer* is paused while the user decides, so approval waits are not working
+    time. NO timeout; auto-approve countdowns belong to the FRONTEND."""
 
     def __init__(self, kind: str):
         self.kind = resolve_kind(kind)

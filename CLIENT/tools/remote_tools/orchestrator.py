@@ -1,29 +1,10 @@
 """RemoteToolOrchestrator - drop-in replacement for ToolOrchestrator.
 
-All tool source code is fetched from SERVER on-demand via WebSocket.
-CLIENT starts with ZERO tools and builds them dynamically in memory.
-
-Same public interface (get_ollama_tools, execute_tool, etc.) but all tool
-source code comes from SERVER on-demand. All execution happens locally.
-
-Workflow:
-  1. First call to get_ollama_tools() triggers lazy fetch from SERVER
-  2. When LLM needs tool X: request source code from SERVER
-  3. Compile source into live function with working_root injected
-  4. Execute locally exactly like current ToolOrchestrator does
-
-FIXED (2026-08):
-  - Now installs ALL shared modules (utils, path_guard, etc.) not just utils.py
-  - Creates proper 'tools' namespace package in sys.modules for import resolution
-
-FIXED (2026-01):
-  - Passes shared_deps from SERVER to compile_tool() so sibling modules
-    (shared_instance, ensure_connected) are available during compilation.
-
-FIXED (2026-01-31):
-  - Stores and passes config_constants from SERVER to compile_tool() so that
-    tools like web_search have access to WEB_SEARCH_* constants at runtime.
-"""
+Tool source is fetched from the SERVER on demand over WebSocket; the CLIENT starts with
+ZERO tools and builds them in memory. Same public interface, execution stays local:
+lazy fetch on the first get_ollama_tools(), source per tool, compiled with working_root
+injected. Shared modules become a 'tools' namespace package in sys.modules so sibling
+imports resolve, and the SERVER's shared_deps / config_constants reach compile_tool()."""
 
 import asyncio
 import inspect
@@ -40,9 +21,8 @@ logger = logging.getLogger("COOLEMS.Tools.Remote.Orchestrator")
 class RemoteToolOrchestrator:
     """Remote tool orchestrator - fetches tools from SERVER on-demand.
 
-    Uses LAZY initialization - tools are fetched from SERVER only when first needed.
-    This avoids event loop conflicts during startup and ensures tools are always available.
-    """
+    LAZY: tools are fetched only when first needed, which avoids event-loop conflicts at
+    startup and keeps tools available."""
 
     def __init__(self, provider=None, ollama_url: str = None):
         self.provider = provider
@@ -78,17 +58,10 @@ class RemoteToolOrchestrator:
     # --- Lazy initialization (called automatically when first needed) ---
 
     async def _ensure_initialized(self) -> bool:
-        """Fetch tools from SERVER if not already done — single-loop, no threads.
+        """Fetch tools from the SERVER if not already done - single loop, no threads.
 
-        2026-08-29 threadless refactor: the old implementation ran
-        asyncio's run() helper inside a one-shot worker thread, guarded by an OS lock.
-        That spawned an OS worker thread + a second event loop for what is a
-        plain async network fetch that can simply be awaited on the running
-        loop. Concurrency is now handled by the single-loop nature of asyncio:
-        one shared in-flight task dedupes overlapping callers (they all await
-        the same task), and there is nothing to lock because only the event
-        loop thread ever touches this state.
-        """
+        One shared in-flight task dedupes overlapping callers; nothing needs a lock because
+        only the event-loop thread touches this state."""
         # Fast path - already initialized with data
         if self._initialized and self._cache.get_definitions():
             return True
@@ -136,13 +109,10 @@ class RemoteToolOrchestrator:
             return False
 
     async def initialize_from_server(self) -> int:
-        """Fetch allowed tool definitions + shared modules from SERVER.
+        """Fetch allowed tool definitions + shared modules from the SERVER.
 
-        Returns number of tools available. Awaited directly on the running event loop
-        by _ensure_initialized() (2026-08-29: no thread pool / asyncio.run).
-        The network fetch is followed by install_from_response() which does all the
-        bookkeeping (definitions, shared modules, DNA data, config constants, prompt).
-        """
+        Returns the number of tools. Awaited on the running loop; install_from_response() does
+        the bookkeeping (definitions, shared modules, DNA data, config constants, prompt)."""
         if not self._fetcher or not self.provider:
             logger.error("Cannot initialize — no provider connected")
             return 0
@@ -166,14 +136,9 @@ class RemoteToolOrchestrator:
     def install_from_response(self, result: Dict[str, Any]) -> int:
         """Install a SERVER tools_response payload (NO network I/O).
 
-        Split out of initialize_from_server() on 2026-08-21 so the boot bootstrap
-        path can reuse it: app/providers/bootstrap.py fetches this same response
-        BEFORE CoolemsClientProvider exists (it subclasses BaseProvider, which is only
-        importable after framework_sources are installed). Returns number of tools available.
-
-        NOTE: install_shared_modules() is idempotent — modules the bootstrap already
-        put in sys.modules (app.providers.base/token_stats) are skipped here.
-        """
+        Separate so the boot bootstrap can reuse it: app/providers/bootstrap.py fetches this
+        response before CoolemsClientProvider exists. Returns the number of tools;
+        install_shared_modules() is idempotent."""
         try:
             definitions = result.get("definitions", [])
             allowed_tools = result.get("allowed_tools")
@@ -279,13 +244,13 @@ class RemoteToolOrchestrator:
     # --- Public interface (matches ToolOrchestrator) ---
 
     async def get_ollama_tools(self, api_key: str = None) -> List[Dict]:
-        """Return ONLY the definition dicts for LLM — no extra fields.
+        """Return ONLY the definition dicts for the LLM - no extra fields.
 
-        llama.cpp expects standard OpenAI-style tool definitions:
             [{"type": "function", "function": {"name": "...", ...}}]
 
-        TRIGGERS LAZY INITIALIZATION on first call if tools haven't been fetched yet.
-        """
+        Triggers lazy initialization on first call. CLIENT-LOCAL tools (ask_user_question) are
+        merged in HERE - their handler owns a card and a Future on this machine - and are role
+        filtered on the CLIENT because the SERVER never sees those names."""
         # Lazy init — fetch from SERVER on demand
         await self._ensure_initialized()
 
@@ -293,16 +258,44 @@ class RemoteToolOrchestrator:
 
         if not defs:
             logger.warning("get_ollama_tools called but no definitions cached — SERVER may be unavailable")
-            return []
 
         # Extract ONLY the definition field of each cached entry
         tool_defs = [d["definition"] if "definition" in d else d for d in defs]
-        logger.info(f"get_ollama_tools: returning {len(tool_defs)} remote tool definitions")
+
+        try:
+            from tools.local_ask_registry import definitions as _local_definitions, is_local_tool
+            from app.keys import get_key_role
+            role = get_key_role(api_key) if api_key else None
+            local = [d for d in _local_definitions(role)]
+            # A SERVER-delivered tool with the same name would shadow the local handler,
+            # so local names win: the registry is the dispatcher, the schema is the promise.
+            remote_names = {t.get("function", {}).get("name") for t in tool_defs}
+            local = [d for d in local if d.get("function", {}).get("name") not in remote_names]
+            tool_defs.extend(local)
+            if local:
+                logger.info(f"get_ollama_tools: +{len(local)} CLIENT-local tool(s) "
+                            f"({sorted(d.get('function', {}).get('name', '') for d in local)})")
+            _ = is_local_tool  # referenced so the import is not dead weight in a debug path
+        except Exception as e:
+            logger.debug(f"[LOCAL-TOOLS] definitions unavailable ({e}) - remote schema only")
+
+        logger.info(f"get_ollama_tools: returning {len(tool_defs)} tool definitions")
         return tool_defs
 
     async def is_tool_allowed(self, tool_name: str, api_key: str = None) -> bool:
-        """Check if a tool name exists in our registry."""
+        """Check if a tool name exists in our registry.
+
+        CLIENT-local tools count as allowed only when the role gate passes."""
         await self._ensure_initialized()  # Ensure tools are loaded first
+
+        try:
+            from tools.local_ask_registry import is_local_tool, allowed_for_role
+            from app.keys import get_key_role
+            if is_local_tool(tool_name):
+                role = get_key_role(api_key) if api_key else None
+                return allowed_for_role(tool_name, role)
+        except Exception:
+            pass
 
         allowed = self._cache.get_allowed_tools()
         if allowed and tool_name not in allowed:
@@ -313,10 +306,18 @@ class RemoteToolOrchestrator:
         )
 
     async def get_tool_names(self, api_key: str = None) -> list:
-        """Get all known tool names."""
+        """Get all known tool names (remote + CLIENT-local)."""
         await self._ensure_initialized()  # Ensure tools are loaded first
-        return sorted(d.get("function", {}).get("name", "")
-                      for d in self._cache.get_definitions())
+        names = sorted(d.get("function", {}).get("name", "")
+                       for d in self._cache.get_definitions())
+        try:
+            from tools.local_ask_registry import local_tool_names, allowed_for_role
+            from app.keys import get_key_role
+            role = get_key_role(api_key) if api_key else None
+            names.extend(sorted(n for n in local_tool_names() if allowed_for_role(n, role)))
+        except Exception:
+            pass
+        return names
 
     async def get_tool_count(self, api_key: str = None) -> int:
         """Get the number of known tools."""
@@ -430,25 +431,11 @@ class RemoteToolOrchestrator:
                                   loop=None, cycle=None):
         """Run a python_exec tool call with the chat's relay context registered.
 
-        tools.exec_tools.python_exec reads this context (threading.local on a
-        sys.modules anchor) to build its UI approval-card relay for out-of-sandbox
-        socket attempts made by the sandboxed child. The context is set/restored on
-        THIS thread -- python_exec sync calls run via asyncio.to_thread, so each call
-        has its own worker thread and concurrent chats never cross wires. *loop* must
-        be captured by the caller on the event-loop thread before to_thread (a worker
-        thread cannot see a running loop). Missing args -> no context: the sandbox
-        keeps its original instant hard block.
-
-        *cycle* (2026-11-07) is this turn's app.cycle_recorder.CycleRecorder. The relay
-        needs it so the file / network / subprocess cards it shows are recorded as rows
-        of THIS turn's history instead of vanishing when the user answers them.
-
-        AUDIT FIX 2026-11-24b: this method was originally inserted one indent level too
-        deep (8 spaces), which silently nested it INSIDE ensure_tool_loaded() as a local
-        function -- py_compile passed, but the class never got the attribute and every
-        python_exec call died with AttributeError in execute_tool. It is now a proper
-        class member (4-space indent).
-        """
+        tools.exec_tools.python_exec reads it (threading.local on a sys.modules anchor) to relay
+        out-of-sandbox socket attempts to the UI approval card. Set/restored on THIS thread -
+        sync calls run via asyncio.to_thread, so chats never cross wires; *loop* must be captured
+        on the event-loop thread first. Missing args -> no context. *cycle* is this turn's
+        CycleRecorder, so relay cards become its rows."""
         import sys as _sys, types as _types, threading as _threading
 
         key = "_coolems_pyexec_context"
@@ -474,16 +461,9 @@ class RemoteToolOrchestrator:
     def _call_desktop_with_context(func, arguments, conversation_id: str = None):
         """Run a Computer Use (cua_*) tool call with the chat's desktop consent channel.
 
-        tools/computer_use/_consent.py reads this channel (threading.local on the
-        sys.modules anchor 'tools._consent') to decide WHICH conversation may use which
-        app. Desktop tools run via asyncio.to_thread, so the channel is set on THIS
-        worker thread and cleared in the finally block - concurrent chats never share
-        grants. No conversation id -> no channel -> every app-bound call fails closed.
-
-        The store is the dep module the loader already installed (install_shared_deps
-        registers each same-package dep as sys.modules['tools.<dep>']), so the CLIENT's
-        consent gate and the tool read the SAME object.
-        """
+        tools/computer_use/_consent.py reads it (threading.local on 'tools._consent') to decide
+        which conversation may use which app. Set on the worker thread, cleared in finally, so
+        concurrent chats never share grants; no conversation id -> fail closed."""
         import sys as _sys
 
         consent = _sys.modules.get("tools._consent")
@@ -510,23 +490,13 @@ class RemoteToolOrchestrator:
     ) -> Any:
         """Execute a tool by name with the given arguments. Fetches if needed.
 
-        Signature matches old ToolOrchestrator for drop-in compatibility.
-        Extra kwargs (conversation_history, api_key) are accepted but not used.
+        Signature matches ToolOrchestrator; extra kwargs (conversation_history, api_key) are
+        accepted and unused. ToolCompilationError is NOT caught - it ends the loop as a
+        non-retryable error.
 
-        NOTE: ToolCompilationError exceptions propagate through here and are
-              NOT caught — they bubble up to react_loop which treats them as
-              non-retryable errors that should terminate the agentic loop immediately.
-              websocket / conversation_id (2026-11-24 OUT-OF-SANDBOX NETWORK
-              CONSENT): optional per-call context. For python_exec they are stored on a
-              process-wide threading.local anchor (_call_pyexec_with_context) so the
-              sandboxed child's socket gate can relay out-of-sandbox connection requests
-              to THIS chat's UI approval card while the tool runs.
-              cycle (2026-11-07): the turn's CycleRecorder, carried in the same context so
-              those relay cards land in the turn's history.
-              desktop tools (2026-11-07): the conversation id is carried on the
-              'tools._consent' channel so the Computer Use tools can verify the user's
-              per-app grant themselves (fail-closed without a channel).
-        """
+        Context kwargs: websocket / conversation_id (python_exec stores them on a threading.local
+        anchor so the sandboxed child can relay consent to this chat; desktop tools carry the id
+        on 'tools._consent' to verify the per-app grant) and cycle (the turn's CycleRecorder)."""
         # Ensure tool is loaded (may raise ToolCompilationError)
         await self.ensure_tool_loaded(tool_name)
 
@@ -613,9 +583,8 @@ class RemoteToolOrchestrator:
     def clear_tools(self):
         """Clear all cached tools (called on disconnect).
 
-        The working root needs no clearing here - it is not stored in this process
-        at all; each turn's value comes from the conversation's DB row via agentic_mode() (2026-10-09).
-        """
+        The working root needs no clearing - it is never stored here; each turn's value comes
+        from the conversation's DB row via agentic_mode()."""
         self._initialized = False
         # (2026-08-29 threadless refactor): cancel an in-flight lazy-init task, if any —
         # after a full reset the next metadata call must start a fresh fetch.

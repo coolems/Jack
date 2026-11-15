@@ -266,6 +266,64 @@ const CycleShell = {
     },
 
     /**
+     * Re-render cards the AI asked that are STILL unanswered.
+     *
+     * An unanswered question is a live fact - the tool call is still waiting on it - so a
+     * reload must show the card again. Source: GET /api/runtime/{conv} -> pending_questions,
+     * the channel's pending store, cleared the moment an answer arrives.
+     *
+     * Mount rule mirrors the live turn: the newest block of THIS conversation owns the card;
+     * with no block on screen it renders in the chat stream.
+     */
+    restoreOpenCards(convId, pending) {
+        if (!convId || !Array.isArray(pending) || !pending.length) return 0;
+        const blocks = (window.CycleBlock && CycleBlock.blocks[convId]) || [];
+        const block = blocks.length ? blocks[blocks.length - 1] : null;
+        let mounted = 0;
+        for (const q of pending) {
+            const requestId = String(q.request_id || '');
+            if (!requestId) continue;
+            const data = {
+                type: 'exec_approval_request',
+                conv_id: convId,
+                request_id: requestId,
+                kind: 'question',
+                // The card body parses this JSON payload (ApprovalDialog._questionCardBody).
+                code: JSON.stringify({
+                    question: String(q.question || ''),
+                    options: Array.isArray(q.options) ? q.options : [],
+                    context: String(q.context || ''),
+                    requirement: String(q.requirement || ''),
+                }),
+                description: String(q.context || ''),
+            };
+            if (block && !block.settled) {
+                const mount = block.liveEl ? block.liveEl.querySelector(
+                    '.cycle-card-mount[data-request-id="' + (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(requestId) : requestId) + '"]') : null;
+                if (mount) continue;                 // the replayed frame already mounted it
+                this.mountCard(block, data);
+            } else {
+                const container = document.getElementById('chatContainer');
+                if (!container) continue;
+                const sel = '.exec-approval-card[data-request-id="' +
+                    (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(requestId) : requestId) + '"]';
+                if (container.querySelector(sel)) continue;
+                if (typeof ApprovalDialog !== 'undefined') ApprovalDialog.appendCard(data);
+            }
+            mounted++;
+        }
+        // A restored card is live work like a live one: keep it in the pool's pending-card
+        // set so the chat's socket is never LRU-evicted while the user still has to answer.
+        if (mounted && typeof ChatSocketPool !== 'undefined') {
+            for (const q of pending) {
+                if (q.request_id) ChatSocketPool._addPendingCard(convId, String(q.request_id));
+            }
+        }
+        if (mounted) this.scrollIfNeeded();
+        return mounted;
+    },
+
+    /**
      * Remove the interactive card once answered; the block row keeps the decision.
      * (2026-11-08 user rule) A dialog must disappear after ANY click OR after the
      * auto-approve timer fired - so this also removes a card that was rendered as a plain
@@ -678,6 +736,12 @@ const CycleShell = {
         (p.consents || []).forEach(c => rows.push({ kind: 'consent', d: { step_no: c.step_no, kind: c.kind, decision: c.decision, payload: c.payload, at_ts: c.at_ts } }));
         (p.grants || []).forEach(g => rows.push({ kind: 'grant', d: { step_no: g.step_no, kind: g.kind, at_ts: g.at_ts } }));
         (p.feedback || []).forEach(f => rows.push({ kind: 'notice', d: { step_no: f.step_no, text: f.text, at_ts: f.at_ts } }));
+        // Question cards of this turn, rebuilt from the persisted row so a reload shows
+        // question + answer exactly as the live turn showed them.
+        (p.questions || []).forEach(q => rows.push({ kind: 'question', d: {
+            step_no: q.step_no, request_id: q.request_id, question: q.question,
+            options: q.options || [], decision: q.decision, pending: false, at_ts: q.at_ts,
+        } }));
         (p.speech || []).forEach(s => rows.push({ kind: 'speech', d: { step_no: s.step_no, kind: s.kind, text: s.text, final: s.final, at_ts: s.at_ts } }));
         rows.sort((a, b) => Number(a.d.at_ts || 0) - Number(b.d.at_ts || 0));
 
