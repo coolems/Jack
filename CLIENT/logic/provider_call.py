@@ -32,9 +32,7 @@ async def call_provider_with_retry(config: Any, messages: List[Dict]) -> Tuple[A
         try:
             provider_call_start = time.time()
 
-            chat_session = getattr(config, "chat_session", None)
-            chat_stream = chat_session.chat_stream if chat_session is not None else config.provider.chat_stream
-            result, stats = await chat_stream(
+            result, stats = await config.provider.chat_stream(
                 config.model,
                 messages,
                 config.websocket,
@@ -44,6 +42,8 @@ async def call_provider_with_retry(config: Any, messages: List[Dict]) -> Tuple[A
                 tools=config.ollama_tools,
                 stop_event=config.stop_event,
             )
+
+            provider_call_elapsed = time.time() - provider_call_start
 
             if isinstance(result, dict):
                 logger.info(f"[AGENTIC.DEBUG] Provider returned dict with keys: {list(result.keys())}")

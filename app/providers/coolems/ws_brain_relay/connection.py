@@ -72,6 +72,8 @@ async def connect_to_web_relay(server_provider):
         USE_WEB_SERVER,
         PROTOCOL_VERSION,
 
+        PROFILE_DEFAULT_RATE_LIMIT,
+
         WEB_RELAY_DEFAULT_PORT,
 
     )
@@ -350,11 +352,15 @@ async def connect_to_web_relay(server_provider):
 
 
 
-                # Rate limiting is applied PER REQUEST in request_handler.py using the
-                # CLIENT's own profile max_rate_limit (bucket key 'relay:<client_id>').
-                # The brain connection has no per-client bucket to charge here, so the
-                # cleanup task is only started lazily - no limit is computed on this path.
+                # Start rate limiter cleanup task (lazy start)
+
                 await rate_limiter.start_cleanup()
+
+
+
+                max_rate = brain_user_info.get("max_rate_limit", PROFILE_DEFAULT_RATE_LIMIT)
+
+
 
                 logger.info(f"[SERVER] Connected to web relay as brain server (role={brain_user_info['role']})")
 

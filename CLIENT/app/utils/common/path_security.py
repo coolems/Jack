@@ -48,71 +48,13 @@ def _strip_extended_length_prefix(path: str) -> str:
     return path
 
 
-def _resolve_root(root: str) -> str:
-    r"""On-disk form of an allowed root, with its real case preserved.
-
-    ``realpath()`` and NOT ``abspath()``: abspath leaves a root that is a
-    symlink/junction unresolved, while the path side of every containment check
-    IS realpath'd -- so a junction working_root would deny files genuinely inside
-    it. The \\?\ prefix is stripped for the same reason as
-    ``_strip_extended_length_prefix()``.
-
-    Case is deliberately NOT folded here: this value is returned to callers as a
-    usable path. Case folding happens only inside the comparison in
-    ``_is_path_inside_allowed()`` (see ``_cmp_key``).
-
-    SYNC NOTE: identical to tools/path_guard.py::_resolve_root -- both modules
-    implement the same canonical containment semantics.
-    """
-    return _strip_extended_length_prefix(os.path.realpath(root))
-
-
-def _anchor_relative(filepath: str, root: str) -> str:
-    r"""Absolute form of *filepath*, anchored on *root* -- never on the process CWD.
-
-    SECURITY (2026-11-14 review fix A6): ``realpath()`` anchors a relative path on
-    ``os.getcwd()``, and the CLIENT process does not run from working_root. A
-    relative name like ``"code.py"`` therefore resolved to whatever file of that
-    name sits in CWD -- denied when CWD was outside the root, and worse, ACCEPTED
-    when a CWD file happened to land inside the root (the wrong file, silently).
-    Absolute paths are returned unchanged; containment is enforced afterwards by
-    ``_is_path_inside_allowed()``, which is what actually decides access.
-
-    A Windows DRIVE-relative path (``"C:x\\y"``) is also left unchanged: it cannot
-    be anchored on the root (it names a different drive's directory), so the
-    containment check resolves it against CWD and denies it -- fail-closed.
-
-    SYNC NOTE: identical to tools/path_guard.py::_anchor_relative.
-    """
-    if os.path.isabs(filepath):
-        return filepath
-    if os.name == "nt" and len(filepath) >= 2 and filepath[1] == ":":
-        return filepath
-    return os.path.join(_resolve_root(root), filepath)
-
-
-def _cmp_key(path: str) -> str:
-    r"""Comparable form of a resolved path: ``normcase`` of a realpath'd string.
-
-    SECURITY (2026-11-14 review fix A5): BOTH sides of the containment check go
-    through this. Windows is case-insensitive, and ``realpath()`` normalizes a
-    path to the case stored on disk -- so a root handed in as 'c:\\transfer\\jack'
-    (UI text, config, a lowercased DB value) used to be compared with ``abspath()``
-    against a realpath'd file and DENIED files that were genuinely inside the root.
-    ``os.path.normcase`` folds case on Windows and is a no-op on POSIX.
-    """
-    return os.path.normcase(path)
-
-
 def _is_path_inside_allowed(filepath: str, allowed_roots: List[str]) -> bool:
-    r"""Return True when *filepath* resolves inside any of *allowed_roots*.
+    """Return True when *filepath* resolves inside any of *allowed_roots*.
 
-    Normalises BOTH sides with ``os.path.realpath()`` so that symlinks and
-    ``..`` tricks are fully resolved before comparison, then folds case with
-    ``os.path.normcase()`` so a case-different spelling of the same root cannot
-    deny a legitimate path. Using ``realpath`` instead of ``abspath`` on both
-    sides prevents symlink-based escape attacks where a link inside working_root
-    points to an arbitrary location on disk.
+    Normalises both sides with ``os.path.realpath()`` so that symlinks and
+    ``..`` tricks are fully resolved before comparison.  Using ``realpath``
+    instead of ``abspath`` prevents symlink-based escape attacks where a link
+    inside working_root points to an arbitrary location on disk.
 
     This is the **ultimate safety net** -- all public functions delegate here
     as their final validation step. Even if earlier checks are bypassed, this
@@ -120,14 +62,17 @@ def _is_path_inside_allowed(filepath: str, allowed_roots: List[str]) -> bool:
     (\\\\?\\C:\\...), symlink escapes, and .. traversal.
     """
     # REALPATH resolves symlinks -- abspath does not.
-    real_path = _cmp_key(_strip_extended_length_prefix(os.path.realpath(filepath)))
+    real_path = os.path.realpath(filepath)
+    # CRITICAL FIX: Strip \\?\ prefix so comparison works against normal roots
+    real_path = _strip_extended_length_prefix(real_path)
 
     for root in allowed_roots:
-        norm_root = _cmp_key(_resolve_root(root))
-        # Separator-anchored prefix: prevents prefix attacks like root + "Evil".
-        # rstrip() so a drive root ('C:\') does not become 'C:\\' + sep.
-        prefix = norm_root.rstrip(os.sep) + os.sep
-        if real_path == norm_root or real_path.startswith(prefix):
+        norm_root = os.path.normpath(os.path.abspath(root))
+        # Also normalize the root side defensively (roots usually don't have prefix)
+        norm_root = _strip_extended_length_prefix(norm_root)
+
+        # Exact match OR starts with root + separator (prevents prefix attacks)
+        if real_path == norm_root or real_path.startswith(norm_root + os.sep):
             return True
     return False
 
@@ -182,16 +127,12 @@ def guard_path_inside_working_root(
     working_root: Optional[str] = None,
     label: str = "File path",
 ) -> None:
-    """Ensure *filepath* is inside *working_root*.  Raises ``ValueError`` if not.
-
-    Relative names are anchored on the root, NOT on the process CWD -- see
-    ``_anchor_relative()`` (2026-11-14 review fix A6).
-    """
+    """Ensure *filepath* is inside *working_root*.  Raises ``ValueError`` if not."""
     from .working_root import get_working_root
 
     wr = working_root or get_working_root()
     allowed = [wr]
-    real_path = os.path.realpath(_anchor_relative(filepath, wr))
+    real_path = os.path.realpath(filepath)
     if not _is_path_inside_allowed(real_path, allowed):
         raise _denied_error(real_path, allowed, label)
 
@@ -205,16 +146,11 @@ def resolve_path_in_working_root(
 
     Returns ``(dirpath, full_filepath_or_None)``.
     Raises ``ValueError`` on any escape attempt.
-
-    ``effective_root`` is the REALPATH'd root (real case, symlinks/junctions
-    resolved) -- see _resolve_root(). Using abspath() here used to hand back a
-    case-different or junction spelling of the root that then failed the
-    containment check on its own children.
     """
     from .working_root import get_working_root
 
     wr = working_root or get_working_root()
-    effective_root = _resolve_root(wr)
+    effective_root = os.path.normpath(os.path.abspath(wr))
 
     # --- directory part ---------------------------------------------------
     if not path or not path.strip() or path == "." or path.lower() == "root":
@@ -248,21 +184,8 @@ def resolve_path_for_move(
     filename: Optional[str] = None,
     label: str = "Path",
 ) -> Tuple[str, Optional[str]]:
-    """Resolve a move/rename target inside *working_root*.
-
-    Same resolution as ``resolve_path_in_working_root``; *label* only names the
-    denial message (e.g. "Source path '...' is outside..."), so a failed move says
-    which side of the move was rejected.
-    """
-    try:
-        return resolve_path_in_working_root(working_root, path, filename)
-    except ValueError as exc:
-        message = str(exc)
-        for prefix in ("Path '", "Resolved file path '"):
-            if message.startswith(prefix):
-                message = message.replace(prefix, f"{label} '", 1)
-                break
-        raise ValueError(message) from None
+    """Alias for ``resolve_path_in_working_root`` — used by move_file tool."""
+    return resolve_path_in_working_root(working_root, path, filename)
 
 
 def resolve_path_to_dir(
@@ -273,14 +196,11 @@ def resolve_path_to_dir(
 
     Used by tools that only need a directory (not a file).
     Raises ``ValueError`` on escape.
-
-    ``effective_root`` is the REALPATH'd root (real case, symlinks/junctions
-    resolved) -- see _resolve_root().
     """
     from .working_root import get_working_root
 
     wr = working_root or get_working_root()
-    effective_root = _resolve_root(wr)
+    effective_root = os.path.normpath(os.path.abspath(wr))
 
     if not path or not path.strip() or path == "." or path.lower() == "root":
         return effective_root
@@ -306,42 +226,37 @@ def is_safe_path(
     """Check whether *filepath* is safe (inside *working_root*).
 
     Returns ``(True, abs_path)`` or ``(False, error_message)``.
+    When ``for_write=True`` the check is stricter (must be inside working_root).
 
-    ``allowed_write_dirs``: extra roots accepted besides working_root
-    (default: working_root only).
-    ``for_write=True`` is STRICTER: the target's DIRECTORY must resolve inside an
-    allowed root too, so a directory-level write (a target that IS a root itself)
-    and any path whose containing directory lands outside every allowed root is
-    refused - the containment check alone would let those through.
-
-    CRITICAL FIX: Relative paths are resolved against working_root, NOT the
-    process CWD -- see ``_anchor_relative()`` (2026-11-14 review fix A6 mirrors
-    this on the SERVER twin).
+    CRITICAL FIX: Relative paths are now resolved against working_root first,
+    NOT against the process CWD. This prevents attacks where CWD != working_root.
     """
     from .working_root import get_working_root
 
     wr = get_working_root()
-    allowed = [wr, *(allowed_write_dirs or [])]
+    allowed = [wr]
     normed = os.path.normpath(filepath)
 
-    # Resolve relative paths against working_root, NOT CWD
-    abs_path = os.path.realpath(_anchor_relative(filepath, wr))
-
     # Quick rejection of obvious traversal attempts
-    if ".." in normed.split(os.sep) and not _is_path_inside_allowed(abs_path, allowed):
+    if ".." in normed.split(os.sep):
+        # Resolve relative paths against working_root, not CWD
+        if not os.path.isabs(filepath):
+            resolved = os.path.realpath(os.path.join(wr, filepath))
+        else:
+            resolved = os.path.realpath(filepath)
+        if _is_path_inside_allowed(resolved, allowed):
+            return True, resolved
         return False, "Path traversal not allowed — resolves outside working root"
 
-    if not _is_path_inside_allowed(abs_path, allowed):
-        return False, f"Path must be within the working root directory ({wr})"
+    # Resolve relative paths against working_root, NOT CWD
+    if not os.path.isabs(filepath):
+        abs_path = os.path.realpath(os.path.join(wr, filepath))
+    else:
+        abs_path = os.path.realpath(filepath)
 
-    if for_write:
-        parent = os.path.realpath(os.path.dirname(abs_path))
-        if not _is_path_inside_allowed(parent, allowed):
-            return False, (
-                f"Write target's directory ({parent}) is outside the allowed roots "
-                f"({allowed})"
-            )
-    return True, abs_path
+    if _is_path_inside_allowed(abs_path, allowed):
+        return True, abs_path
+    return False, f"Path must be within the working root directory ({wr})"
 
 
 # ---------------------------------------------------------------------------
@@ -374,17 +289,12 @@ def find_file(filename: str) -> Optional[str]:
     if not cleaned:
         return None
 
-    # Candidates are built on the RESOLVED root (see _resolve_root), so the
-    # returned path is the on-disk spelling of the directory — a case-different
-    # or junction spelling of the working root would otherwise come back in that
-    # spelling and never match what the other resolvers produce.
-    root_real = _resolve_root(wr)
-    allowed_roots: List[str] = [root_real]
+    allowed_roots: List[str] = [wr]
 
     # Candidate locations to check (in priority order)
     candidates = [
-        os.path.join(root_real, cleaned),
-        os.path.join(root_real, os.path.basename(cleaned)),
+        os.path.join(wr, cleaned),
+        os.path.join(wr, os.path.basename(cleaned)),
     ]
 
     seen: set = set()  # avoid checking the same normalised path twice
@@ -407,9 +317,6 @@ def find_file(filename: str) -> Optional[str]:
 
 __all__ = [
     "_strip_extended_length_prefix",
-    "_resolve_root",
-    "_cmp_key",
-    "_anchor_relative",
     "_is_path_inside_allowed",
     "_denied_error",
     "validate_filename",

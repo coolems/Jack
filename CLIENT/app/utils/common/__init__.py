@@ -34,9 +34,6 @@ def __getattr__(name):
 # ---- Path security ---------------------------------------------------------
 from .path_security import (
     _strip_extended_length_prefix,
-    _resolve_root,
-    _cmp_key,
-    _anchor_relative,
     _is_path_inside_allowed,
     _denied_error,
     validate_filename,
@@ -76,9 +73,6 @@ __all__ = [
     "get_working_root",
     # path_security
     "_strip_extended_length_prefix",
-    "_resolve_root",
-    "_cmp_key",
-    "_anchor_relative",
     "_is_path_inside_allowed",
     "_denied_error",
     "validate_filename",

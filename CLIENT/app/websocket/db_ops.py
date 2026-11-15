@@ -103,69 +103,6 @@ def _sync_conversation_working_root(cursor, conv_id: str) -> None:
 
 
 
-def cut_chat_history(cursor, conv_id: str, index: int):
-    """Remove the chat-level history from `index` on, plus everything that belongs to it.
-
-    THE INDEX CONTRACT: the UI numbers CHAT-LEVEL items - a prompt bubble (.cycle-user), an
-    answer bubble (.message), a turn block (.cycle-block). Steering markers and runtime
-    notices are NOT chat-level items (they are rows inside the turn's block), so this counts
-    DB rows with is_steer=0 AND is_notice=0 - the same set the UI counts. Counting raw rows
-    would cut at the wrong message as soon as a workspace has any steer/notice row.
-
-    Everything at or after the cut point goes, steer/notice rows included. The cycle rows
-    (turn_log) are children of the CONVERSATION, not of the answer they describe, and
-    foreign keys are ON on every connection, so they are pruned FIRST - otherwise a reload
-    rebuilds blocks for answers that no longer exist.
-
-    Raises ValueError when `index` is past the end of the history. The caller's transaction
-    then rolls back and NOTHING is written: a bad index can never destroy a workspace.
-    Returns (deleted_messages, pruned_cycle_rows).
-    """
-    rows = cursor.execute(
-        "SELECT id, timestamp, rowid, role FROM messages WHERE conversation_id = ? "
-        "AND is_steer = 0 AND is_notice = 0 ORDER BY timestamp, rowid",
-        (conv_id,)
-    ).fetchall()
-
-    if index > len(rows):
-        raise ValueError(
-            f"edit index {index} is past the end of this workspace ({len(rows)} message(s))")
-
-    if index == len(rows):
-        return 0, 0
-
-    cut_ts, cut_rowid, cut_role = rows[index][1], rows[index][2], rows[index][3]
-    doomed = cursor.execute(
-        "SELECT id FROM messages WHERE conversation_id = ? "
-        "AND (timestamp > ? OR (timestamp = ? AND rowid >= ?))",
-        (conv_id, cut_ts, cut_ts, cut_rowid)
-    ).fetchall()
-    ids = [r[0] for r in doomed]
-
-    # Cutting at an ANSWER removes a whole turn, and that turn's steer markers and notices
-    # were written BEFORE the answer row, so the timestamp cut alone would leave them
-    # orphaned: invisible in the UI, still in the model's history. They sit between the
-    # prompt that started the turn and the answer that ended it.
-    if cut_role == "assistant" and index > 0:
-        prev_ts = rows[index - 1][1]
-        extra = cursor.execute(
-            "SELECT id FROM messages WHERE conversation_id = ? "
-            "AND (is_steer = 1 OR is_notice = 1) AND timestamp > ? AND timestamp <= ?",
-            (conv_id, prev_ts, cut_ts)
-        ).fetchall()
-        ids.extend(r[0] for r in extra)
-
-    if not ids:
-        return 0, 0
-
-    from app.websocket.turn_ops import truncate_turn_logs  # lazy: turn_ops imports db_ops
-    pruned = truncate_turn_logs(cursor, conv_id, ids, cut_ts)
-
-    placeholders = ",".join("?" * len(ids))
-    cursor.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", ids)
-    return cursor.rowcount, pruned
-
-
 def save_user_message(
     conn_path: str,
     conv_id: str,
@@ -174,16 +111,12 @@ def save_user_message(
     file_contents: Optional[List[Dict]] = None,
     auto_title: bool = True,
     is_steer: bool = False,
-    is_notice: bool = False,
-    cut_index: Optional[int] = None,
 ):
     """
     Save a user message to the database.
 
     Args:
-        conn_path: Accepted for API compatibility only - NEVER read. The connection
-            comes from app.db_manager.get_db_connection(), whose own initialized path
-            is the single source of truth for every write in this module.
+        conn_path: Path to the SQLite database (kept for API compatibility).
         conv_id: Conversation ID.
         content: Message text.
         media_urls: Optional list of media file URLs.
@@ -193,17 +126,6 @@ def save_user_message(
             is stored with the raw text so the model still sees the correction in a later
             turn, but the flag tells the UI it is NOT a chat-level message - it is painted
             as a row of that turn's loop-history block (app/turn_log `steers`).
-        is_notice: True for a RUNTIME NOTICE (2026-12 subagents / background jobs /
-            question answers). The row keeps its HEADER, because the notice is not user
-            speech and a later turn loading history must still see who said it. The flag
-            tells the UI to render it as a row of the turn's loop-history block
-            (turn_log `notices`) instead of a chat-level user bubble.
-        cut_index: (2026-11-13) When set, this save ALSO replaces the history from that
-            chat-level index - the prompt edit. The removal and the new prompt are written
-            in ONE transaction, so an edit cannot leave a workspace without a prompt: the
-            old flow deleted the rows in one call and depended on a second call (the socket
-            frame) to store the replacement, and a frame that failed validation deleted the
-            prompt and saved nothing. Either both happen or neither does.
     """
     msg_id = str(uuid.uuid4())
     conn = get_db_connection()
@@ -212,17 +134,9 @@ def save_user_message(
         # FIX (2026-08-30): guarantee the conversation row exists so the
         # working_root sync below can never be a silent no-op UPDATE.
         _ensure_conversation_exists(cursor, conv_id)
-
-        if cut_index is not None:
-            deleted, pruned = cut_chat_history(cursor, conv_id, cut_index)
-            logger.info(
-                f"[EDIT] conversation {conv_id}: {deleted} message(s) removed from index "
-                f"{cut_index}, {pruned} cycle row(s) pruned"
-            )
-
         cursor.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents, is_steer, is_notice) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents, is_steer) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 msg_id,
                 conv_id,
@@ -231,7 +145,6 @@ def save_user_message(
                 json.dumps(media_urls) if media_urls else None,
                 json.dumps(file_contents) if file_contents else None,
                 1 if is_steer else 0,
-                1 if is_notice else 0,
             ),
         )
         cursor.execute(
@@ -255,12 +168,6 @@ def save_user_message(
 
         conn.commit()
         return msg_id
-    except Exception:
-        # Nothing is written on ANY failure. With cut_index set this is the guarantee that
-        # matters: a failed edit rolls back the removal too, so the workspace keeps its
-        # prompt instead of ending up empty.
-        conn.rollback()
-        raise
     finally:
         close_db_connection(conn)
 
@@ -270,11 +177,7 @@ def save_assistant_message(
     conv_id: str,
     content: str,
 ):
-    """Save an assistant (AI) response to the database.
-
-    conn_path is accepted for API compatibility only - NEVER read; the connection
-    comes from app.db_manager.get_db_connection() (see save_user_message).
-    """
+    """Save an assistant (AI) response to the database."""
     msg_id = str(uuid.uuid4())
     conn = get_db_connection()
     try:
@@ -309,9 +212,6 @@ def save_search_result(
     """
     Save both user and assistant messages for a /search command result.
     Used by search_handler.py.
-
-    conn_path is accepted for API compatibility only - NEVER read; the connection
-    comes from app.db_manager.get_db_connection() (see save_user_message).
     """
     conn = get_db_connection()
     try:
@@ -347,9 +247,6 @@ def save_partial_response(
     """
     Save a partial response when the user disconnects mid-generation.
     Appends '[Generation stopped by user]' marker.
-
-    conn_path is accepted for API compatibility only - NEVER read; the connection
-    comes from app.db_manager.get_db_connection() (see save_user_message).
     """
     content = partial_response + "\n\n_[Generation stopped by user]_"
     msg_id = str(uuid.uuid4())

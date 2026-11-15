@@ -259,18 +259,6 @@
 /* ---- auto-allow grants ---- */
 .cycle-row-grant .cycle-consent-line { color: var(--success, #2ecc71); }
 
-/* ---- question rows (2026-12, tinted 2026-11-13) ----
-   The answer to a question the AI asked. Same tint as the card the user answered, so the
-   durable row and the transient card belong to each other at a glance. */
-.cycle-row-question {
-    border-left: 2px solid var(--question-accent, #22c55e);
-    padding-left: 8px;
-    background: var(--question-accent-soft, rgba(34, 197, 94, 0.06));
-}
-.cycle-row-question .cycle-consent-line { color: var(--question-accent, #22c55e); }
-.cycle-row-question[data-decision="deny"] .cycle-consent-line { color: var(--warning, #f59e0b); }
-.cycle-row-question[data-decision="allow_category_until_done"] .cycle-consent-line { color: var(--question-accent, #22c55e); }
-
 /* ---- steering rows (2026-11-08, user request) ----
    A message typed WHILE the turn runs is LOOP WORK, never a chat-level user message: it is
    a row of THIS block, placed at the moment the user typed it (at_ts = received_at), so it
@@ -501,9 +489,10 @@
 .cycle-ai-seg .cycle-ai-thinking { border-left: none; padding: 0; }
 
 /* The final answer of the loop is the one that stays after the loop ends (the speech row
-   carries `final`, so the strip marks it - step 0 is never a real step number). */
+   carries `final`, so the strip marks it - step 0 is never a real step number).
+   the final segment keeps the same neutral divider as the other segments */
 .cycle-ai-answer[data-final="1"] { font-weight: 500; }
-.cycle-ai-seg[data-final="1"] { border-left-color: var(--accent, #4f8cff); }
+.cycle-ai-seg[data-final="1"] { border-left-color: var(--border-color, #2a2f3a); }
 
 /* ---- AI strip Copy buttons (2026-11-08, restored to the REPO shape) ----
    In the last repo version an AI answer was a .message-content bubble whose Copy chip
@@ -625,66 +614,3 @@
     .cycle-summary { font-size: 12px; }
     .cycle-image-thumb { max-width: 90px; }
 }
-
-/* ---- runtime entities (2026-12 subagents / background jobs / questions) ----
-   A delegated child and a background job are rows of the turn block, like tools. They had
-   no rules at all, so their name/status/meta rendered as unstyled text and the child's
-   streamed output looked like part of the answer. Kept visually quieter than tool rows:
-   delegated work is context, not the turn's own actions. */
-.cycle-child-name, .cycle-job-name {
-    font-family: ui-monospace, monospace;
-    font-size: 12px;
-    color: var(--text-secondary, #9aa4b2);
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.cycle-child-label, .cycle-runtime-label {
-    font-family: inherit;
-    font-weight: 400;
-    color: var(--text-muted, #7d8797);
-    margin-left: 6px;
-}
-.cycle-child-status, .cycle-job-status {
-    font-size: 12px;
-    color: var(--accent, #4f8cff);
-    flex-shrink: 0;
-}
-.cycle-row-child[data-child-status="settled"] .cycle-child-status,
-.cycle-row-child[data-child-status="completed"] .cycle-child-status,
-.cycle-row-job[data-job-status="settled"] .cycle-job-status,
-.cycle-row-job[data-job-status="done"] .cycle-job-status { color: var(--success, #2ecc71); }
-.cycle-row-child[data-child-status="aborted"] .cycle-child-status,
-.cycle-row-child[data-child-status="error"] .cycle-child-status,
-.cycle-row-job[data-job-status="killed"] .cycle-job-status,
-.cycle-row-job[data-job-status="failed"] .cycle-job-status { color: var(--danger, #e5534b); }
-
-.cycle-runtime-meta {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    color: var(--text-muted, #7d8797);
-    margin-top: 4px;
-}
-.cycle-runtime-text {
-    font-size: 12px;
-    color: var(--text-secondary, #9aa4b2);
-    white-space: pre-wrap;
-    margin-top: 4px;
-}
-
-/* The child's own streamed lines (cycle_child_output). They belong to the CHILD's row,
-   never to the parent's answer strip - so they are visibly quieter than answer text. */
-.cycle-child-output, .cycle-job-output {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    line-height: 1.45;
-    color: var(--text-secondary, #9aa4b2);
-    margin-top: 4px;
-    max-height: 160px;
-    overflow: auto;
-    border-left: 2px solid var(--border, #2b3240);
-    padding-left: 8px;
-}
-.cycle-child-line, .cycle-job-line { white-space: pre-wrap; }
-.cycle-child-line.thinking { color: var(--text-muted, #7d8797); font-style: italic; }
-.cycle-job-line.stderr { color: var(--danger, #e5534b); }

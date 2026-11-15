@@ -431,17 +431,6 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
 
-    // (2026-11-13) The server replaced this workspace's history: an edited prompt removes the
-    // tail it replaces AND stores the new prompt in one transaction, so what is on screen is
-    // stale. Rebuild from the DB - this frame arrives before the turn streams, so the answer
-    // lands in the rebuilt view.
-    if (data.type === 'history_replaced') {
-        if (typeof rebuildWorkspaceView === 'function') {
-            void rebuildWorkspaceView(convId).catch(e => console.error('[WS] view rebuild failed:', e));
-        }
-        return;
-    }
-
     // ===== LOOP-HISTORY BLOCKS (2026-11-08) ===========================================
     // An agentic turn is ONE collapsed block, not a stream of bubbles. Every frame below
     // resolves its block through _cycleTarget(), which refuses a turn_id owned by another
@@ -518,73 +507,6 @@ function handleWebSocketMessage(data, ownerConvId) {
         // The recorder's row for a steering message: a fact of the turn, painted INSIDE the
         // block at the moment the user typed it. Never a chat-level message.
         if (typeof handleSteerFrame === 'function') handleSteerFrame(data, convId);
-        return;
-    }
-
-    // ===== RUNTIME lane (2026-12 subagents / background jobs / questions) ============
-    // A notice is the RUNTIME speaking (a child settled, a job settled, the user answered
-    // a question the AI asked). It is never a chat-level message: it is a row of the turn's
-    // block, correlated by notice_id, exactly like steering. Children/jobs are rows too, so
-    // the user can see delegated work while it runs.
-
-    if (data.type === 'cycle_notice') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setNotice(block, Object.assign({ state: 'applied' }, data));
-        return;
-    }
-    if (data.type === 'notice_queued') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setNotice(block, Object.assign({ state: 'queued' }, data));
-        return;
-    }
-    if (data.type === 'notice_applied') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setNotice(block, Object.assign({ state: 'applied' }, data));
-        return;
-    }
-    if (data.type === 'notice_deferred') {
-        // No wake budget left (or quiet-wake mode): the notice waits for the user's next
-        // message. With no block on screen it must still be visible as a system notice.
-        const block = _cycleTarget(convId, data);
-        if (block) {
-            CycleBlock.setNotice(block, Object.assign({ state: 'deferred' }, data));
-        } else {
-            showNotification('A background result is waiting: ' + _oneLine(data.content || ''), 'info');
-        }
-        return;
-    }
-    if (data.type === 'cycle_child') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setChild(block, data);
-        return;
-    }
-    if (data.type === 'cycle_child_output') {
-        // (2026-11-30) A delegated child's streamed text. It paints in THAT child's row,
-        // never in the parent's answer strip: a child's words are not the parent's answer,
-        // and forwarding them as `content` frames used to write them into the parent's
-        // bubble (and its `done` frame used to settle the parent's block mid-turn).
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.appendChildOutput(block, data);
-        return;
-    }
-    if (data.type === 'cycle_job') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setJob(block, data);
-        return;
-    }
-    if (data.type === 'cycle_job_output') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.appendJobOutput(block, data);
-        return;
-    }
-    if (data.type === 'cycle_question_pending') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setQuestion(block, Object.assign({ pending: true }, data));
-        return;
-    }
-    if (data.type === 'cycle_question') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.setQuestion(block, data);
         return;
     }
     if (data.type === 'cycle_final') {
@@ -670,16 +592,6 @@ function handleWebSocketMessage(data, ownerConvId) {
     }
 
     if (data.type === 'image_generated') {
-        const block = _cycleTarget(convId, data);
-        if (block) CycleBlock.addImage(block, data);
-        return;
-    }
-
-    // (2026-12) the recorder's persisted identity row for a generated image. The live
-    // 'image_generated' frame already painted the pixels for THIS call - addImage() dedupes
-    // by call_id, so this only paints when the live frame missed the block (replay / late
-    // attach). A reload never sees frames: it rebuilds from the payload instead.
-    if (data.type === 'cycle_image') {
         const block = _cycleTarget(convId, data);
         if (block) CycleBlock.addImage(block, data);
         return;

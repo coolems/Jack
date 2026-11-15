@@ -68,17 +68,11 @@ VK_CODES = {
     "menu": (0x5D, False), "capslock": (0x14, False), "numlock": (0x90, True),
     # The literal '+' and '-' keys: the chord syntax writes Command-plus as 'cmd++'. These are
     # the OEM codes for the physical keys - VK_OEM_PLUS (0xBB) and VK_OEM_MINUS (0xBD). The
-    # arithmetic codes VK_ADD (0x6B) / VK_SUBTRACT (0x6D) are numpad keys: they insert nothing
-    # into a text field unless Num Lock is on, and then they type '+' / '-' respectively.
-    # 0x2D is VK_INSERT (not VK_SUBTRACT) and 0x6E is VK_DECIMAL - neither is a plus or minus
-    # key (the first version used 0x6E for 'plus', so 'ctrl++' zoomed nothing and 'cmd++' sent
-    # the wrong key). 'kpsubtract' held 0x6B, which is VK_ADD: a numpad-minus chord pressed +.
-    # Numpad +/- are NOT extended keys: their scan codes are 0x4E and 0x4A with no 0xE0
-    # prefix (MapVirtualKeyW, MAPVK_VK_TO_VSC_EX) - only numpad Enter and numpad Divide carry
-    # the 0xE0 prefix. KEYEVENTF_EXTENDEDKEY claims a 0xE0-prefixed scan code (KEYBDINPUT), so
-    # the old True flag made the layout translate a plain numpad key as an extended one.
-    "plus": (0xBB, False), "+": (0xBB, False), "kpadd": (0x6B, False),
-    "minus": (0xBD, False), "-": (0xBD, False), "kpsubtract": (0x6D, False),
+    # arithmetic codes VK_ADD (0x6B) / VK_SUBTRACT (0x2D) are numpad keys and insert nothing
+    # into a text field; 0x6E is VK_DECIMAL, which is neither key (the first version used it
+    # for 'plus', so 'ctrl++' zoomed nothing and 'cmd++' sent the wrong key).
+    "plus": (0xBB, False), "+": (0xBB, False), "kpadd": (0x6B, True),
+    "minus": (0xBD, False), "-": (0xBD, False), "kpsubtract": (0x6B, True),
     "pause": (0x13, True), "printscreen": (0x2C, True), "scrolllock": (0x91, True),
     "f1": (0x70, False), "f2": (0x71, False), "f3": (0x72, False), "f4": (0x73, False),
     "f5": (0x74, False), "f6": (0x75, False), "f7": (0x76, False), "f8": (0x77, False),
@@ -385,16 +379,15 @@ def cua_press_chord(key: str, modifiers=None) -> bool:
 #: table fall back to unicode events.
 #:
 #: The punctuation codes are the OEM codes for the physical key, NOT the arithmetic numpad
-#: codes: 0x2D is VK_INSERT (not VK_SUBTRACT - that is 0x6D) and it inserts nothing into a
-#: text field, VK_OEM_MINUS (0xBD) is the main-row minus key (verified live - 0x2D silently
-#: dropped every '-' and '_').
+#: codes: VK_SUBTRACT (0x2D) inserts nothing into a text field, VK_OEM_MINUS (0xBD) is the
+#: main-row minus key (verified live - 0x2D silently dropped every '-' and '_').
 CHAR_VK_PLAIN = {}
 CHAR_VK_SHIFT = {}
 for _i, _ch in enumerate("abcdefghijklmnopqrstuvwxyz"):
     CHAR_VK_PLAIN[_ch] = 0x41 + _i          # VK_A..VK_Z (no shift = lowercase)
 for _i, _ch in enumerate("0123456789"):
     CHAR_VK_PLAIN[_ch] = 0x30 + _i          # VK_0..VK_9
-CHAR_VK_PLAIN.update({" ": 0x20, "\n": 0x0D, "\r": 0x0D, "\t": 0x09})
+CHAR_VK_PLAIN.update({" ": 0x20, "\n": 0x0D, "\r": 0x0D, "\t": 0x09, "\t": 0x09})
 # physical key -> (unshifted char, shifted char); code is the same VK for both.
 _OEM_KEYS = {
     0xBD: ("-", "_"),   # VK_OEM_MINUS   main-row minus

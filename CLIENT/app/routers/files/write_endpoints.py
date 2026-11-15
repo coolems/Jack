@@ -1,22 +1,19 @@
 """Write file endpoints (POST/DELETE operations)."""
 
+import asyncio
 import os
 import shutil
 import subprocess
+import sys
 import uuid
 from typing import Dict
 from fastapi import APIRouter, File, UploadFile, Query, HTTPException, Request
 
 
 from app.utils.common import is_text_file, is_image_file, read_text_file, MAX_FILE_SIZE
-from .middleware import _safe_relative_path, _is_root_itself, _get_working_root_dir, logger
+from .middleware import _safe_relative_path, _get_working_root_dir, logger
 
 from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
-
-# Sandboxed execution seam (SECURITY 2026-11-14): /api/run-python runs INSIDE the
-# python_exec runtime sandbox instead of a bare subprocess.run(). Fail-closed: if the
-# sandbox cannot be resolved the endpoint refuses (403) rather than spawning unsandboxed.
-from .sandbox_runner import run_sandboxed_file, SandboxUnavailable, _unavailable_detail
 
 
 def register_write_endpoints(router: APIRouter):
@@ -56,12 +53,6 @@ def register_write_endpoints(router: APIRouter):
             safe_path = _safe_relative_path(working_root_dir, path)
             if safe_path is None:
                 raise HTTPException(status_code=400, detail="Invalid path")
-            # SECURITY (2026-11-02): reject the root itself. _safe_relative_path accepts
-            # the root on purpose (listing/uploading at the root is valid), but rel='.',
-            # ' ', './.', 'sub/../' resolve to it and would reach the rmtree() below -
-            # a recursive delete of the whole workspace. Only a real child may be deleted.
-            if _is_root_itself(working_root_dir, safe_path):
-                raise HTTPException(status_code=400, detail="Cannot delete the working root itself")
             if not os.path.exists(safe_path):
                 raise HTTPException(status_code=404, detail="Path not found")
             if os.path.isdir(safe_path):
@@ -138,20 +129,12 @@ def register_write_endpoints(router: APIRouter):
     async def run_python_file(path: str = Query(..., description="Relative path inside working_root folder")):
         """Run a Python file and return its output.
 
-        SECURITY (2026-11-14): the file now runs INSIDE the python_exec runtime sandbox
-        (see app/routers/files/sandbox_runner.py). The previous implementation was a bare
-        ``subprocess.run([python_exe, safe_path])`` -- no containment at all, so an
-        uploaded .py could read/write anywhere on the machine and reach the network. The
-        sandbox pins every filesystem/spawn/socket decision to working_root, exactly like
-        the agent's python_exec tool. If the sandbox cannot be resolved the request is
-        REFUSED (403) -- there is no unsandboxed fallback.
-
-        SERVER-side limitation gate (2026-10-01): before spawning any child process the
-        CLIENT checks whether SUBPROCESS execution is allowed by the limitations the
-        SERVER delivered for this machine's profile - per-profile python_exec_blocked_libs
-        plus the per-role tool allowlist (app.keys.is_subprocess_allowed). No local role
-        verification: whatever restrictions the SERVER sent over WebSocket are enforced
-        here too, so a direct HTTP request cannot bypass what the agent channel is denied.
+        SERVER-side limitation gate (2026-10-01): before spawning any child process the CLIENT
+        checks whether SUBPROCESS execution is allowed by the limitations the SERVER delivered
+        for this machine's profile - per-profile python_exec_blocked_libs plus the per-role tool
+        allowlist (app.keys.is_subprocess_allowed). No local role verification: whatever
+        restrictions the SERVER sent over WebSocket are enforced here too, so a direct HTTP
+        request cannot bypass what the agent channel is denied.
         """
         try:
             allowed, reason = is_subprocess_allowed()
@@ -170,12 +153,20 @@ def register_write_endpoints(router: APIRouter):
             # BEFORE any spawn (e.g. working_root resolution failure) - a local import inside
             # the try block left that name unbound in such cases and evaluating the except-chain
             # raised NameError instead of returning the real 500 with the actual cause.
-            try:
-                result = await run_sandboxed_file(safe_path, working_root_dir, timeout_sec=30)
-            except SandboxUnavailable as e:
-                raise HTTPException(status_code=403, detail=_unavailable_detail(e))
-            return {"stdout": result["stdout"], "stderr": result["stderr"],
-                    "returncode": result["returncode"]}
+            python_exe = sys.executable or "python"
+            if sys.platform == "win32":
+                startup_info = subprocess.STARTUPINFO()
+                startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                # CPython's subprocess module only defines SW_HIDE (0) - it has never defined
+                # SW_SHOWNORMAL, so direct attribute access raised AttributeError on every Windows
+                # run. Use the raw Win32 value directly: SW_SHOWNORMAL == 1 (5 is SW_SHOW).
+                startup_info.wShowWindow = 1
+                # FIX (2026-08-29): blocking subprocess off the event loop - it used to freeze
+                # all HTTP endpoints (incl. /api/tree -> "Error loading files") for up to 30s.
+                result = await asyncio.to_thread(subprocess.run, [python_exe, safe_path], capture_output=True, text=True, timeout=30, startupinfo=startup_info)
+            else:
+                result = await asyncio.to_thread(subprocess.run, [python_exe, safe_path], capture_output=True, text=True, timeout=30)
+            return {"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode}
         except HTTPException:
             raise
         except subprocess.TimeoutExpired:

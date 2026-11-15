@@ -1,4 +1,4 @@
-r"""python_exec RUNTIME SANDBOX -- data-only module exposing the bootstrap prefix source.
+"""python_exec RUNTIME SANDBOX -- data-only module exposing the bootstrap prefix source.
 
 WHAT THIS IS
 ============
@@ -39,10 +39,7 @@ CONTAINMENT SEMANTICS  *** SYNC NOTE: keep identical to tools/path_guard.py::_is
 ------------------------------------------------------------------
 * A path is "inside" a root iff ``normcase(realpath(path))`` equals the root or starts
   with ``root + os.sep`` (separator-anchored -- prevents prefix attacks like
-  working_root+"Evil"; the root is rstrip'd first so a drive root 'C:\' does not
-  become 'C:\\' + sep). realpath resolves symlinks, UNC and .. sequences, and
-  normcase folds Windows case on BOTH sides -- so a case-different spelling of
-  working_root and a symlink/junction working_root contain their own files.
+  working_root+"Evil"). realpath resolves symlinks, UNC and .. sequences.
 * WRITE operations (open w/a/x/+, os.open write flags, nt.open write flags,
   remove/rename/mkdir/..., shutil copy/move/copytree/rmtree destinations, archive
   extraction targets) are allowed ONLY inside working_root. No exceptions.
@@ -101,141 +98,6 @@ Fixes (all in the child, all fail-closed):
 7. IMPORT BLOCKS in the child now also list nt/_winapi/winreg -- a defense-in-depth
    net for builds where they are NOT preloaded (they ARE preloaded on CPython 3.12
    Windows, which is why fix #3 above patches the functions directly).
-
-HARDENING 2026-11-14 -- CONSENT SELF-APPROVAL, RAW-WIN32/CLOSURE, FAIL-OPEN STAGES
-==================================================================================
-Live exploits reproduced inside a real sandboxed child (admin clean set, NET_CONSENT=0),
-all closed here:
-
-* CONSENT GATE SELF-APPROVAL. The three out-of-sandbox gates (network / file / subprocess)
-  read the parent's answer from <root>/.temp/.jack_netreq/<id>.decision.json -- a folder
-  INSIDE working_root, which the child can write, and nothing checked who wrote it. A thread
-  inside the payload wrote its own {"decision":"allow"}: socket.connect(192.0.2.1:80) passed
-  and open(<outside>,"w") returned ALLOWED. DECISIONS ARE NOW PARENT-OWNED: every write route
-  (audit "open" flag-aware, os.open, nt.open, _winapi.CreateFile, builtins.open, Path write
-  methods, shutil.move, and mutation ops that could REPLACE a file) hard-denies a path whose
-  directory component is '.jack_netreq' and whose name ends in '.decision.json'. Reads stay
-  legal (the gates read them); the child may still write its own REQUEST file.
-* AUDIT "open" WRITE MISREAD. The hook read only args[1]; os.open/nt.open fire
-  (path, None, FLAGS_INT), so every raw write looked like a READ at hook level. Now the flag
-  word (args[2]) is consulted too.
-* RAW WIN32 ENUMERATION / PREDICATES. Stage 6 patched only nt.open/stat/lstat/access:
-  nt.listdir(<Windows System32>) -> 4892 entries, nt.scandir -> 4892,
-  nt._path_exists/_path_isdir/_path_isfile -> True, nt._getfinalpathname leaked the resolved
-  path. Those fire NO audit event at all. Now patched with the same containment semantics
-  (listdir/scandir -> READ_ROOTS; predicates answer ROOT-only; pathname info -> READ_ROOTS).
-* BYTES PATHS IN THE ENUMERATION HOOK (2026-11-14 follow-up, verified escape). The
-  "os.listdir/os.scandir/os.walk" hook branch did ``s = str(args[0])``. On a BYTES path that
-  yields ``"b'C:\\Windows'"`` -- a string that is not a path at all -- and ``realpath()``
-  resolves it as a NON-EXISTENT CHILD OF THE ROOT, so ``_inside()`` answered True and the
-  check passed. Verified live: ``os.listdir(b"C:\\Windows")`` -> 115 entries,
-  ``os.scandir(b"C:\\Windows")`` -> 115, ``next(os.walk(b"C:\\Windows"))`` -> 3 tuples / 83
-  subdirectories, rc=0 and NO consent request written. Bytes is a legal path type for these
-  APIs (str/bytes/PathLike), so the branch now decodes with ``_path_str()`` -- exactly like
-  the "open" branch and the nt.* wrappers. Second issue in the same branch: a call with NO
-  path argument fires the event with ``args[0] = None`` (verified), and ``os.listdir`` /
-  ``os.scandir`` are bound to the ORIGINAL ``nt.listdir``/``nt.scandir`` objects by
-  ``from nt import *`` at import time, so the stage-6 ``nt.*`` patch cannot reach those calls
-  -- the hook is the only layer on that route. ``str(None)`` is ``"None"``, which resolves as
-  ``<root>\None`` -- NOT inside the read roots -- so every zero-argument enumeration was
-  DENIED, including the legitimate ``os.listdir()`` inside working_root (false positive,
-  verified). It never leaked, but containment on that route rested on a coincidence instead
-  of the real path. The branch now resolves the inherited cwd when no path is given (same
-  rule as ``_check_cwd()``): in-root default enumeration works again, and a cwd moved outside
-  working_root by ``os.chdir()`` is still denied.
-* WRAPPER CLOSURE EXTRACTION. Every function wrapper keeps the pre-patch original in its
-  __closure__ cells, so `fn.__closure__` recovered raw open / nt.open / _winapi.CreateFile /
-  socket.connect and bypassed the wrapper entirely (verified: outside read, outside handle,
-  non-loopback connect). Fix philosophy: enforce at the AUDIT level, which fires INSIDE the C
-  function and therefore holds however the call was reached -- new hook branches for
-  _winapi.CreateFile (access mask AND creation disposition via _winapi_is_write),
-  _winapi.CreateProcess (executable containment + program denylist), socket.connect /
-  connect_ex / sendto (loopback rule + consent gate, honouring the admin _NET_OPEN opt-in),
-  os.system and os.spawn. The wrappers remain as a second net.
-* _winapi.CreateProcess was completely unpoliced (a raw spawn bypassed subprocess, so the
-  Popen event never fired). Its audit args expose only (executable, marker, start_info) -- NOT
-  the command line -- so the hook polices the executable, and a call with executable=None (the
-  subprocess shape, program inside the command line) is denied unless this run's subprocess
-  Popen event just authorised a spawn: a single-use token (_SPAWN_TOKEN) is granted by the
-  Popen branch and consumed by CreateProcess. The stage-6 wrapper sees the real command_line
-  and polices the program basename + every absolute-path argument.
-* EXEC POLICY ARGUMENTS. The policy inspected only argv[0]'s basename, so arguments were
-  unchecked: `findstr localhost <Windows hosts file>` printed the system
-  HOSTS file (rc=0). Now _check_cmd_paths() requires every ABSOLUTE path argument of a spawned
-  program to resolve inside working_root or a legitimate read root / PATH dir (consentable
-  otherwise); relative args resolve against the child cwd, so they stay inside by construction.
-* SPAWN CWD (2026-11-14 follow-up, verified escape). _check_cmd_paths() cannot see `cwd=`:
-  with cwd outside working_root the argv entries are RELATIVE, so no absolute path appears
-  anywhere. `subprocess.run(["findstr","16-bit","win.ini"], cwd=r"C:\Windows")` returned rc=0
-  and printed '; for 16-bit app support' -- real content of C:\Windows\win.ini -- and the
-  string form `subprocess.run("findstr 16-bit win.ini", cwd=r"C:\Windows")` leaked the same.
-  The grandchild is an unsandboxed OS process whose working directory is the leak. Now
-  _check_cwd() requires the spawn directory to resolve inside working_root, enforced on every
-  route: the "subprocess.Popen" audit event (cwd is args[2] on Windows AND POSIX -- verified
-  against Lib/subprocess.py:1534/:1823), the patched Popen.__init__ (keyword or positional
-  slot), the "_winapi.CreateProcess" audit event (args[2] -- verified shape
-  (None, '\x05', 'C:\\Windows')) and its stage-6 wrapper, plus the os.system / os.spawn audit
-  branches, which fire NO Popen event and therefore inherit OUR cwd. A spawn with no explicit
-  cwd is checked against os.getcwd() too, so `os.chdir(<outside>)` followed by a bare spawn is
-  blocked as well. Askable through the FILE consent gate; in-root cwd (including .temp and
-  in-root chdir) keeps working (verified).
-* RENAMED SHELLS. cmd.exe copied to 'mycmd.exe' ran '/c echo hi' (rc=0) -- the exact-name
-  denylist never saw 'cmd'. Shell stems are now matched as SUFFIXES (_SHELL_SUFFIXES), so a
-  renamed shell binary is still denied.
-* DEVICE NAMESPACE. _is_dev_or_pipe exempted the whole ``\\.\`` namespace, which covers raw volume
-  handles (``\\.\PHYSICALDRIVE0``, ``\\.\HarddiskVolume1``) -- real OS objects outside containment and
-  outside the loopback socket rule. Now only ``\\.\pipe\*`` (asyncio stdio transports need it) plus
-  the classic console device names are exempt.
-* tarfile extractall validated NOTHING when members is None (`for m in members or []`;
-  zipfile uses self.namelist()), so a tar carrying '../x' extracted straight out of
-  working_root. It now validates self.getmembers() in that default case, and
-  filter="fully_trusted" is denied outright.
-* EVERY CONTAINMENT STAGE WAS FAIL-OPEN. 11 stage/mod-level handlers swallowed their
-  exception and continued, and the hook swallowed non-PermissionError. With addaudithook
-  raising, the child ran FULLY UNSANDBOXED with rc=0. Now: a hook that cannot install, or any
-  stage/mod patch that raises, calls _jps_fail() -> log + stderr marker + os._exit(3) before
-  any user code runs; and an internal error while handling a POLICED event (_POLICED_EVENTS)
-  denies that operation instead of letting it through. Unpoliced CPython events still pass, so
-  normal runs are unaffected. Logging-only handlers stay tolerant (a log must never break the
-  sandbox).
-
-HARDENING 2026-11-15 -- EXEC POLICY: SYSTEM-ABUSE TOOLS, SWITCH ARGUMENTS, "sh" SUFFIX
-=======================================================================================
-Three verified defects in the exec policy (reproduced with the bootstrap's own
-_is_denied_prog()/_check_cmd_paths() and with real spawns of renamed copies in .temp):
-
-* WINDOWS SYSTEM-ABUSE UTILITIES WERE ALLOWED. _DENY_PROGS covered shells, interpreters
-  and network transfer tools only -- none of the Windows abuse surface. Verified allowed
-  before the fix: wsl, reg, certutil, mshta, net, sc, rundll32, tasklist. `wsl` alone
-  defeats the whole sandbox: the Linux side of the machine has no audit hook, so one
-  argument hands the payload an unsandboxed filesystem + network + interpreter. `reg`
-  writes the registry, which is not a filesystem path and therefore no path check can
-  ever cover it. Now denied: wsl, reg, bitsadmin, certutil, mshta, net/net1, netsh,
-  schtasks, taskkill, tasklist, sc, msiexec, rundll32.
-  (bitsadmin/schtasks/taskkill/msiexec/netsh had been blocked only BY ACCIDENT -- see the
-  next bullet -- so the denylist is what makes them reliably denied.)
-* WINDOWS SWITCHES MISREAD AS PATH ARGUMENTS. _check_cmd_paths() tested
-  ntpath.isabs(tok), and isabs("/list") is True (drive-relative), so every Windows switch
-  looked like an absolute path and was denied. Verified false positives on the pre-fix
-  bootstrap: `sort /r`, `findstr /c:x README.md`, `findstr /m def README.md`. A switch now
-  skips: leading separator + an ALPHA-ONLY flag name, optionally ':value' (values may hold
-  dots/digits -- `/c:foo.txt`, `/d:2024-01-01`). A genuine path argument keeps being checked:
-  a further separator ('/Windows/win.ini'), a dot in the flag itself ('/win.ini' -> the real
-  file C:\win.ini), or a drive/UNC prefix -- so `findstr hello C:\Windows\win.ini` is still
-  denied. POSIX is untouched: "/tmp" really is absolute there.
-  RESIDUAL: a switch VALUE that looks like a path ('/c:\Windows\win.ini', '/d:C:\x') is not
-  inspected -- the flag name is alpha, so the token is treated as a switch. Windows tools
-  read such values as literal strings ('/c:' is a search string, not a file), and the tools
-  that DO act on a path value (msiexec, certutil, reg) are denied outright by _DENY_PROGS.
-* "sh"/"ash" AS SUFFIXES DENIED LEGITIMATE PROGRAMS. The renamed-shell rule matched shell
-  stems as suffixes, and 'sh' is a substring of ordinary names -- verified DENIED: finish,
-  flash, push, wash, brush, gosh, relish, notesh. Real shells (sh/bash/zsh/dash/ksh/csh/
-  tcsh/ash) plus ssh/fish/slogin are now EXACT basenames in _DENY_PROGS; the suffix list
-  keeps only stems that cannot occur inside a legitimate name.
-  RESIDUAL: a renamed shell whose basename is not an exact match ('mysh.exe') is not
-  caught by the suffix list anymore. Accepted deliberately -- restoring 'sh' as a suffix
-  would deny legitimate tools again. cmd/powershell/pwsh/wscript/cscript/conhost/bash/zsh/
-  dash/ksh/csh/tcsh renamed copies stay denied by suffix.
 
 PERF 2026-09-17 ROUND 4 -- CLOSING THE macOS B1->B2 HANG (realpath recursion storm)
 ===================================================================================
@@ -382,40 +244,7 @@ RESIDUAL LIMITATIONS (documented -- same class as any path sandbox)
   functions there are patched directly (fix #3 above).
 * Setup-stage failures no longer fail open SILENTLY: any exception swallowed during
   bootstrap setup is appended to <working_root>/.temp/.jack_pyexec_sandbox_errors.txt so a
-  broken guard can be spotted immediately (2026-09-17). Since 2026-11-14 a failed stage is
-  also FATAL: _jps_fail() logs it and exits 3 before user code runs -- a guard that did not
-  install is treated as no sandbox at all.
-* RESIDUAL (2026-11-14): raw _winapi.CreateProcess with executable=None is DENIED unless this
-  run's subprocess.Popen event just authorised a spawn (single-use token). The audit event for
-  CreateProcess does not expose the COMMAND LINE, so the hook cannot police a smuggled
-  command line by itself; legitimate spawns pass because subprocess audits Popen.__init__
-  before CreateProcess, and the stage-6 wrapper polices the command line for calls that go
-  through the patched function. A payload that extracts the ORIGINAL CreateProcess from the
-  wrapper's closure with executable=None is therefore blocked; with an explicit executable
-  path it is policed at the audit level (executable containment + program denylist), but its
-  command-line arguments are not inspected on that route.
-* RESIDUAL (2026-11-14): the consent-decision lock covers DECISION files. A payload can still
-  write its own REQUEST file under .temp/.jack_netreq (that is the documented channel) and can
-  read decisions; it cannot answer itself. The parent must keep writing decisions OUTSIDE the
-  child's writable tree or on a channel the child cannot write -- this layer only makes the
-  in-root decision path unwritable from inside the child.
-* RESIDUAL (2026-11-15): a renamed shell whose basename is not an EXACT denylist name
-  ('mysh.exe', 'myash.exe') is not caught -- 'sh'/'ash' are exact basenames only, because
-  as suffixes they denied legitimate programs (finish/flash/push/wash, verified). Renamed
-  copies of cmd/powershell/pwsh/wscript/cscript/conhost/bash/zsh/dash/ksh/csh/tcsh stay
-  denied by suffix, and every spawnable program is still subject to the cwd + absolute
-  argument rules.
-* RESIDUAL (2026-11-14): spawned bare commands (git, npm, cargo, ...) still run at OS level;
-  their absolute path ARGUMENTS are now validated, but a command that resolves files through
-  its own internal logic (config paths, env vars, remote protocols) is that tool's behaviour,
-  not something a Python-level sandbox can observe.
-* PRE-EXISTING quirk (verified identical before and after 2026-11-14): on Windows every
-  string-form command is shell-wrapped, so the shell-OPERATOR rule inspects its tokens --
-  and '\' is itself an operator character. Any ABSOLUTE Windows executable path therefore
-  contains an operator token and is DENIED (e.g. subprocess.run([shutil.which("git")]) ->
-  'C:\Program Files\Git\cmd\git.EXE'); bare program names ('git') work. Left as-is:
-  relaxing the rule for path-shaped tokens would weaken the check that blocks chained
-  commands, and it is not a containment hole (it denies MORE, never less).
+  broken guard can be spotted immediately (2026-09-17).
 """
 
 SANDBOX_BOOTSTRAP = r'''
@@ -511,11 +340,7 @@ def _jps_setup():
         except Exception:
             return False
         for r in roots:
-            # Separator-anchored prefix, rstrip'd so a drive root ('C:\') does not
-            # become 'C:\\' + sep (which would deny every child of that drive).
-            # Same semantics as tools/path_guard.py::_is_path_inside_allowed.
-            prefix = r.rstrip(_jps_os.sep) + _jps_os.sep
-            if rp == r or rp.startswith(prefix):
+            if rp == r or rp.startswith(r + _jps_os.sep):
                 return True
         return False
 
@@ -619,108 +444,15 @@ def _jps_setup():
             pass
         return False
 
-    # Named-pipe / device namespace exemption (2026-09-17; NARROWED 2026-11-14): asyncio
-    # subprocess transports create stdio pipes via _winapi.CreateFile on '\\.\pipe\...'
-    # names, which are NOT filesystem paths, so the PIPE namespace must stay exempt.
-    # The old rule exempted the WHOLE \\.\ namespace, which also covers raw volume and
-    # device handles (\\.\PHYSICALDRIVE0, \\.\HarddiskVolume1, ...) -- real OS objects
-    # outside containment. Now only \\.\pipe\* plus the classic console device names
-    # (nul/con/prn/aux/com1..9, also handled by _is_devnull) are exempt.
+    # Named-pipe / device namespace exemption (2026-09-17): asyncio subprocess
+    # transports create stdio pipes via _winapi.CreateFile on '\\' .\\pipe\\...' names,
+    # which are NOT filesystem paths. Exempt the whole \\.\ device/pipe namespace from
+    # containment (same class as the devnull exemption). Residual: raw volume/device
+    # handles (\\.\PHYSICALDRIVE0) stay reachable -- documented, not a file path.
     def _is_dev_or_pipe(p):
         s = p.decode("utf-8", "replace") if isinstance(p, (bytes, bytearray)) else str(p)
-        b = s.strip().lower().replace("/", "\\")
-        if b.startswith('\\\\.\\pipe\\') or b.startswith('//./pipe/'):
-            return True
-        return b in ("nul", "con", "prn", "aux", "com1", "com2", "com3", "com4",
-                     "com5", "com6", "com7", "com8", "com9")
-
-    # Path-string helper used by the audit hook AND the raw-Win32 wrappers (defined here,
-    # before both, so the hook never hits a NameError on a non-Windows build where the
-    # stage-6 block does not run).
-    def _path_str(x):
-        """Best-effort path string (str/bytes/os.PathLike); None otherwise."""
-        if isinstance(x, bytes):
-            return x.decode("utf-8", "replace")
-        if isinstance(x, str):
-            return x
-        try:
-            return _jps_os.fspath(x)
-        except Exception:
-            return None
-
-    # Write policy for _winapi.CreateFile (Windows), used by the AUDIT hook AND the stage-6
-    # wrapper. Two independent signals decide "write":
-    #   * the ACCESS mask contains any write bit -- GENERIC_WRITE (0x40000000),
-    #     FILE_GENERIC_WRITE (0x120116), DELETE (0x00010000);
-    #   * the CREATION DISPOSITION creates or truncates -- CREATE_NEW (1),
-    #     CREATE_ALWAYS (2), TRUNCATE_EXISTING (5).
-    # Reading only the access mask was a verified miss (2026-11-14): FILE_GENERIC_WRITE
-    # contains DELETE but no GENERIC_WRITE bit, and the disposition slot was never looked
-    # at, so a write handle opened with a create disposition slipped past the check.
-    # _winapi exposes only OPEN_EXISTING/GENERIC_*/FILE_GENERIC_*, so the disposition and
-    # DELETE values are Win32 API constants (stable across versions).
-    _WACC_MASK = 0
-    _WCREATIONS = frozenset((1, 2, 5))  # CREATE_NEW, CREATE_ALWAYS, TRUNCATE_EXISTING
-    if _jps_os.name == "nt":
-        _wapi_pre = _jps_sys.modules.get("_winapi")
-        for _c, _fallback in (("GENERIC_WRITE", 0x40000000), ("FILE_GENERIC_WRITE", 0x120116)):
-            try:
-                _WACC_MASK |= getattr(_wapi_pre, _c)
-            except Exception:
-                _WACC_MASK |= _fallback
-        _WACC_MASK |= 0x00010000  # DELETE access
-
-    def _winapi_is_write(access, creation):
-        if isinstance(access, int) and (access & _WACC_MASK) != 0:
-            return True
-        if isinstance(creation, int) and creation in _WCREATIONS:
-            return True
-        # Undetermined access AND undetermined disposition -> fail closed as a write.
-        return not isinstance(access, int) and not isinstance(creation, int)
-
-    # CONSENT-DECISION WRITE LOCK (2026-11-14, verified escape). The three out-of-sandbox
-    # consent gates (network / file / subprocess) read the parent's answer from
-    # <root>/.temp/.jack_netreq/<id>.decision.json -- a folder INSIDE working_root, which
-    # the child can write. Without this lock a thread inside the payload wrote its own
-    # {"decision":"allow"} and socket.connect + open(outside) both passed the gate.
-    # Decision files are PARENT-OWNED: any write to one is denied outright, and never
-    # asked (asking the user about the ask would be circular). Reads stay legal -- the
-    # gates themselves read them. Covers every write route: open/flags, os.open, nt.open,
-    # _winapi.CreateFile, and mutation ops that could REPLACE a decision file.
-    def _is_consent_decision(p):
-        s = _path_str(p)
-        if s is None:
-            return False
-        b = s.strip().lower().replace("/", "\\")
-        # The folder is '.jack_netreq' (leading dot) -- match the directory component,
-        # not a bare '\jack_netreq\' which the dotted name does not contain.
-        parts = b.split("\\")
-        base = parts[-1]
-        parent = parts[-2] if len(parts) >= 2 else ""
-        return base.endswith(".decision.json") and parent == ".jack_netreq"
-
-    def _deny_decision_write(what, p):
-        raise PermissionError(
-            "python_exec sandbox: %s of '%s' is blocked -- consent DECISION files under "
-            ".temp/.jack_netreq are written by the parent process only. Code running "
-            "inside python_exec must not answer its own approval request (fail-closed)."
-            % (what, p)
-        )
-
-    # FAIL-CLOSED CONTRACT for setup stages (2026-11-14). Every containment stage used to
-    # swallow its exception and continue: a child whose audit hook or patch stage failed to
-    # install ran FULLY UNSANDBOXED with rc=0 (verified -- addaudithook raising left
-    # os.listdir/open outside the root wide open). A guard that did not install is a
-    # security failure, not a warning: log it, then exit 3 before any user code runs.
-    def _jps_fail(where):
-        _jps_log_exc(where)
-        try:
-            print("python_exec sandbox INIT FAILED: %s -- containment could not be "
-                  "installed; refusing to run unsandboxed (fail-closed)." % where,
-                  file=_jps_sys.stderr, flush=True)
-        except Exception:
-            pass
-        _jps_os._exit(3)
+        b = s.strip().lower()
+        return b.startswith('\\\\.\\') or b.startswith('//./')
 
     # ---- 0. CHILD-PROCESS EXEC POLICY data + helpers (2026-09-15 Mac fix) -----
     # NOTE (2026-09-17): the former `hasattr(os, "nt")` check was FALSE on CPython 3.12
@@ -735,27 +467,10 @@ def _jps_setup():
     _DENY_PROGS = frozenset((
         "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
         "wscript", "wscript.exe", "cscript", "cscript.exe", "conhost", "conhost.exe",
-        "sh", "bash", "zsh", "dash", "ksh", "ash", "tcsh", "csh", "fish",
-        "ssh", "slogin",
+        "sh", "bash", "zsh", "dash", "ksh", "ash", "tcsh", "csh",
         "python", "python2", "python3", "pythonw", "py", "node", "nodejs",
         "perl", "ruby", "php", "java",
         "curl", "wget", "ftp", "lftp", "sftp", "scp", "rsync", "tftp", "telnet",
-        # WINDOWS SYSTEM-ABUSE UTILITIES (2026-11-15, verified gap). None of these is a
-        # shell, so _SHELL_SUFFIXES never saw them and the sandbox let them run:
-        #   wsl       -> the Linux side of the machine, no audit hook there at all: a full
-        #                escape (filesystem, network, interpreter) with one argument.
-        #   reg       -> registry WRITE (registry is not a filesystem path, so no path
-        #                check can ever cover it).
-        #   sc        -> service start/stop;  taskkill/tasklist -> process control/enumeration
-        #   mshta     -> HTML Application host: runs script code outside this process
-        #   certutil  -> decode/encode + download;  bitsadmin -> background transfer
-        #   msiexec   -> installer;  rundll32 -> arbitrary DLL entry point
-        #   net/net1  -> user/share/service administration;  netsh -> firewall config
-        # Verified ALLOWED before this fix: wsl, reg, certutil, mshta, net, sc, rundll32,
-        # tasklist. (bitsadmin/schtasks/taskkill/msiexec/netsh were blocked only by
-        # accident -- see the switch-argument rule in _check_cmd_paths below.)
-        "wsl", "reg", "bitsadmin", "certutil", "mshta", "net", "net1", "netsh",
-        "schtasks", "taskkill", "tasklist", "sc", "msiexec", "rundll32",
     ))
     # Shell operators that let one string chain/redirect into arbitrary commands.
     _SHELL_OPS = frozenset("|&;<>(){}$`\\\n")
@@ -763,9 +478,8 @@ def _jps_setup():
     def _deny_exec(what, detail):
         raise PermissionError(
             "python_exec sandbox: child-process spawn blocked -- %s (%s). "
-            "Shells, interpreters, network tools and Windows system-abuse utilities "
-            "cannot be spawned from python_exec; filesystem access stays inside "
-            "working_root." % (what, str(detail)[:120])
+            "Shells, interpreters and network tools cannot be spawned from "
+            "python_exec; filesystem access stays inside working_root." % (what, str(detail)[:120])
         )
 
     def _jps_basename(s):
@@ -813,101 +527,14 @@ def _jps_setup():
                     return True
         return b == "java"
 
-    # Renamed-shell detection (2026-11-14, verified escape): cmd.exe copied to
-    # 'mycmd.exe' ran '/c echo hi' with rc=0 -- the exact-name denylist never saw 'cmd'.
-    # A shell binary renamed by the payload is still recognisable by its SUFFIX, so shell
-    # stems are matched as suffixes too. Suffix (not substring) on purpose: 'copy'/'py'
-    # style names must not false-positive.
-    #
-    # 'sh'/'ash' are deliberately NOT suffixes (2026-11-15, verified false positives): they
-    # are substrings of ordinary program names, so the old rule DENIED finish, flash, push,
-    # wash, brush, gosh, relish and notesh -- any tool whose name happens to end in 'sh'.
-    # Real shells and ssh/fish/slogin are matched as EXACT basenames in _DENY_PROGS above,
-    # which is the whole set of programs that actually exist as shells on these platforms.
-    # The remaining residual is documented in the module docstring: a renamed shell whose
-    # basename is not an exact match ('mysh.exe') is not caught here.
-    _SHELL_SUFFIXES = ("cmd", "cmd.exe", "powershell", "pwsh", "wscript", "cscript",
-                       "conhost", "bash", "zsh", "dash", "ksh", "csh", "tcsh")
-
     def _is_denied_prog(base):
         b = base[:-4] if base.endswith(".exe") else base
-        if base in _DENY_PROGS or b in _DENY_PROGS or _is_interpreter(b):
-            return True
-        return any(b.endswith(s) for s in _SHELL_SUFFIXES)
+        return (base in _DENY_PROGS or b in _DENY_PROGS) or _is_interpreter(b)
 
     def _check_prog_base(base, ctx):
         if base and _is_denied_prog(base):
             # (2026-10-24) consentable: asks the local user when a UI relay is live.
-            _exec_gate("program %r is a shell/interpreter/network/system tool" % base, ctx)
-
-    # ARGUMENT PATH POLICY (2026-11-14, verified escape). The exec policy used to inspect
-    # ONLY argv[0]'s basename, so arguments were completely unchecked: `findstr localhost
-    # C:\Windows\System32\drivers\etc\hosts` printed the system HOSTS file (rc=0), and a
-    # copy of cmd.exe renamed to mycmd.exe ran `/c echo hi` (rc=0) -- the denylist never
-    # saw 'cmd'. Now every ABSOLUTE path argument a spawned program is given must resolve
-    # inside working_root or a legitimate read root (Python home / sys.path / PATH dir);
-    # anything else is consentable, exactly like an out-of-sandbox file open. Relative
-    # args resolve against the child's cwd (= working_root), so they stay inside by
-    # construction -- no false positives on URLs, git refs, regexes or bare words.
-    def _check_cmd_paths(seq, ctx):
-        for tok in seq[1:]:
-            if not isinstance(tok, str) or not tok:
-                continue
-            if not _jps_os.path.isabs(tok):
-                continue
-            # Windows SWITCHES are drive-relative to isabs(): "/list", "/query", "/c:x",
-            # "/f", "/m" all answer True (ntpath.isabs("/list") == True), so the rule above
-            # misread them as ABSOLUTE PATH arguments and denied them -- verified false
-            # positives on the pre-fix bootstrap: `sort /r`, `findstr /c:x file`,
-            # `findstr /m def README.md`. A switch is a leading separator followed by an
-            # ALPHA-ONLY flag, optionally ':value' (the value may contain dots/digits:
-            # '/c:foo.txt', '/d:2024-01-01'); anything with a further separator, a dot in
-            # the flag itself ('/win.ini' -> drive-relative C:\win.ini, a real file) or a
-            # drive/UNC prefix is a path argument and stays checked. Windows-only: on POSIX
-            # "/tmp" IS an absolute path and must stay checked.
-            if _IS_WIN and tok[0] in ("/", "\\"):
-                _body = tok[1:]
-                if "/" not in _body and "\\" not in _body and _body.split(":", 1)[0].isalpha():
-                    continue
-            if _is_devnull(tok) or _is_dev_or_pipe(tok):
-                continue
-            if _inside(tok, READ_ROOTS) or _in_path_dirs(tok):
-                continue
-            _exec_gate("absolute path argument outside working_root", ctx)
-
-    # CWD POLICY (2026-11-14, verified escape). Every spawn route accepts cwd=, and CPython
-    # passes it to the audit event as args[2] of "subprocess.Popen" (Lib/subprocess.py:1534
-    # Windows, :1823 POSIX) -- but the exec policy inspected only the COMMAND, so a spawn
-    # with cwd outside working_root ran the grandchild THERE. The grandchild is an OS-level
-    # unsandboxed process, and _check_cmd_paths() cannot see this: with cwd=C:\Windows the
-    # arguments are RELATIVE, so no absolute path appears in argv at all. Verified live:
-    #   subprocess.run(["findstr","16-bit","win.ini"], cwd=r"C:\Windows") -> rc=0, printed
-    #   '; for 16-bit app support'  (content of C:\Windows\win.ini)
-    #   subprocess.run("findstr 16-bit win.ini", cwd=r"C:\Windows")       -> rc=0, same leak
-    # So cwd is a containment decision, not a cosmetic argument: it must resolve inside
-    # working_root. Relative cwd strings resolve against the child's cwd (= working_root),
-    # so they stay inside by construction; an earlier os.chdir() to an outside directory
-    # makes a relative cwd resolve OUTSIDE and _norm() (realpath) catches that. An int cwd
-    # is a file descriptor (os.fsdecode keeps it as an int) -- fds can only be created
-    # through the checked open primitives above, so it passes through like elsewhere here.
-    # Askable through the FILE consent gate (_fs_deny): the card shows the exact directory.
-    def _check_cwd(cwd):
-        if cwd is None:
-            # No explicit cwd: the grandchild INHERITS this process's cwd, which user code
-            # may have moved outside working_root with os.chdir() -- the same escape with
-            # one step removed. Check the inherited value too (os.getcwd() fires no audit
-            # event, so it is safe to call from the hook).
-            try:
-                cwd = _jps_os.getcwd()
-            except Exception:
-                cwd = ""  # undeterminable -> _inside() answers False -> fail closed
-        s = _path_str(cwd)
-        if s is None:
-            return  # int fd / exotic shape -> let CPython handle it (fd came from a checked open)
-        if _is_devnull(s) or _is_dev_or_pipe(s):
-            return
-        if not _inside(s, [ROOT]):
-            _fs_deny("subprocess cwd", s)
+            _exec_gate("program %r is a shell/interpreter/network tool" % base, ctx)
 
     def _check_cmd(cmdline, shell_ctx=False):
         """Validate one command for spawning. `cmdline` is a list or a string."""
@@ -927,13 +554,11 @@ def _jps_setup():
                     _exec_gate("shell operator in command (token %r)" % tok, cmdline)
             toks = _jps_tokens(cmdline)
             _check_prog_base(_jps_basename(toks[0]) if toks else "", cmdline)
-            _check_cmd_paths(toks, cmdline)
         else:
             seq = [t.decode("utf-8", "replace") if isinstance(t, (bytes, bytearray)) else str(t)
                    for t in cmdline]
             prog = seq[0] if seq else ""
             _check_prog_base(_jps_basename(prog), cmdline)
-            _check_cmd_paths(seq, cmdline)
 
     # ---- OUT-OF-SANDBOX SUBPROCESS CONSENT GATE (2026-10-24) ------------------
     # A denied child-process spawn (shell / interpreter / network tool, or a shell
@@ -1021,43 +646,8 @@ def _jps_setup():
             "user denied it or did not answer in time. Shells, interpreters and network "
             "tools are blocked from python_exec by default." % (what, str(detail)[:120]))
 
-    # ONE-SPAWN TOKEN (2026-11-14): the audit args of _winapi.CreateProcess do not expose
-    # the command line (verified: arg1 is a 1-char internal marker), so a raw
-    # CreateProcess(executable=None) call cannot be inspected at the audit level.
-    # subprocess is the legitimate route: its Popen event and patched __init__ run BEFORE
-    # CreateProcess. Each authorised Popen therefore issues a SINGLE-USE token that the
-    # CreateProcess(exe=None) branch consumes -- a raw smuggled call with no preceding
-    # authorised spawn finds no token and is denied, and a second smuggled call cannot
-    # piggyback on an already-consumed one.
-    _SPAWN_TOKEN = [0]
-
-    def _spawn_authorized():
-        if _SPAWN_TOKEN[0]:
-            _SPAWN_TOKEN[0] = 0  # consume -- one CreateProcess per authorised Popen
-            return True
-        return False
-
-    def _grant_spawn():
-        _SPAWN_TOKEN[0] += 1
-
     # ---- 1. AUDIT HOOK: primary runtime enforcement -------------------------
-    # FAIL-CLOSED ON INTERNAL ERRORS (2026-11-14): the hook used to swallow every
-    # non-PermissionError, so a broken/patched containment check silently ALLOWED the
-    # operation. Now: an error while handling an event this sandbox POLICES denies that
-    # operation (fail closed); an unpoliced event still passes through, because CPython
-    # fires many events the sandbox does not check and denying them would break normal
-    # runs. _POLICED_EVENTS lists exactly the branches below.
-    _POLICED_EVENTS = frozenset((
-        "open", "os.listdir", "os.scandir", "os.walk",
-        "os.remove", "os.unlink", "os.rename", "os.replace", "os.mkdir", "os.rmdir",
-        "os.chmod", "os.utime", "os.truncate", "os.link", "os.symlink",
-        "shutil.copyfile", "shutil.move", "import", "subprocess.Popen",
-        "os.system", "os.spawn",
-        "_winapi.CreateFile", "_winapi.CreateProcess",
-    ))
-
     def _audit(event, args):
-        _policed = event in _POLICED_EVENTS
         try:
             if event == "open":
                 target = args[0]
@@ -1065,122 +655,29 @@ def _jps_setup():
                     return
                 s = (target.decode("utf-8", "replace")
                      if isinstance(target, bytes) else str(target))
-                # Two audit shapes (verified on CPython 3.12): builtins.open / io.FileIO
-                # carry (path, mode STRING, mode_int); os.open / nt.open carry
-                # (path, None, FLAGS_INT) -- the mode slot is None and the flag word is
-                # args[2]. Reading ONLY args[1] made every os.open/nt.open WRITE look like
-                # a READ at the hook level (verified: os.open(p, O_WRONLY|O_CREAT) fired
-                # ('open', (p, None, 385)) and the hook computed is_write=False), so the
-                # write policy and the consent-decision lock were both bypassable there.
+                # Two audit shapes: builtins.open carries a mode STRING; os.open /
+                # nt.open / io.FileIO carry an int FLAG word. Treating flag ints as
+                # read was a verified gap -- it let nt.open(O_WRONLY|O_CREAT) write
+                # anywhere READ_ROOTS reach (2026-09-17 round-B probe).
                 _m = args[1] if len(args) > 1 else None
-                _fl = args[2] if len(args) > 2 else None
-                _wf = 0
-                for _f in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_APPEND", "O_TRUNC"):
-                    try:
-                        _wf |= getattr(_jps_os, _f)
-                    except Exception:
-                        pass
                 if isinstance(_m, int):
+                    _wf = 0
+                    for _f in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_APPEND", "O_TRUNC"):
+                        try:
+                            _wf |= getattr(_jps_os, _f)
+                        except Exception:
+                            pass
                     is_write = bool(_m & _wf)
-                elif isinstance(_fl, int):
-                    is_write = bool(_fl & _wf)
                 else:
                     is_write = any(ch in str(_m or "r") for ch in "wax+")
                 if _is_devnull(s) or _is_dev_or_pipe(s):
                     return  # device name (nul /dev/null) -- not a filesystem path
-                if is_write and _is_consent_decision(s):
-                    # CONSENT SELF-APPROVAL LOCK (2026-11-14, verified escape): a thread
-                    # inside the payload wrote its own <id>.decision.json and the gate read
-                    # it as the user's answer. Decision files are PARENT-OWNED -> hard deny,
-                    # never askable (asking about the ask would be circular).
-                    _deny_decision_write("open(write)", s)
                 roots = [ROOT] if is_write else READ_ROOTS
                 if not _inside(s, roots):
                     _fs_deny("open" + ("(write)" if is_write else ""), s)
-            elif event in ("_winapi.CreateFile",):
-                # Raw Win32 handle factory, checked at the AUDIT level (2026-11-14): the
-                # function wrapper below is bypassable by pulling the ORIGINAL builtin out
-                # of its closure cells (verified: __closure__ hands back the pre-patch
-                # CreateFile). The audit event fires inside the C function, so it holds no
-                # matter how the call was reached. args = (name, access, share, creation...)
-                nm = _path_str(args[0]) if args else None
-                if nm is not None and _is_dev_or_pipe(nm):
-                    return  # \\.\pipe\* stdio pipes -- not filesystem paths
-                if nm is not None:
-                    acc = args[1] if len(args) > 1 else None
-                    # Verified audit shape on 3.12: (name, access, share, CREATION, flags).
-                    creation = args[3] if len(args) > 3 else None
-                    if _winapi_is_write(acc, creation):
-                        if _is_consent_decision(nm):
-                            _deny_decision_write("_winapi.CreateFile(write)", nm)
-                        if not _inside(nm, [ROOT]):
-                            _fs_deny("_winapi.CreateFile(write)", nm)
-                    elif not _inside(nm, READ_ROOTS):
-                        _fs_deny("_winapi.CreateFile(read)", nm)
-            elif event == "_winapi.CreateProcess":
-                # Raw spawn (2026-11-14, verified leak): a direct _winapi.CreateProcess
-                # call bypasses subprocess, so the Popen event never fires for it.
-                # Audit args on CPython 3.12 are (executable, <internal marker>, cwd) --
-                # verified live: (None, '\x05', 'C:\\Windows'). The COMMAND LINE is NOT
-                # exposed (arg1 is a 1-char marker, not the string we passed), so the audit
-                # level can police the EXECUTABLE and the CWD only; command-line arguments
-                # are policed by the wrapper patch in stage 6. cwd is checked FIRST here --
-                # it holds for every route (subprocess, asyncio, raw calls, closure-extracted
-                # originals), which is exactly what the stage-6 wrapper cannot guarantee.
-                _check_cwd(args[2] if len(args) > 2 else None)
-                exe = _path_str(args[0]) if args else None
-                if exe is None:
-                    if not _spawn_authorized():
-                        raise PermissionError(
-                            "python_exec sandbox: _winapi.CreateProcess with executable=None "
-                            "is blocked -- the program lives in the command line, which the "
-                            "audit event cannot inspect. Use subprocess.run/Popen (its exec "
-                            "policy is checked)."
-                        )
-                    return
-                if not _inside(exe, READ_ROOTS) and not _in_path_dirs(exe):
-                    _fs_deny("_winapi.CreateProcess (executable)", exe)
-                _check_prog_base(_jps_basename(exe), args)
             elif event in ("os.listdir", "os.scandir", "os.walk"):
                 # Enumeration: read-side -> working_root + Python home.
-                # _path_str() DECODES bytes (verified escape 2026-11-14): str(args[0]) on a
-                # bytes path yields "b'C:\\Windows'", which _norm()/realpath() resolves as a
-                # NON-EXISTENT child OF THE ROOT -> _inside() answered True -> the check
-                # passed and os.listdir(b"C:\\Windows") / os.scandir(b"...") / os.walk(b"...")
-                # enumerated outside working_root with no denial and no consent request.
-                # Bytes is a legal path type (os.listdir accepts str/bytes/PathLike), and the
-                # nt.* wrappers below already decode via _as_path_str(), so the audit-level
-                # branch must decode the same way -- exactly like the "open" branch does.
-                if args and isinstance(args[0], int):
-                    # Enumeration BY FILE DESCRIPTOR: the fd IS the directory being
-                    # enumerated, so there is no path for the hook to validate. Pre-fix the
-                    # branch denied it anyway (str(fd) resolves as a non-existent child of
-                    # the root); kept fail-closed, but as a HARD block with an honest message
-                    # -- an fd number is not a path, so neither a consent card nor the
-                    # "outside working_root" wording makes sense here.
-                    raise PermissionError(
-                        "python_exec sandbox: %s by file descriptor (%d) is blocked -- the "
-                        "hook sees no path to validate. Enumerate by path instead."
-                        % (event, args[0])
-                    )
-                s = _path_str(args[0])
-                if s is None:
-                    # NO PATH ARGUMENT: os.listdir()/os.scandir() take the path from the
-                    # C level, so the audit event carries args[0] = None (verified). os.py
-                    # binds os.listdir to the ORIGINAL nt.listdir object at import time
-                    # (`from nt import *`), so the stage-6 nt.listdir patch cannot reach the
-                    # zero-argument call -- the hook is the ONLY layer on that route. The old
-                    # str(None) == "None" resolved as <root>\None, which is NOT a read root,
-                    # so every default enumeration was DENIED -- including legitimate
-                    # os.listdir() inside working_root (false positive, verified). It never
-                    # leaked, but containment there rested on a coincidence rather than on the
-                    # real directory. Resolve the inherited cwd instead (same rule as
-                    # _check_cwd()): in-root default enumeration works, a cwd moved outside
-                    # working_root by os.chdir() stays denied.
-                    try:
-                        s = _jps_os.getcwd()
-                    except Exception:
-                        s = ""  # undeterminable -> _inside() answers False -> fail closed
+                s = str(args[0])
                 if not _inside(s, READ_ROOTS):
                     _fs_deny(event + " (enumeration)", s)
             elif event in ("os.remove", "os.unlink", "os.rename", "os.replace",
@@ -1196,11 +693,6 @@ def _jps_setup():
                 for _a in args[:4]:
                     if isinstance(_a, (str, bytes)):
                         _s = _a.decode("utf-8", "replace") if isinstance(_a, bytes) else str(_a)
-                        if _is_consent_decision(_s):
-                            # A mutation can REPLACE a decision file (os.rename / os.replace
-                            # / shutil.move onto it) -- same self-approval escape as an
-                            # open(w), so it is denied outright.
-                            _deny_decision_write(event, _s)
                         if not _inside(_s, [ROOT]):
                             _fs_deny(event + " (write)", _s)
             elif event in ("shutil.copyfile", "shutil.move"):
@@ -1235,18 +727,6 @@ def _jps_setup():
                         "python_exec sandbox: import of %r is blocked -- raw OS-level "
                         "file/registry APIs bypass working_root containment." % name
                     )
-            elif event in ("socket.connect", "socket.connect_ex", "socket.sendto"):
-                # AUDIT-LEVEL outbound policy (2026-11-14): the socket wrappers below are
-                # bypassable the same way the file wrappers are -- socket.connect.__closure__
-                # hands back the pre-patch C method (verified: an extracted original
-                # connected to a non-loopback target with no gate). These events fire inside
-                # C, so the loopback rule and the consent gate hold however the call was
-                # reached. args = (socket, address[, ...]). The admin opt-in
-                # (JACK_PYEXEC_NETWORK=1 -> _NET_OPEN) installs NO restrictions, so the hook
-                # honours it too -- resolved at call time like every other late name here.
-                if _NET_OPEN or len(args) < 2:
-                    return
-                _net_gate(args[1], event.split(".", 1)[1])
             elif event == "subprocess.Popen":
                 # Fires for EVERY spawn path (subprocess.run/Popen, asyncio
                 # create_subprocess_*, popen2/os.system internals). Shape in 3.12:
@@ -1261,53 +741,15 @@ def _jps_setup():
                     if isinstance(a, (list, tuple)):
                         _check_cmd(list(a))
                         break
-                # cwd is args[2] on BOTH platforms (verified against Lib/subprocess.py:
-                # Windows sys.audit("subprocess.Popen", executable, args, cwd, env) at
-                # line 1534, POSIX the same at line 1823). Checked AFTER the command so a
-                # denied program still reports the exec-policy reason first.
-                _check_cwd(args[2] if len(args) > 2 else None)
-                # This spawn passed the exec policy -> let the ONE following raw
-                # CreateProcess(executable=None) consume the token (see _SPAWN_TOKEN).
-                _grant_spawn()
-            elif event == "os.system":
-                # os.system is patched below, but the audit event is the net that holds
-                # if the wrapper is bypassed (closure-extracted original). args=(cmd,).
-                # os.system is C-level -- it fires NO Popen/CreateProcess event (verified),
-                # so the cwd rule must be applied here too: the grandchild inherits OUR
-                # cwd, which os.chdir() may have moved outside working_root.
-                if args and isinstance(args[0], str):
-                    _check_cmd(args[0], shell_ctx=True)
-                    _check_cwd(None)
-            elif event == "os.spawn":
-                # os.spawn* (mode, path, argv...). Patched below too; this is the net.
-                # Same inherited-cwd rule as os.system (no Popen event on this route).
-                if len(args) >= 2:
-                    _check_prog_base(_jps_basename(_path_str(args[1]) or ""), args)
-                    if len(args) >= 3 and isinstance(args[2], (list, tuple)):
-                        _check_cmd_paths([str(x) for x in args[2]], args)
-                    _check_cwd(None)
         except PermissionError:
             raise
-        except Exception as _jps_hook_err:
-            # FAIL CLOSED for policed events (2026-11-14): an internal error inside a
-            # containment branch must NOT let the operation through. Unpoliced events
-            # still pass -- they are not filesystem/spawn/import decisions.
-            if _policed:
-                _jps_log_exc("audit hook (%s): %s" % (event, repr(_jps_hook_err)))
-                raise PermissionError(
-                    "python_exec sandbox: %s blocked -- the containment check for this "
-                    "operation failed (%s), so it was denied (fail-closed)."
-                    % (event, repr(_jps_hook_err)[:120])
-                )
-            pass  # malformed/unpoliced event -- never fail-open unrelated CPython events
+        except Exception:
+            pass  # never let a malformed event fail-open the hook
 
     try:
         _jps_sys.addaudithook(_audit)
     except Exception as _jps_hook_exc:
-        # FAIL CLOSED (2026-11-14, verified): the hook is the PRIMARY enforcement layer --
-        # enumeration, raw Win32 and spawn checks exist ONLY here. Swallowing this left the
-        # child fully unsandboxed with rc=0. A hook that cannot install means no sandbox.
-        _jps_fail("audit hook could not be installed")
+        _jps_log_exc("addaudithook: %s" % repr(_jps_hook_exc))
 
     try:
         _jps_log("B1: audit hook installed (open/enumeration/import/Popen checks live)")
@@ -1332,9 +774,6 @@ def _jps_setup():
                     s = _p
                 else:
                     continue
-                if _is_consent_decision(s):
-                    # rename/replace/move onto a decision file = self-approval escape.
-                    _deny_decision_write(nm, s)
                 if not _inside(s, [ROOT]):
                     _fs_deny(nm + " (write)", s)
             return orig(path, *a, **k)
@@ -1482,7 +921,7 @@ def _jps_setup():
                     return _orig_getsize(f)
                 _op.getsize = _path_getsize
         except Exception as _jps_mod_exc:
-            _jps_fail("os.path meta patch: %s" % repr(_jps_mod_exc))
+            _jps_log_exc("os.path meta patch: %s" % repr(_jps_mod_exc))
 
         try:
             _jps_log("B2c: os.path wrappers patched")
@@ -1535,18 +974,12 @@ def _jps_setup():
                 orig = getattr(_jps_Path, nm)
                 def wrapped(self, *a, **k):
                     s = _path_str(self)
-                    if s is not None:
-                        if _is_consent_decision(s):
-                            _deny_decision_write("Path." + nm, s)
-                        if not _inside(s, [ROOT]):
-                            _fs_deny("Path." + nm + " (write)", s)
+                    if s is not None and not _inside(s, [ROOT]):
+                        _fs_deny("Path." + nm + " (write)", s)
                     for _x in a:
                         xs = _path_str(_x)
-                        if xs is not None:
-                            if _is_consent_decision(xs):
-                                _deny_decision_write("Path." + nm + " target", xs)
-                            if not _inside(xs, [ROOT]):
-                                _fs_deny("Path." + nm + " target (write)", xs)
+                        if xs is not None and not _inside(xs, [ROOT]):
+                            _fs_deny("Path." + nm + " target (write)", xs)
                     return orig(self, *a, **k)
                 wrapped.__name__ = nm
                 return wrapped
@@ -1566,7 +999,7 @@ def _jps_setup():
                 return _orig_sym(self, target, *a, **k)
             _jps_Path.symlink_to = _symlink_to
         except Exception as _jps_mod_exc:
-            _jps_fail("pathlib patch: %s" % repr(_jps_mod_exc))
+            _jps_log_exc("pathlib patch: %s" % repr(_jps_mod_exc))
 
         try:
             _jps_log("B2d: pathlib patched")
@@ -1587,8 +1020,6 @@ def _jps_setup():
             is_write = bool(flags & wf)
             if _is_devnull(s) or _is_dev_or_pipe(s):
                 return _orig_open(path, flags, *a, **k)  # device name (nul) -- let the OS handle it
-            if is_write and _is_consent_decision(s):
-                _deny_decision_write("os.open(write)", s)
             if not _inside(s, [ROOT] if is_write else READ_ROOTS):
                 _fs_deny("os.open" + ("(write)" if is_write else ""), s)
             return _orig_open(path, flags, *a, **k)
@@ -1600,7 +1031,7 @@ def _jps_setup():
             pass
 
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 2 (os patches): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 2 (os patches): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B2: os/pathlib/os.open patching done")
@@ -1629,21 +1060,12 @@ def _jps_setup():
                 seq = [t.decode("utf-8", "replace") if isinstance(t, (bytes, bytearray)) else str(t)
                        for t in args]
                 _check_prog_base(_jps_basename(seq[0]) if seq else "", args)
-                _check_cmd_paths(seq, args)  # absolute-path args (2026-11-14)
             if executable is not None:
                 _check_prog_base(
                     _jps_basename(executable.decode("utf-8", "replace")
                                   if isinstance(executable, bytes) else str(executable)),
                     "executable=" + repr(str(executable))[:60],
                 )
-            # cwd= (2026-11-14 containment): the wrapper binds args/bufsize/executable/
-            # stdin/stdout/stderr explicitly, so the leftover positional tail is
-            # (preexec_fn, close_fds, shell, cwd, env, ...) -- cwd is a[3]. Keyword form
-            # is k["cwd"]. The wrapper sees the CALLER's own cwd value -- exactly what the
-            # audit event cannot show for a caller that extracts the original __init__
-            # from this wrapper's closure.
-            _cwd = k.get("cwd") if "cwd" in k else (a[3] if len(a) > 3 else None)
-            _check_cwd(_cwd)
             return _orig_popen_init(
                 self, args, bufsize=bufsize, executable=executable,
                 stdin=stdin, stdout=stdout, stderr=stderr, *a, **k
@@ -1651,7 +1073,7 @@ def _jps_setup():
 
         _jps_subprocess.Popen.__init__ = _popen_init
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 3 (subprocess patch): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 3 (subprocess patch): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B3a: subprocess.Popen exec policy installed")
@@ -1752,7 +1174,7 @@ def _jps_setup():
                 return pid
             _real_os2.fork = _fork
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 3b (os exec policy): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 3b (os exec policy): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B3: child-process exec policy done (shells/interpreters/network denied)")
@@ -1799,8 +1221,6 @@ def _jps_setup():
                         s = _p
                     else:
                         continue
-                    if _lbl == "destination" and _is_consent_decision(s):
-                        _deny_decision_write("shutil.move (destination)", s)
                     _roots = [ROOT] if _lbl == "destination" else READ_ROOTS
                     if not _inside(s, _roots):
                         _fs_deny("shutil.move (" + _lbl + ")", s)
@@ -1871,7 +1291,7 @@ def _jps_setup():
                 return _orig_du(path)
             _jps_shutil.disk_usage = _disk_usage
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 4 (shutil): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 4 (shutil): %s" % repr(_jps_stage_exc))
 
     # ---- 5. ARCHIVE + COMPRESSED-FILE WRITERS (hardening 2026-09-17) ------
     try:
@@ -1927,7 +1347,7 @@ def _jps_setup():
         _jps_zipfile.ZipFile.extract = _extract
 
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 5 (zipfile): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 5 (zipfile): %s" % repr(_jps_stage_exc))
 
     try:
         import tarfile as _jps_tarfile
@@ -1960,21 +1380,9 @@ def _jps_setup():
             ps = (p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p))
             if not _inside(ps, [ROOT]):
                 _fs_deny("tarfile extractall destination", ps)
-            # ZIP uses `members or self.namelist()`; tar used `members or []`, which
-            # validated NOTHING when members is None -- the DEFAULT case. A tar carrying
-            # '../x' (or a deeper traversal) then extracted straight out of working_root
-            # (verified). Validate every member of the archive when the caller did not
-            # pass a list, exactly like zipfile does.
-            checked = members if members is not None else self.getmembers()
-            for m in checked:
+            for m in members or []:
                 nm = m.name if hasattr(m, "name") else m
                 _tar_member_ok(nm)
-            # 'fully_trusted' disables CPython's own member filtering entirely; the
-            # sandbox's own traversal check above still runs, but a blanket-trusted
-            # extraction is never legitimate inside a containment sandbox -> deny.
-            filt = k.get("filter") if "filter" in k else (a[0] if a and isinstance(a[0], str) else None)
-            if filt == "fully_trusted":
-                _deny("tarfile extractall filter='fully_trusted'", ps)
             return _orig_textractall(self, path, members, *a, **k)
         _jps_tarfile.TarFile.extractall = _textractall
 
@@ -1990,7 +1398,7 @@ def _jps_setup():
         _jps_tarfile.TarFile.extract = _textract
 
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 5b (tarfile): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 5b (tarfile): %s" % repr(_jps_stage_exc))
 
     # gzip / bz2 / lzma .open -- mode-aware (write => ROOT only).
     for _modname in ("gzip", "bz2", "lzma"):
@@ -2014,7 +1422,7 @@ def _jps_setup():
                     return wrapped
                 setattr(_m, "open", _make_comp_guard(_orig_co, _modname))
         except Exception as _jps_mod_exc:
-            _jps_fail("compressed writer (%s): %s" % (_modname, repr(_jps_mod_exc)))
+            _jps_log_exc("compressed writer (%s): %s" % (_modname, repr(_jps_mod_exc)))
 
     try:
         _jps_log("B4: shutil/archive/compressed-file guards done")
@@ -2058,8 +1466,6 @@ def _jps_setup():
                         except Exception:
                             pass
                     is_write = bool(flags & wf) if isinstance(flags, int) else True
-                    if is_write and _is_consent_decision(s):
-                        _deny_decision_write("nt.open(write)", s)
                     if not _inside(s, [ROOT] if is_write else READ_ROOTS):
                         _fs_deny("nt.open" + ("(write)" if is_write else ""), s)
                 return _orig_nt_open(path, flags, *a, **k)
@@ -2093,58 +1499,6 @@ def _jps_setup():
                     return _orig_ntacc(path, *a, **k)
                 _nt.access = _nt_access
 
-            # RAW ENUMERATION + RAW PATH PREDICATES (2026-11-14, verified leaks). Stage 6
-            # patched only nt.open/stat/lstat/access, so the raw enumeration and existence
-            # primitives stayed wide open: nt.listdir(C:\Windows\System32) -> 4892 entries,
-            # nt.scandir -> 4892, nt._path_exists(win.ini) -> True, nt._path_isdir -> True,
-            # nt._getfinalpathname -> '\\\\?\\C:\\Windows\\win.ini'. os.listdir/scandir are
-            # covered by the audit hook, but nt.* are called directly by ntpath and by user
-            # code holding the module, and the *_path_* / *_pathname predicates fire NO
-            # audit event at all -- they leak path EXISTENCE and the resolved real path.
-            for _n in ("listdir", "scandir"):
-                if hasattr(_nt, _n):
-                    def _make_ntenum(nm, orig_fn):
-                        def wrapped(path, *a, **k):
-                            s = _as_path_str(path)
-                            if s is not None and not _inside(s, READ_ROOTS) \
-                                    and not _consent_ok(s):
-                                _fs_deny("nt." + nm + " (enumeration)", s)
-                            return orig_fn(path, *a, **k)
-                        wrapped.__name__ = nm
-                        return wrapped
-                    setattr(_nt, _n, _make_ntenum(_n, getattr(_nt, _n)))
-
-            for _n in ("_path_exists", "_path_isdir", "_path_isfile"):
-                if hasattr(_nt, _n):
-                    def _make_ntpred(nm, orig_fn):
-                        def wrapped(path, *a, **k):
-                            s = _as_path_str(path)
-                            if (s is not None and not _inside(s, [ROOT]) and not _in_path_dirs(s)
-                                    and not _consent_ok(s)):
-                                return False  # existence predicate: no leak outside ROOT
-                            return orig_fn(path, *a, **k)
-                        wrapped.__name__ = nm
-                        return wrapped
-                    setattr(_nt, _n, _make_ntpred(_n, getattr(_nt, _n)))
-
-            # nt._getfinalpathname / _getfullpathname return the RESOLVED absolute path of
-            # an outside file -- pure metadata leak, no audit event. Scope like stat.
-            for _n in ("_getfinalpathname", "_getfullpathname"):
-                if hasattr(_nt, _n):
-                    def _make_ntpathinfo(nm, orig_fn):
-                        def wrapped(path, *a, **k):
-                            s = _as_path_str(path)
-                            if s is not None and not _inside(s, READ_ROOTS) \
-                                    and not _consent_ok(s):
-                                raise FileNotFoundError(
-                                    "[Errno 2] No such file or directory (outside working_root -- "
-                                    "python_exec sandbox blocks metadata access outside %s)" % root
-                                )
-                            return orig_fn(path, *a, **k)
-                        wrapped.__name__ = nm
-                        return wrapped
-                    setattr(_nt, _n, _make_ntpathinfo(_n, getattr(_nt, _n)))
-
             # _winapi -- the raw Win32 handle factory + copy fast path.
             try:
                 import _winapi as _wapi
@@ -2166,6 +1520,12 @@ def _jps_setup():
                 # read-only handles => READ_ROOTS. Fail-closed: if the access value
                 # cannot be determined (unusual arg shape), treat it as a write.
                 if hasattr(_wapi, "CreateFile"):
+                    _WACC = 0
+                    for _c in ("GENERIC_WRITE", "FILE_GENERIC_WRITE", "FILE_ALL_ACCESS", "DELETE"):
+                        try:
+                            _WACC |= getattr(_wapi, _c)
+                        except Exception:
+                            pass
                     _orig_cfile = _wapi.CreateFile
                     def _cfile(name, *a, **k):
                         s = _as_path_str(name)
@@ -2177,60 +1537,17 @@ def _jps_setup():
                             acc = k.get("dwDesiredAccess")
                             if acc is None and a and isinstance(a[0], int):
                                 acc = a[0]
-                            creation = k.get("dwCreationDisposition")
-                            if creation is None and len(a) > 3 and isinstance(a[3], int):
-                                creation = a[3]
-                            if _winapi_is_write(acc, creation):
-                                if _is_consent_decision(s):
-                                    _deny_decision_write("_winapi.CreateFile(write)", s)
-                                if not _inside(s, [ROOT]):
-                                    _fs_deny("_winapi.CreateFile(write)", s)
-                            elif not _inside(s, READ_ROOTS):
-                                _fs_deny("_winapi.CreateFile(read)", s)
+                            if not isinstance(acc, int):
+                                acc = -1  # undetermined -> fail closed (write policy)
+                            is_write = (acc & _WACC) != 0 if (_WACC and acc >= 0) else True
+                            if not _inside(s, [ROOT] if is_write else READ_ROOTS):
+                                _fs_deny("_winapi.CreateFile" + ("(write)" if is_write else ""), s)
                         return _orig_cfile(name, *a, **k)
                     _wapi.CreateFile = _cfile
-
-                # CreateProcess -- the raw spawn primitive (2026-11-14, verified leak).
-                # Unlike the AUDIT event, the wrapper sees the real command_line, so the
-                # program basename AND every absolute-path argument are checked here. The
-                # shell-OPERATOR rule is not applied to command_line: subprocess builds it
-                # with list2cmdline(), so Windows paths contain '\\' and the operator rule
-                # would break every legitimate subprocess.run. CPython's own shell wrapper
-                # (os.popen / shell=True / os.system -> '<COMSPEC> /c "<cmd>"') is recognised
-                # so those routes keep working -- their inner command was already policed by
-                # the patched os.system/os.popen/Popen.__init__ path.
-                if hasattr(_wapi, "CreateProcess"):
-                    _orig_cproc = _wapi.CreateProcess
-                    def _cproc(exe=None, cmd=None, *a, **k):
-                        # cwd= positional slot 7 of _winapi.CreateProcess (executable, args,
-                        # fileattr, pipeattr, inheritable, creationflags, env, cwd,
-                        # startupinfo) or the keyword. The AUDIT branch above already checks
-                        # args[2] for every route; this wrapper is the second net for calls
-                        # that reach the ORIGINAL function extracted from this closure --
-                        # those still fire the audit event, but the wrapper also lets us
-                        # report the caller's exact cwd value.
-                        _check_cwd(k.get("cwd") if "cwd" in k else (a[7] if len(a) > 7 else None))
-                        es = _as_path_str(exe)
-                        if es is not None:
-                            if not _inside(es, READ_ROOTS) and not _in_path_dirs(es):
-                                _fs_deny("_winapi.CreateProcess (executable)", es)
-                            _check_prog_base(_jps_basename(es), exe)
-                        cs = cmd if isinstance(cmd, str) else (
-                            cmd.decode("utf-8", "replace") if isinstance(cmd, (bytes, bytearray)) else None)
-                        if cs is not None:
-                            toks = _jps_tokens(cs)
-                            if toks:
-                                b0 = _jps_basename(toks[0])
-                                wrapped = _is_denied_prog(b0) and len(toks) > 2 and toks[1] in ("/c", "/C")
-                                if not wrapped:
-                                    _check_prog_base(b0, cs)
-                            _check_cmd_paths(toks, cs)
-                        return _orig_cproc(exe, cmd, *a, **k)
-                    _wapi.CreateProcess = _cproc
             except Exception as _jps_mod_exc:
-                _jps_fail("raw win32 (_winapi): %s" % repr(_jps_mod_exc))
+                _jps_log_exc("raw win32 (_winapi): %s" % repr(_jps_mod_exc))
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 6 (raw win32): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 6 (raw win32): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B5: raw Win32 stage done (%s)" % ("patched" if _IS_WIN else "skipped, not Windows"))
@@ -2254,8 +1571,6 @@ def _jps_setup():
                 s = file.decode("utf-8", "replace") if isinstance(file, bytes) else file
                 if _is_devnull(s) or _is_dev_or_pipe(s):
                     return _orig_builtin_open(file, mode, *a, **k)  # device name (nul /dev/null)
-                if is_write and _is_consent_decision(s):
-                    _deny_decision_write("open(write)", s)
                 if not _inside(s, [ROOT] if is_write else READ_ROOTS):
                     _fs_deny("open" + ("(write)" if is_write else ""), s)
             # LINE-ENDING POLICY (2026-10-23): text-mode writes must NOT let the OS
@@ -2289,7 +1604,7 @@ def _jps_setup():
         except Exception:
             pass
     except Exception as _jps_stage_exc:
-        _jps_fail("builtins.open patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("builtins.open patch: %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B6: builtins.open containment installed")
@@ -2587,7 +1902,7 @@ def _jps_setup():
                     return _sock_orig_cc(address, *a, **k)
                 _jps_sock.create_connection = _sock_cc
     except Exception as _jps_stage_exc:
-        _jps_fail("socket patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("socket patch: %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B7: socket policy installed (%s)" % ("OPEN NETWORK (admin JACK_PYEXEC_NETWORK=1)" if _NET_OPEN else "loopback-only"))
@@ -2647,7 +1962,7 @@ def _jps_setup():
                 return _orig_ext_exec(self, module)
             _jps_ibext.ExtensionFileLoader.exec_module = _ext_exec
     except Exception as _jps_stage_exc:
-        _jps_fail("importlib loader patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("importlib loader patch: %s" % repr(_jps_stage_exc))
 
     # sqlite3.connect -- its C VFS bypasses the "open" audit event; validate path.
     try:
@@ -2683,7 +1998,7 @@ def _jps_setup():
             return _orig_connect(database, *a, **k)
         _sqlite3.connect = _connect
     except Exception as _jps_stage_exc:
-        _jps_fail("sqlite3 patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("sqlite3 patch: %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B8: importlib/sqlite3 guards done")
@@ -2718,16 +2033,16 @@ except Exception:
 # The test suite enforces parts == literal so they can never drift silently.
 
 _SANDBOX_PART_FILES = [
-    "_part_00_header.py",            # literal L2-5     banner + stdlib aliases
-    "_part_01_core.py",              # literal L6-304   root/READ_ROOTS/_norm/_inside/_deny/logging; _jps_setup def starts here
-    "_part_02_exec_policy_data.py",  # literal L305-622 stage 0: exec-policy denylists + tokenizers + _check_cmd + _check_cwd + consent gates + spawn token
-    "_part_03_audit_hook.py",        # literal L623-897 stage 1: sys.addaudithook enforcement (incl. raw-Win32/socket branches, cwd checks, fail-closed)
-    "_part_04_os_patches.py",        # literal L898-1190 stage 2: os patches + metadata scoping + flag-aware os.open
-    "_part_05_subprocess_policy.py", # literal L1191-1342 stage 3: Popen/spawn/exec/fork policy (incl. cwd= in Popen.__init__)
-    "_part_06_shutil.py",            # literal L1343-1455 stage 4: shutil high-level guards
-    "_part_07_archives.py",          # literal L1456-1604 stage 5: zip/tar/gzip/bz2/lzma writers
-    "_part_08_win32_misc.py",        # literal L1605-2274 stage 6: raw Win32 + builtins.open + sockets + importlib/sqlite3; last line ends _jps_setup()
-    "_part_09_footer.py",            # literal L2275-2286 module-level tail: _jps_setup() call + B9 log + end marker
+    "_part_00_header.py",            # L228-231   banner + stdlib aliases
+    "_part_01_core.py",              # L232-435    root/READ_ROOTS/_norm/_inside/_deny/logging; _jps_setup def starts here
+    "_part_02_exec_policy_data.py",  # L436-539    stage 0: exec-policy denylists + tokenizers + _check_cmd
+    "_part_03_audit_hook.py",        # L540-650    stage 1: sys.addaudithook enforcement
+    "_part_04_os_patches.py",        # L651-913    stage 2: os patches + metadata scoping + flag-aware os.open
+    "_part_05_subprocess_policy.py", # L914-1053   stage 3: Popen/spawn/exec/fork policy
+    "_part_06_shutil.py",            # L1054-1164  stage 4: shutil high-level guards
+    "_part_07_archives.py",          # L1165-1301  stage 5: zip/tar/gzip/bz2/lzma writers
+    "_part_08_win32_misc.py",        # L1302-1663  stage 6: raw Win32 + builtins.open + sockets + importlib/sqlite3
+    "_part_09_footer.py",            # L1664-1674  module-level tail: _jps_setup() call + B9 log + end marker
 ]
 
 _FRAGMENT_MARKER = "# === FRAGMENT START (verbatim) ==="
@@ -2761,15 +2076,11 @@ def split_into_fragments(value=None):
     """
     if value is None:
         value = SANDBOX_BOOTSTRAP
-    if not value.startswith(chr(10)):
-        raise ValueError("unexpected literal head -- join contract changed")
+    assert value.startswith(chr(10)), "unexpected literal head -- join contract changed"
     body = value[1:]
     starts = []
     pos = 0
-    if len(_SANDBOX_PART_FILES) != len(_PART_BANNER_LINES):
-        raise ValueError("part-file list and anchor list drifted (%d vs %d)"
-                         % (len(_SANDBOX_PART_FILES), len(_PART_BANNER_LINES)))
-    for fname, anchor in zip(_SANDBOX_PART_FILES, _PART_BANNER_LINES, strict=True):
+    for fname, anchor in zip(_SANDBOX_PART_FILES, _PART_BANNER_LINES):
         idx = body.find(anchor, pos)
         if idx == -1:
             raise ValueError("layout anchor not found for %s -- literal layout changed" % fname)

@@ -127,7 +127,7 @@ class CoolemsServerProvider(BaseProvider):
         import websockets
 
         from config import (
-            COOLEMS_DIRECT_WS_PORT,
+            COOLEMS_SERVER_HOST, COOLEMS_DIRECT_WS_PORT,
             COOLEMS_DIRECT_WS_CERT_PATH,
             COOLEMS_DIRECT_WS_KEY_PATH, WEB_RELAY_MAX_MESSAGE_SIZE,
             WEB_RELAY_HEARTBEAT_INTERVAL, WEB_RELAY_HEARTBEAT_TIMEOUT,
@@ -156,7 +156,7 @@ class CoolemsServerProvider(BaseProvider):
                 max_size=WEB_RELAY_MAX_MESSAGE_SIZE,
                 ping_interval=WEB_RELAY_HEARTBEAT_INTERVAL,
                 ping_timeout=WEB_RELAY_HEARTBEAT_TIMEOUT,
-            ):
+            ) as server:
                 scheme = "wss" if ssl_context else "ws"
                 logger.info(f"[SERVER] Direct WS server NOW LISTENING on {scheme}://{host}:{port}")
 

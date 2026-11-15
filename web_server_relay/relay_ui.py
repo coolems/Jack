@@ -60,6 +60,7 @@ class RelayManagerUI:
         self.root.geometry("900x680")
         self.root.minsize(760, 560)
 
+        f_base = ("Consolas", 10)
         f_big = ("Consolas", 20, "bold")
         f_head = ("Consolas", 9)
 

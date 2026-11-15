@@ -13,17 +13,9 @@ API key -- flows.
 Enforcement points (both verified live against websockets 12 / Python 3.12):
   - wrap_socket(): blocking sockets (selector loops, direct use).
   - wrap_bio(): the asyncio proactor transport calls context.wrap_bio() and then drives
-    the returned SSLObject via do_handshake()/read()/write()/unwrap(). We return a thin proxy that
+    the returned SSLObject via do_handshake()/read()/write(). We return a thin proxy that
     re-checks the fingerprint after each of those calls until it has seen the peer cert
     (checked-once afterwards: the certificate cannot change mid-connection).
-
-NO-CERTIFICATE PEERS FAIL CLOSED (2026-11-15). A peer that completes the handshake without
-presenting a certificate used to pass the pin: _peer_cert_fingerprint() returned None, which
-the code read as "cert not available yet", so _pin_checked stayed False forever and the
-connection proceeded. That is precisely the shape of a TLS link stripped by a MITM, so an
-anonymous peer must be rejected. do_handshake() returning normally means the handshake is
-COMPLETE (SSLWantReadError propagates while it is in progress), so the proxy treats a missing
-fingerprint at that point -- and at wrap_socket(), whose handshake is synchronous -- as fatal.
 
 Why not ssl.SSLContext.verify_callback? It is not reliably honored across CPython /
 OpenSSL builds (verified absent as a real hook in 3.12.8 on this machine), so the pin is
@@ -101,22 +93,12 @@ class _PinnedSSLObject:
         self._obj = obj
         self._pin_checked = False
 
-    def _check(self, handshake_done=False):
+    def _check(self):
         if self._pin_checked:
             return
         fp = _peer_cert_fingerprint(self._obj)
         if fp is None:
-            if handshake_done:
-                # The handshake COMPLETED and no certificate was presented: the pin can
-                # never be verified, so fail closed instead of letting an anonymous peer
-                # through (a peer with no cert is exactly what a stripped/MITM'd TLS link
-                # looks like from the client side).
-                raise ssl_mod.SSLError(
-                    "Peer presented no certificate - the cert pin cannot be verified "
-                    "(fail-closed). Check the relay TLS configuration: a TLS link without "
-                    "a server certificate is not trusted by WEB_RELAY_CERT_PIN_FINGERPRINT."
-                )
-            return  # handshake still in progress -- re-checked on the next call
+            return  # peer cert not available yet -- re-checked on the next call
         if fp != self._pin:
             raise ssl_mod.SSLError(
                 f"Certificate pin mismatch: got {fp[:24]}..., expected {self._pin[:24]}... "
@@ -125,11 +107,8 @@ class _PinnedSSLObject:
         self._pin_checked = True
 
     def do_handshake(self):
-        # A normal return means the handshake is COMPLETE (SSLWantReadError propagates
-        # while it is still in progress), so the peer certificate -- or its absence -- is
-        # final here and must be enforced rather than deferred.
         result = self._obj.do_handshake()
-        self._check(handshake_done=True)
+        self._check()
         return result
 
     def read(self, *args, **kwargs):
@@ -170,17 +149,8 @@ class PinnedSSLContext(ssl_mod.SSLContext):
 
     def wrap_socket(self, sock, *args, **kwargs):
         s = super().wrap_socket(sock, *args, **kwargs)
-        # wrap_socket() performs the handshake synchronously on a blocking socket, so a
-        # missing fingerprint here means the peer presented NO certificate -- fail closed
-        # rather than accepting an anonymous peer (2026-11-15).
         fp = _peer_cert_fingerprint(s)
-        if fp is None:
-            raise ssl_mod.SSLError(
-                "Peer presented no certificate - the cert pin cannot be verified "
-                "(fail-closed). Check the relay TLS configuration: a TLS link without a "
-                "server certificate is not trusted by WEB_RELAY_CERT_PIN_FINGERPRINT."
-            )
-        if fp != self._pin:
+        if fp is not None and fp != self._pin:
             raise ssl_mod.SSLError(
                 f"Certificate pin mismatch: got {fp[:24]}..., expected {self._pin[:24]}... "
                 "(possible MITM or the peer certificate changed - update WEB_RELAY_CERT_PIN_FINGERPRINT)"

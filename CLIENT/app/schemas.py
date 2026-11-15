@@ -61,16 +61,6 @@ class WebSocketChatMessage(BaseModel):
         max_length=100,
         description="Client-generated correlation id echoed back in steer_received/applied/rejected frames"
     )
-    # (2026-11-13 prompt-loss fix) An edited prompt carries the chat-level index it
-    # replaces. The handler then removes that tail AND stores the new prompt in ONE
-    # transaction (db_ops.save_user_message(cut_index=...)), so a failed frame cannot leave
-    # a workspace without a prompt. Without this field the UI had to delete the rows with a
-    # separate REST call first, and a rejected frame here destroyed the prompt.
-    edit_from_index: Optional[int] = Field(
-        None,
-        ge=0,
-        description="Chat-level index this message replaces; the removal and the save happen atomically"
-    )
     
     @field_validator("message")
     @classmethod
@@ -83,22 +73,14 @@ class WebSocketChatMessage(BaseModel):
     @classmethod
     def model_must_be_valid_name(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
-            # (2026-11-13 fix) An EMPTY model string means "use the configured model", not a
-            # bad name. The UI's picker is empty when /api/models has not loaded yet (fresh
-            # restart, no llama node serving), and it used to send '' here - which this
-            # validator rejected, so the frame was dropped and the user's prompt was never
-            # saved. Normalise to None instead of killing the turn.
-            v = v.strip()
-            if not v:
-                return None
             # Basic sanity: model names shouldn't contain path traversal or control chars
             if ".." in v or "\0" in v:
                 raise ValueError("Model name contains invalid characters")
             # Allow alphanumeric, colons, slashes, dots, hyphens, underscores
             import re
-            if not re.match(r'^[a-zA-Z0-9:/._\-]+$', v):
+            if not re.match(r'^[a-zA-Z0-9:/._\-]+$', v.strip()):
                 raise ValueError("Model name contains invalid characters")
-            return v
+            return v.strip()
         return v
 
     @field_validator("media_files")

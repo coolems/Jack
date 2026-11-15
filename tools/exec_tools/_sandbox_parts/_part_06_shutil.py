@@ -49,8 +49,6 @@
                         s = _p
                     else:
                         continue
-                    if _lbl == "destination" and _is_consent_decision(s):
-                        _deny_decision_write("shutil.move (destination)", s)
                     _roots = [ROOT] if _lbl == "destination" else READ_ROOTS
                     if not _inside(s, _roots):
                         _fs_deny("shutil.move (" + _lbl + ")", s)
@@ -121,5 +119,5 @@
                 return _orig_du(path)
             _jps_shutil.disk_usage = _disk_usage
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 4 (shutil): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 4 (shutil): %s" % repr(_jps_stage_exc))
 

@@ -22,8 +22,7 @@ from fastapi import APIRouter, Request, HTTPException, Query
 
 from app.helpers import get_client_ip
 from app.db_manager import get_db_connection, close_db_connection
-from app.websocket.turn_ops import delete_conversation_rows, load_turn_logs
-from app.websocket.db_ops import cut_chat_history
+from app.websocket.turn_ops import delete_conversation_rows, truncate_turn_logs, load_turn_logs
 import logging
 
 logger = logging.getLogger("COOLEMS")
@@ -34,12 +33,7 @@ VALID_COLORS = [
 ]
 
 def create_conversations_router(db_path: str, model_name: str, agent) -> APIRouter:
-    """Factory function that returns a configured conversations router.
-
-    db_path is accepted for API compatibility only - NEVER read. Every endpoint here
-    gets its connection from app.db_manager.get_db_connection(), whose own initialized
-    path is the single source of truth (same shape as app/websocket/db_ops.py).
-    """
+    """Factory function that returns a configured conversations router."""
     router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
     @router.post("")
@@ -130,8 +124,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             logger.info(f"Client {current_ip} viewing conversation {conv_id}")
 
             cursor.execute(
-                "SELECT id, role, content, media_urls, file_contents, timestamp, is_steer, "
-                "is_notice FROM messages "
+                "SELECT id, role, content, media_urls, file_contents, timestamp, is_steer FROM messages "
                 "WHERE conversation_id = ? ORDER BY timestamp, rowid",
                 (conv_id,)
             )
@@ -156,11 +149,6 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 # message: the UI skips these rows and shows them inside the turn's
                 # loop-history block instead.
                 "is_steer": bool(row[6]) if len(row) > 6 else False,
-                # (2026-12 subagents / background jobs) a RUNTIME NOTICE is the runtime
-                # speaking to the model, not the user: the UI skips these rows too (they
-                # render as rows inside the turn block), while history loading keeps them
-                # as real model context.
-                "is_notice": bool(row[7]) if len(row) > 7 else False,
             })
 
         return {
@@ -182,10 +170,9 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         straight from the ChatBus channel, so a chat switch can restore the
         generation indicator and send/stop button color even when no frames are
         currently flowing (e.g. the turn finished while the user was elsewhere).
-
-        No client-IP lookup here: the answer is bus state, not stored data, and the
-        conversation-existence check below is what gates the lookup.
         """
+        current_ip = get_client_ip(request)
+
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
@@ -277,42 +264,39 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
     @router.delete("/{conv_id}/messages/truncate")
     async def truncate_messages(conv_id: str, data: Dict, request: Request):
-        """Remove the history from a chat-level index. Nothing is stored here.
-
-        A prompt EDIT does not use this endpoint: an edited prompt travels over the
-        WebSocket with `edit_from_index`, and app/websocket/db_ops.py removes the tail it
-        replaces in the SAME transaction as the new prompt. Cutting here and storing the
-        replacement somewhere else is what lost the prompt when the second step failed.
-
-        The index counts the same chat-level items the UI does (db_ops.cut_chat_history).
-        """
         current_ip = get_client_ip(request)
         message_index = data.get("message_index", 0)
-        if not isinstance(message_index, int) or isinstance(message_index, bool) or message_index < 0:
-            raise HTTPException(status_code=400,
-                                detail="message_index must be a non-negative integer")
 
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
-            try:
-                deleted_count, pruned_turn_logs = cut_chat_history(cursor, conv_id, message_index)
+
+            cursor.execute(
+                "SELECT id, timestamp FROM messages WHERE conversation_id = ? "
+                "ORDER BY timestamp, rowid",
+                (conv_id,)
+            )
+            rows = cursor.fetchall()
+
+            deleted_count = 0
+            pruned_turn_logs = 0
+            if message_index < len(rows):
+                ids_to_delete = [row[0] for row in rows[message_index:]]
+                deleted_count = len(ids_to_delete)
+                placeholders = ",".join("?" * deleted_count)
+                cursor.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", ids_to_delete)
+                # Cycle rows belong to the CONVERSATION, not to the answer they describe:
+                # without this prune, a reload rebuilds cycle blocks for answers that are gone.
+                pruned_turn_logs = truncate_turn_logs(
+                    cursor, conv_id, ids_to_delete, rows[message_index][1]
+                )
                 conn.commit()
-            except ValueError as e:
-                # A bad index writes nothing.
-                conn.rollback()
-                raise HTTPException(status_code=400, detail=str(e))
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Failed to truncate conversation {conv_id}: {e}")
-                raise HTTPException(status_code=500, detail="Failed to truncate workspace")
+                logger.info(
+                    f"Client {current_ip} truncated {deleted_count} messages from "
+                    f"conversation {conv_id} (turn_logs={pruned_turn_logs})"
+                )
         finally:
             close_db_connection(conn)
-
-        logger.info(
-            f"Client {current_ip} truncated {deleted_count} messages from "
-            f"conversation {conv_id} (turn_logs={pruned_turn_logs})"
-        )
         return {"status": "truncated", "deleted_count": deleted_count,
                 "remaining_count": message_index, "deleted_turn_logs": pruned_turn_logs}
 

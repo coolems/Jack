@@ -7,9 +7,8 @@ the UI socket can come and go while this task streams through its ChannelWebSock
 channel (live push or bounded background buffer).
 
 The flow mirrors the pre-refactor handler exactly:
-  build dispatch closure (agentic | normal) → agentic runs once with provider-call retry;
-  normal mode keeps retry_with_backoff → cancel handling / error frames / assistant
-  persistence / search suggestion / done.
+  build dispatch closure (agentic | normal) → retry_with_backoff (20 min budget) →
+  cancel handling / error frames / assistant persistence / search suggestion / done.
 """
 
 import asyncio
@@ -35,14 +34,13 @@ from app.websocket.db_ops import (
     save_user_message,
     _sync_conversation_working_root,
 )
-from logic.runtime_notice import render_notice
 from app.websocket.turn_ops import save_turn_log
 from app.db_manager import get_db_connection, close_db_connection
 from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_config
 from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
 from logic.normal import get_ollama_status_message
 import app.prompts as _app_prompts
-from utils.retry import UserCancelled, retry_with_backoff
+from utils.retry import retry_with_backoff
 
 logger = logging.getLogger("COOLEMS.ChatBus")
 
@@ -178,11 +176,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     ollama_tools = prepared["ollama_tools"]
     dna_content = prepared["dna_content"]
     user_msg = prepared["user_msg"]
-    # (2026-12 notice lane) True when this turn was started by the RUNTIME (a settlement
-    # notice on an idle chat), not by the user. The notice text is already persisted by
-    # ChatBus.submit_notice() with is_notice=True, so this turn must NOT persist a user
-    # message — doing so would paint a fake user bubble in the chat.
-    notice_wake = bool(prepared.get("notice_wake"))
 
     # fresh state for this turn (the channel outlives it)
     stop_event.clear()
@@ -226,25 +219,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         except Exception as e:
             logger.error(f"[CHATBUS] Failed to persist steering message for conv={conv_id}: {e}")
 
-    async def _persist_applied_notice(item) -> None:
-        """Record one applied RUNTIME notice in the conversation history (2026-12).
-
-        Unlike a steering message, a notice keeps its HEADER in the row: it is not user
-        speech, and a later turn loading history must still be able to tell that a child
-        settled or a job finished rather than that the user said something. Flagged
-        `is_notice`, so the UI never paints it as a chat-level bubble - it reads as a row
-        of the turn's loop-history block (turn_log `notices`).
-        """
-        text = item.get("text", "") if isinstance(item, dict) else str(item or "")
-        if not text.strip():
-            return
-        source = item.get("source", "runtime") if isinstance(item, dict) else "runtime"
-        try:
-            save_user_message(db_path, conv_id, render_notice(source, text),
-                              auto_title=False, is_notice=True)
-        except Exception as e:
-            logger.error(f"[CHATBUS] Failed to persist runtime notice for conv={conv_id}: {e}")
-
 # (2026-09-24 python_exec user approval): a FRESH approval state per run - any
     # "run until task done" grant from an earlier loop is gone by design, so the next
     # python_exec in this new loop asks the user again. The channel holds it for the
@@ -273,9 +247,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                               turn_started_at=time.time(), last_turn_sec=last_session_sec)
         # The id of the running turn is the identity steering frames must carry.
         channel.turn_id = cycle.turn_id
-        # (2026-12 runtime) the live turn's recorder, so app.runtime / the local tools can
-        # record child + job + question rows into THIS turn's block (channel.record_runtime).
-        channel.cycle = cycle
         # The sink captures streamed AI text into the recorder (speech rows), so the block
         # shows everything the AI said during this loop, not just the final answer.
         sink.cycle = cycle
@@ -338,11 +309,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                         # message only after it was actually injected.
                         steer_source=channel,
                         on_steer_applied=_persist_applied_steer,
-                        # (2026-12 runtime notice lane) the same boundaries, a separate
-                        # queue: subagent / job settlements and answers to questions the
-                        # AI asked arrive here, never as a new turn and never as user speech.
-                        notice_source=channel,
-                        on_notice_applied=_persist_applied_notice,
                         # (2026-11-08 loop history) this turn's recorder: steps, tools,
                         # consent cards, steers and every AI text land in one block.
                         cycle=cycle,
@@ -369,30 +335,14 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
             return await normal_mode(normal_config, conversation_history, enhanced_message, media_files)
 
         try:
-            if agent_mode:
-                # A late transport failure must not replay an agent turn that already ran
-                # tools. Provider calls have their own bounded retry inside the loop.
-                try:
-                    final_response = await _dispatch_ai_request()
-                    if stop_event and stop_event.is_set():
-                        raise UserCancelled("User cancelled generation.")
-                    succeeded = True
-                except Exception as e:
-                    if stop_event and stop_event.is_set():
-                        final_response = UserCancelled("User cancelled generation.")
-                    else:
-                        final_response = e
-                        logger.error(f"[CHATBUS] Agent turn failed without whole-turn replay for conv={conv_id}: {e}")
-                    succeeded = False
-            else:
-                final_response, succeeded = await retry_with_backoff(
-                    func=_dispatch_ai_request,
-                    websocket=sink,
-                    stop_event=stop_event,
-                    provider_name=provider.name,
-                    auto_restart_provider=provider,
-                    recovery_callback=send_recovery_warning,
-                )
+            final_response, succeeded = await retry_with_backoff(
+                func=_dispatch_ai_request,
+                websocket=sink,
+                stop_event=stop_event,
+                provider_name=provider.name,
+                auto_restart_provider=provider,
+                recovery_callback=send_recovery_warning,
+            )
 
             # --- user cancellation: graceful stop (same behaviour as the old handler) ---
             if _is_user_cancelled(final_response):
@@ -510,11 +460,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         _own_turn_id = cycle.turn_id if cycle is not None else ""
         if _own_turn_id and channel.turn_id == _own_turn_id:
             channel.turn_id = ""
-        # (2026-12 runtime) Same ownership rule for the recorder: a settlement of a child
-        # or job that arrives after this turn ends must NOT record into a newer turn's
-        # block, so the channel only keeps the recorder that belongs to the turn that set it.
-        if cycle is not None and getattr(channel, "cycle", None) is cycle:
-            channel.cycle = None
         # (2026-08-23 session stats) settle this turn's ACTIVE time on EVERY exit path
         # (done / cancel / error - the early 'return' after a user Stop included) and hand it
         # to the NEXT turn as 'last session'. Paused time (approval menus) is excluded.

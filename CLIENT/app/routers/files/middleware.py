@@ -12,38 +12,14 @@ def _safe_relative_path(base: str, rel: str):
     
     Uses realpath to resolve symlinks and .. sequences before containment check.
     Returns None if the resolved path escapes *base*.
-
-    2026-11-14 review fix A5 (same class as path_guard): compare with normcase so a
-    case-different spelling of the root still contains its own files, and rstrip the
-    root before appending os.sep so a drive root ('C:\\') does not become 'C:\\\\'.
     """
     if not rel:
         return base
     full = os.path.realpath(os.path.join(base, rel))
-    # Compare BOTH sides normcase'd -- realpath returns the on-disk case, so a
-    # case-different root must not deny its own children.
-    base_real = os.path.normcase(os.path.realpath(base))
-    full_norm = os.path.normcase(full)
-    prefix = base_real.rstrip(os.sep) + os.sep
-    if not (full_norm.startswith(prefix) or full_norm == base_real):
+    base_real = os.path.realpath(base)
+    if not (full.startswith(base_real + os.sep) or full == base_real):
         return None
     return full
-
-
-def _is_root_itself(base: str, resolved: str) -> bool:
-    """True when *resolved* IS the working root directory itself.
-
-    SECURITY (2026-11-02): the containment check above deliberately ACCEPTS the
-    root, because listing/uploading at the root is legitimate. But a destructive
-    endpoint must not accept it: rel='.', ' ', './.', 'sub/../' and a symlink that
-    points back at the root all realpath() to *base*, so os.path.isdir() would pass
-    and shutil.rmtree(base) would wipe the entire workspace. Destructive endpoints
-    call this before deleting and reject with 400.
-
-    Compared on realpath + normcase so Windows case-insensitivity and symlink
-    indirection cannot smuggle the root past the check.
-    """
-    return os.path.normcase(os.path.realpath(resolved)) == os.path.normcase(os.path.realpath(base))
 
 
 def _get_working_root_dir():

@@ -58,34 +58,6 @@ live in tests/test_sandbox_bootstrap.py.
 import ast
 import os
 import re
-import warnings
-
-
-def _parse_quiet(code):
-    """ast.parse() that does not leak SyntaxWarning into the parent process.
-
-    WHY THIS EXISTS (2026-11-24 review fix). ``ast.parse()`` runs the real compiler,
-    so a user snippet carrying an invalid escape sequence -- ``x = "a\\Wb"`` -- makes
-    CPython emit ``SyntaxWarning: invalid escape sequence '\\W'`` through the warnings
-    module IN THE PARENT PROCESS, under the filename ``<unknown>``. python_exec parses
-    the same snippet TWICE (run_path_scope_check + run_ast_check), so every restricted
-    profile printed two console lines naming no file, duplicating the child's own
-    accurate warning (``<python_exec>:1: SyntaxWarning: ...``) that already reaches the
-    model inside the tool result's stderr block.
-
-    This module is a static ANALYSER -- it must not print. Suppressing SyntaxWarning
-    only, only for the duration of the parse, keeps the user's real warning visible in
-    the child (a separate interpreter, unaffected by this filter). SyntaxError still
-    propagates unchanged: it is an exception, not a warning.
-
-    Concurrency note: warnings filters are process-global and catch_warnings() is not
-    strictly thread-safe, so a concurrent parse in another thread could briefly see the
-    ignore filter. That is acceptable -- the suppressed thing is a warning, never a
-    block decision, and the child interpreter still reports it to the model.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", SyntaxWarning)
-        return ast.parse(code)
 
 
 # ============================================================================
@@ -769,10 +741,8 @@ def run_path_scope_check(code, working_root):
     """Pre-execution guardrail: block path literals used OUTSIDE working_root.
 
     Only strings that are arguments of a filesystem API (or of a path-named
-    keyword) are considered. Each candidate is resolved with os.path.realpath/
-    normcase and compared to *working_root* (both sides realpath'd, so a
-    symlink/junction working_root and a case-different spelling of it compare
-    correctly -- 2026-11-14 review fix A5); a ".." full-segment traversal is
+    keyword) are considered. Each candidate is resolved with os.path.abspath/
+    normcase and compared to *working_root*; a ".." full-segment traversal is
     always reported. See the block comment above for the rationale.
 
     Args:
@@ -785,7 +755,7 @@ def run_path_scope_check(code, working_root):
     if not isinstance(code, str) or not code.strip():
         return False, []
     try:
-        tree = _parse_quiet(code)
+        tree = ast.parse(code)
     except SyntaxError:
         # Unparseable code cannot execute in the child either (it dies before any
         # I/O), so there is no path to scope here.
@@ -794,7 +764,7 @@ def run_path_scope_check(code, working_root):
     if not working_root or not isinstance(working_root, str):
         return True, ["path-scope guardrail has no configured working_root -- refusing to run (fail-closed)"]
 
-    root_norm = os.path.normcase(os.path.realpath(working_root))
+    root_norm = os.path.normcase(os.path.abspath(working_root))
     violations = []
     seen = set()
 
@@ -805,16 +775,8 @@ def run_path_scope_check(code, working_root):
             reason = ("'..' path traversal -- the child process cwd is working_root, "
                       "so '..' climbs out of it")
         elif _is_path_candidate(s):
-            # REALPATH on BOTH sides (2026-11-14 review fix A5, same class as
-            # tools/path_guard.py): abspath() leaves a working_root that is a
-            # symlink/junction unresolved, so code reading a file genuinely inside
-            # a junction root was reported as OUTSIDE and the run was blocked.
-            # realpath is also the fail-CLOSED direction here: a literal that goes
-            # through a symlink pointing out of the root now resolves outside and
-            # is denied (the runtime sandbox blocks it anyway -- this layer is UX).
-            resolved = os.path.normcase(os.path.realpath(s))
-            prefix = root_norm.rstrip(os.sep) + os.sep
-            if resolved != root_norm and not resolved.startswith(prefix):
+            resolved = os.path.normcase(os.path.abspath(s))
+            if resolved != root_norm and not resolved.startswith(root_norm + os.sep):
                 reason = (f"path resolves to {resolved} which is OUTSIDE "
                           f"working_root ({working_root})")
         if not reason:
@@ -868,7 +830,7 @@ def run_ast_check(code, forbidden_modules, policy):
         _check_forbidden_ast().
     """
     try:
-        tree = _parse_quiet(code)
+        tree = ast.parse(code)
     except SyntaxError:
         return False, ["Syntax error in code -- falling back to pattern scan"]
 

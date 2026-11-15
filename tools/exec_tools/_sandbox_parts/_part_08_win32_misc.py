@@ -1,13 +1,7 @@
 # _part_08_win32_misc.py -- PROVENANCE FRAGMENT of _sandbox_bootstrap.SANDBOX_BOOTSTRAP
 #
 # STAGE 6 -- raw Win32 (_winapi/nt) file primitives + builtins.open containment + socket outbound policy (loopback-only default; OUT-OF-SANDBOX NETWORK CONSENT GATE asking the local user via .temp/.jack_netreq request/decision files, 2026-11-24; admin open network via JACK_PYEXEC_NETWORK=1, 2026-09-30) + importlib/sqlite3 guards; last line ends _jps_setup()
-# 2026-11-14 additions: nt.listdir/scandir/_path_exists/_path_isdir/_path_isfile/_getfinalpathname/_getfullpathname
-# patched (raw enumeration + predicate leaks had no audit event), _winapi.CreateFile wrapper on access mask AND
-# creation disposition, _winapi.CreateProcess wrapper (command-line program + argv paths), decision-file lock
-# on every write route, narrowed device namespace (\\.\pipe\* + console names only), _jps_fail on every stage/mod
-# failure (no fail-open), _check_cwd in the _winapi.CreateProcess wrapper (positional slot 7 / keyword).
 # Legacy source: lines 1302-1663 of the pre-split single-file SANDBOX_BOOTSTRAP string.
-# Current literal: lines 1605-2274 of the embedded literal.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
 # disk reads at import time -- the CLIENT execs that source in-memory where no repo
@@ -52,8 +46,6 @@
                         except Exception:
                             pass
                     is_write = bool(flags & wf) if isinstance(flags, int) else True
-                    if is_write and _is_consent_decision(s):
-                        _deny_decision_write("nt.open(write)", s)
                     if not _inside(s, [ROOT] if is_write else READ_ROOTS):
                         _fs_deny("nt.open" + ("(write)" if is_write else ""), s)
                 return _orig_nt_open(path, flags, *a, **k)
@@ -87,58 +79,6 @@
                     return _orig_ntacc(path, *a, **k)
                 _nt.access = _nt_access
 
-            # RAW ENUMERATION + RAW PATH PREDICATES (2026-11-14, verified leaks). Stage 6
-            # patched only nt.open/stat/lstat/access, so the raw enumeration and existence
-            # primitives stayed wide open: nt.listdir(C:\Windows\System32) -> 4892 entries,
-            # nt.scandir -> 4892, nt._path_exists(win.ini) -> True, nt._path_isdir -> True,
-            # nt._getfinalpathname -> '\\\\?\\C:\\Windows\\win.ini'. os.listdir/scandir are
-            # covered by the audit hook, but nt.* are called directly by ntpath and by user
-            # code holding the module, and the *_path_* / *_pathname predicates fire NO
-            # audit event at all -- they leak path EXISTENCE and the resolved real path.
-            for _n in ("listdir", "scandir"):
-                if hasattr(_nt, _n):
-                    def _make_ntenum(nm, orig_fn):
-                        def wrapped(path, *a, **k):
-                            s = _as_path_str(path)
-                            if s is not None and not _inside(s, READ_ROOTS) \
-                                    and not _consent_ok(s):
-                                _fs_deny("nt." + nm + " (enumeration)", s)
-                            return orig_fn(path, *a, **k)
-                        wrapped.__name__ = nm
-                        return wrapped
-                    setattr(_nt, _n, _make_ntenum(_n, getattr(_nt, _n)))
-
-            for _n in ("_path_exists", "_path_isdir", "_path_isfile"):
-                if hasattr(_nt, _n):
-                    def _make_ntpred(nm, orig_fn):
-                        def wrapped(path, *a, **k):
-                            s = _as_path_str(path)
-                            if (s is not None and not _inside(s, [ROOT]) and not _in_path_dirs(s)
-                                    and not _consent_ok(s)):
-                                return False  # existence predicate: no leak outside ROOT
-                            return orig_fn(path, *a, **k)
-                        wrapped.__name__ = nm
-                        return wrapped
-                    setattr(_nt, _n, _make_ntpred(_n, getattr(_nt, _n)))
-
-            # nt._getfinalpathname / _getfullpathname return the RESOLVED absolute path of
-            # an outside file -- pure metadata leak, no audit event. Scope like stat.
-            for _n in ("_getfinalpathname", "_getfullpathname"):
-                if hasattr(_nt, _n):
-                    def _make_ntpathinfo(nm, orig_fn):
-                        def wrapped(path, *a, **k):
-                            s = _as_path_str(path)
-                            if s is not None and not _inside(s, READ_ROOTS) \
-                                    and not _consent_ok(s):
-                                raise FileNotFoundError(
-                                    "[Errno 2] No such file or directory (outside working_root -- "
-                                    "python_exec sandbox blocks metadata access outside %s)" % root
-                                )
-                            return orig_fn(path, *a, **k)
-                        wrapped.__name__ = nm
-                        return wrapped
-                    setattr(_nt, _n, _make_ntpathinfo(_n, getattr(_nt, _n)))
-
             # _winapi -- the raw Win32 handle factory + copy fast path.
             try:
                 import _winapi as _wapi
@@ -160,6 +100,12 @@
                 # read-only handles => READ_ROOTS. Fail-closed: if the access value
                 # cannot be determined (unusual arg shape), treat it as a write.
                 if hasattr(_wapi, "CreateFile"):
+                    _WACC = 0
+                    for _c in ("GENERIC_WRITE", "FILE_GENERIC_WRITE", "FILE_ALL_ACCESS", "DELETE"):
+                        try:
+                            _WACC |= getattr(_wapi, _c)
+                        except Exception:
+                            pass
                     _orig_cfile = _wapi.CreateFile
                     def _cfile(name, *a, **k):
                         s = _as_path_str(name)
@@ -171,60 +117,17 @@
                             acc = k.get("dwDesiredAccess")
                             if acc is None and a and isinstance(a[0], int):
                                 acc = a[0]
-                            creation = k.get("dwCreationDisposition")
-                            if creation is None and len(a) > 3 and isinstance(a[3], int):
-                                creation = a[3]
-                            if _winapi_is_write(acc, creation):
-                                if _is_consent_decision(s):
-                                    _deny_decision_write("_winapi.CreateFile(write)", s)
-                                if not _inside(s, [ROOT]):
-                                    _fs_deny("_winapi.CreateFile(write)", s)
-                            elif not _inside(s, READ_ROOTS):
-                                _fs_deny("_winapi.CreateFile(read)", s)
+                            if not isinstance(acc, int):
+                                acc = -1  # undetermined -> fail closed (write policy)
+                            is_write = (acc & _WACC) != 0 if (_WACC and acc >= 0) else True
+                            if not _inside(s, [ROOT] if is_write else READ_ROOTS):
+                                _fs_deny("_winapi.CreateFile" + ("(write)" if is_write else ""), s)
                         return _orig_cfile(name, *a, **k)
                     _wapi.CreateFile = _cfile
-
-                # CreateProcess -- the raw spawn primitive (2026-11-14, verified leak).
-                # Unlike the AUDIT event, the wrapper sees the real command_line, so the
-                # program basename AND every absolute-path argument are checked here. The
-                # shell-OPERATOR rule is not applied to command_line: subprocess builds it
-                # with list2cmdline(), so Windows paths contain '\\' and the operator rule
-                # would break every legitimate subprocess.run. CPython's own shell wrapper
-                # (os.popen / shell=True / os.system -> '<COMSPEC> /c "<cmd>"') is recognised
-                # so those routes keep working -- their inner command was already policed by
-                # the patched os.system/os.popen/Popen.__init__ path.
-                if hasattr(_wapi, "CreateProcess"):
-                    _orig_cproc = _wapi.CreateProcess
-                    def _cproc(exe=None, cmd=None, *a, **k):
-                        # cwd= positional slot 7 of _winapi.CreateProcess (executable, args,
-                        # fileattr, pipeattr, inheritable, creationflags, env, cwd,
-                        # startupinfo) or the keyword. The AUDIT branch above already checks
-                        # args[2] for every route; this wrapper is the second net for calls
-                        # that reach the ORIGINAL function extracted from this closure --
-                        # those still fire the audit event, but the wrapper also lets us
-                        # report the caller's exact cwd value.
-                        _check_cwd(k.get("cwd") if "cwd" in k else (a[7] if len(a) > 7 else None))
-                        es = _as_path_str(exe)
-                        if es is not None:
-                            if not _inside(es, READ_ROOTS) and not _in_path_dirs(es):
-                                _fs_deny("_winapi.CreateProcess (executable)", es)
-                            _check_prog_base(_jps_basename(es), exe)
-                        cs = cmd if isinstance(cmd, str) else (
-                            cmd.decode("utf-8", "replace") if isinstance(cmd, (bytes, bytearray)) else None)
-                        if cs is not None:
-                            toks = _jps_tokens(cs)
-                            if toks:
-                                b0 = _jps_basename(toks[0])
-                                wrapped = _is_denied_prog(b0) and len(toks) > 2 and toks[1] in ("/c", "/C")
-                                if not wrapped:
-                                    _check_prog_base(b0, cs)
-                            _check_cmd_paths(toks, cs)
-                        return _orig_cproc(exe, cmd, *a, **k)
-                    _wapi.CreateProcess = _cproc
             except Exception as _jps_mod_exc:
-                _jps_fail("raw win32 (_winapi): %s" % repr(_jps_mod_exc))
+                _jps_log_exc("raw win32 (_winapi): %s" % repr(_jps_mod_exc))
     except Exception as _jps_stage_exc:
-        _jps_fail("stage 6 (raw win32): %s" % repr(_jps_stage_exc))
+        _jps_log_exc("stage 6 (raw win32): %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B5: raw Win32 stage done (%s)" % ("patched" if _IS_WIN else "skipped, not Windows"))
@@ -248,8 +151,6 @@
                 s = file.decode("utf-8", "replace") if isinstance(file, bytes) else file
                 if _is_devnull(s) or _is_dev_or_pipe(s):
                     return _orig_builtin_open(file, mode, *a, **k)  # device name (nul /dev/null)
-                if is_write and _is_consent_decision(s):
-                    _deny_decision_write("open(write)", s)
                 if not _inside(s, [ROOT] if is_write else READ_ROOTS):
                     _fs_deny("open" + ("(write)" if is_write else ""), s)
             # LINE-ENDING POLICY (2026-10-23): text-mode writes must NOT let the OS
@@ -283,7 +184,7 @@
         except Exception:
             pass
     except Exception as _jps_stage_exc:
-        _jps_fail("builtins.open patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("builtins.open patch: %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B6: builtins.open containment installed")
@@ -581,7 +482,7 @@
                     return _sock_orig_cc(address, *a, **k)
                 _jps_sock.create_connection = _sock_cc
     except Exception as _jps_stage_exc:
-        _jps_fail("socket patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("socket patch: %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B7: socket policy installed (%s)" % ("OPEN NETWORK (admin JACK_PYEXEC_NETWORK=1)" if _NET_OPEN else "loopback-only"))
@@ -641,7 +542,7 @@
                 return _orig_ext_exec(self, module)
             _jps_ibext.ExtensionFileLoader.exec_module = _ext_exec
     except Exception as _jps_stage_exc:
-        _jps_fail("importlib loader patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("importlib loader patch: %s" % repr(_jps_stage_exc))
 
     # sqlite3.connect -- its C VFS bypasses the "open" audit event; validate path.
     try:
@@ -677,7 +578,7 @@
             return _orig_connect(database, *a, **k)
         _sqlite3.connect = _connect
     except Exception as _jps_stage_exc:
-        _jps_fail("sqlite3 patch: %s" % repr(_jps_stage_exc))
+        _jps_log_exc("sqlite3 patch: %s" % repr(_jps_stage_exc))
 
     try:
         _jps_log("B8: importlib/sqlite3 guards done")

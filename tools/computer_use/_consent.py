@@ -222,24 +222,17 @@ def decision_for(app_identity: str, conversation_id: str) -> str:
 def revoke_app(app_identity: str, conversation_id: str = "") -> int:
     """Withdraw one app's access. Returns how many conversations lost it.
 
-    conversation_id='' (default) revokes EVERY conversation and clears the
-    process-wide denial mark. A conversation_id revokes ONLY that conversation -
-    the process-wide denial stays intact, because clearing it would silently
-    re-open the app for other conversations (fail-closed by design).
-
     Handles are invalidated by the caller (cua_revoke_access -> _desktop_state
     .invalidate_app) so a revoked app cannot be used by a later call.
     """
     key = _norm_identity(app_identity)
     removed = 0
     st = _state()
-    targets = [conversation_id] if conversation_id else list(st.decisions)
     with st.lock:
-        for conv in targets:
-            if st.decisions.get(conv, {}).pop(key, None) is not None:
+        for conv in list(st.decisions):
+            if st.decisions[conv].pop(key, None) is not None:
                 removed += 1
-        if not conversation_id:
-            st.denied.discard(key)
+        st.denied.discard(key)
     logger.info("[CUA-CONSENT] access revoked for %s (%d conversations)", key, removed)
     return removed
 
