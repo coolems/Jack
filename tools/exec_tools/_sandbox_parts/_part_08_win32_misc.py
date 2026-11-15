@@ -7,7 +7,7 @@
 # on every write route, narrowed device namespace (\\.\pipe\* + console names only), _jps_fail on every stage/mod
 # failure (no fail-open), _check_cwd in the _winapi.CreateProcess wrapper (positional slot 7 / keyword).
 # Legacy source: lines 1302-1663 of the pre-split single-file SANDBOX_BOOTSTRAP string.
-# Current literal: lines 1529-2198 of the embedded literal.
+# Current literal: lines 1605-2274 of the embedded literal.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
 # disk reads at import time -- the CLIENT execs that source in-memory where no repo

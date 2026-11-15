@@ -5,8 +5,14 @@
 # decisions), _jps_fail (fail-closed stages), _SHELL_SUFFIXES (renamed shells), _check_cmd_paths (argv paths),
 # _SPAWN_TOKEN (one-use token for raw CreateProcess with executable=None), _check_cwd (spawn directory must
 # resolve inside working_root -- the verified cwd=C:\Windows leak)
+# 2026-11-15 additions: _DENY_PROGS gains the Windows system-abuse utilities (wsl, reg, bitsadmin, certutil,
+# mshta, net/net1, netsh, schtasks, taskkill, tasklist, sc, msiexec, rundll32) plus ssh/fish/slogin -- wsl alone
+# defeats the sandbox (Linux side, no audit hook); _SHELL_SUFFIXES drops the bare 'sh'/'ash' stems (they denied
+# legitimate programs ending in 'sh': finish/flash/push/wash, verified false positives) and those shells are now
+# exact basenames; _check_cmd_paths skips Windows SWITCHES ('/r', '/c:x', '/m') instead of reading them as
+# absolute path arguments (ntpath.isabs('/list') is True -- verified false positives on sort /r, findstr /c:x).
 # Legacy source: lines 436-539 of the pre-split single-file SANDBOX_BOOTSTRAP string.
-# Current literal: lines 305-583 of the embedded literal.
+# Current literal: lines 305-622 of the embedded literal.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
 # disk reads at import time -- the CLIENT execs that source in-memory where no repo
@@ -28,10 +34,27 @@
     _DENY_PROGS = frozenset((
         "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
         "wscript", "wscript.exe", "cscript", "cscript.exe", "conhost", "conhost.exe",
-        "sh", "bash", "zsh", "dash", "ksh", "ash", "tcsh", "csh",
+        "sh", "bash", "zsh", "dash", "ksh", "ash", "tcsh", "csh", "fish",
+        "ssh", "slogin",
         "python", "python2", "python3", "pythonw", "py", "node", "nodejs",
         "perl", "ruby", "php", "java",
         "curl", "wget", "ftp", "lftp", "sftp", "scp", "rsync", "tftp", "telnet",
+        # WINDOWS SYSTEM-ABUSE UTILITIES (2026-11-15, verified gap). None of these is a
+        # shell, so _SHELL_SUFFIXES never saw them and the sandbox let them run:
+        #   wsl       -> the Linux side of the machine, no audit hook there at all: a full
+        #                escape (filesystem, network, interpreter) with one argument.
+        #   reg       -> registry WRITE (registry is not a filesystem path, so no path
+        #                check can ever cover it).
+        #   sc        -> service start/stop;  taskkill/tasklist -> process control/enumeration
+        #   mshta     -> HTML Application host: runs script code outside this process
+        #   certutil  -> decode/encode + download;  bitsadmin -> background transfer
+        #   msiexec   -> installer;  rundll32 -> arbitrary DLL entry point
+        #   net/net1  -> user/share/service administration;  netsh -> firewall config
+        # Verified ALLOWED before this fix: wsl, reg, certutil, mshta, net, sc, rundll32,
+        # tasklist. (bitsadmin/schtasks/taskkill/msiexec/netsh were blocked only by
+        # accident -- see the switch-argument rule in _check_cmd_paths below.)
+        "wsl", "reg", "bitsadmin", "certutil", "mshta", "net", "net1", "netsh",
+        "schtasks", "taskkill", "tasklist", "sc", "msiexec", "rundll32",
     ))
     # Shell operators that let one string chain/redirect into arbitrary commands.
     _SHELL_OPS = frozenset("|&;<>(){}$`\\\n")
@@ -39,8 +62,9 @@
     def _deny_exec(what, detail):
         raise PermissionError(
             "python_exec sandbox: child-process spawn blocked -- %s (%s). "
-            "Shells, interpreters and network tools cannot be spawned from "
-            "python_exec; filesystem access stays inside working_root." % (what, str(detail)[:120])
+            "Shells, interpreters, network tools and Windows system-abuse utilities "
+            "cannot be spawned from python_exec; filesystem access stays inside "
+            "working_root." % (what, str(detail)[:120])
         )
 
     def _jps_basename(s):
@@ -92,10 +116,17 @@
     # 'mycmd.exe' ran '/c echo hi' with rc=0 -- the exact-name denylist never saw 'cmd'.
     # A shell binary renamed by the payload is still recognisable by its SUFFIX, so shell
     # stems are matched as suffixes too. Suffix (not substring) on purpose: 'copy'/'py'
-    # style names must not false-positive. 'ssh' ends in 'sh' -> denied, which is correct
-    # (it is a network transfer tool anyway).
+    # style names must not false-positive.
+    #
+    # 'sh'/'ash' are deliberately NOT suffixes (2026-11-15, verified false positives): they
+    # are substrings of ordinary program names, so the old rule DENIED finish, flash, push,
+    # wash, brush, gosh, relish and notesh -- any tool whose name happens to end in 'sh'.
+    # Real shells and ssh/fish/slogin are matched as EXACT basenames in _DENY_PROGS above,
+    # which is the whole set of programs that actually exist as shells on these platforms.
+    # The remaining residual is documented in the module docstring: a renamed shell whose
+    # basename is not an exact match ('mysh.exe') is not caught here.
     _SHELL_SUFFIXES = ("cmd", "cmd.exe", "powershell", "pwsh", "wscript", "cscript",
-                       "conhost", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "ash")
+                       "conhost", "bash", "zsh", "dash", "ksh", "csh", "tcsh")
 
     def _is_denied_prog(base):
         b = base[:-4] if base.endswith(".exe") else base
@@ -106,7 +137,7 @@
     def _check_prog_base(base, ctx):
         if base and _is_denied_prog(base):
             # (2026-10-24) consentable: asks the local user when a UI relay is live.
-            _exec_gate("program %r is a shell/interpreter/network tool" % base, ctx)
+            _exec_gate("program %r is a shell/interpreter/network/system tool" % base, ctx)
 
     # ARGUMENT PATH POLICY (2026-11-14, verified escape). The exec policy used to inspect
     # ONLY argv[0]'s basename, so arguments were completely unchecked: `findstr localhost
@@ -123,6 +154,20 @@
                 continue
             if not _jps_os.path.isabs(tok):
                 continue
+            # Windows SWITCHES are drive-relative to isabs(): "/list", "/query", "/c:x",
+            # "/f", "/m" all answer True (ntpath.isabs("/list") == True), so the rule above
+            # misread them as ABSOLUTE PATH arguments and denied them -- verified false
+            # positives on the pre-fix bootstrap: `sort /r`, `findstr /c:x file`,
+            # `findstr /m def README.md`. A switch is a leading separator followed by an
+            # ALPHA-ONLY flag, optionally ':value' (the value may contain dots/digits:
+            # '/c:foo.txt', '/d:2024-01-01'); anything with a further separator, a dot in
+            # the flag itself ('/win.ini' -> drive-relative C:\win.ini, a real file) or a
+            # drive/UNC prefix is a path argument and stays checked. Windows-only: on POSIX
+            # "/tmp" IS an absolute path and must stay checked.
+            if _IS_WIN and tok[0] in ("/", "\\"):
+                _body = tok[1:]
+                if "/" not in _body and "\\" not in _body and _body.split(":", 1)[0].isalpha():
+                    continue
             if _is_devnull(tok) or _is_dev_or_pipe(tok):
                 continue
             if _inside(tok, READ_ROOTS) or _in_path_dirs(tok):

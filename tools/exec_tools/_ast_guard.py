@@ -58,6 +58,34 @@ live in tests/test_sandbox_bootstrap.py.
 import ast
 import os
 import re
+import warnings
+
+
+def _parse_quiet(code):
+    """ast.parse() that does not leak SyntaxWarning into the parent process.
+
+    WHY THIS EXISTS (2026-11-24 review fix). ``ast.parse()`` runs the real compiler,
+    so a user snippet carrying an invalid escape sequence -- ``x = "a\\Wb"`` -- makes
+    CPython emit ``SyntaxWarning: invalid escape sequence '\\W'`` through the warnings
+    module IN THE PARENT PROCESS, under the filename ``<unknown>``. python_exec parses
+    the same snippet TWICE (run_path_scope_check + run_ast_check), so every restricted
+    profile printed two console lines naming no file, duplicating the child's own
+    accurate warning (``<python_exec>:1: SyntaxWarning: ...``) that already reaches the
+    model inside the tool result's stderr block.
+
+    This module is a static ANALYSER -- it must not print. Suppressing SyntaxWarning
+    only, only for the duration of the parse, keeps the user's real warning visible in
+    the child (a separate interpreter, unaffected by this filter). SyntaxError still
+    propagates unchanged: it is an exception, not a warning.
+
+    Concurrency note: warnings filters are process-global and catch_warnings() is not
+    strictly thread-safe, so a concurrent parse in another thread could briefly see the
+    ignore filter. That is acceptable -- the suppressed thing is a warning, never a
+    block decision, and the child interpreter still reports it to the model.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return ast.parse(code)
 
 
 # ============================================================================
@@ -757,7 +785,7 @@ def run_path_scope_check(code, working_root):
     if not isinstance(code, str) or not code.strip():
         return False, []
     try:
-        tree = ast.parse(code)
+        tree = _parse_quiet(code)
     except SyntaxError:
         # Unparseable code cannot execute in the child either (it dies before any
         # I/O), so there is no path to scope here.
@@ -840,7 +868,7 @@ def run_ast_check(code, forbidden_modules, policy):
         _check_forbidden_ast().
     """
     try:
-        tree = ast.parse(code)
+        tree = _parse_quiet(code)
     except SyntaxError:
         return False, ["Syntax error in code -- falling back to pattern scan"]
 

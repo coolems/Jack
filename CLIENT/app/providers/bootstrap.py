@@ -172,9 +172,11 @@ async def _bootstrap_fetch_once() -> dict | None:
 
     # Determine the ordered URL + SSL candidate list (mirrors CoolemsClientProvider._get_ws_candidates).
     # Direct mode gets ONE candidate per configured address - local first, failover order.
-    def _direct_ssl():
+    def _direct_ssl(host=None):
+        # host is passed so a DNS-named server gets hostname verification (anti-MITM);
+        # IP literals keep check_hostname off - see ssl_helper._build_verifying_ssl_context.
         return (
-            _build_verifying_ssl_context(COOLEMS_SERVER_CERT_PATH)
+            _build_verifying_ssl_context(COOLEMS_SERVER_CERT_PATH, host)
             if COOLEMS_DIRECT_VERIFY_SSL_CERTS
             else _build_no_verify_ssl_context()
         )
@@ -188,10 +190,10 @@ async def _bootstrap_fetch_once() -> dict | None:
         if not addr:
             raise ConnectionError("Web relay mode selected but no relay host saved - open Settings -> Connection Mode and enter the web_server_relay address.")
         from app.providers.coolems.ssl_helper import _build_relay_ssl_context
-        ssl_ctx = _build_relay_ssl_context(_RELAY_VERIFY_SSL, WEB_RELAY_CERT_PIN_FINGERPRINT)
+        host, port = _parse_web_relay_address(addr, WEB_RELAY_DEFAULT_PORT)
+        ssl_ctx = _build_relay_ssl_context(_RELAY_VERIFY_SSL, WEB_RELAY_CERT_PIN_FINGERPRINT, host)
         if ssl_ctx is None:
             raise ConnectionError("Web relay connection refused - no trusted TLS configured. Set WEB_RELAY_VERIFY_SSL_CERTS=True (public CA) or WEB_RELAY_CERT_PIN_FINGERPRINT.")
-        host, port = _parse_web_relay_address(addr, WEB_RELAY_DEFAULT_PORT)
         return [(_build_websocket_url(host, port, True, "/ws/client"), ssl_ctx)]
 
     candidates = []
@@ -219,7 +221,7 @@ async def _bootstrap_fetch_once() -> dict | None:
             if key in seen:
                 continue
             seen.add(key)
-            candidates.append((_build_websocket_url(host, COOLEMS_DIRECT_WS_PORT, True), _direct_ssl()))
+            candidates.append((_build_websocket_url(host, COOLEMS_DIRECT_WS_PORT, True), _direct_ssl(host)))
         if not candidates:  # settings empty/corrupt -> boot-time cached address keeps us alive
             addr = COOLEMS_CLIENT_SERVER_ADDRESS
             if addr.startswith("["):
@@ -228,7 +230,7 @@ async def _bootstrap_fetch_once() -> dict | None:
                 host = addr.rsplit(":", 1)[0]
             else:
                 host = addr
-            candidates.append((_build_websocket_url(host, COOLEMS_DIRECT_WS_PORT, True), _direct_ssl()))
+            candidates.append((_build_websocket_url(host, COOLEMS_DIRECT_WS_PORT, True), _direct_ssl(host)))
 
     api_key = load_coolems_api_key()
 

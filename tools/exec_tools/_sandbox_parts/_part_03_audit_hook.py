@@ -7,7 +7,7 @@
 # _check_cwd on the Popen event (args[2] on both platforms), the CreateProcess event (args[2]) and the
 # os.system/os.spawn branches (those fire no Popen event, so they inherit OUR cwd)
 # Legacy source: lines 540-650 of the pre-split single-file SANDBOX_BOOTSTRAP string.
-# Current literal: lines 584-821 of the embedded literal.
+# Current literal: lines 623-897 of the embedded literal.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
 # disk reads at import time -- the CLIENT execs that source in-memory where no repo

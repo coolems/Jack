@@ -111,9 +111,28 @@ def _child_env(working_root_dir):
     return env
 
 
+def _wrapped(gl, source):
+    """The wrapped user code ONLY -- for the branch that delegates to the runner.
+
+    ``_run_sandboxed_subprocess`` builds the child payload itself
+    (``_CHILD_PREAMBLE + SANDBOX_BOOTSTRAP + C2 marker + wrapped_code``), so handing it
+    an already-prefixed payload prepends the bootstrap TWICE: the child runs
+    ``_jps_setup()`` two times (two audit hooks, every primitive patched twice, double
+    the payload bytes). python_exec never pre-prefixes -- it passes ``_wrap_user_code()``
+    output straight to the runner, and this seam must do exactly the same.
+    """
+    return gl["_wrap_user_code"](source)
+
+
 def _payload(gl, source):
-    """Bootstrap prefix + the user's source, assembled exactly as python_exec does."""
+    """Full child payload: preamble + bootstrap + wrapped user code, assembled once.
+
+    Used by the DETACHED branch, which spawns the child directly instead of delegating
+    to ``_run_sandboxed_subprocess`` -- so it has to install the prefix itself. Mirrors
+    that runner's assembly byte-for-byte, so both branches deliver identical payloads.
+    """
     return (gl["_CHILD_PREAMBLE"] + gl["SANDBOX_BOOTSTRAP"] + "\n"
+            + "_jpsd_log('C2: sandbox bootstrap installed OK')\n"
             + gl["_wrap_user_code"](source))
 
 
@@ -136,12 +155,13 @@ async def run_sandboxed_file(safe_path, working_root_dir, timeout_sec=30):
     it to 403) or subprocess.TimeoutExpired (caller maps it to a timeout result).
     """
     gl = await _sandbox_pieces()
-    payload = _payload(gl, _read_source(safe_path))
+    # The runner does the env pins, the bootstrap prefix, stdin delivery, draining and
+    # timeout kill itself -- so it gets the WRAPPED CODE, never a pre-prefixed payload.
+    wrapped = _wrapped(gl, _read_source(safe_path))
     runner = gl["_run_sandboxed_subprocess"]
 
     def _run():
-        # The runner does the env pins, stdin delivery, draining and timeout kill itself.
-        return runner(payload, working_root_dir, timeout_sec)
+        return runner(wrapped, working_root_dir, timeout_sec)
 
     proc = await asyncio.to_thread(_run)
     return {"stdout": proc.stdout or "", "stderr": proc.stderr or "",

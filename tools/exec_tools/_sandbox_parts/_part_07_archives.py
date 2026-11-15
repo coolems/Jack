@@ -5,7 +5,7 @@
 # and rejects filter='fully_trusted'; every mod-level failure now calls _jps_fail (exit 3) instead of
 # swallowing and continuing unsandboxed.
 # Legacy source: lines 1165-1301 of the pre-split single-file SANDBOX_BOOTSTRAP string.
-# Current literal: lines 1380-1528 of the embedded literal.
+# Current literal: lines 1456-1604 of the embedded literal.
 # TEXT FRAGMENT, not an importable module. PROVENANCE ONLY (2026-09-23):
 # _sandbox_bootstrap.py keeps SANDBOX_BOOTSTRAP as an IN-FILE literal and performs NO
 # disk reads at import time -- the CLIENT execs that source in-memory where no repo

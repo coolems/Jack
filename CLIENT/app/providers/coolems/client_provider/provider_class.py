@@ -216,7 +216,10 @@ class CoolemsClientProvider(BaseProvider):
 
         from ..ssl_helper import _build_relay_ssl_context
 
-        ctx = _build_relay_ssl_context(WEB_RELAY_VERIFY_SSL_CERTS, WEB_RELAY_CERT_PIN_FINGERPRINT)
+        # The relay host is passed so the CA-verification path also checks the certificate
+        # NAME (chain verification alone accepts any CA-signed cert for any host).
+        _relay_host = (_live_relay_host_port() or (self._ws_host, self._ws_port))[0]
+        ctx = _build_relay_ssl_context(WEB_RELAY_VERIFY_SSL_CERTS, WEB_RELAY_CERT_PIN_FINGERPRINT, _relay_host)
 
         if ctx is not None:
 
@@ -231,9 +234,14 @@ class CoolemsClientProvider(BaseProvider):
 
         return ctx
 
-    def _build_direct_ssl_context(self):
+    def _build_direct_ssl_context(self, host=None):
 
-        """SSL context for DIRECT mode (honors COOLEMS_DIRECT_VERIFY_SSL_CERTS)."""
+        """SSL context for DIRECT mode (honors COOLEMS_DIRECT_VERIFY_SSL_CERTS).
+
+        host (2026-11-15): the candidate address this context will connect to. DNS names
+        get hostname verification (chain verification alone accepts any CA-signed cert for
+        any host); IP literals keep check_hostname off - see ssl_helper._build_verifying_ssl_context.
+        """
 
         if not self._use_direct_ssl:
 
@@ -243,7 +251,7 @@ class CoolemsClientProvider(BaseProvider):
 
         if COOLEMS_DIRECT_VERIFY_SSL_CERTS:
 
-            ctx = _build_verifying_ssl_context(COOLEMS_SERVER_CERT_PATH)
+            ctx = _build_verifying_ssl_context(COOLEMS_SERVER_CERT_PATH, host)
 
             logger.info("[TLS] Direct mode: certificate verification ENABLED")
 
@@ -270,7 +278,7 @@ class CoolemsClientProvider(BaseProvider):
 
             ws_url = _build_websocket_url(self._direct_ws_host, self._direct_ws_port, self._use_direct_ssl)
 
-            ssl_ctx = self._build_direct_ssl_context()
+            ssl_ctx = self._build_direct_ssl_context(self._direct_ws_host)
 
         return ws_url, ssl_ctx
 
@@ -322,11 +330,11 @@ class CoolemsClientProvider(BaseProvider):
             seen.add((host, port))
             candidates.append(
                 (_build_websocket_url(host, port, self._use_direct_ssl),
-                 self._build_direct_ssl_context())
+                 self._build_direct_ssl_context(host))
             )
         if not candidates:  # settings empty/corrupt -> boot-time cached address keeps us alive
             ws_url = _build_websocket_url(self._direct_ws_host, self._direct_ws_port, self._use_direct_ssl)
-            candidates.append((ws_url, self._build_direct_ssl_context()))
+            candidates.append((ws_url, self._build_direct_ssl_context(self._direct_ws_host)))
         return candidates
 
     # --- Tool request helpers (delegate to tool_requests module) ---

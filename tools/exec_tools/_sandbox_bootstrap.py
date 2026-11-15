@@ -199,6 +199,44 @@ all closed here:
   normal runs are unaffected. Logging-only handlers stay tolerant (a log must never break the
   sandbox).
 
+HARDENING 2026-11-15 -- EXEC POLICY: SYSTEM-ABUSE TOOLS, SWITCH ARGUMENTS, "sh" SUFFIX
+=======================================================================================
+Three verified defects in the exec policy (reproduced with the bootstrap's own
+_is_denied_prog()/_check_cmd_paths() and with real spawns of renamed copies in .temp):
+
+* WINDOWS SYSTEM-ABUSE UTILITIES WERE ALLOWED. _DENY_PROGS covered shells, interpreters
+  and network transfer tools only -- none of the Windows abuse surface. Verified allowed
+  before the fix: wsl, reg, certutil, mshta, net, sc, rundll32, tasklist. `wsl` alone
+  defeats the whole sandbox: the Linux side of the machine has no audit hook, so one
+  argument hands the payload an unsandboxed filesystem + network + interpreter. `reg`
+  writes the registry, which is not a filesystem path and therefore no path check can
+  ever cover it. Now denied: wsl, reg, bitsadmin, certutil, mshta, net/net1, netsh,
+  schtasks, taskkill, tasklist, sc, msiexec, rundll32.
+  (bitsadmin/schtasks/taskkill/msiexec/netsh had been blocked only BY ACCIDENT -- see the
+  next bullet -- so the denylist is what makes them reliably denied.)
+* WINDOWS SWITCHES MISREAD AS PATH ARGUMENTS. _check_cmd_paths() tested
+  ntpath.isabs(tok), and isabs("/list") is True (drive-relative), so every Windows switch
+  looked like an absolute path and was denied. Verified false positives on the pre-fix
+  bootstrap: `sort /r`, `findstr /c:x README.md`, `findstr /m def README.md`. A switch now
+  skips: leading separator + an ALPHA-ONLY flag name, optionally ':value' (values may hold
+  dots/digits -- `/c:foo.txt`, `/d:2024-01-01`). A genuine path argument keeps being checked:
+  a further separator ('/Windows/win.ini'), a dot in the flag itself ('/win.ini' -> the real
+  file C:\win.ini), or a drive/UNC prefix -- so `findstr hello C:\Windows\win.ini` is still
+  denied. POSIX is untouched: "/tmp" really is absolute there.
+  RESIDUAL: a switch VALUE that looks like a path ('/c:\Windows\win.ini', '/d:C:\x') is not
+  inspected -- the flag name is alpha, so the token is treated as a switch. Windows tools
+  read such values as literal strings ('/c:' is a search string, not a file), and the tools
+  that DO act on a path value (msiexec, certutil, reg) are denied outright by _DENY_PROGS.
+* "sh"/"ash" AS SUFFIXES DENIED LEGITIMATE PROGRAMS. The renamed-shell rule matched shell
+  stems as suffixes, and 'sh' is a substring of ordinary names -- verified DENIED: finish,
+  flash, push, wash, brush, gosh, relish, notesh. Real shells (sh/bash/zsh/dash/ksh/csh/
+  tcsh/ash) plus ssh/fish/slogin are now EXACT basenames in _DENY_PROGS; the suffix list
+  keeps only stems that cannot occur inside a legitimate name.
+  RESIDUAL: a renamed shell whose basename is not an exact match ('mysh.exe') is not
+  caught by the suffix list anymore. Accepted deliberately -- restoring 'sh' as a suffix
+  would deny legitimate tools again. cmd/powershell/pwsh/wscript/cscript/conhost/bash/zsh/
+  dash/ksh/csh/tcsh renamed copies stay denied by suffix.
+
 PERF 2026-09-17 ROUND 4 -- CLOSING THE macOS B1->B2 HANG (realpath recursion storm)
 ===================================================================================
 On POSIX os.path.realpath is PURE PYTHON and lstats every path component; each of
@@ -361,6 +399,12 @@ RESIDUAL LIMITATIONS (documented -- same class as any path sandbox)
   read decisions; it cannot answer itself. The parent must keep writing decisions OUTSIDE the
   child's writable tree or on a channel the child cannot write -- this layer only makes the
   in-root decision path unwritable from inside the child.
+* RESIDUAL (2026-11-15): a renamed shell whose basename is not an EXACT denylist name
+  ('mysh.exe', 'myash.exe') is not caught -- 'sh'/'ash' are exact basenames only, because
+  as suffixes they denied legitimate programs (finish/flash/push/wash, verified). Renamed
+  copies of cmd/powershell/pwsh/wscript/cscript/conhost/bash/zsh/dash/ksh/csh/tcsh stay
+  denied by suffix, and every spawnable program is still subject to the cwd + absolute
+  argument rules.
 * RESIDUAL (2026-11-14): spawned bare commands (git, npm, cargo, ...) still run at OS level;
   their absolute path ARGUMENTS are now validated, but a command that resolves files through
   its own internal logic (config paths, env vars, remote protocols) is that tool's behaviour,
@@ -691,10 +735,27 @@ def _jps_setup():
     _DENY_PROGS = frozenset((
         "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
         "wscript", "wscript.exe", "cscript", "cscript.exe", "conhost", "conhost.exe",
-        "sh", "bash", "zsh", "dash", "ksh", "ash", "tcsh", "csh",
+        "sh", "bash", "zsh", "dash", "ksh", "ash", "tcsh", "csh", "fish",
+        "ssh", "slogin",
         "python", "python2", "python3", "pythonw", "py", "node", "nodejs",
         "perl", "ruby", "php", "java",
         "curl", "wget", "ftp", "lftp", "sftp", "scp", "rsync", "tftp", "telnet",
+        # WINDOWS SYSTEM-ABUSE UTILITIES (2026-11-15, verified gap). None of these is a
+        # shell, so _SHELL_SUFFIXES never saw them and the sandbox let them run:
+        #   wsl       -> the Linux side of the machine, no audit hook there at all: a full
+        #                escape (filesystem, network, interpreter) with one argument.
+        #   reg       -> registry WRITE (registry is not a filesystem path, so no path
+        #                check can ever cover it).
+        #   sc        -> service start/stop;  taskkill/tasklist -> process control/enumeration
+        #   mshta     -> HTML Application host: runs script code outside this process
+        #   certutil  -> decode/encode + download;  bitsadmin -> background transfer
+        #   msiexec   -> installer;  rundll32 -> arbitrary DLL entry point
+        #   net/net1  -> user/share/service administration;  netsh -> firewall config
+        # Verified ALLOWED before this fix: wsl, reg, certutil, mshta, net, sc, rundll32,
+        # tasklist. (bitsadmin/schtasks/taskkill/msiexec/netsh were blocked only by
+        # accident -- see the switch-argument rule in _check_cmd_paths below.)
+        "wsl", "reg", "bitsadmin", "certutil", "mshta", "net", "net1", "netsh",
+        "schtasks", "taskkill", "tasklist", "sc", "msiexec", "rundll32",
     ))
     # Shell operators that let one string chain/redirect into arbitrary commands.
     _SHELL_OPS = frozenset("|&;<>(){}$`\\\n")
@@ -702,8 +763,9 @@ def _jps_setup():
     def _deny_exec(what, detail):
         raise PermissionError(
             "python_exec sandbox: child-process spawn blocked -- %s (%s). "
-            "Shells, interpreters and network tools cannot be spawned from "
-            "python_exec; filesystem access stays inside working_root." % (what, str(detail)[:120])
+            "Shells, interpreters, network tools and Windows system-abuse utilities "
+            "cannot be spawned from python_exec; filesystem access stays inside "
+            "working_root." % (what, str(detail)[:120])
         )
 
     def _jps_basename(s):
@@ -755,10 +817,17 @@ def _jps_setup():
     # 'mycmd.exe' ran '/c echo hi' with rc=0 -- the exact-name denylist never saw 'cmd'.
     # A shell binary renamed by the payload is still recognisable by its SUFFIX, so shell
     # stems are matched as suffixes too. Suffix (not substring) on purpose: 'copy'/'py'
-    # style names must not false-positive. 'ssh' ends in 'sh' -> denied, which is correct
-    # (it is a network transfer tool anyway).
+    # style names must not false-positive.
+    #
+    # 'sh'/'ash' are deliberately NOT suffixes (2026-11-15, verified false positives): they
+    # are substrings of ordinary program names, so the old rule DENIED finish, flash, push,
+    # wash, brush, gosh, relish and notesh -- any tool whose name happens to end in 'sh'.
+    # Real shells and ssh/fish/slogin are matched as EXACT basenames in _DENY_PROGS above,
+    # which is the whole set of programs that actually exist as shells on these platforms.
+    # The remaining residual is documented in the module docstring: a renamed shell whose
+    # basename is not an exact match ('mysh.exe') is not caught here.
     _SHELL_SUFFIXES = ("cmd", "cmd.exe", "powershell", "pwsh", "wscript", "cscript",
-                       "conhost", "sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "ash")
+                       "conhost", "bash", "zsh", "dash", "ksh", "csh", "tcsh")
 
     def _is_denied_prog(base):
         b = base[:-4] if base.endswith(".exe") else base
@@ -769,7 +838,7 @@ def _jps_setup():
     def _check_prog_base(base, ctx):
         if base and _is_denied_prog(base):
             # (2026-10-24) consentable: asks the local user when a UI relay is live.
-            _exec_gate("program %r is a shell/interpreter/network tool" % base, ctx)
+            _exec_gate("program %r is a shell/interpreter/network/system tool" % base, ctx)
 
     # ARGUMENT PATH POLICY (2026-11-14, verified escape). The exec policy used to inspect
     # ONLY argv[0]'s basename, so arguments were completely unchecked: `findstr localhost
@@ -786,6 +855,20 @@ def _jps_setup():
                 continue
             if not _jps_os.path.isabs(tok):
                 continue
+            # Windows SWITCHES are drive-relative to isabs(): "/list", "/query", "/c:x",
+            # "/f", "/m" all answer True (ntpath.isabs("/list") == True), so the rule above
+            # misread them as ABSOLUTE PATH arguments and denied them -- verified false
+            # positives on the pre-fix bootstrap: `sort /r`, `findstr /c:x file`,
+            # `findstr /m def README.md`. A switch is a leading separator followed by an
+            # ALPHA-ONLY flag, optionally ':value' (the value may contain dots/digits:
+            # '/c:foo.txt', '/d:2024-01-01'); anything with a further separator, a dot in
+            # the flag itself ('/win.ini' -> drive-relative C:\win.ini, a real file) or a
+            # drive/UNC prefix is a path argument and stays checked. Windows-only: on POSIX
+            # "/tmp" IS an absolute path and must stay checked.
+            if _IS_WIN and tok[0] in ("/", "\\"):
+                _body = tok[1:]
+                if "/" not in _body and "\\" not in _body and _body.split(":", 1)[0].isalpha():
+                    continue
             if _is_devnull(tok) or _is_dev_or_pipe(tok):
                 continue
             if _inside(tok, READ_ROOTS) or _in_path_dirs(tok):
@@ -2637,14 +2720,14 @@ except Exception:
 _SANDBOX_PART_FILES = [
     "_part_00_header.py",            # literal L2-5     banner + stdlib aliases
     "_part_01_core.py",              # literal L6-304   root/READ_ROOTS/_norm/_inside/_deny/logging; _jps_setup def starts here
-    "_part_02_exec_policy_data.py",  # literal L305-583 stage 0: exec-policy denylists + tokenizers + _check_cmd + _check_cwd + consent gates + spawn token
-    "_part_03_audit_hook.py",        # literal L584-821 stage 1: sys.addaudithook enforcement (incl. raw-Win32/socket branches, cwd checks, fail-closed)
-    "_part_04_os_patches.py",        # literal L822-1114 stage 2: os patches + metadata scoping + flag-aware os.open
-    "_part_05_subprocess_policy.py", # literal L1115-1266 stage 3: Popen/spawn/exec/fork policy (incl. cwd= in Popen.__init__)
-    "_part_06_shutil.py",            # literal L1267-1379 stage 4: shutil high-level guards
-    "_part_07_archives.py",          # literal L1380-1528 stage 5: zip/tar/gzip/bz2/lzma writers
-    "_part_08_win32_misc.py",        # literal L1529-2198 stage 6: raw Win32 + builtins.open + sockets + importlib/sqlite3; last line ends _jps_setup()
-    "_part_09_footer.py",            # literal L2199-2209 module-level tail: _jps_setup() call + B9 log + end marker
+    "_part_02_exec_policy_data.py",  # literal L305-622 stage 0: exec-policy denylists + tokenizers + _check_cmd + _check_cwd + consent gates + spawn token
+    "_part_03_audit_hook.py",        # literal L623-897 stage 1: sys.addaudithook enforcement (incl. raw-Win32/socket branches, cwd checks, fail-closed)
+    "_part_04_os_patches.py",        # literal L898-1190 stage 2: os patches + metadata scoping + flag-aware os.open
+    "_part_05_subprocess_policy.py", # literal L1191-1342 stage 3: Popen/spawn/exec/fork policy (incl. cwd= in Popen.__init__)
+    "_part_06_shutil.py",            # literal L1343-1455 stage 4: shutil high-level guards
+    "_part_07_archives.py",          # literal L1456-1604 stage 5: zip/tar/gzip/bz2/lzma writers
+    "_part_08_win32_misc.py",        # literal L1605-2274 stage 6: raw Win32 + builtins.open + sockets + importlib/sqlite3; last line ends _jps_setup()
+    "_part_09_footer.py",            # literal L2275-2286 module-level tail: _jps_setup() call + B9 log + end marker
 ]
 
 _FRAGMENT_MARKER = "# === FRAGMENT START (verbatim) ==="
