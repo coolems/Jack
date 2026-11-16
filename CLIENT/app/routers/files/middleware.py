@@ -22,6 +22,19 @@ def _safe_relative_path(base: str, rel: str):
     return full
 
 
+def _is_working_root_base(base: str, candidate: str) -> bool:
+    """True when *candidate* resolves to *base* itself, not to something inside it.
+
+    _safe_relative_path() guarantees containment, and containment INCLUDES the base -
+    which is right for listings and uploads, but never for a delete target: wiping the
+    whole working root must be impossible. realpath() on both sides also catches the
+    spellings that look like children but are not ('.', './', 'app/..', whitespace-only
+    values, trailing spaces/dots that Windows realpath strips) and symlinks pointing
+    back at the root. normcase() keeps the compare correct on case-insensitive drives.
+    """
+    return os.path.normcase(os.path.realpath(candidate)) == os.path.normcase(os.path.realpath(base))
+
+
 def _get_working_root_dir():
     """Return the current dynamic working root directory.
     

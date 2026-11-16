@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, UploadFile, Query, HTTPException, Request
 
 
 from app.utils.common import is_text_file, is_image_file, read_text_file, MAX_FILE_SIZE
-from .middleware import _safe_relative_path, _get_working_root_dir, logger
+from .middleware import _safe_relative_path, _is_working_root_base, _get_working_root_dir, logger
 
 from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
 
@@ -45,14 +45,24 @@ def register_write_endpoints(router: APIRouter):
 
     @router.delete("/api/tree")
     async def delete_tree(path: str = Query(..., description="Relative path inside working_root folder")):
-        """Delete a file or folder (recursively) by relative path."""
+        """Delete a file or folder (recursively) by relative path.
+
+        SECURITY (2026-11-16): the target must be a real CHILD of working_root.
+        _safe_relative_path() only guarantees containment, and containment includes the
+        base itself - '.', './', 'app/..' and whitespace-only values all resolve to the
+        working root, which used to reach shutil.rmtree() and wipe the whole workspace
+        (the Files tab deletes without a confirmation dialog). An empty/blank path is a
+        missing parameter, and a path that resolves to the root is refused outright.
+        """
         try:
-            if not path:
+            if not path.strip():
                 raise HTTPException(status_code=400, detail="Missing path parameter")
             working_root_dir = _get_working_root_dir()
             safe_path = _safe_relative_path(working_root_dir, path)
             if safe_path is None:
                 raise HTTPException(status_code=400, detail="Invalid path")
+            if _is_working_root_base(working_root_dir, safe_path):
+                raise HTTPException(status_code=400, detail="Refusing to delete the working root itself")
             if not os.path.exists(safe_path):
                 raise HTTPException(status_code=404, detail="Path not found")
             if os.path.isdir(safe_path):

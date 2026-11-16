@@ -22,6 +22,7 @@ from app.utils.common import (
     is_text_file,
     encode_image_to_base64,
     read_text_file,
+    guard_path_inside_working_root,
 )
 from app.utils.common import get_working_root
 
@@ -43,6 +44,34 @@ _IMAGE_MIME = {
 def _mime_for(filename: str) -> str:
     ext = os.path.splitext(filename.lower())[1]
     return _IMAGE_MIME.get(ext, "application/octet-stream")
+
+
+def _resolve_upload_path(upload_dir: str, file_url: str) -> str | None:
+    """Map an attachment URL (``/files/<rel>``) to a real path INSIDE *upload_dir*.
+
+    Returns None for anything that is not a plain working-root-relative path:
+    absolute paths, drive letters, leading separators, UNC targets or ``..``
+    traversal.  Rejected instead of raised, so one bad attachment cannot break
+    the rest of the message (the per-file isolation contract above).
+
+    FIX (2026-11-13): the old code did ``file_url.replace("/files/", "")`` and a
+    bare ``os.path.join``.  That stripped the prefix but kept the traversal tail
+    (``/files/../x`` -> ``../x``), and ``os.path.join`` DISCARDS *upload_dir*
+    when the remainder is absolute - so any file on the machine could be read
+    into the prompt.  Containment is now enforced by the shared guard.
+    """
+    rel = str(file_url).replace("\\", "/")
+    if rel.startswith("/files/"):
+        rel = rel[len("/files/"):]        # prefix only, once - never replace() mid-string
+    rel = rel.strip()
+    if not rel or rel.startswith("/") or os.path.splitdrive(rel)[0]:
+        return None
+    filepath = os.path.normpath(os.path.join(upload_dir, rel))
+    try:
+        guard_path_inside_working_root(filepath, upload_dir, label="Attachment path")
+    except ValueError:
+        return None
+    return filepath
 
 
 def process_media_files(
@@ -82,11 +111,14 @@ def process_media_files(
     file_contents: List[Dict] = []
 
     for file_url in media_files:
-        filename = file_url.split("/")[-1]
-        if file_url.startswith("/files/"):
-            filename = file_url.replace("/files/", "")
-
-        filepath = os.path.join(UPLOAD_DIR, filename)
+        filepath = _resolve_upload_path(UPLOAD_DIR, file_url)
+        if filepath is None:
+            logger.warning(f"Rejected attachment (not a working-root file): {file_url!r}")
+            failed_images.append(os.path.basename(str(file_url).replace("\\", "/")))
+            continue
+        # Derived from the RESOLVED path, never from the client string, so no
+        # attacker-controlled text reaches the prompt through the filename.
+        filename = os.path.relpath(filepath, UPLOAD_DIR).replace(os.sep, "/")
 
         try:
             if not os.path.exists(filepath):

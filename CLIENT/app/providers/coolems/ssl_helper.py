@@ -31,32 +31,30 @@ def _build_no_verify_ssl_context() -> ssl_mod.SSLContext:
     return ctx
 
 
+# ---------------------------------------------------------------------------
+# (2026-09-23 v4) FAIL-CLOSED relay TLS builder.
+# The web relay runs on a PUBLIC host - the client->relay link is internet-facing,
+# so an untrusted transport would expose the API key in the first auth frame.
+# _build_relay_ssl_context() returns a verifying or pinned context and NEVER falls
+# back to CERT_NONE: when neither option is usable it returns None and the caller
+# refuses to connect (with an actionable log message) instead of degrading.
+# ---------------------------------------------------------------------------
 
+def _build_relay_ssl_context(verify_certs, pin_fingerprint) -> ssl_mod.SSLContext | None:
+    """SSL context for RELAY-mode connections (internet-facing), fail-closed.
 
-    # ---------------------------------------------------------------------------
-    # (2026-09-23 v4) FAIL-CLOSED relay TLS builder.
-    # The web relay runs on a PUBLIC host - the client->relay link is internet-facing,
-    # so an untrusted transport would expose the API key in the first auth frame.
-    # build_relay_ssl_context() returns a verifying or pinned context and NEVER falls
-    # back to CERT_NONE: when neither option is usable it returns None and the caller
-    # refuses to connect (with an actionable log message) instead of degrading.
-    # ---------------------------------------------------------------------------
-
-    def _build_relay_ssl_context(verify_certs, pin_fingerprint):
-        """SSL context for RELAY-mode connections (internet-facing), fail-closed.
-
-        Returns:
-            ssl.SSLContext when either full CA verification or a usable cert pin is
-            configured; None otherwise - the caller MUST refuse to connect in that case.
-        """
-        if verify_certs:
-            from config import COOLEMS_SERVER_CERT_PATH  # lazy: ssl_helper must stay import-light
-            return _build_verifying_ssl_context(COOLEMS_SERVER_CERT_PATH)
-        if pin_fingerprint:
-            ctx = _build_pinned_ssl_context(pin_fingerprint)
-            if ctx is not None:
-                return ctx
-        return None
+    Returns:
+        ssl.SSLContext when either full CA verification or a usable cert pin is
+        configured; None otherwise - the caller MUST refuse to connect in that case.
+    """
+    if verify_certs:
+        from config import COOLEMS_SERVER_CERT_PATH  # lazy: ssl_helper must stay import-light
+        return _build_verifying_ssl_context(COOLEMS_SERVER_CERT_PATH)
+    if pin_fingerprint:
+        ctx = _build_pinned_ssl_context(pin_fingerprint)
+        if ctx is not None:
+            return ctx
+    return None
 
 
 # ---------------------------------------------------------------------------
