@@ -112,7 +112,12 @@ MODEL_NAME: str = ""  # empty = "load whatever .last_model_loaded.json says"
 # Strata is a SEPARATE local app that serves an OpenAI-compatible (llama.cpp-shaped)
 # HTTP endpoint. The SERVER only talks to it over HTTP: no spawn, no kill, no model
 # loading - Strata owns the process and the model. Every request carries a Bearer token.
-STRATA_SERVER_PORT: int = 18500                         # TCP port of Strata's inference endpoint
+# Must be the port of the Strata endpoint in config/strata_servers.json - the registry
+# probes those entries, this URL is what the relay itself talks to. Same port on both
+# sides, or the relay probes a port nothing serves (ConnectError: "Strata is not running")
+# while the registry happily reports a healthy node. 8081 = ZZZ_STRATA_CLI.bat in the
+# Strata model root (0.0.0.0, no API key); the Strata app's own endpoint is 18500.
+STRATA_SERVER_PORT: int = 8081                          # TCP port of Strata's inference endpoint
 STRATA_URL: str = f"http://localhost:{STRATA_SERVER_PORT}"  # Strata base URL - DERIVED from STRATA_SERVER_PORT (single knob)
 # Bearer token for /props, /v1/models and /v1/chat/completions (/health needs none).
 # Precedence: strata_servers.json entry 'api_key' > this value > env STRATA_API_KEY.
