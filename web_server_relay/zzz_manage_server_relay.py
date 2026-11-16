@@ -1,49 +1,20 @@
-"""
-COOLEMS Web Relay — local management panel (Tk GUI)
-====================================================
-
-Run this on your HOME SERVER (the machine that also runs the brain). It is a
-standalone DESKTOP application (tkinter): no web server, no local port, no HTML.
-It opens a management WebSocket to the PHP relay's /ws/manage endpoint and gives
-you a small window to:
-
+"""COOLEMS Web Relay — local management panel (Tk GUI)
+Run this on your HOME SERVER (the machine that also runs the brain). It is a standalone
+DESKTOP application (tkinter): no web server, no local port, no HTML. It opens a management
+WebSocket to the PHP relay's /ws/manage endpoint and gives you a small window to:
   * verify whether YOUR home server ("brain") is connected to the web relay,
   * measure live ping (RTT) to the relay — last/min/avg/max + sparkline,
   * see how many internet clients are currently attached (+ who they are),
   * PAUSE / RESUME new-client intake on the relay (existing clients keep flowing),
   * RESET all client connections on the relay.
-
-Security: the /ws/manage channel is IP-locked to your home server's public egress
-IP and requires the same BRAIN_KEY as the brain itself — a stranger on the
-internet cannot drive the relay even if they reach it. The GUI binds to nothing;
-it only runs locally in its own process.
-
+Security: the /ws/manage channel is IP-locked to your home server's public egress IP and
+requires the same BRAIN_KEY as the brain itself — a stranger on the internet cannot drive
+the relay even if they reach it. The GUI binds to nothing; it only runs locally in its own
+process.
 Usage:
     python zzz_manage_server_relay.py                 # reads config/config.py (USE_WEB_SERVER)
-                                                      # no relay configured yet = IDLE mode: window opens with a setup guide
+                                                      window opens with a setup guide
     python zzz_manage_server_relay.py --relay host:port   # override the relay address
-
-The admin API key is read from config/.api_keys.json (the entry with role=admin).
-TLS trust follows the same fail-closed rules as the brain side:
-WEB_RELAY_VERIFY_SSL_CERTS=True -> full CA verification; otherwise a usable
-WEB_RELAY_CERT_PIN_FINGERPRINT is required. Plaintext ws:// is refused on any
-non-localhost relay address (the relay must serve TLS in production anyway).
-
-Architecture: one daemon thread runs an asyncio event loop that owns the
-/websocket to the relay (reconnect + backoff, ping for RTT, status polling).
-The tkinter main thread polls shared state every 250 ms and renders it. Operator
-commands travel through a queue.Queue drained by an async pump task — no lock
-juggling needed because all socket sends happen inside one event loop.
-
-Modules (this folder):
-    relay_state.py   shared STATE / CMD_Q + engine-shutdown helper (no tkinter, no asyncio loop)
-    relay_ui.py      the tkinter dashboard window (RelayManagerUI)
-    zzz_manage_server_relay.py  this file: config resolution, asyncio engine, main()
-
-When launched as a script (python web_server_relay\\zzz_manage_server_relay.py or
-via ZZZ_MANAGE_RELAY.bat), Python puts THIS folder on sys.path automatically —
-the sibling modules are imported by plain name. The repo-root bootstrap below is
-kept for `python -m`-style invocations from other directories.
 """
 
 from __future__ import annotations

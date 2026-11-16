@@ -1,7 +1,6 @@
-"""Dedicated OCR llama-server lifecycle manager (2026-08-26).
+"""Dedicated OCR llama-server lifecycle manager.
 
 WHY THIS EXISTS
----------------
 The main chat server (port 5000) usually runs a big non-vision model (e.g.
 Qwen3.8-27B-MTP, no mmproj next to it), so POSTing an image there returns:
 
@@ -24,6 +23,7 @@ Design rules:
   * Idempotent: if a healthy OCR instance with the expected model is already up
     (launched by us or externally), it is reused — no duplicate processes.
   * Safe cleanup: we only ever terminate processes WE launched ourselves.
+
 """
 
 import asyncio
@@ -157,8 +157,8 @@ def _loaded_model_id(port: int) -> str:
 def _model_matches(loaded_id: str, expected_path: str) -> bool:
     """EXACT match only (same rule as health_check._verify_model_loaded).
 
-    2026-08-23 security fix: the old bidirectional substring match could let a
-    wrong model pass verification; compare stripped basenames for equality.
+    Compares stripped basenames for equality; a substring match could let a wrong model pass
+    verification.
     """
     if not loaded_id or not expected_path:
         return False
@@ -236,11 +236,11 @@ def _popen_ocr(model_file: str, mmproj_file: str) -> Optional[subprocess.Popen]:
 async def _launch_and_wait(model_file: str, mmproj_file: str) -> bool:
     """Start the OCR llama-server and wait until healthy + verified (ASYNC).
 
-    (2026-09 threadless refactor): split from the old fully-blocking version. The Popen
-    leaf runs in a worker thread; the health wait / model verification are AWAITED on the
-    loop directly - .health_check._wait_for_health and _verify_model_loaded are async now,
-    so they can no longer be called from a to_thread() worker (that was silently skipping
-    them: awaiting nothing)."""
+    The Popen leaf runs in a worker thread; the health wait and model verification are
+    AWAITED on the loop directly. health_check._wait_for_health and _verify_model_loaded
+    are async, so they must never be called from a to_thread worker - awaiting nothing
+    there would silently skip both checks.
+    """
     global _ocr_process
 
     from .health_check import _wait_for_health, _verify_model_loaded
@@ -293,19 +293,9 @@ def _tracked_state() -> Tuple[Optional[subprocess.Popen], Optional[str]]:
 
 async def ensure_ocr_server() -> Optional[str]:
     """Make sure a vision-capable dedicated OCR server is running.
-
     Returns the base URL (e.g. "http://localhost:5010") when one is available,
     or None when it could not be started/verified. Idempotent and safe to call
     on every OCR request - reuse is a cheap /health probe.
-
-    Locking discipline (2026-08-27 fix): the threading lock is only ever held
-    for instantaneous state reads/writes - NEVER across an await or a blocking
-    wait. All long-running work (health probes, model verification, process
-    launch up to ~120 s) runs OUTSIDE the lock via asyncio.to_thread, so two
-    concurrent OCR requests can no longer stall each other on lock acquisition.
-    A separate _launch_in_progress flag + Event serializes the slow path so
-    simultaneous requests never double-start the server and a cleanup can never
-    race an external-reuse probe.
     """
     global _ocr_process, _last_model_path, _launch_in_progress, _launch_event
 

@@ -1,16 +1,8 @@
-"""FrameSink — transport-agnostic delivery of response frames back to a chat.
+"""FrameSink - transport-agnostic delivery of response frames back to a chat.
 
-2026-09-08 multi-chat (Phase 2). Workers in the queue never touch a raw WebSocket: they
-write through a FrameSink, which knows how to deliver JSON frames over whatever transport
-the request came in on. The two adapters wrap the existing chat_relay machinery verbatim:
-
-  * :class:`DirectWsSink`    — direct TLS WS client (client <-> server).
-  * :class:`RelayTargetSink` — web-relay brain link; every frame is tagged with
-    ``target_client`` so the relay routes it to exactly the requesting client.
-
-Both expose the same surface the chat core needs: ``send_text(str)`` + ``is_closed``,
-plus a convenience ``push_frame(dict)`` that JSON-encodes and swallows closed-socket
-errors (a vanished client must never crash a worker).
+Workers in the queue never know how the answer leaves: they push frames into a sink. The
+sink is a WebSocket writer, a relay writer or a buffer, so the queue logic is identical
+for every transport.
 """
 
 import json

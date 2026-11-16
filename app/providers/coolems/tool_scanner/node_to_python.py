@@ -4,15 +4,10 @@ import ast
 
 def _ast_node_to_python(node):
 
-    """Convert an AST node directly to a Python object without string round-trip.
+    """Convert an AST node directly to a Python object, without a string round-trip.
 
-
-    Handles Constant, Dict, List, Tuple, Set, Name (for None/True/False),
-
-    UnaryOp (negation), and Ellipsis. Falls back to ast.literal_eval on unparsed
-
-    string for complex cases that still work with literal_eval.
-
+    Handles Constant, Dict, List, Tuple, Set, Name (None/True/False), UnaryOp (negation)
+    and Ellipsis; anything else falls back to ast.literal_eval.
     """
 
     if isinstance(node, ast.Constant):

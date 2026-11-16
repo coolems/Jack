@@ -205,7 +205,7 @@ def set_current_working_root(path) -> None:
 def get_working_root() -> str:
     """Return the working root for the CURRENT context.
 
-    Resolution order (2026-10-09):
+    Resolution order
       1. The ContextVar of the current task/context - set per turn from the active
          workspace's conversations.working_root DB row (per-workspace isolation).
       2. Legacy module global (non-async callers / direct test sets).
@@ -227,7 +227,7 @@ def set_working_root(path) -> None:
 
     The production writer is CLIENT-side: POST /api/working_root persists per-workspace
     values to the database and agentic_mode() publishes them via
-    set_current_working_root(). This function only updates THIS process's context value -
+    set_current_working_root(). This function only updates THIS process's context value
     it never touches disk.
 
     Raises:
@@ -386,15 +386,14 @@ _current_user_role: Optional[str] = None
 def set_current_user_role(role: str) -> None:
     """Store a user role in this store (see header).
 
-        In the live architecture no production code path calls this: CLIENT-side
-        tools read their role from the injected CURRENT_USER_ROLE global. Kept for
-        tests and direct callers that need a per-task isolated role value.
+        Writes BOTH the per-task ContextVar (the value async callers actually read,
+        isolated per WS connection) AND the legacy module global (kept so non-async
+        callers/tests keep working). In concurrent asyncio contexts only the ContextVar
+        matters, which is what prevents role bleed between simultaneous clients.
 
-    FIX (2026-08-19): writes BOTH the per-task ContextVar (the value that async
-    callers actually read -- isolated per WS connection) AND the legacy module
-    global (kept so non-async callers/tests keep working). In concurrent
-    asyncio contexts only the ContextVar matters, which is what prevents role
-    bleed between simultaneous clients.
+        In the live architecture no production code path calls this: CLIENT-side tools
+        read their role from the injected CURRENT_USER_ROLE global. Kept for tests and
+        direct callers that need a per-task isolated role value.
 
     Args:
         role: The user's role string (e.g., 'admin', 'power_user', 'user')
@@ -408,12 +407,11 @@ def set_current_user_role(role: str) -> None:
 def get_current_user_role() -> str:
     """Return the current authenticated user's role.
 
-    Resolution order (FIX 2026-08-19):
-      1. The ContextVar of the CURRENT task/context -- per-connection value set at
-         auth time; concurrent WS clients can never see each other's roles.
+    Resolution order:
+      1. The ContextVar of the CURRENT task/context - per-connection value set at auth time,
+         so concurrent WS clients never see each other's roles.
       2. Legacy module global (non-async callers / direct test sets).
-      3. 'user' -- safe default when nothing has been set (e.g., CLIENT sandbox
-         without server context).
+      3. 'user' - safe default when nothing has been set (e.g. CLIENT sandbox, no server ctx).
 
     Returns:
         Role string: 'admin', 'power_user', or 'user'
@@ -464,13 +462,13 @@ def _clean_blocked_libs(modules) -> list:
 def set_python_exec_blocked_libs(modules) -> None:
     """Store a python_exec blocked-libs list in this store (see header).
 
+        Writes BOTH the per-task ContextVar (what async callers read) AND the legacy
+        module global, mirroring set_current_user_role().
+
         Accepts a list of module names; an EMPTY list is meaningful -- it means "no
         restrictions at all" and is stored as-is. Pass None to clear back to the
         built-in defaults. Live CLIENT tools read their set from the injected
         PYTHON_EXEC_BLOCKED_LIBS global, not from this store.
-
-    FIX (2026-08-19): writes BOTH the per-task ContextVar (what async callers read)
-    AND the legacy module global, mirroring set_current_user_role().
     """
     global _current_python_exec_blocked_libs
     if modules is None:
@@ -485,12 +483,12 @@ def set_python_exec_blocked_libs(modules) -> None:
 def get_python_exec_blocked_libs():
     """Return the stored python_exec blocked-libs list, or None for built-in defaults.
 
-    Resolution order (FIX 2026-08-19): ContextVar of the current task first
-    (per-connection isolation), then the legacy module global, then None.
+        Resolution order (FIX): ContextVar of the current task first
+        (per-connection isolation), then the legacy module global, then None.
 
-    Returns:
-        list -- module names to block on import (empty list = allow everything)
-        None -- no per-profile set available -> caller uses its built-in default blocklist
+        Returns:
+            list -- module names to block on import (empty list = allow everything)
+            None -- no per-profile set available -> caller uses its built-in default blocklist
     """
     stored = _current_python_exec_blocked_libs_ctx.get()
     if stored is not None:
@@ -508,11 +506,11 @@ def get_python_exec_blocked_libs():
 
 def validate_filename(filename: str, label: str = "Filename") -> None:
     """Validate that a filename contains no path traversal or separators.
-    
+
     Args:
         filename: The filename to validate.
         label: Label for error messages.
-        
+
     Raises:
         ValueError: If the filename is invalid.
     """
@@ -539,16 +537,16 @@ def validate_filename(filename: str, label: str = "Filename") -> None:
 
 def resolve_path_to_dir(working_root: str, path: str = "") -> str:
     """Resolve *path* to a directory inside *working_root*.
-    
+
     Delegates to path_guard.resolve_path_to_dir for security validation.
-    
+
     Args:
         working_root: The base allowed directory.
         path: Relative or absolute path to resolve. Empty string means working_root itself.
-        
+
     Returns:
         Resolved absolute directory path.
-        
+
     Raises:
         ValueError: If the resolved path escapes working_root.
     """
@@ -573,7 +571,7 @@ def guard_path_inside_working_root(
     label: str = "File path",
 ) -> None:
     """Ensure *filepath* is inside *working_root*. Raises ``ValueError`` if not.
-    
+
     Delegates to path_guard.guard_path_inside_working_root for security validation.
     """
     wr = working_root or get_working_root()
@@ -610,10 +608,10 @@ def is_image_file(filepath: str) -> bool:
 
 def encode_image_to_base64(image_path: str) -> Optional[str]:
     """Read an image file and return its base64-encoded string.
-    
+
     Args:
         image_path: Absolute path to the image file.
-        
+
     Returns:
         Base64 encoded string of the file content, or None on failure.
     """
@@ -628,11 +626,11 @@ def encode_image_to_base64(image_path: str) -> Optional[str]:
 
 def read_text_file(filepath: str, max_chars: int = MAX_TEXT_CONTENT_SIZE) -> Optional[str]:
     """Read a text file with size limit.
-    
+
     Args:
         filepath: Absolute path to the text file.
         max_chars: Maximum characters to read (default 500k).
-        
+
     Returns:
         File content as string, or None on failure.
     """
@@ -647,7 +645,7 @@ def read_text_file(filepath: str, max_chars: int = MAX_TEXT_CONTENT_SIZE) -> Opt
 
 def get_file_info(filepath: str) -> dict:
     """Get basic file metadata.
-    
+
     Returns a dict with keys: name, ext, size_bytes, is_text, is_image.
     """
     stat = os.stat(filepath) if os.path.exists(filepath) else None
@@ -671,15 +669,15 @@ def find_file(
     project_root: Optional[str] = None,
 ) -> Optional[str]:
     """Search for *filename* inside allowed directories.
-    
+
     Delegates to path_guard.secure_find_file which never returns paths outside
     the allowed directories (defense in depth).
-    
+
     Args:
         filename: Name of the file to find (may include relative subpath).
         working_root: Base directory for search. Uses global if None.
         project_root: Secondary search directory (optional).
-        
+
     Returns:
         Absolute path to found file, or None if not found.
     """
@@ -706,27 +704,12 @@ def validate_file_access(
     label: str = "File",
 ) -> str:
     """Validate that a file EXISTS and can be safely accessed.
-
     Delegates to path_guard.validate_file_access for security validation.
-
-    (2026-11 review fix B3) The old ``must_exist`` parameter was documented but
-    silently ignored: path_guard.validate_file_access ALWAYS requires existence,
-    so ``must_exist=False`` callers would still get FileNotFoundError. The
-    parameter is removed rather than implemented - no caller in the repo ever
-    passed it, and a "validate a path that may not exist" mode would need a
-    different function (containment-only), not a flag that lies about behaviour.
-
-    Args:
-        filepath: Path to validate (relative or absolute).
-        working_root: Base allowed directory. Uses global if None.
-        label: Label for error messages.
-
-    Returns:
-        Resolved absolute path string.
-
-    Raises:
-        ValueError: If access is denied.
-        FileNotFoundError: If the file does not exist.
+    path_guard.validate_file_access ALWAYS requires existence, so ``must_exist=False``
+    callers would still get FileNotFoundError. The parameter is removed rather than
+    implemented - no caller in the repo ever passed it, and a "validate a path that may not
+    exist" mode would need a different function (containment-only), not a flag that lies
+    about behaviour.
     """
     wr = working_root or get_working_root()
     

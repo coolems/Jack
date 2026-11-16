@@ -188,21 +188,10 @@ def _js_unescape(token: str) -> str:
 
 def parse_waf_challenge(body: bytes) -> "_WafChallenge | None":
     """Parse the mfe.gov.ro-style JS PoW challenge from a WAF HTML body.
-
-    Returns a _WafChallenge with every parameter needed to replicate the page's
-    own solve loop, or None when the body does not match the known pattern
-    (in which case the caller treats it as an ordinary failure). Pure string work --
-    no network access, no JavaScript execution.
-
-    How the obfuscation works: a 3-string literal array is rotated left N times by
-    a self-executing IIFE; all later lookups use indices into the ROTATED array.
-    We recover each value directly via final[idx] = items[(idx + N) % 3], so neither
-    the rotation count nor the original layout has to be guessed -- the lookup
-    sites themselves tell us which slot holds the prefix, the method and the cookie.
-
-    The target byte position is also obfuscated: n1 = parseInt('0x' + c[K]) where c
-    is the (hex) prefix string -- i.e. n1 is the hex value of the K-th CHARACTER of
-    the prefix, not a literal index. We replicate that exactly once the prefix is known.
+    Returns a _WafChallenge with every parameter needed to replicate the page's own solve
+    loop, or None when the body does not match the known pattern (in which case the caller
+    treats it as an ordinary failure). Pure string work - no network access, no JavaScript
+    execution.
     """
     try:
         text = body.decode("utf-8", errors="replace")
@@ -361,21 +350,22 @@ async def _http_get_once(session, url: str, headers: dict) -> dict:
 
 async def download_file(url: str, filename: str = None, download_dir: str = "", use_browser_context: bool = True) -> str:
     """
-    Download a file from a URL with SSRF protection.
+        Download a file from a URL with SSRF protection.
 
-    Args:
-        url: The URL to download
-        filename: Optional filename (inferred from URL if not provided)
-        download_dir: Directory to save to (default: working_root via get_working_root())
-        use_browser_context: If True, uses the browser's context for download (handles auth/session)
+        Args:
+            url: The URL to download
+            filename: Optional filename (inferred from URL if not provided)
+            download_dir: Directory to save to (
+            default: working_root via get_working_root)
+            use_browser_context: If True, uses the browser's context for download (handles auth/session)
 
-    Returns:
-        Success: "Downloaded: <filename> (<N> bytes)" (+ " (via WAF challenge solved)" when a JS
-                 proof-of-work gate was detected and passed offline).
-        Failure: a structured multi-line message starting with "Download failed [diagnosis=...]"
-                 that carries the HTTP status, final URL after redirects, content type, a body
-                 snippet, the redirect chain, and an explicit suggested_action so an AI reading
-                 the result can decide the next step (retry later / use browser context / fix URL).
+        Returns:
+            Success: "Downloaded: <filename> (<N> bytes)" (+ " (via WAF challenge solved)" when a JS
+                     proof-of-work gate was detected and passed offline).
+            Failure: a structured multi-line message starting with "Download failed [diagnosis=...]"
+                     that carries the HTTP status, final URL after redirects, content type, a body
+                     snippet, the redirect chain, and an explicit suggested_action so an AI reading
+                     the result can decide the next step (retry later / use browser context / fix URL).
     """
     from ..utils import get_working_root, resolve_path_to_dir, validate_filename
 

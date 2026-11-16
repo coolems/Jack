@@ -52,11 +52,11 @@ def register_special_endpoints(router: APIRouter):
     async def open_folder(path: str = Query("", description="Relative path inside working_root folder")):
         """Open a FOLDER in the system explorer (directories only).
 
-        SERVER-side limitation gate (2026-10-01): same as /api/run-file and /api/run-python -
+        SERVER-side limitation gate: same as /api/run-file and /api/run-python
         spawning os.startfile / open / xdg-open is a child-process execution surface, so it
         checks is_subprocess_allowed() first.
 
-        Directories only (2026-10-01): on Windows os.startfile() EXECUTES files (.bat/.exe/...),
+        Directories only: on Windows os.startfile() EXECUTES files (.bat/.exe/...),
         and /api/upload keeps the basename - an un-gated startfile on a file inside working_root
         would be a bypass of the exec policy. isdir() closes that surface.
         """
@@ -89,12 +89,13 @@ def register_special_endpoints(router: APIRouter):
     async def run_file(data: Dict):
         """Run a Python file. GUI apps (pygame, tkinter) launch in new terminal window.
 
-        SERVER-side limitation gate (2026-10-01): before spawning any child process the CLIENT
+        SERVER-side limitation gate: before spawning any child process the CLIENT
         checks whether SUBPROCESS execution is allowed by the limitations the SERVER delivered for
         this machine's profile - per-profile python_exec_blocked_libs plus the per-role tool
         allowlist (app.keys.is_subprocess_allowed). No local role verification: whatever
         restrictions the SERVER sent over WebSocket are enforced here too, so a direct HTTP
-        request cannot bypass what the agent channel is denied."""
+        request cannot bypass what the agent channel is denied.
+        """
         try:
             import subprocess as subproc
             allowed, reason = is_subprocess_allowed()

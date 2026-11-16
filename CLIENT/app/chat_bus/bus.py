@@ -1,33 +1,22 @@
-"""ChatBus — registry of per-chat background sessions (2026-09-08 multi-chat, Phase 3).
+"""ChatBus - registry of per-chat background sessions.
 
 One ChatChannel per conversation id; each channel owns its generation task, stop event and
-frame buffer. The UI WebSocket handler becomes a thin subscriber: it attaches/detaches its
-socket to the channel instead of owning the whole turn inline. That is what lets several
-chats generate at once — switching chats in the browser no longer kills anything.
+frame buffer. The UI WebSocket handler is a subscriber: it attaches/detaches its socket to
+the channel instead of owning the turn inline, so several chats can generate at once and
+switching chats in the browser never kills a running session.
 
 Responsibilities (and ONLY these):
-  * get_or_create / submit   — create or reuse a channel, spawn the background task
-  * attach / detach          — UI socket lifecycle per conversation
-      * steer                    — queue a mid-run user message for the live agentic turn
-      * stop                     — cancel queued-or-running work for one chat (/api/stop)
-  * stop_all                 — cancel EVERY live session (UI closed / backend shutdown)
-  * stale cleanup            — drop channels idle too long (replaces the old dict cleanup)
+  * get_or_create / submit - create or reuse a channel, spawn the background task
+  * attach / detach - UI socket lifecycle per conversation
+  * steer - queue a mid-run user message for the live agentic turn
+  * stop - cancel queued-or-running work for one chat (/api/stop)
+  * stop_all - cancel EVERY live session (UI closed / backend shutdown)
+  * stale cleanup - drop channels idle too long
 
-STALE-TASK CONTRACT (2026-09-10 fix, "No active generation found" bug):
-  The UI's red stop button and the window-close path both rely on this bus. A chat that is
-  generating/queued ALWAYS has a live channel with a running task; /api/stop routes through
-  it (see routers/agent.py) so the button can never report "No active generation found" for
-  a chat that visibly shows as working.
-
-  stop() uses two layers:
-    1. cooperative — set the channel's stop_event; every loop boundary, retry wait and the
-       relay-WS watcher react to it (graceful unwind + 'done' frame);
-    2. hard backstop — if the turn has not unwound within STOP_HARD_CANCEL_GRACE_SEC the
-       task is cancelled anyway, so "Stop" ALWAYS stops even mid long tool execution.
-
-  stop_all() implements the other half of the user's contract: when the UI window closes or
-  crashes (POST /api/shutdown-all), EVERY task is stopped - no zombie turns keep streaming
-  (and burning tokens) in the background after the window is gone.
+STOP CONTRACT: the UI's red stop button and the window-close path both rely on this bus. A
+chat that is generating or queued ALWAYS has a live channel with a running task, and
+/api/stop routes through it (see routers/agent.py), so the button cannot report "No active
+generation found" for a chat that visibly shows as working.
 """
 
 import asyncio
@@ -205,11 +194,10 @@ class ChatBus:
     # --- generation -------------------------------------------------------------------
 
     async def submit(self, ws, conv_id: str, prepared: dict) -> ChatChannel:
-        """Start a background generation turn for *prepared* (see handler._prepare_user_message).
+        """Start a background generation turn for *prepared* (handler._prepare_user_message).
 
-        If the chat already has a live session the old one is stopped first — a new user
-        message supersedes it (same as clicking send while generating before this refactor,
-        which used to be impossible because the receive loop was busy).
+        A chat with a live session stops it first: a new user message always supersedes the
+        generation in flight.
         """
         self._bind_owner_loop()
         ch = self.get_or_create(conv_id)
@@ -236,20 +224,11 @@ class ChatBus:
 
     async def steer(self, conv_id: str, text: str, steer_id: str | None = None):
         """Queue a mid-run user message for this chat's LIVE agentic turn.
-
-        Live steering (2026-10-23): the UI lets the user keep typing while the agent works;
-        pressing Enter sends the text here instead of starting a new turn. The running ReAct
-        loop drains this queue at its next safe boundary and injects the text as a fresh user
-        instruction (see logic/react_loop._apply_pending_steers), so the current task continues
-        with the correction instead of being killed and restarted.
-
-        Returns a 3-tuple ``(ok, info, code)``:
-          * ok=True  -> info is the queued item dict (its "id" is echoed to the UI)
-          * ok=False -> info is a human-readable reason, code a stable machine code.
-
-        Refused when there is no live turn or the turn is not agentic: a normal one-shot
-        completion has no next step to inject into, and the UI is told honestly instead of
-        silently dropping the user's text.
+        Live steering: the UI lets the user keep typing while the agent works; pressing
+        Enter sends the text here instead of starting a new turn. The running ReAct loop
+        drains this queue at its next safe boundary and injects the text as a fresh user
+        instruction (see logic/react_loop._apply_pending_steers), so the current task
+        continues with the correction instead of being killed and restarted.
         """
         self._bind_owner_loop()
         text = (text or "").strip()

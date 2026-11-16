@@ -26,8 +26,7 @@ from ..utils import find_file, is_image_file, locate_scratch_image
 logger = logging.getLogger("COOLEMS.Tools.Vision")
 
 def view_image(filename: str) -> dict:
-    """
-    Load an image and return a dict with image_base64 for vision model.
+    """Load an image and return a dict with image_base64 for vision model.
     The agentic loop checks for image_base64 in the result and sends it
     to Ollama via the 'images' key in the message, enabling true vision.
 

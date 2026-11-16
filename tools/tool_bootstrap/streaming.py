@@ -1,29 +1,10 @@
 """Streaming subprocess runner with a per-line progress hook.
-
-run_streaming() is the drop-in upgrade of subprocess.run(..., capture_output=True) used by
-the tool runtime setup steps: it calls on_line(line) for EVERY completed stdout line while
-the process runs (pip redraws its bar with '\r', so one read can hold minutes of repaints
+run_streaming is the drop-in upgrade of subprocess.run(..., capture_output=True) used by the
+tool runtime setup steps: it calls on_line(line) for EVERY completed stdout line while the
+process runs (pip redraws its bar with ' ', so one read can hold minutes of repaints
 - _split_output_lines turns each repaint into an event). stderr is drained by a background
-thread; timeout>0 kills the child and raises subprocess.TimeoutExpired exactly like
-subprocess.run does.
-
-REALTIME FIX (2026-10-23, corrected 2026-10-23): stdout is read as RAW BYTES with
-read1(), never through Python's text-mode wrapper and never with a size-hinting read().
-  * Popen(text=True) wraps stdout in a TextIOWrapper whose readline() only returns when
-    its INTERNAL buffer (~8 KB) fills or the pipe hits EOF - a child flushing one small
-    JSON line every 0.5 s therefore delivered nothing for ~20 s at a time.
-  * Drop text=True and proc.stdout becomes a BufferedReader, which has NO .buffer
-    attribute (only TextIOWrapper does) - touching it raises AttributeError and kills
-    every setup call outright.
-  * BufferedReader.read(n) is NOT a "give me what is available" call either: it loops
-    until n bytes or EOF, so read(65536) stalls until 64 KB accumulate - strictly worse
-    than the 8 KB text buffer it was meant to replace. read1(n) performs at most ONE
-    raw read and returns the moment any bytes reach the OS pipe (measured: every 0.5 s
-    flush delivered within ~50 ms; read(65536) delivered 8 lines only at EOF, 2.08 s).
-Chunks are decoded with an incremental UTF-8 decoder and reassembled into COMPLETE
-lines by a carry buffer, so a JSON event or a pip repaint split across two reads is
-never emitted half-finished. on_line() therefore fires within milliseconds of every
-child flush and .setup_progress.json stays live.
+  thread; timeout>0 kills the child and raises subprocess.TimeoutExpired exactly like
+  subprocess.run does.
 """
 
 import codecs
@@ -40,33 +21,17 @@ _MAX_LINE_CARRY = 1024 * 1024
 logger = logging.getLogger("COOLEMS.Tools.Bootstrap")
 
 def _split_output_lines(raw: str):
-    """Split a child's raw stdout into logical lines on BOTH '\n' and '\r'.
+    """Split pip/venv output into real lines.
 
-    pip redraws its download progress bar in place with carriage returns - no newline
-    arrives until the wheel finishes (minutes for torch). Splitting on '\r' too turns
-    every bar repaint into an event, so the UI gets live percent/speed/ETA instead of a
-    silent 'downloading' line that only ends at EOF.
+    pip redraws its download progress bar in place with carriage returns, so no newline
+    arrives per update; each \r segment is its own line.
     """
     return [seg for seg in re.split(r"[\r\n]+", raw) if seg.strip()]
 
 
 def run_streaming(cmd: list, timeout: int = 0, env: dict = None, input_text: str = None,
                   on_line=None):
-    """Run *cmd* streaming stdout line-by-line (live progress hook).
-
-    Drop-in upgrade of subprocess.run(..., capture_output=True) for the setup steps:
-      * on_line(line) is called for EVERY completed stdout line while the process runs
-        - and in REALTIME: read1() returns as soon as any bytes reach the OS pipe, so
-        small flushed lines are delivered immediately (see the REALTIME FIX above);
-        (the callback may never break setup - exceptions are swallowed and logged);
-      * returns (returncode, [stdout lines], stderr_text);
-      * timeout>0 kills the process after *timeout* seconds and raises
-        subprocess.TimeoutExpired exactly like subprocess.run does;
-      * input_text is written to stdin when given.
-
-    stderr is drained by a background thread so a chatty child can never deadlock on
-    its pipe buffer while we are busy reading stdout lines.
-    """
+    """Run *cmd* streaming stdout line-by-line (live progress hook)."""
     # NOTE: text=False on purpose - see the REALTIME FIX in the module docstring. The
     # child's bytes are decoded here, chunk by chunk, with a carry for split UTF-8.
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

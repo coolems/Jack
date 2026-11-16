@@ -1,5 +1,4 @@
-"""
-CLIENT tools module - REMOTE-ONLY architecture.
+"""CLIENT tools module - REMOTE-ONLY architecture.
 
 All tool source code lives on SERVER. This module provides the mechanism to:
   1. Fetch tool definitions + source from SERVER via WebSocket

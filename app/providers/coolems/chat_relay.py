@@ -1,14 +1,13 @@
-"""Chat relay — forwards chat requests to local LLM and streams response back over WebSocket.
+"""Chat relay - forwards chat requests to the local LLM and streams the response back over WebSocket.
 
-2026-09-08 multi-chat (Phase 2) split: the transport-independent generation core lives in
-:func:`run_chat_core` and is shared by BOTH entry points below AND by the queue worker pool
-(`app/server_queue/worker_pool.py`). The two legacy functions are now thin shims that keep
-the old call signatures working unchanged.
+The transport-independent generation core is run_chat_core(), shared by both entry
+points below and by the queue worker pool (app/server_queue/worker_pool.py).
+relay_chat_websocket / relay_chat_websocket_direct are thin shims over it.
 
-Frame routing contract (unchanged from before the split):
-  * llama streaming chunks arrive via ``sink.send_text(json)`` — the sink is either a raw
-    _WSAdapter (shim path, exactly as before) or a FrameSink (worker path).
-  * final response / token_stats / done / error frames are sent through the same object.
+Frame routing contract:
+  * llama streaming chunks arrive via sink.send_text(json) - the sink is either a raw
+    _WSAdapter (shim path) or a FrameSink (worker path).
+  * final response / token_stats / done / error frames go through the same object.
 """
 
 import json
@@ -30,21 +29,14 @@ logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 
 
 def _is_expected_disconnect(exc: BaseException) -> bool:
-    """L6 fix: decide whether a send failure is an *expected* client disconnect.
+    """Decide whether a send failure is an *expected* client disconnect.
 
-    The old implementation substring-matched "1000"/"closed"/"ok" in str(e), which
-    is brittle across websockets versions (message wording changes between releases
-    and could match unrelated errors). Detection now uses the exception TYPE and,
-    for the `websockets` library, the RFC6455 close code carried on the exception:
+      - ConnectionClosedOK -> normal closure (code 1000), always expected
+      - ConnectionClosedError -> abnormal; expected only when it carries a normal-policy
+        close code, i.e. the peer closed cleanly rather than the transport failing
+      - OSError / generic Exception -> NOT expected (a real send error)
 
-      - ConnectionClosedOK            → normal closure (code 1000) — always expected
-      - ConnectionClosedError         → abnormal closure; only "expected" if it
-                                        carries a normal-policy close code (1000-1003,
-                                        1005, 1007-1011, 3000) i.e. the peer closed
-                                        cleanly rather than the transport failing
-      - OSError / generic Exception   → NOT an expected disconnect (real error)
-
-    Unknown exception types default to False (log as a real send failure).
+    Unknown exception types default to False.
     """
     exc_type_name = type(exc).__name__
     if exc_type_name == "ConnectionClosedOK":
@@ -62,8 +54,8 @@ class _WSAdapter:
     """Lightweight wrapper that presents a uniform send_text() interface over any WebSocket.
 
     Used by both direct-client and relay-mode so chat_stream() can call
-    websocket.send_text(...) without caring about the underlying transport.
-    
+    websocket.send_text without caring about the underlying transport.
+
     Gracefully handles closed connections — logs at DEBUG level for expected disconnects.
     """
 
@@ -153,7 +145,7 @@ def _extract_tool_names(tools: list) -> list:
 
 
 def _filter_tools_by_profile(server_provider, user_info, tools):
-    """Keep only the tools the caller's profile is allowed to use (S1 fix behaviour)."""
+    """Keep only the tools the caller's profile is allowed to use (behaviour)."""
     if not user_info or not tools:
         return tools
     tool_names = _extract_tool_names(tools)
@@ -173,11 +165,11 @@ def _filter_tools_by_profile(server_provider, user_info, tools):
 
 def _estimate_prompt_chars(messages, tools):
     """Estimate prompt size INCLUDING the tool schema (client-side estimates exclude it -
-    that drift is what let prompts reach 130k+ tokens against a 131k window).
+        that drift is what let prompts reach 130k+ tokens against a 131k window).
 
-    FIXED (2026-08): include tool_calls JSON in the estimate - content-only sums
-    counted assistant tool-call messages as 0 tokens and this log line was blind
-    to the fastest-growing part of agentic history.
+        Tool-call JSON is included: a content-only sum counts assistant tool-call messages
+        as 0 tokens, hiding the fastest-growing part of agentic history.
+
     """
     est_chars = sum(
         len(str(m.get("content", ""))) + (len(json.dumps(m["tool_calls"])) if m.get("tool_calls") else 0)
@@ -282,7 +274,7 @@ async def relay_chat_websocket_direct(server_provider, msg: dict, ws):
         to local.chat_stream(). This ensures llama.cpp generation is aborted immediately
         when the client disconnects, instead of running to completion with no one listening.
 
-    2026-09-08 multi-chat: body reduced to a shim over run_chat_core() — behaviour identical.
+    Thin shim over run_chat_core(); behaviour is identical to the relay path.
     """
     model = msg.get("model", "")
     messages = msg.get("messages", [])
@@ -307,17 +299,17 @@ async def relay_chat_websocket_direct(server_provider, msg: dict, ws):
 
 async def relay_chat_websocket(server_provider, msg: dict, ws, user_info=None):
     """Forward chat request to local LLM and relay response back over WebSocket (relay mode).
-    (2026-09-01 S1 fix) *user_info* is the RELAYED CLIENT's resolved profile.
-    It drives tool-schema filtering and - together with _RelayTargetAdapter -
-    routes every outgoing frame back to exactly that client over the shared
-    brain<->relay socket. None (legacy call) = no extra filtering.
+        *user_info* is the RELAYED CLIENT's resolved profile.
+        It drives tool-schema filtering and - together with _RelayTargetAdapter -
+        routes every outgoing frame back to exactly that client over the shared
+        brain<->relay socket. None (legacy call) = no extra filtering.
 
-    SERVER-SIDE STOP PROPAGATION (2026-08-20): mirrors the direct path -- extracts
-    _server_stop_event from msg (injected by ws_brain_relay, keyed per relayed client)
-    and passes it to local.chat_stream() so llama.cpp generation aborts when a client
-    behind the relay sends 'stop' or disconnects.
+        SERVER-SIDE STOP PROPAGATION : mirrors the direct path -- extracts
+        _server_stop_event from msg (injected by ws_brain_relay, keyed per relayed client)
+        and passes it to local.chat_stream so llama.cpp generation aborts when a client
+        behind the relay sends 'stop' or disconnects.
 
-    2026-09-08 multi-chat: body reduced to a shim over run_chat_core() — behaviour identical.
+        multi-chat: thin shim over run_chat_core — behaviour identical.
     """
     # Extract server-side stop event (injected by ws_brain_relay per relayed client)
     server_stop_event = msg.pop("_server_stop_event", None)

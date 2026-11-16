@@ -1,12 +1,10 @@
-"""YouTube search function - searches for videos using Piped API with YouTube HTML fallback
+"""YouTube search - Piped API with a YouTube HTML fallback.
 
-FIX (2026-08-23): the old version hardcoded two dead Piped instances and swallowed all
-errors, so it ALWAYS returned "No YouTube videos found". Now:
-  * instance list is configurable via the PIPED_INSTANCES env var (comma-separated)
-    or tools/config/piped_instances.json; defaults include verified-live mirrors.
-  * every failing instance reports its real status code / error in the output.
-  * if ALL Piped instances fail, falls back to parsing YouTube's own results page
-    (ytInitialData JSON -- same approach web_search uses for HTML engines).
+  * the instance list is configurable via the PIPED_INSTANCES env var (comma-separated)
+    or tools/config/piped_instances.json; defaults include verified-live mirrors
+  * every failing instance reports its real status code / error in the output
+  * if ALL Piped instances fail, YouTube's own results page is parsed (ytInitialData JSON,
+    the same approach web_search uses for HTML engines)
 """
 
 __tool_description__ = {

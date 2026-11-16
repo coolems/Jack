@@ -1,33 +1,22 @@
 """Regex pattern scan for python_exec -- SECONDARY defense-in-depth layer.
 
-WHY STRING MASKING (2026-07-14 refactor)
-========================================
-The legacy implementation ran its regexes over a hand-rolled ``_strip_comments()``
-pass that ignored backslash escapes and triple quotes, so a ``#`` inside a string
-literal corrupted the scanned text -- producing both false positives (legit code
-blocked) and false negatives (payloads hidden in strings). That helper was dead
-code but showed where the design was heading.
+The regexes run over a MASKED copy of the source: the standard-library ``tokenize``
+module replaces every STRING, FSTRING_* and COMMENT token with whitespace of EXACTLY the
+same length, newlines preserved. That gives:
+  * a ``#`` or quote inside a string cannot corrupt the scanned text, so no false
+    positives on legitimate code and no payloads hidden inside strings;
+  * stable offsets and line numbers (same-length replacement) for position reporting;
+  * on tokenization failure (unterminated string, bad encoding) the ORIGINAL source is
+    scanned unchanged - the scan is never skipped.
 
-This module instead uses the standard-library ``tokenize`` module to replace every
-STRING, FSTRING_* and COMMENT token with whitespace of EXACTLY the same length
-(newlines preserved). Consequences:
+TRADE-OFF: on Python 3.12+ f-string expression parts are separate tokens and get masked,
+so a pattern inside an f-string expression is invisible to THIS layer. _ast_guard.py sees
+those expressions as real nodes and its hard floor blocks them, so this layer stays pure
+defense-in-depth.
 
-  * regexes only ever see real code tokens -- string contents can neither trigger
-    a rule nor hide one;
-  * line/column numbers stay stable (same-length replacement), which keeps any
-    future position-based reporting accurate;
-  * if tokenization itself fails (unterminated string, bad encoding) the ORIGINAL
-    source is scanned unchanged -- fail-safe: we never skip the scan.
-
-KNOWN TRADE-OFF: on Python 3.12+ f-string expression parts are separate tokens and
-get masked along with the literal text, so a pattern hidden inside an f-string
-expression (e.g. ``f"{b.open('x')}"``) is not seen by THIS layer. That is accepted
-because the AST layer (_ast_guard.py) sees those expressions as real nodes and its
-hard floor blocks them; this layer remains pure defense-in-depth.
-
-DELIVERY NOTE: same-package dependency of python_exec.py (delivered to CLIENTs via
-tool_scanner + dynamic_loader). Imports only stdlib 'tokenize'/'re'. Policy data is
-passed in by the caller -- zero sibling coupling, trivially unit-testable.
+DELIVERY: same-package dependency of python_exec.py (sent to CLIENTs via tool_scanner +
+dynamic_loader). Stdlib only ('tokenize', 're'); policy data comes from the caller, so
+the module has no sibling coupling and is trivially unit-testable.
 """
 
 import re

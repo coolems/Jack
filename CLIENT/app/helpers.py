@@ -1,17 +1,31 @@
 """Small request helpers shared by CLIENT routers.
 
-Provides client IP extraction for HTTP requests and WebSockets
-(X-Forwarded-For aware), used to attribute conversations per machine.
+Client IP extraction for HTTP requests and WebSockets, used to attribute conversations
+per machine (conversations.ip_address = the workspace owner).
+
+X-Forwarded-For is honoured ONLY when config.TRUST_PROXY_HEADERS is True. The header is
+client-controlled and the extracted value is what conversation ownership is keyed on, so
+trusting it by default would let any caller claim another machine's identity. Without a
+reverse proxy the socket address is the only trustworthy source.
 """
 
 from fastapi import Request, WebSocket
 
+from config import TRUST_PROXY_HEADERS
+
 
 def get_client_ip(request: Request) -> str:
-    """Get real client IP from request."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Get the client IP for conversation ownership.
+
+    Default: the real socket address. X-Forwarded-For is read only behind an
+    operator-controlled reverse proxy (config.TRUST_PROXY_HEADERS), where the socket
+    address belongs to the proxy and the header is the only usable identity.
+
+    """
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
 
     client = request.client
     if client:

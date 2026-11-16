@@ -8,7 +8,6 @@ Creates in <certs_dir>:
   server.key  - its private key. NEVER commit it (.gitignore *.key keeps it out).
 
 Why this exists: a fresh GitHub clone has no certificates anywhere, so the CLIENT UI starts
-HTTP-only (see entry/ssl_config.py) and a browser that previously trusted the old machine's
 cert will refuse to connect ("will not connect at all"). Generating a local CA + leaf pair
 restores HTTPS with a certificate the user trusts in one import step.
 

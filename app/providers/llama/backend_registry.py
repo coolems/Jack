@@ -1,32 +1,19 @@
-"""Multi-instance LLM backend registry (2026-09-08 multi-chat; fleet model 2026-10).-
+"""Multi-instance LLM backend registry.
 
-The hand-editable ``config/llama_servers.json`` is the single source of truth for WHICH
-llama servers we talk to. This module turns that list into live, tracked backends:
+The hand-editable config/llama_servers.json is the single source of truth for WHICH llama
+servers we talk to. This module turns that list into live, tracked backends:
+  * LlmBackend - one llama-server instance (host:port): provider handle, health state,
+    busy counter, DISCOVERED capacity (/props.total_slots), per-slot context, loaded model
+    and llama.cpp build. LOCAL instances are reconciled at boot by the node launcher
+    (attach to a healthy matching node, else spawn one from config/llama_node.json);
+    remote instances (LAN machines) are ATTACH-ONLY.
+  * Shutdown: stop_all terminates ONLY backends WE spawned (spawned_by_us=True, tracked
+    Popen). A node started outside us is attached but never killed on SERVER exit.
+  * LlmBackendRegistry - all backends with start_all/stop_all, a periodic health+props
+    poller, a capacity-aware acquisition helper and a snapshot for logs and the table.
 
-  * :class:`LlmBackend` — one llama-server instance (host:port): its provider handle,
-    health state, busy counter, DISCOVERED capacity (``/props.total_slots``), per-slot
-    context, loaded model and llama.cpp build. LOCAL instances are reconciled at boot by
-    the node launcher (attach to a healthy matching node, else spawn one with the settings
-    from ``config/llama_node.json`` — init writes defaults there); remote instances (LAN
-    machines) are ATTACH-ONLY. Remote concurrency is owned by the node launcher and
-    discovered here.
-
-  * Shutdown semantics (2026-10-25): ``stop_all()`` terminates ONLY backends WE spawned
-    (``spawned_by_us=True``, tracked Popen). A node started outside us (admin launcher,
-    manual) is attached but NEVER killed on SERVER exit.
-  * :class:`LlmBackendRegistry` — the set of all backends with start_all/stop_all, a
-    periodic health+props poller, a capacity-aware acquisition helper and a fleet
-    snapshot for logs and the fleet table.
-
-Single-instance default: when llama_servers.json holds only the legacy local entry, this
-module behaves exactly like the old single-server code path (same process, same port,
-one slot).
-
-(2026-11 strata backend) The same registry also drives ``config/strata_servers.json`` when
-config.SERVER_BACKEND = "strata": those instances carry ``kind="strata"`` and a Bearer key,
-are ALWAYS attach-only (``spawnable=False`` - Strata starts its own process, we never spawn
-or kill it), their /health + /props + /v1/models calls carry the auth header, and their
-provider handle is a :class:`StrataProvider` instead of a :class:`LlamaProvider`.
+When llama_servers.json holds only the local entry this is the single-server path: same
+process, same port, one slot.
 """
 
 import asyncio
@@ -152,8 +139,9 @@ class LlmBackend:
     def provider(self):
         """Lazy per-instance provider handle (thin URL-bound wrapper — cheap to create).
 
-        Kind decides the class: llama nodes get LlamaProvider, Strata endpoints get
-        StrataProvider (same OpenAI-compatible wire format + Bearer auth headers)."""
+        Kind decides the class: llama nodes get LlamaProvider, endpoints get
+        StrataProvider (same OpenAI-compatible wire format + Bearer auth headers).
+        """
         if self._provider is None:
             from config import PROVIDER_DEFAULT_TIMEOUT
             if self.kind == "strata":
@@ -168,7 +156,7 @@ class LlmBackend:
     def serves_model(self, model_key: str) -> bool:
         """True when requests for this canonical model key may run on this backend.
 
-        (2026-11 strata) One endpoint serves one model under SEVERAL ids: ``/props`` names
+        One endpoint serves one model under SEVERAL ids: ``/props`` names
         the GGUF file, ``/props.model_alias`` and ``/v1/models`` report the alias id the
         CLIENT picker shows and sends. Both must route to the same slot group, otherwise
         the worker's routing guard rejects a request for the very model this backend
@@ -329,7 +317,7 @@ class LlmBackend:
             return False
 
     def bump_error(self, message: str) -> None:
-        """Record a failure against this node (for the fleet table and error frames)."""
+        """Record a failure against this node (for the table and error frames)."""
         self.last_error = str(message or "")[:500]
         self.error_count += 1
 
@@ -364,30 +352,9 @@ class LlmBackend:
 
     async def ensure_started(self) -> bool:
         """Make sure this instance is up. Local: reconcile (attach or spawn); remote: probe only.
-
-        (2026-10 discovery model) The SPAWN slot count is the explicit config value when
-        present, else LLAMA_SERVER_PARALLEL as a launch fallback - after /props lands the
-        DISCOVERED total_slots own routing capacity and the worker pool reconciles to it.
-
-        If no explicit concurrency was configured AND the server reports a different slot
-        count than we launched with (e.g. a manually-started llama-server on our port runs
-        --parallel 4), relaunch ONCE with the discovered number so process reality matches
-        routing capacity - otherwise we would over-admit requests into fewer real slots.
-
-        A MATCHING report never touches the running server: terminate+respawn only happens
-        inside the mismatch branch (audit fix 2026-10 - the old structure terminated our own
-        tracked process unconditionally and then skipped the respawn, killing llama at boot
-        while still reporting HEALTHY).
-
-        (2026-10-25 node auto-start) LOCAL instances whose port matches config/llama_node.json
-        are reconciled by the NODE LAUNCHER instead of start_server(): a healthy matching
-        node is ATTACHED (spawned_by_us stays False - it survives SERVER shutdown), otherwise
-        we SPAWN detached with the init/admin settings from that file. No matching node
-        config -> legacy start_server() path exactly as before.
-
-        (2026-11 strata) ATTACH-ONLY backends (`spawnable=False`) are probe-only: remote llama
-        nodes as before, plus every Strata endpoint - Strata launches its own inference
-        process, so the brain never spawns, relaunches or terminates it.
+        (discovery model) The SPAWN slot count is the explicit config value when present,
+        else LLAMA_SERVER_PARALLEL as a launch fallback - after /props lands the DISCOVERED
+        total_slots own routing capacity and the worker pool reconciles to it.
         """
         if not self.spawnable:
             return await self.probe_health()
@@ -525,9 +492,10 @@ class LlmBackend:
 class LlmBackendRegistry:
     """All configured backends, started together and health-polled.
 
-    (2026-11) ``from_config(kind="strata")`` builds the same registry over
-    config/strata_servers.json instead of config/llama_servers.json - every backend then
-    reports ``kind="strata"`` and is attach-only."""
+         ``from_config(kind="strata")`` builds the same registry over
+        config/strata_servers.json instead of config/llama_servers.json - every backend then
+        reports ``kind="strata"`` and is attach-only.
+    """
 
     def __init__(self, instances: list[LlamaServerInstance]):
         # de-dup by key (loader already dedupes; defensive for direct construction)
@@ -545,7 +513,8 @@ class LlmBackendRegistry:
 
         ``kind`` selects the source of truth: "llama" -> config/llama_servers.json
         (spawn-or-attach llama-server instances), "strata" -> config/strata_servers.json
-        (attach-only Strata endpoints)."""
+        (attach-only endpoints).
+        """
         if kind == "strata":
             return cls(get_strata_server_instances())
         return cls(get_llama_server_instances())
@@ -569,8 +538,9 @@ class LlmBackendRegistry:
     def backends_for_model(self, model: str) -> list[LlmBackend]:
         """Backends whose discovered model matches *model* (healthy or not).
 
-        (2026-11 strata) Matches the canonical key AND the endpoint's alias ids, so a
-        client that picked the alias from ``/v1/models`` lands in this backend's queue."""
+        Matches the canonical key AND the endpoint's alias ids, so a
+        client that picked the alias from ``/v1/models`` lands in this backend's queue.
+        """
         want = model_key_of(model)
         if not want:
             return []
@@ -583,11 +553,12 @@ class LlmBackendRegistry:
     def canonical_model_key(self, model: str) -> str:
         """The queue key a request for *model* must use.
 
-        (2026-11 strata) Workers poll ONE queue per backend - the backend's canonical
-        ``model_key``. A client may name the model by an alias id (``/v1/models``), whose
+         Workers poll ONE queue per backend - the backend's canonical
+        ``model_key``. A client may name the model by an alias id (``//models``), whose
         key would land in a FIFO no worker reads, so the request is re-keyed to the group
         that serves it. Falls back to the caller's key when no backend claims the model
-        (the "no node serves this" path then reports it as asked)."""
+        (the "no node serves this" path then reports it as asked).
+        """
         want = model_key_of(model)
         if not want:
             return ""
@@ -649,7 +620,7 @@ class LlmBackendRegistry:
         return min(vals) if vals else CONTEXT_WINDOW_TOKENS
 
     def snapshot(self) -> list[dict]:
-        """Per-backend state for the fleet table / logs / error frames."""
+        """Per-backend state for the table / logs / error frames."""
         return [
             {
                 "name": b.instance.name,
@@ -685,7 +656,7 @@ class LlmBackendRegistry:
     async def probe_all(self) -> list[tuple[LlmBackend, bool]]:
         """Probe /health + /props for every backend, IN PARALLEL.
 
-        A fleet of down nodes would otherwise cost 5 s each (connect timeout) before the
+        A of down nodes would otherwise cost 5 s each (connect timeout) before the
         server can accept its first client.
         """
         backends = list(self.backends.values())
@@ -726,10 +697,11 @@ class LlmBackendRegistry:
         return "LLM BACKEND REGISTRY (mixed: " + ", ".join(sorted(kinds)) + ")"
 
     def backend_noun(self) -> str:
-        """Client-facing wording for a serving backend, by kind (2026-11 strata).
+        """Client-facing wording for a serving backend, chosen by kind.
 
-        User messages must not say "llama node" when the fleet is Strata — the fix a
-        user needs is different (start Strata / set its key, not launch a llama node)."""
+        The wording differs per kind because what the user must do differs: start a llama node,
+        or set the key of a remote endpoint.
+        """
         kinds = {b.kind for b in self.backends.values()}
         if kinds == {"strata"}:
             return "Strata endpoint"
@@ -738,9 +710,10 @@ class LlmBackendRegistry:
         return "backend"
 
     async def start_all(self) -> bool:
-        """Start/attach every configured instance and log the startup fleet table.
+        """Start/attach every configured instance and log the startup table.
 
-        Returns True when at least one backend is healthy (the SERVER can serve)."""
+        Returns True when at least one backend is healthy (the SERVER can serve).
+        """
         results = []
         for b in self.backends.values():
             ok = await b.ensure_started()
@@ -757,14 +730,16 @@ class LlmBackendRegistry:
     async def stop_all(self) -> None:
         """Stop the instances WE spawned. Remotes and ATTACHED nodes are left running.
 
-        (2026-10-25 shutdown semantics) A node started outside us (admin launcher via
-        utils/start_llama_node, or a manual llama-server we merely attached to) is NOT
-        terminated on SERVER exit - it survives for other users of the machine. Only
-        backends with spawned_by_us=True and a live tracked Popen are stopped.
+                A node started outside us (admin launcher via
+                utils/start_llama_node, or a manual llama-server we merely attached to) is NOT
+                terminated on SERVER exit - it survives for other users of the machine. Only
+                backends with spawned_by_us=True and a live tracked Popen are stopped.
 
-        (2026-11 strata) Attach-only backends (`spawnable=False`: remotes and every Strata
-        endpoint) are skipped outright - Strata's process belongs to Strata, and killing it
-        on SERVER exit would take the local inference endpoint down for everything else."""
+                Attach-only backends (`spawnable=False`: remotes and every Strata
+                endpoint) are skipped outright - Strata's process belongs to Strata, and killing it
+                on SERVER exit would take the local inference endpoint down for everything else.
+
+        """
         from .process_mgmt import _server_processes, _terminate_process
         for b in self.backends.values():
             if not b.spawnable:
@@ -784,10 +759,9 @@ class LlmBackendRegistry:
     def start_health_poller(self, interval_sec: int = 30) -> Optional[asyncio.Task]:
         """Background task re-probing every backend (and refreshing its /props).
 
-        (2026-10 fleet fix) Safe to call again on a DIFFERENT event loop: the SERVER boots
-        on one temporary asyncio.run() loop and then serves on another, which used to leave
-        this poller dead after boot (health + capacity frozen forever). A task owned by a
-        different/closed loop is replaced here.
+        Safe to call again on a DIFFERENT event loop: the SERVER boots on one temporary
+        asyncio.run loop and then serves on another, so a poller bound to the boot loop
+        would die there and freeze health + capacity forever.
         """
         try:
             running = asyncio.get_running_loop()

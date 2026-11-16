@@ -1,9 +1,7 @@
 """tools_request handler: ship tool definitions + shared modules to the CLIENT.
 
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 605-716), incl.
-_load_profile_blocked_libs() which resolves the per-profile python_exec
-blocked-libs set shipped with tools_response. Only mechanical change: the
-tool_scanner import gained one dot of relative depth (. -> ..).
+_load_profile_blocked_libs resolves the per-profile python_exec blocked-libs set shipped
+with tools_response.
 """
 
 import json
@@ -44,20 +42,10 @@ def _load_profile_blocked_libs(user_info):
 
 async def _handle_tools_request(ws, user_info, server_provider):
     """Handle tools_request message - return all allowed tool definitions + shared modules.
-
-    FIX #4 (2026-01-31) — Role Injection into Config Constants:
-        The authenticated user's role is injected into config_constants so that
-        CLIENT-side tools (running in sandboxed process) can detect the correct
-        security level. This solves the problem where server knows admin role but
-        client-side python_exec defaults to "user" and blocks everything.
-
-    Flow:
-        1. SERVER injects CURRENT_USER_ROLE into config_constants dict
-        2. Config constants sent over WebSocket in tools_response JSON
-        3. CLIENT dynamic_loader injects config_constants into globals() before exec()
-        4. The role is carried as IDENTITY data only -- python_exec no longer
-        consumes it for any security decision (its guardrails are driven by the
-        per-profile blocked-libs set, see tools/exec_tools/python_exec.py).
+        The authenticated user's role is injected into config_constants so that CLIENT-side
+        tools (running in sandboxed process) can detect the correct security level. This
+        solves the problem where server knows admin role but client-side python_exec
+        defaults to "user" and blocks everything.
     """
     from ..tool_scanner import get_client_tools_dir, scan_tool_definitions, get_shared_utils_source, get_all_shared_sources, extract_config_constants, get_dna_data_files, get_framework_sources, get_shared_hashes
 

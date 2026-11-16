@@ -1,5 +1,4 @@
-"""
-Tools module for COOLEMS - COMPLETELY DYNAMIC auto-discovery
+"""Tools module for COOLEMS - COMPLETELY DYNAMIC auto-discovery
 
 ZERO hardcoded lists. Everything is discovered at runtime.
 """

@@ -51,10 +51,10 @@ def resolve_runtime_dir(runtime_name: str) -> str:
 
 
 def _smoke_test_venv(venv_py: str) -> bool:
-    """True when the (possibly relocated) venv python still starts and imports sys.
+    """Prove a fresh venv actually runs.
 
-    NOTE: must use "-c import sys" - a BARE python.exe enters interactive mode and
-    waits on stdin forever, which would look like a broken venv (60s timeout).
+    Must use "-c import sys": a bare python.exe enters interactive mode and waits on stdin,
+    which would hang the setup.
     """
     try:
         r = subprocess.run([venv_py, "-c", "import sys"], capture_output=True,

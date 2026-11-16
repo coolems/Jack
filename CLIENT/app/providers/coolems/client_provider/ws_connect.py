@@ -11,7 +11,6 @@ Web relay mode (Settings UI Connection Mode = "web_relay"):
   CLIENT needs. The home SERVER reaches the same relay itself; no SERVER address is
   used or required by this CLIENT in relay mode.
 
-MODULE SPLIT (2026-10):
   - client_provider/connection_modes.py -> model-switch flag + live connection-mode/address helpers
   - client_provider/ws_connect.py       -> _AccumulatingWS + the fail-closed relay_ws_connect helper
   - client_provider/provider_class.py   -> the CoolemsClientProvider class (thin delegations)
@@ -54,7 +53,7 @@ class _AccumulatingWS:
 async def relay_ws_connect(provider, **connect_kwargs):
     """Open ONE trusted-TLS WebSocket to the web relay (fail-closed).
 
-    (2026-09-23 v4) The client->relay link is internet-facing. This helper builds the
+     The client->relay link is internet-facing. This helper builds the
     SSL context via provider._build_ssl_context() and REFUSES to connect when it comes
     back None (no CA verification / no usable cert pin configured) - there is no silent
     CERT_NONE fallback for relay connections anymore. Used by every relay_mode method.

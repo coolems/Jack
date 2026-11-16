@@ -1,28 +1,21 @@
 """RequestQueue — per-MODEL FIFO backlogs of ChatRequests waiting for a free slot.
 
-2026-09-08 multi-chat (Phase 2); 2026-10 fleet: the fleet can serve several models, so
-the backlog is partitioned by model group. A Qwen request can never sit in front of a
-Gemma slot, and a saturated Qwen queue never rejects a Gemma request. Within a group the
-order is FIFO, and per-user slot caps are enforced when a worker picks the next request.
-
+The fleet can serve several models, so the backlog is partitioned by model group. A Qwen request
+can never sit in front of a Gemma slot, and a saturated Qwen queue never rejects a Gemma
+request. Within a group the order is FIFO, and per-user slot caps are enforced when a worker
+picks the next request.
 Storage model:
-
-  * ``_by_model[key]``    — FIFO list of that model's queued requests (workers pop here)
-  * ``_by_owner[owner]``  — that owner's queued requests (in-place cancellation)
-  * ``_running[owner]``   — the request currently running for that owner
-  * ``_running_by_user``  — how many generations each USER is running right now
+  * ``_by_model[key]`` — FIFO list of that model's queued requests (workers pop here)
+  * ``_by_owner[owner]`` — that owner's queued requests (in-place cancellation)
+  * ``_running[owner]`` — the request currently running for that owner
+  * ``_running_by_user`` — how many generations each USER is running right now
   * ``_running_by_model`` — how many slots of each model group are busy (stats)
-  * ``_cond``             — ONE asyncio.Condition guarding all of the above
+  * ``_cond`` — ONE asyncio.Condition guarding all of the above
+Atomicity: every mutation acquires the condition and does its work with ZERO await points
+inside, so on a single event loop each mutation runs to completion without yielding. ``get``
+reserves the user's slot at pop time (not later), which is what makes per-user caps exact
+even with many workers racing for the head of the queue.
 
-Atomicity: every mutation acquires the condition and does its work with ZERO await
-points inside, so on a single event loop each mutation runs to completion without
-yielding. ``get()`` reserves the user's slot at pop time (not later), which is what makes
-per-user caps exact even with many workers racing for the head of the queue.
-
-Full-group behaviour (2026-10 requirement): a full group does NOT reject instantly.
-``enqueue`` waits up to ``QUEUE_FULL_GRACE_SEC`` for space; if a slot frees it accepts,
-otherwise it returns a RETRYABLE "server is full" result. No penalty, no ban - the
-caller refunds the rate-limit token and the client simply resends.
 """
 
 import asyncio
@@ -58,7 +51,7 @@ class EnqueueResult:
 
 
 class _LegacyQueueView:
-    """Read-only stand-in for the old asyncio.Queue attribute (test/tooling compatibility)."""
+    """Read-only stand-in for the asyncio.Queue attribute kept for test/tooling compat."""
 
     def __init__(self, queue: "RequestQueue"):
         self._q = queue
@@ -210,7 +203,7 @@ class RequestQueue:
 
         The user's slot is RESERVED here (running counters incremented) so two workers
         can never admit two requests for a user whose cap is 1. Callers MUST always call
-        :meth:`mark_done` for a returned request (the worker does it in a finally block).
+        meth:`mark_done` for a returned request (the worker does it in a finally block).
         """
         async with self._cond:
             while True:
@@ -329,10 +322,7 @@ class RequestQueue:
         }
 
     def start_stats_logger(self, interval_sec: int = QUEUE_STATS_LOG_INTERVAL_SEC) -> None:
-        """Periodic queue-depth heartbeat - INFO only when state CHANGES.
-
-        interval <= 0 disables it; start/stop stay idempotent.
-        """
+        """Start the periodic stats logger. interval <= 0 disables it; start/stop are idempotent."""
         if interval_sec and interval_sec > 0 and self._log_task is None:
             last_logged = [None]
 

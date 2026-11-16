@@ -28,12 +28,11 @@ logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 async def go_back(wait_until: str = "commit", timeout: int = 30000) -> str:
     """Navigate back in history.
 
-    2026-11-06 latency fix (measured on science.nasa.gov/gallery/hubbles-galaxies/):
-    Playwright's go_back() defaults to wait_until="load", which waits for every image,
-    script and iframe of the restored page. A 32-image gallery never finishes 'load'
-    inside the 30 s default, so go_back() reported "Timeout 30000ms exceeded" even though
-    the browser had already navigated to the gallery. commit returns as soon as the
-    navigation is committed - the same default goto() uses - and the caller can still ask
+    wait_until defaults to "commit": Playwright's go_back() defaults to "load", which waits
+    for every image, script and iframe of the restored page. A 32-image gallery never
+    finishes 'load' inside the 30 s default, so go_back() reports "Timeout 30000ms
+    exceeded" even though the browser already navigated. commit returns as soon as the
+    navigation is committed - the same default goto() uses - and a caller can still ask
     for a heavier state explicitly.
     """
     from .ensure_connected import ensure_connected

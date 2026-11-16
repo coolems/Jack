@@ -1,6 +1,6 @@
 """insert_lines - add literal text after a specific line of an existing file.
 
-The `insert` command of deepseek-harness's str_replace_editor (ported 2026-11-06 alongside
+The `insert` command of deepseek-harness's str_replace_editor (ported alongside
 edit_file). Appending to the END of a file is write_file(mode='a'); this targets a line in the
 MIDDLE, which edit_file cannot do without inventing an old_string spanning the seam.
 
@@ -61,23 +61,11 @@ logger = logging.getLogger("COOLEMS.Tools.Edit")
 
 def insert_lines(filename: str, after_line: int, text: str, path: str = "") -> str:
     """Insert literal text after line *after_line* of an existing file inside working_root.
-
     SECURITY RULE - CRITICAL:
         * filename = JUST THE FILE NAME only (e.g. 'config.py'). NO slashes allowed!
         * path = DIRECTORY ONLY where the file lives (e.g. 'tools/file_tools')
-
-    SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
+    All paths are locked inside working_root. Path traversal via '..' is blocked.
               Filenames with embedded separators or traversal sequences are rejected.
-
-    Args:
-        filename: Just the file name, no path. NEVER include '/' or '\\'.
-        after_line: 1-based line to insert after (0 = start of file).
-        text: Literal text to insert.
-        path: Directory path only, resolved against working_root. Empty = working_root.
-
-    Returns:
-        Success message with the inserted position, new line count and byte size, or
-        'Error: ...' carrying the reason (not found / bad line number / outside working_root).
     """
     logger.info(f"[insert_lines] {filename!r} in {path!r} after line {after_line!r}")
 

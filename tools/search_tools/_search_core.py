@@ -66,9 +66,9 @@ def truncate_output(text: str) -> str:
 
 def build_grep_argv(pattern: str, target: str, include: str, context_lines: int,
                     ignore_case: bool, include_ignored: bool) -> list[str]:
-    """argv for one grep run. --no-config first: a stray RIPGREP_CONFIG_PATH or rg.conf
-    beside the binary could otherwise inject --pre and make rg run an arbitrary
-    preprocessor on every matched file."""
+    """argv for one grep run. --no-config comes first: a stray RIPGREP_CONFIG_PATH or rg.conf
+    beside the project would otherwise change our flags.
+    """
     argv = ["--no-config", "--json"]
     if include_ignored:
         argv += ["--no-ignore", "--hidden"]
@@ -112,7 +112,6 @@ def validate_include(include: str) -> str | None:
 def _event_text(data: dict) -> str:
     """The matched/context line text from an rg JSON event.
 
-    rg 15 nests the line under data['lines']['text']; older builds used a flat
     'line_text'. Both are accepted so the parser survives an rg upgrade or downgrade.
     """
     lines = data.get("lines")

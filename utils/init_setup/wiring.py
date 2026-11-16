@@ -303,11 +303,10 @@ def _read_int_from_config_py(cfg_py: str, name: str, fallback: int) -> int:
 
 
 def write_local_node_config(ctx: dict) -> None:
-    """Write DEFAULT settings for the local llama node (2026-10-25 auto-start).
+    """Write DEFAULT settings for the local llama node (auto-start).
 
     config/llama_node.json is the single file both paths use: init writes sane defaults
     here, and the admin wizard (utils/start_llama_node) overwrites it when an admin wants
-    a custom node. At boot the SERVER reconciles each LOCAL instance against this file:
     healthy matching node -> attach; nothing running -> spawn detached with these settings
     ("auto_start": true). NEVER overwrites an existing file - an admin's configuration wins.
     """

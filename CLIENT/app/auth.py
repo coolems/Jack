@@ -1,43 +1,20 @@
-"""
-COOLEMS CLIENT - Authentication Module (CLIENT-SIDE ONLY)
-
-CLIENT does NOT validate API keys or manage permissions locally.
-All authorization happens on SERVER via WebSocket (configurable port, default 8080).
-
+"""COOLEMS CLIENT - Authentication Module (CLIENT-SIDE ONLY)
+CLIENT does NOT validate API keys or manage permissions locally. All authorization happens
+on SERVER via WebSocket (configurable port, default 8080).
 This module provides minimal HTTP middleware for local-mode detection only:
   - SETUP MODE (no real key configured yet): EVERYTHING is locked down except the
-    loopback-only POST /api/auth/set-key endpoint that writes the first key. No chat,
-    no files, no code execution before a key exists (2026-09-01 fix).
+    loopback-only POST /api/auth/set-key endpoint that writes the first key. No chat, no
+    files, no code execution before a key exists
   - KEYED MODE: a real key must be available locally (CLIENT/config/.api_client_keys.json,
-    COOLEMS_CLIENT_API_KEY env var, or the in-memory runtime key from this UI session)
-    so we know which credential to present to the SERVER + email header mandatory.
-
-REAL auth: CLIENT sends email + API key to SERVER -> SERVER validates against
-its own config/.api_keys.json and applies restrictions from profiles.json. The server's
-auth_ok / tools_response messages carry the authoritative role, allowed_models
-and allowed_tools — the CLIENT never resolves permissions from disk locally.
-
-
-SECURITY (2026-08-25) - hardened after code review:
-  1. /files/ is NO LONGER a public prefix. File downloads are served through the
-     authenticated /api/download endpoint instead, so unauthenticated LAN hosts can
-     no longer read arbitrary files from working_root (e.g. config/.api_client_keys.json).
-     Only / and /static/ remain public (UI shell + assets).
-  2. In LOCAL MODE a request is only allowed when it comes FROM loopback AND the
-     Host header also points at loopback. This closes the DNS-rebinding hole where an
-     attacker page on another machine could fetch http://127.0.0.1:8000/... with a
-     same-origin policy (Host would be the victim's hostname, not 127.0.0.1).
-
-SECURITY (2026-09-01) - SETUP MODE fix ("no key set yet" state):
-  Previously "LOCAL MODE" (zero real keys in .api_client_keys.json) let ANY loopback
-  caller — any user or browser tab on this PC — through with api_role="admin" and no
-  credentials at all. That is now impossible: while no real key exists, the middleware
-  rejects every non-public request with an actionable 401 EXCEPT POST /api/auth/set-key
-  (loopback-only), which writes the first key into .api_client_keys.json. WebSocket
-  connections are refused in setup mode too. Mode is checked PER REQUEST/CONNECTION so
-  setting a key via the endpoint unlocks everything immediately — no restart needed.
+    COOLEMS_CLIENT_API_KEY env var, or the in-memory runtime key from this UI session) so we
+    know which credential to present to the SERVER + email header mandatory.
+REAL auth: CLIENT sends email + API key to SERVER -> SERVER validates against its own
+config/.api_keys.json and applies restrictions from profiles.json. The server's auth_ok /
+tools_response messages carry the authoritative role, allowed_models and allowed_tools — the
+CLIENT never resolves permissions from disk locally.
 """
 
+import ipaddress
 import logging
 from typing import Optional
 
@@ -88,7 +65,7 @@ LICENSE_STATUS_PATH = "/api/license/status"
 
 
 def _is_public_path(path: str) -> bool:
-    """Return True if the path does not require authentication."""
+    """True when the path needs no authentication."""
     if path in PUBLIC_PATHS:
         return True
     if path in PUBLIC_EXACT:
@@ -102,7 +79,7 @@ def _is_public_path(path: str) -> bool:
 def _is_local_mode() -> bool:
     """Check if running without any real API key (SETUP MODE).
 
-    Checked PER REQUEST on purpose (2026-09-01): a key can be added at runtime via
+    Checked PER REQUEST on purpose: a key can be added at runtime via
     POST /api/auth/set-key and the very next request must already run KEYED MODE.
     The file read is cheap; keyed mode re-reads it per request anyway.
     """
@@ -113,40 +90,41 @@ def _is_local_mode() -> bool:
         return True
 
 
+# Exact spellings that mean "this machine". A hostname is attacker-chosen, so it is
+# matched literally and NEVER resolved: a domain whose A record is 127.0.0.1 must not
+# pass as local. Whole 127.0.0.0/8 and ::1 count as loopback by literal IP form.
+_LOCAL_HOST_NAMES = frozenset(("127.0.0.1", "::1", "localhost"))
+
+
+def _strip_host_port(value: str) -> str:
+    """Bare lowercase hostname from a Host value, brackets and port removed."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):  # IPv6 literal: [::1]:8000
+        end = value.find("]")
+        return value[1:end] if end > 0 else value
+    if value.count(":") == 1:  # IPv4 or hostname with port
+        return value.split(":")[0]
+    return value
+
+
 def _is_loopback_host(host: str) -> bool:
-        """Check whether *host* is a localhost/loopback address (stdlib only).
+    """True when *host* is a literal loopback address or name (stdlib only, no DNS).
 
-        The full SSRF defense module lives ONLY on the SERVER and reaches this CLIENT
-        at runtime as in-memory code ('tools.ssrf_defense', dropped when the process
-        exits). Auth runs before any server delivery exists, so it keeps its own
-        minimal loopback check here instead of importing a local ssrf_defense copy.
-        """
-        if host in ('127.0.0.1', '::1', 'localhost'):
-            return True
-
-        import ipaddress as _ipaddress
-
-        # Literal IP address form.
-        try:
-            addr = _ipaddress.ip_address(host)
-            return bool(addr.is_loopback)
-        except ValueError:
-            pass
-
-        # Hostname form -- resolve and check every returned address.
-        try:
-            import socket as _socket
-            for res in _socket.getaddrinfo(host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM):
-                ip_str = res[4][0]
-                try:
-                    if _ipaddress.ip_address(ip_str).is_loopback:
-                        return True
-                except ValueError:
-                    continue
-        except OSError:
-            pass
-
+    The full SSRF defense module lives ONLY on the SERVER and reaches this CLIENT at
+    runtime as in-memory code, so auth keeps its own minimal check here.
+    """
+    host = _strip_host_port(host)
+    if host in _LOCAL_HOST_NAMES:
+        return True
+    try:
+        return bool(ipaddress.ip_address(host).is_loopback)
+    except ValueError:
         return False
+
+
+def _is_local_host_header(raw_host: str) -> bool:
+    """True when a Host header literally names this machine; absent or blank -> False."""
+    return bool(_strip_host_port(raw_host)) and _is_loopback_host(raw_host)
 
 
 def _set_request_state(scope, **kwargs):
@@ -157,38 +135,24 @@ def _set_request_state(scope, **kwargs):
 
 
 def _is_localhost_client(scope: dict) -> bool:
-    """Check if the request originates from localhost/loopback.
+    """True when the request comes from this machine and targets it.
 
-    SECURITY (2026-08-25): now requires BOTH a loopback source address AND a
-    loopback Host header. The Host check closes the DNS-rebinding hole: an attacker
-    page served from another machine can make same-origin fetches to
-    http://127.0.0.1:PORT/... (source IP = victim's own loopback) but the Host
-    header will carry the hostname the browser was told, which is NOT loopback for a
-    rebinding domain. A genuine local user typing 127.0.0.1/localhost in the address
-    bar passes both checks.
-
-    Reads the client host from ASGI scope and verifies it's a loopback address.
-    Used to enforce local-only access when no API keys are configured.
+    Requires BOTH a loopback source address AND a loopback Host header. The Host check is
+    the DNS-rebinding defense: a page on another machine can fetch http://127.0.0.1:PORT/
+    with the victim's own loopback as source IP, but its Host header carries the hostname
+    the browser was told. That name is matched literally only - never resolved - so a
+    domain pointing at 127.0.0.1 fails. A missing Host header also fails: a client that
+    cannot say which host it meant is not proven local.
     """
     try:
         client = scope.get("client")  # (host, port) tuple or None
         if not client:
             return False
-        host = client[0]
+        if not _is_loopback_host(client[0]):
+            return False
 
-        # Fast checks for common localhost forms
-        if host in ('127.0.0.1', '::1', 'localhost'):
-            pass
-        else:
-            # Full loopback validation via stdlib-only helper (see _is_loopback_host)
-            if not _is_loopback_host(host):
-                return False
-
-        # Host header must ALSO be loopback (DNS-rebinding defense).
         headers = dict(scope.get("headers", {}))
-        host_header = headers.get(b"host", b"").decode("utf-8", errors="replace")
-        host_name = host_header.split(":")[0].strip().lower() or "localhost"
-        return _is_loopback_host(host_name)
+        return _is_local_host_header(headers.get(b"host", b"").decode("utf-8", errors="replace"))
     except Exception:
         return False
 
@@ -196,39 +160,13 @@ def _is_localhost_client(scope: dict) -> bool:
 # ---------- ASGI Middleware (CLIENT - minimal) ----------
 
 class APIMiddleware:
-    """
-    Custom ASGI middleware for CLIENT-side API key authentication.
+    """ASGI middleware for CLIENT-side API key authentication.
 
-    SETUP MODE (2026-09-01): When 0 real API keys are configured, the whole API is
-    locked down — every non-public request gets an actionable 401 and WebSockets are
-    refused — EXCEPT POST /api/auth/set-key from loopback callers, which writes the
-    first key. This closes the old hole where any local user/browser got role=admin
-    (full file R/W + code execution) before a single key existed: in that state the
-    only possible action is "set api key".
-
-    KEYED MODE: Key must pass local validation (config file CLIENT/config/.api_client_keys.json /
-    in-memory runtime key / COOLEMS_CLIENT_API_KEY env var - the config file holds exactly
-    ONE row {email, date_acquired, key}, plaintext by design since 2026-10-08)
-    + email header. Role comes from the SERVER's last auth_ok (in-memory cache,
-    fail-closed "user" fallback) - permission enforcement (allowed models/tools,
-    rate limits) happens on the SERVER.
-
-    /api/auth/set-key stays loopback-available in KEYED MODE too so the owner can
-    change the key from the UI; a local user could edit .api_client_keys.json on disk
-    anyway, so this grants no new power (the NEW key is still validated by the SERVER
-    on connect).
-
-    Accepts keys via HEADER ONLY:
-      - Authorization: Bearer <key>
-      - X-API-Key: <key>
-
-    Sub-resource exception (SECURITY 2026-10-05): /api/download and /api/open also accept
-    ?t=<media token> - a short-lived, single-use, path-bound capability minted by the UI
-    through POST /api/auth/media-token AFTER header auth passed. <img>/<iframe>/anchor tags
-    cannot send headers; before this fix they carried the master key as ?api_key=...&email=...
-    which exposed it in browser history, Referer headers and logging hops.
-    Skips public paths (/, /static/). Everything else (/api/*, /files/*) requires auth.
-    Reloads keys from file on every request.
+    SETUP MODE: with 0 real API keys configured the whole API is locked down - every
+    non-public request gets an actionable 401 and WebSockets are refused - EXCEPT
+    POST /api/auth/set-key from loopback callers, which writes the first key. Before a key
+    exists the only possible action is "set api key", so no local caller can obtain
+    role=admin (file R/W + code execution) in that state.
     """
 
     def __init__(self, app):
@@ -465,13 +403,12 @@ class APIMiddleware:
 # ---------- WebSocket Authentication (CLIENT - minimal) ----------
 
 async def authenticate_websocket(websocket: WebSocket, api_keys=None, email: str = "") -> tuple:
-    """
-    Validate API key on a WebSocket connection.
+    """Validate API key on a WebSocket connection.
 
     CLIENT does NOT enforce max-connections or role-based restrictions locally.
     That is handled by SERVER via the coolems_client/coolems_server WebSocket protocol.
 
-    SETUP MODE (2026-09-01): when no real key exists yet, NO chat is possible at all —
+    SETUP MODE: when no real key exists yet, NO chat is possible at all —
     not even from loopback. The only thing allowed before a key exists is setting one
     (POST /api/auth/set-key over HTTP). Checked per connection so the very next WS
     attempt after a key was set already runs KEYED MODE auth.
@@ -487,19 +424,11 @@ async def authenticate_websocket(websocket: WebSocket, api_keys=None, email: str
 
         is_localhost = False
         try:
-            is_localhost = _is_loopback_host(host)
+            is_localhost = _is_loopback_host(host) and _is_local_host_header(
+                websocket.headers.get("host", "")
+            )
         except Exception:
             logger.debug("Non-critical exception caught at CLIENT/app/auth.py")
-
-        # SECURITY (2026-08-25): Host header must also be loopback (DNS-rebinding defense).
-        if is_localhost:
-            try:
-                host_header = websocket.headers.get("host", "")
-                host_name = host_header.split(":")[0].strip().lower() or "localhost"
-                if not _is_loopback_host(host_name):
-                    is_localhost = False
-            except Exception:
-                pass
 
         logger.warning(f"Setup mode rejected WebSocket from {host} (no API key configured yet)")
         if is_localhost:

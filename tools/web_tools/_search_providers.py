@@ -1,19 +1,15 @@
 """HTTP adapters for web_search - one provider per function, uniform contract.
 
-Every provider returns a dict:
+Every provider returns:
     {"ok": bool, "items": [{"title","url","snippet","date"}], "note": str}
 
-Items are RAW (no normalisation): web_search.py owns URL normalisation, snippet
-cleaning and dedup via _search_core. Keeping the adapters free of sibling imports
-is deliberate - the delivery pipeline injects shared_deps into the TOOL's globals,
-not into another dep's globals, so a dep must never import a dep.
+Items are RAW (no normalisation): web_search.py owns URL normalisation, snippet cleaning
+and dedup via _search_core. Adapters never import a sibling - the delivery pipeline
+injects shared_deps into the TOOL's globals, not into another dep's globals.
 
-Honest-failure contract (2026-11-06): ok=True ONLY when at least one usable result
-was parsed. HTTP >= 400, a bot wall, or zero parsed items => ok=False with a note.
-The old tool accepted "DuckDuckGo returned status 202 (blocked)" as a result, which
-made a failed search look successful while returning nothing.
-
-No dangerous modules (requests + stdlib only) - no sandbox policy rows needed.
+Honest-failure contract: ok=True ONLY when at least one usable result was parsed.
+HTTP >= 400, a bot wall, or zero parsed items => ok=False with a note. Reporting a
+blocked request as a result would make a failed search look successful.
 """
 
 import re
@@ -69,7 +65,7 @@ def bing_rss(query: str, limit: int, settings: dict) -> dict:
 
     Deliberately NO mkt/cc parameter: Bing's market targeting returns 0 items for
     many queries with mkt=en-US and rewrites the query with cc=US (measured
-    2026-11-06). Language twins are collapsed by _search_core.dedup_key instead.
+    ). Language twins are collapsed by _search_core.dedup_key instead.
     """
     timeout = settings.get("timeout") or 12
     try:

@@ -17,7 +17,6 @@ def _read_client_ui_port() -> int:
 
     This script is stdlib-only and must not import either config package (the SERVER
     "config" and the CLIENT "CLIENT/config" packages would mix in one process, and this
-    runs before any venv exists). Same pattern as the CONTEXT_WINDOW_TOKENS patch below:
     parse the value out of the file. A missing constant or a non-integer value is a
     configuration error - it raises instead of guessing a port (no-fallback contract).
     """

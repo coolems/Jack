@@ -22,8 +22,7 @@ class GitTools:
         logger.info(f"GitTools initialized with {len(self._tools)} tools: {list(self._tools.keys())}")
 
     def _discover_tools(self) -> None:
-        """
-        Auto-discover all tool functions in this directory.
+        """Auto-discover all tool functions in this directory.
         Each .py file (except __init__.py and files in subfolders) should
         contain a function whose name matches the filename.
         """

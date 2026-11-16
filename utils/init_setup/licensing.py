@@ -1,32 +1,13 @@
 """LICENSING STEP for ZZZ_initial_init.bat (console, stdlib-only).
-
-LICENSING PLAN v14 (2026-10-15): the CLIENT keeps NO license files and never talks to
-coolems.com. ALL license logic lives on the SERVER: it reads its own state file
-(<SERVER ROOT>/config/license_state.json), checks coolems.com at boot + every 30 min,
-writes the answer back into that same file (offline fallback when unreachable; an
-expired cache is treated as not licensed), and feeds a slim {use, company} payload to
-every CLIENT over WebSocket (auth_ok + each token_stats frame). The CLIENT badge only
-DISPLAYS what it was fed.
-
+LICENSING PLAN: the CLIENT keeps NO license files and never talks to coolems.com. ALL
+license logic lives on the SERVER: it reads its own state file (<SERVER
+ROOT>/config/license_state.json), checks coolems.com at boot + every 30 min, writes the
+answer back into that same file (offline fallback when unreachable; an expired cache is
+treated as not licensed), and feeds a slim {use, company} payload to every CLIENT over
+WebSocket (auth_ok + each token_stats frame). The CLIENT badge only DISPLAYS what it was
+fed.
 IP history of check attempts lives on the WEB side now — index.php writes
 ip_history.json next to licenses.json. This local file stores NO ip data.
-
-This init step therefore:
-  - asks "private or company?";
-  - WRITES the answer into <SERVER ROOT>/config/license_state.json with ALL user input
-    (choice, company name, e-mail, seats wanted, free-text request) — the server reads
-    exactly this file on boot;
-  - private  -> asks for an e-mail (optional). With e-mail: the server asks coolems.com
-                at boot + every 30 min; the web side sends a one-time confirmation link and
-                only writes the address into its own private_license.json after it is clicked.
-                Without e-mail: fully offline, zero friction (server sends {use:"private"}).
-  - company  -> prints + opens a pre-filled license-request e-mail. The server then
-                fetches confirmation from coolems.com itself at boot and caches the
-                answer in the same file — no manual editing needed anywhere.
-
-STDLIB-ONLY at import time (init runs before any venv exists) — so it writes the JSON
-directly instead of importing app/license_server.py; the schema is kept identical to
-app/license_server.default_state().
 """
 
 import json

@@ -1,5 +1,4 @@
-"""
-CLI entry point for standalone TTS operation.
+"""CLI entry point for standalone TTS operation.
 
 Usage:
     python -m static.voice --voice M1 --speed 1.0

@@ -333,9 +333,10 @@ class ToolExecutor:
                                        kind: str = "python", payload: Any = "") -> None:
         """Fold the card's answer into its row (the card itself is transient).
 
-        Folded when a card appeared (a real request_id) or the answer is not an auto-allow -
+        Folded when a card appeared (a real request_id) or the answer is not an auto-allow
         'deny' / 'explain' / 'unavailable' all belong in history. Auto-allow paths add no
-        consent row; the grant row records them once per kind."""
+        consent row; the grant row records them once per kind.
+        """
         if request_id or decision not in ("allow", "allow_category_until_done"):
             await self._rec("consent", kind, decision, request_id, payload)
         if decision == "allow_category_until_done":
@@ -711,10 +712,10 @@ class ToolExecutor:
                                         conversation_id: str = None):
         """Ask the local user whether this python_exec code may run on THIS machine.
 
-        Thin wrapper over the shared consent dialog (kind='python'). ConsentResult:
         allowed=True -> execute; decision=='explain' -> return the instruction, nothing ran;
         anything else -> fail closed. No timeout; the per-run state lives on the ChatChannel,
-        so a grant lasts exactly one agentic run."""
+        so a grant lasts exactly one agentic run.
+        """
         from app.chat_bus import ConsentDialog, ConsentResult
 
         code = (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else ""

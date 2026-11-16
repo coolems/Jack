@@ -1,4 +1,4 @@
-"""desktop_consent_state - CLIENT-side fallback store for Computer Use access (2026-11-07).
+"""desktop_consent_state - CLIENT-side fallback store for Computer Use access.
 
 WHY THIS EXISTS
 The real desktop consent store lives in the SERVER-shipped dep tools/computer_use/_consent.py
@@ -18,6 +18,7 @@ or an unreadable file => not granted.
 
 Scope rules mirror the dep: grants are per conversation id; a denial blocks the app for the
 whole process; the run-wide grant ('allow until task done') applies to the desktop kind only.
+
 """
 
 import json

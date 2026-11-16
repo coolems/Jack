@@ -52,37 +52,13 @@ logger = logging.getLogger("COOLEMS.Tools.Files")
 
 
 def write_file(filename: str, content: str, path: str = "", mode: str = "w") -> str:
-    """
-    Create or overwrite a file with the given content.
-
+    """Create or overwrite a file with the given content.
     SECURITY RULE - CRITICAL:
         * filename = JUST THE FILE NAME only (e.g. 'config.py'). NO slashes allowed!
         * path = DIRECTORY ONLY where the file should be written (e.g. 'local_ai/config')
         * To write 'local_ai/CLIENT/config/settings.py':  filename='settings.py', path='local_ai/CLIENT/config'
-
-    SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
+    All paths are locked inside working_root. Path traversal via '..' is blocked.
               Filenames with embedded separators or traversal sequences are rejected.
-
-    LINE ENDINGS: content is normalized before writing -- LF for regular text and
-              CRLF for .bat/.cmd (matching .gitattributes). "\r\r\n" corruption from
-              older text-mode writes is repaired automatically.
-
-    SCRATCH POLICY (2026-11-09, user request): the working_root top level is repo
-              content, so a scratch file written there is redirected to its .temp home:
-              plan_*.md -> .temp/plans/, tmp_/temp_/scratch_/*.tmp -> .temp/.
-              Only a root-level write is redirected -- an explicit path always wins, and
-              ordinary repo files are untouched. Readers find the redirected file by its
-              bare name (see utils.locate_scratch_file).
-
-    Args:
-        filename: Just the file name, no path (e.g. 'myfile.txt'). NEVER include '/' or '\\'.
-        content: File content to write.
-        mode: Write mode - 'w' for overwrite, 'a' for append.
-        path: Directory path only, no filename. Relative paths resolved against
-              working_root. Empty string defaults to working_root/. Use '.' or 'root'.
-
-    Returns:
-        Success message with file path and size, or 'Error: {message}' on failure.
     """
     logger.info(f"write_file called: path={path}, filename={filename}, len={len(content) if isinstance(content, str) else 'n/a'}")
 

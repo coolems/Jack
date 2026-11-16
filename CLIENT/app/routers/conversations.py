@@ -1,19 +1,16 @@
-"""
-Conversation endpoints - CRUD operations for conversations and messages.
+"""Conversation endpoints - CRUD operations for conversations and messages.
 
-UPDATED (2025-07-12):
-    - Added 'color' field support for conversations (8 color palette)
-    - Extended list endpoint with sort_by and sort_order query params
-    - Sort options: created (by creation time), color, name (by title)
-    - Order options: asc (ascending), desc (descending)
+Sorting: sort_by created|color|name, sort_order asc|desc (color palette: VALID_COLORS).
+All connections go through app.db_manager (WAL mode, busy timeout, foreign keys ON).
 
-UPDATED (2025-06-25):
-    - Refactored to use centralized db_manager for safe pooled connections with WAL mode
+OWNERSHIP: conversations.ip_address is the workspace owner. GET / lists only the
+caller's own rows, and every per-conversation route goes through
+_require_conversation_owner - see helpers.get_client_ip for why X-Forwarded-For is not
+trusted by default.
 
-FIXED (2026-12-04): workspace deletion failed with "FOREIGN KEY constraint failed"
-    (HTTP 500 -> "Failed to delete workspace"). turn_log rows are CHILDREN of the
-    conversation, so DELETE must clear them first - both delete and truncate now go
-    through app.websocket.turn_ops.
+DELETE/TRUNCATE: turn_log and messages are CHILDREN of the conversation, so deleting
+clears children first (app.websocket.turn_ops) - otherwise the FK constraint turns the
+delete into a 500 "Failed to delete workspace".
 """
 import json
 import uuid
@@ -31,6 +28,31 @@ logger = logging.getLogger("COOLEMS")
 VALID_COLORS = [
     "red", "orange", "yellow", "green", "blue", "purple", "pink", "gray"
 ]
+
+# Rows with no recorded owner: the schema default and the WebSocket fallback in
+# app/websocket/db_ops._ensure_conversation_exists() both leave ip_address 'unknown'.
+# Such a workspace has no identity to compare against, so it stays reachable - 403-ing
+# it would hide workspaces the CLIENT itself created over the chat socket.
+NO_OWNER = "unknown"
+
+
+def _require_conversation_owner(cursor, conv_id: str, current_ip: str) -> str:
+    """Return the conversation's owner ip, or raise 404 (missing) / 403 (not ours)."""
+    cursor.execute("SELECT ip_address FROM conversations WHERE id = ?", (conv_id,))
+    conv_info = cursor.fetchone()
+
+    if not conv_info:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    owner_ip = conv_info[0]
+    if owner_ip and owner_ip != NO_OWNER and owner_ip != current_ip:
+        logger.warning(
+            f"Client {current_ip} denied access to conversation {conv_id} owned by {owner_ip}"
+        )
+        raise HTTPException(status_code=403, detail="This workspace belongs to another client")
+
+    return owner_ip
+
 
 def create_conversations_router(db_path: str, model_name: str, agent) -> APIRouter:
     """Factory function that returns a configured conversations router."""
@@ -61,8 +83,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         sort_by: str = Query("created", regex="^(created|color|name)$"),
         sort_order: str = Query("desc", regex="^(asc|desc)$"),
     ):
-        """
-        List conversations for the current client with optional sorting.
+        """List conversations for the current client with optional sorting.
 
         - sort_by: 'created' (default), 'color', or 'name'
         - sort_order: 'asc' or 'desc' (default 'desc')
@@ -115,11 +136,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         try:
             cursor = conn.cursor()
 
-            cursor.execute("SELECT ip_address FROM conversations WHERE id = ?", (conv_id,))
-            conv_info = cursor.fetchone()
-
-            if not conv_info:
-                raise HTTPException(status_code=404, detail="Conversation not found")
+            owner_ip = _require_conversation_owner(cursor, conv_id, current_ip)
 
             logger.info(f"Client {current_ip} viewing conversation {conv_id}")
 
@@ -159,28 +176,26 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             # Cycle history (2026-11-08): one row per agentic turn, already normalized
             # by turn_ops.load_turn_logs -> the UI rebuilds collapsed cycle blocks from it.
             "turn_logs": load_turn_logs(conv_id),
-            "owner_ip": conv_info[0]
+            "owner_ip": owner_ip
         }
 
     @router.get("/{conv_id}/status")
     async def get_conversation_status(conv_id: str, request: Request):
-        """Live session state of one chat (2026-09-08 multi-chat UI fix).
+        """Live session state of one chat.
 
         Returns {"status": "idle"|"queued"|"generating"|..., "queue_position": int}
-        straight from the ChatBus channel, so a chat switch can restore the
-        generation indicator and send/stop button color even when no frames are
-        currently flowing (e.g. the turn finished while the user was elsewhere).
+        straight from the ChatBus channel, so a chat switch can restore the generation
+        indicator and send/stop button color even when no frames are currently flowing
+        (e.g. the turn finished while the user was elsewhere).
+
         """
+        current_ip = get_client_ip(request)
+
         conn = get_db_connection()
         try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT ip_address FROM conversations WHERE id = ?", (conv_id,))
-            conv_info = cursor.fetchone()
+            _require_conversation_owner(conn.cursor(), conv_id, current_ip)
         finally:
             close_db_connection(conn)
-
-        if not conv_info:
-            raise HTTPException(status_code=404, detail="Conversation not found")
 
         status = "idle"
         queue_position = 0
@@ -202,8 +217,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
     
     @router.post("/{conv_id}/update")
     async def update_conversation(conv_id: str, data: Dict, request: Request):
-        """
-        Update conversation properties.
+        """Update conversation properties.
 
         Accepts: title, system_prompt, color
         - color: one of VALID_COLORS or None to clear
@@ -213,6 +227,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
+
+            _require_conversation_owner(cursor, conv_id, current_ip)
 
             if "title" in data:
                 cursor.execute("UPDATE conversations SET title = ? WHERE id = ?", (data["title"], conv_id))
@@ -238,11 +254,15 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
         conn = get_db_connection()
         try:
+            _require_conversation_owner(conn.cursor(), conv_id, current_ip)
+
             # CHILD-FIRST: cycle history and messages reference the conversation row,
             # and foreign keys are ON on every connection - clearing the parent first
             # raises IntegrityError and the workspace can never be deleted.
             counts = delete_conversation_rows(conn.cursor(), conv_id)
             conn.commit()
+        except HTTPException:
+            raise  # 404/403 from the ownership guard must not become a 500
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to delete conversation {conv_id}: {e}")
@@ -268,6 +288,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
+
+            _require_conversation_owner(cursor, conv_id, current_ip)
 
             cursor.execute(
                 "SELECT id, timestamp FROM messages WHERE conversation_id = ? "
@@ -305,6 +327,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
+
+            _require_conversation_owner(cursor, conv_id, current_ip)
 
             cursor.execute(
                 "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",

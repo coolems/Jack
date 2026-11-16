@@ -1,5 +1,4 @@
-"""
-Vision message converter for llama.cpp.
+"""Vision message converter for llama.cpp.
 
 Converts Ollama-style 'images' key into OpenAI-compatible multimodal format
 that llama.cpp expects via /v1/chat/completions.
@@ -8,8 +7,7 @@ from typing import List, Dict
 
 
 def convert_messages_for_vision(messages: List[Dict]) -> List[Dict]:
-    """
-    Convert messages that use the Ollama-style 'images' key into the
+    """Convert messages that use the Ollama-style 'images' key into the
     OpenAI-compatible multimodal format that llama.cpp expects.
 
     Ollama format:

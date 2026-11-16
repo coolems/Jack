@@ -1,11 +1,12 @@
-"""Model ROUTING request handler for direct WS clients (2026-10 fleet).
+"""Model ROUTING request handler for direct WS clients.
 
-There is NO model switching any more: every llama node is started with a fixed model and
-keeps it. The CLIENT's "load model" action therefore becomes a routing check - it reports
+There is NO model switching: every llama node is started with a fixed model and keeps
+it. The CLIENT's "load model" action therefore becomes a routing check - it reports
 whether the swarm currently serves the requested model, and where. The actual routing
 happens per chat request in the server queue (per-model FIFO).
 
 Permission check still uses the shared exact-filename resolver (no folders, no substrings).
+
 """
 
 import json

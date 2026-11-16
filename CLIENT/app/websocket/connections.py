@@ -1,10 +1,9 @@
-"""
-WebSocket Connection Registry & Broadcast.
+"""WebSocket Connection Registry & Broadcast.
 
 Tracks all active UI WebSocket connections and provides a broadcast
 mechanism to push status messages (model switch progress, etc.) to ALL clients.
 
-FIXED (2026-01-04): Multi-chat interference bug cleanup.
+FIXED: interference bug cleanup.
 - Connection tracking is per (client_ip, conv_id) for proper multi-tab support.
 """
 
@@ -23,7 +22,7 @@ _client_conversations: Dict[str, Set[Tuple[str, Any]]] = {}
 
 def register_connection(ws: Any, client_ip: str = "", conv_id: str = "") -> None:
     """Register a new WebSocket connection.
-    
+
     Args:
         ws: The WebSocket object.
         client_ip: Client IP address (for multi-tab tracking).
@@ -38,7 +37,7 @@ def register_connection(ws: Any, client_ip: str = "", conv_id: str = "") -> None
 
 def unregister_connection(ws: Any, client_ip: str = "", conv_id: str = "") -> None:
     """Remove a WebSocket connection (on disconnect).
-    
+
     Args:
         ws: The WebSocket object.
         client_ip: Client IP address.
@@ -56,8 +55,7 @@ def unregister_connection(ws: Any, client_ip: str = "", conv_id: str = "") -> No
 
 
 async def broadcast(message: dict) -> int:
-    """
-    Broadcast a JSON message to ALL active WebSocket connections.
+    """Broadcast a JSON message to ALL active WebSocket connections.
 
     Dead connections are automatically cleaned up from the registry.
 
@@ -89,8 +87,7 @@ async def broadcast(message: dict) -> int:
 
 
 async def broadcast_model_switch_status(status: str, message: str, model_name: str = "") -> None:
-    """
-    Convenience function to broadcast model switch status updates.
+    """Convenience function to broadcast model switch status updates.
 
     Sends a 'model_switch_status' message that the UI can handle specially.
 

@@ -9,7 +9,7 @@ Provider modes:
                         the local LLM backend, streams back.
   - llama            → Same just relay + launches CLIENT as subprocess for local UI use.
                         SERVER stays dumb. CLIENT handles all intelligence locally.
-  - strata           → Same relay + CLIENT, local backend = Strata's endpoint (2026-11).
+  - strata           → Same relay + CLIENT, local backend = Strata's endpoint.
                         Shorthand for config.SERVER_BACKEND = "strata".
 
 Local LLM backend (config.SERVER_BACKEND; the relay never spawns Strata — attach-only):
@@ -36,6 +36,17 @@ import logging
 import os
 import subprocess
 import sys
+
+# Interpreter floor: this codebase needs Python 3.12+. Checked before any project
+# import so an older interpreter reports this instead of failing with a SyntaxError
+# deep inside the provider import chain.
+if sys.version_info < (3, 12):
+    sys.exit(
+        f"COOLEMS needs Python 3.12 or newer - this launcher is running "
+        f"{sys.version.split()[0]} ({sys.executable}).\n"
+        f"  Recreate the venv:  py -3.12 -m venv \"{os.path.dirname(os.path.abspath(__file__))}\\venv\"\n"
+        f"  then:  venv\\Scripts\\activate  and  pip install -r requirements.txt"
+    )
 
 from app.logging_config import setup_logging
 from app.initialization import init_provider_and_app, resolve_provider_and_url

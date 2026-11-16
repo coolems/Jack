@@ -72,7 +72,7 @@ def _canonical(name: str) -> str:
 def _collect_all_gguf(allowed_folders, default_dir):
     """Return list of full paths to .gguf files across all scan dirs + default dir.
 
-    (2026-10 fleet) Scans each root BOTH flat and one subfolder deep, because the init
+     Scans each root BOTH flat and one subfolder deep, because the init
     script downloads a model into ``llama_server/models/<model-name>/``. mmproj
     (vision projector) files are excluded. Order is deterministic: roots in insertion
     order, filenames sorted.
@@ -100,15 +100,13 @@ def _collect_all_gguf(allowed_folders, default_dir):
 
 
 def _get_model_scan_dirs():
-    """Directories scanned for local .gguf models (2026-10 fleet).
+    """Directories scanned for local .gguf models, in priority order.
 
-    Profiles no longer carry ``allowed_models_folders`` (they authorize by filename), so
-    the scanner owns the search path. Sources, in priority order:
-
-      1. ``llama_server/models`` (always; one subfolder level is scanned)
-      2. ``config.LLAMA_MODEL_DIRS`` (optional absolute paths, per machine)
-      3. the folder of the model recorded in ``config/.last_model_loaded.json``
-         (so a model kept outside the repo still boots and is listed)
+    Profiles authorize by filename, so the scanner owns the search path:
+      1. llama_server/models (one subfolder level is scanned)
+      2. config.LLAMA_MODEL_DIRS (optional absolute paths, per machine)
+      3. the folder of the model in config/.last_model_loaded.json, so a model kept
+         outside the repo still boots and is listed
     """
     dirs: list[str] = []
 

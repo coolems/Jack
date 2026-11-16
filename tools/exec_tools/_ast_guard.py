@@ -1,58 +1,20 @@
 """AST security guard for python_exec -- the PRIMARY code check.
-
 WHAT THIS FILE DOES
-===================
 Walks the parsed AST of user-supplied Python code and reports violations in two layers:
-
   LAYER 1 - PROFILE-DRIVEN IMPORT CHECKS (soft, profile-controlled)
       The active per-profile blocked-libs set (shipped by the SERVER -- see
-      _get_blocked_libs() in python_exec.py) decides which modules are import-blocked.
-      An EMPTY set means "allow everything" BY DESIGN (admin clean set); for that
-      case python_exec() skips the guardrails entirely before this file ever runs.
-
+      _get_blocked_libs in python_exec.py) decides which modules are import-blocked. An
+      EMPTY set means "allow everything" BY DESIGN (admin clean set); for that case
+      python_exec skips the guardrails entirely before this file ever runs.
   LAYER 2 - HARD FLOOR (always active for every NON-EMPTY profile set)
-      The AST/regex guardrail over arbitrary Python is fundamentally whack-a-mole:
-      any single missed pattern is a full escape, because executed code runs in a
-      normal interpreter with all builtins available. The hard floor therefore
-      blocks the generic PRIMITIVES of escape instead of enumerating payloads:
-
+      The AST/regex guardrail over arbitrary Python is fundamentally whack-a-mole: any
+      single missed pattern is a full escape, because executed code runs in a normal
+      interpreter with all builtins available. The hard floor therefore blocks the generic
+      PRIMITIVES of escape instead of enumerating payloads:
         * attribute calls to open/exec/eval/compile/__import__ on ANY object
-          (closes `b = globals()['__builtins__']; f = b.open; f(...)`, which was a
-          verified live escape before the 2026-07-14 refactor)
         * subscript lookups through globals()/vars() results or any tainted name
         * getattr with a dynamic (non-literal) attribute name
         * calls/assignments through names that were assigned from a dangerous expression
-
-      TAINT MODEL: expressions whose value is "dangerous" are marked. A Name bound
-      to a dangerous expression becomes tainted; using a tainted name in an
-      assignment, call, subscript or getattr is blocked. Taint sources (see
-      _taint_reason): globals()/vars() calls, subscripts through them, the bare
-      __builtins__ reference (in script context it resolves to the builtins MODULE),
-      getattr with dynamic names, and attribute access holding a hard-floor builtin
-      or dangerous dunder on any object.
-
-      The model is computed in a PRE-PASS over the whole tree before visiting, so
-      detection is independent of statement order (an assignment earlier in the file
-      taints uses later in the file; no reliance on visitor traversal order). It is
-      deliberately a conservative over-approximation -- shadowing edge cases may be
-      over-blocked, never under-blocked (fail-closed).
-
-DELIVERY NOTE (CLIENT sandbox)
-==============================
-This module is delivered to CLIENTs as a same-package dependency of python_exec.py:
-tool_scanner._find_same_package_imports() picks it up from the tool's
-'from ._ast_guard import ...' line, and dynamic_loader transforms that into
-bare-name assignments with the symbols injected at compile time. It therefore
-imports ONLY stdlib 'ast'. All policy data is passed in as a namespace object by
-python_exec (see run_ast_check) so this file has ZERO coupling to sibling modules --
-which keeps it trivially unit-testable and immune to loader transform edge cases.
-
-DEBUGGING
-=========
-Every violation string names the pattern that matched, e.g.:
-    "b.open() -- attribute call to hard-floor builtin 'open' on any object is blocked"
-The exploit battery (escape probes) and legitimate-code controls (regression probes)
-live in tests/test_sandbox_bootstrap.py.
 """
 
 import ast
@@ -80,9 +42,9 @@ def resolve_subscript_root(node):
     """Walk through chained subscripts and resolve to the root name or call func name.
 
     Handles patterns like:
-        globals()['os']()           -> 'globals'
-        vars()['__builtins__']['eval']()  -> 'vars'
-        __builtins__['system']()    -> '__builtins__'
+        globals['os']           -> 'globals'
+        vars['__builtins__']['eval']  -> 'vars'
+        __builtins__['system']    -> '__builtins__'
     """
     current = node
     while isinstance(current, ast.Subscript):
@@ -132,19 +94,19 @@ def _check_lambda_for_forbidden_calls(lambda_node, violations, policy):
 class ASTSecurityVisitor(ast.NodeVisitor):
     """Walk the AST and detect dangerous patterns.
 
-    Args:
-        forbidden_modules: the ACTIVE profile-driven import blocklist (frozenset).
-            An empty set means "allow everything" -- all import checks are skipped
-            (admin clean set; python_exec() normally skips the whole guardrail in
-            that case, this keeps the visitor usable standalone).
-        policy: namespace with the security constants from _policy.py
-            (FORBIDDEN_FUNCTIONS, HARD_FLOOR_ATTR_CALL_NAMES, DANGEROUS_ATTR_ACCESS,
-            TINTED_CALL_NAMES, HIGHER_ORDER_FUNCTIONS, FORBIDDEN_ATTR_CALLS, ...).
+        Args:
+            forbidden_modules: the ACTIVE profile-driven import blocklist (frozenset).
+                An empty set means "allow everything" -- all import checks are skipped
+                (admin clean set; python_exec normally skips the whole guardrail in
+                that case, this keeps the visitor usable standalone).
+            policy: namespace with the security constants from _policy.py
+                (FORBIDDEN_FUNCTIONS, HARD_FLOOR_ATTR_CALL_NAMES, DANGEROUS_ATTR_ACCESS,
+                TINTED_CALL_NAMES, HIGHER_ORDER_FUNCTIONS, FORBIDDEN_ATTR_CALLS, ...).
 
-    Usage:
-        visitor = ASTSecurityVisitor(blocklist, policy)
-        visitor.prepare(tree)   # taint pre-pass (MUST run before visit)
-        visitor.visit(tree)     # detection pass; results in visitor.violations
+        Usage:
+            visitor = ASTSecurityVisitor(blocklist, policy)
+            visitor.prepare(tree)   # taint pre-pass (MUST run before visit)
+            visitor.visit(tree)     # detection pass; results in visitor.violations
     """
 
     def __init__(self, forbidden_modules, policy):
@@ -164,11 +126,10 @@ class ASTSecurityVisitor(ast.NodeVisitor):
     # ------------------------------------------------------------------
 
     def _taint_reason(self, node):
-        """Return a human-readable reason if *node*'s value is dangerous, else None.
+        """Why an expression is considered tainted - what the author is trying to hand over.
 
-        This is the heart of the 2026-07-14 fix: it answers "does this expression
-        hand over something that can escape working_root or execute code?" without
-        depending on where in the file the expression appears.
+        Answers "does this escape working_root or execute code?" without depending on how the
+        value was built, so aliases and indirect calls are judged by their effect.
         """
         P = self.P
 

@@ -1,5 +1,4 @@
-"""
-Vision Tools - Dynamic Entry Point
+"""Vision Tools - Dynamic Entry Point
 
 This module auto-discovers all vision tool functions.
 Each tool function is self-contained and can call Ollama directly.
@@ -14,8 +13,7 @@ logger = logging.getLogger("COOLEMS.Tools.Vision")
 
 
 class VisionTools:
-    """
-    Dynamic vision tools wrapper - auto-discovers ALL functions in this folder.
+    """Dynamic vision tools wrapper - auto-discovers ALL functions in this folder.
     Each tool function remains in its own file with its __tool_description__.
     """
     

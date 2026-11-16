@@ -11,7 +11,6 @@ Web relay mode (Settings UI Connection Mode = "web_relay"):
   CLIENT needs. The home SERVER reaches the same relay itself; no SERVER address is
   used or required by this CLIENT in relay mode.
 
-MODULE SPLIT (2026-10):
   - client_provider/connection_modes.py -> model-switch flag + live connection-mode/address helpers
   - client_provider/ws_connect.py       -> _AccumulatingWS + the fail-closed relay_ws_connect helper
   - client_provider/provider_class.py   -> the CoolemsClientProvider class (thin delegations)
@@ -47,11 +46,8 @@ def _set_model_switching(value: bool) -> None:
 
     """Set the global model-switch-in-progress flag.
 
-
-
-    Called from agent.py router to suppress spurious connection errors
-
-    during server reload phases.
+        Called from the agent.py router to suppress spurious connection errors while the
+        SERVER reloads for a model switch.
 
     """
 
@@ -65,14 +61,14 @@ def _set_model_switching(value: bool) -> None:
 
 
 def _relay_mode() -> bool:
-    """(2026-09-23) LIVE connection-mode check: 'web_relay' selected in settings.json
+    """LIVE connection-mode check: 'web_relay' selected in settings.json
     (Settings UI, default direct). Read fresh on every call so a mode switch applies to the
     very next connection - no restart needed for the mode itself.
     """
     return get_connection_mode() == "web_relay"
 
 def _live_relay_host_port():
-    """(2026-09-23) LIVE relay (host, port) from settings.json for the next connection.
+    """LIVE relay (host, port) from settings.json for the next connection.
 
     Re-read on every call so an address change in the Settings UI applies to the very
     next connect. Returns None when no live address is configured - callers fall back

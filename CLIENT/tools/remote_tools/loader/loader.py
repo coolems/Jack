@@ -1,8 +1,8 @@
 """DynamicModuleLoader -- the public facade for loading SERVER-delivered tool code.
 
-This class owns ALL loader state (installed-shared-modules flag, shared sources kept
-for re-install, config constants, integrity hashes) and delegates each concern to a
-focused module in this package:
+This class owns ALL loader state (installed-shared-modules flag, shared sources kept for
+re-install, config constants, integrity hashes) and delegates each concern to a focused
+module in this package:
 
   errors           ToolCompilationError (+ subclasses)   -- non-retryable compile failures
   policy           per-tool import/call allowlists       -- the auditable trust table
@@ -12,9 +12,7 @@ focused module in this package:
   shared_modules   sys.modules installation of shared code (utils, path_guard, app.dna.*)
   globals_builder  exec-globals assembly + shared_deps install
 
-Behavior is byte-for-byte the same as the original single-file dynamic_loader.py:
-same public methods, same error messages, same fail-closed semantics. The split exists
-for maintenance/debugging -- each concern can now be read, tested and changed alone.
+Fail-closed semantics are the contract: a promised hash mismatch never execs.
 """
 
 import logging
@@ -78,9 +76,8 @@ class DynamicModuleLoader:
     def set_expected_shared_hashes(self, hashes: dict) -> None:
         """Store SERVER-shipped SHA-256 prefixes for shared/framework modules.
 
-        Called by RemoteToolOrchestrator BEFORE install_shared_modules(). Fail-closed:
-        when a hash is present and the delivered source does not match, that module is
-        NOT exec'd (2026-08-20). Absent hashes are tolerated (legacy server).
+        When a hash is present and the delivered source does not match, that module is
+        NOT exec'd. Absent hashes are tolerated (server shipped none).
         """
         self._expected_shared_hashes = dict(hashes) if hashes else {}
 
@@ -110,28 +107,12 @@ class DynamicModuleLoader:
 
     def install_shared_modules(self, sources: Dict[str, str], expected_hashes: Optional[Dict[str, str]] = None) -> bool:
         """Install shared utility modules for remote tool execution.
-
         Creates proper namespace package structure in sys.modules so that Python's
         import machinery can resolve 'from tools.utils import X' etc.
-
-        CRITICAL FIX (2026-01): Now handles subpackage __init__.py files properly.
-        When a key like 'web_interact' is provided, it creates the parent package
-        BEFORE processing child modules (e.g. 'web_interact.shared_instance').
-        This allows relative imports within subpackages to work correctly.
-
-        CRITICAL FIX (2026-01-31): Fixed subpackage module attachment so that
-        nested packages are set as attributes on their parent package, not just
-        the top-level tools namespace. This allows Python to resolve
-        'import tools.web_interact' and 'from tools.web_interact import X'.
-
-        Args:
-            sources: Dict mapping module names to source code strings.
-                     Keys are like 'utils', 'path_guard', 'ssrf_defense'.
-                     Subpackage keys use dot notation: 'web_interact', 'web_interact.shared_instance'.
-                     Values are the raw Python source text (can be None if not available).
-
-        Returns:
-            True if installation succeeded, False otherwise.
+        CRITICAL Now handles subpackage __init__.py files properly. When a key like
+        'web_interact' is provided, it creates the parent package BEFORE processing child
+        modules (e.g. 'web_interact.shared_instance'). This allows relative imports within
+        subpackages to work correctly.
         """
         # Per-call hashes win over stored ones; fall back to set_expected_shared_hashes().
         effective_hashes = expected_hashes or self._expected_shared_hashes or {}
@@ -159,42 +140,7 @@ class DynamicModuleLoader:
     def compile_tool(self, tool_name: str, source_code: str, shared_deps: dict = None,
                      config_constants: dict = None, source_hash: Optional[str] = None,
                      tool_manifest: Optional[dict] = None) -> Callable[..., Any]:
-        """Compile a single tool from source code and return the callable function.
-
-        Pipeline (each step isolated in its own module for debugging):
-          1. AST security validation            (ast_guard.validate_source_code)
-          2. fail-closed integrity checks       (integrity.verify_tool_hash + allowlist)
-          3. shared modules auto-install if needed
-          4. source transformation              (source_transform.transform_tool_source)
-          5. exec-globals assembly              (globals_builder.build_tool_exec_globals)
-          6. config constants injection         (globals_builder.inject_config_constants)
-          6b. tool manifest injection            (SERVER-shipped TOOL_MANIFEST global)
-          7. shared deps install + symbol merge (globals_builder.install_shared_deps)
-             + REQUIRED-DEP GATE: a same-package import whose dep failed to install
-               raises ToolCompilationError here instead of a runtime NameError later
-               (2026-09-20 fail-loud fix -- the python_exec SANDBOX_BOOTSTRAP incident)
-          8. exec transformed source
-          9. extract the tool callable          (must be named exactly *tool_name*)
-
-        Args:
-            tool_name: Name of the tool (used for module name, allowlists and logging).
-            source_code: Python source code containing the tool function.
-            shared_deps: Optional dict mapping dep_name -> source_code for same-package dependencies.
-            config_constants: Optional dict of config constants to inject into exec_globals
-                              (e.g. WEB_SEARCH_DEFAULT_MAX_RESULTS, WEB_SEARCH_SEARXNG_INSTANCES).
-            source_hash: Optional SERVER-shipped SHA-256 prefix; a mismatch REFUSES compilation
-                         (fail-closed, 2026-08-20).
-             tool_manifest: Optional SERVER-shipped tool manifest dict; when present it is
-                         injected as the TOOL_MANIFEST global so self-unpacking tools run from
-                         the server's single source of truth (2026-09-11).
-
-        Returns:
-            The compiled tool function ready to be called.
-
-        Raises:
-            ToolCompilationError: If AST validation fails or compilation errors occur.
-                This is a NON-RETRYABLE error (excluded from retry logic by class name).
-        """
+        """Compile a single tool from source code and return the callable function."""
         # 1. Validate source via AST analysis (with tool-specific allowlist).
         errors = validate_source_code(source_code, tool_name)
         if errors:

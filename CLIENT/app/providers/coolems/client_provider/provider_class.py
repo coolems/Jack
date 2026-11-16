@@ -11,7 +11,6 @@ Web relay mode (Settings UI Connection Mode = "web_relay"):
   CLIENT needs. The home SERVER reaches the same relay itself; no SERVER address is
   used or required by this CLIENT in relay mode.
 
-MODULE SPLIT (2026-10):
   - client_provider/connection_modes.py -> model-switch flag + live connection-mode/address helpers
   - client_provider/ws_connect.py       -> _AccumulatingWS + the fail-closed relay_ws_connect helper
   - client_provider/provider_class.py   -> the CoolemsClientProvider class (thin delegations)
@@ -68,28 +67,14 @@ class CoolemsClientProvider(BaseProvider):
 
     """WebSocket client provider - the ONLY transport to a remote COOLEMS SERVER.
 
+    Connection mode is read LIVE from settings.json (Settings UI "Connection Mode"):
+    "direct"     -> wss://<server>:8080 on the LAN
+    "web_relay"  -> wss to the RELAY address only; the home SERVER is never addressed
 
-
-    Two connection modes (selected LIVE from settings.json, Settings UI "Connection Mode";
-
-    default is direct):
-
-      * Direct mode  ("direct")     -> wss://<server>:8080 on the LAN
-
-      * Relay mode   ("web_relay")  -> wss to the RELAY address only (host+port from settings);
-
-                                       the home SERVER is never addressed by this CLIENT
-
-
-
-    Every method is a thin delegation to direct_mode.py / relay_mode.py /
-
-    control_channel.py; this class holds no protocol logic of its own.
-
-    Outbound auth key comes from app.keys.load_coolems_api_key(): the in-memory runtime key (UI
-    session), then <CLIENT>/config/.api_client_keys.json (plaintext single row {email,
-    date_acquired, key} - 2026-10-08), then the COOLEMS_CLIENT_API_KEY env var fallback.
-
+    Every method delegates to direct_mode.py / relay_mode.py / control_channel.py, so the
+    class holds no protocol logic. The outbound auth key comes from
+    app.keys.load_coolems_api_key(): runtime key, then config/.api_client_keys.json, then
+    the COOLEMS_CLIENT_API_KEY env var.
     """
 
 
@@ -194,21 +179,23 @@ class CoolemsClientProvider(BaseProvider):
 
     @property
     def _is_relay(self) -> bool:
-        """(2026-09-23) True while the CLIENT is configured for web-relay mode (live)."""
+        """True while the CLIENT is configured for web-relay mode (live)."""
 
         return _relay_mode()
 
     def _build_ssl_context(self):
-        """SSL context for RELAY mode - FAIL-CLOSED (2026-09-23 v4).
+        """SSL context for RELAY mode - FAIL-CLOSED.
 
-        The relay runs on a PUBLIC host, so the client->relay link is internet-facing:
-        an untrusted transport would expose the API key in the first auth frame. Either
-        full CA verification (WEB_RELAY_VERIFY_SSL_CERTS=True - Let's Encrypt etc.) or a
-        usable cert pin (WEB_RELAY_CERT_PIN_FINGERPRINT) is required; there is NO silent
-        CERT_NONE fallback anymore.
+                The relay runs on a PUBLIC host, so the client->relay link is internet-facing:
+                an untrusted transport would expose the API key in the first auth frame. Either
+                full CA verification (WEB_RELAY_VERIFY_SSL_CERTS=True - Let's Encrypt etc.) or a
+                usable cert pin (WEB_RELAY_CERT_PIN_FINGERPRINT) is required; there is NO silent
+                CERT_NONE fallback anymore.
 
-        Returns the ssl context, or None when TLS cannot be trusted - every caller must
-        then refuse to connect with an actionable message (see _relay_connect()).
+                Returns the ssl context, or None when TLS cannot be trusted - every caller must
+                then refuse to connect with an actionable message (see _relay_connect()).
+
+
         """
         if not self._use_ssl:
 
@@ -276,17 +263,10 @@ class CoolemsClientProvider(BaseProvider):
 
     def _get_ws_candidates(self) -> list:
         """Ordered (ws_url, ssl_context) candidates for the next connection attempt.
-
         Direct mode: one candidate per address from config.get_server_address_list()
         (settings.json 'server_addresses', local first - see that function's docstring).
         Relay mode: a single candidate (the relay itself). The list is read FRESH on
         every call so settings.json edits apply to the very next connection.
-
-        STICKY ORDERING (2026-09-01): when config.get_good_server() has a recorded
-        known-good address that is still in the list, it is moved to index 0 - after a
-        restart the client goes straight back to the server that worked last time and
-        only scans the rest of the list if THAT one is dead (open_with_failover keeps
-        the runtime stickiness; this ordering covers cold starts).
         """
         if _relay_mode():
 
@@ -404,12 +384,10 @@ class CoolemsClientProvider(BaseProvider):
 
 
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
-            """Health probe (async).
+            """Provider health probe (async).
 
-            (2026-09 threadless refactor): the old one-shot ThreadPoolExecutor + asyncio.run
-            bridge is gone. This simply awaits the relay/direct implementation on the
-            caller's event loop; every production caller is async now (boot runs its own
-            top-level asyncio.run before uvicorn starts)."""
+            Runs on the caller's event loop, so no thread bridge is needed here.
+            """
             try:
                 return await asyncio.wait_for(self._async_health_check(force), timeout=30)
             except TimeoutError:
@@ -442,8 +420,8 @@ class CoolemsClientProvider(BaseProvider):
     async def get_models_list(self) -> List[Dict]:
             """Model list fetch (async).
 
-            (2026-09 threadless refactor): executor + asyncio.run bridge removed; awaits the
-            relay/direct implementation on the caller's loop."""
+            Awaits the relay/direct implementation on the caller's event loop.
+            """
             try:
                 return await asyncio.wait_for(self._async_get_models(), timeout=30)
             except TimeoutError:
@@ -476,8 +454,8 @@ class CoolemsClientProvider(BaseProvider):
     async def get_current_model(self, force: bool = False) -> Optional[str]:
             """Current-model query (async).
 
-            (2026-09 threadless refactor): executor + asyncio.run bridge removed; awaits the
-            relay/direct implementation on the caller's loop."""
+            Awaits the relay/direct implementation on the caller's event loop.
+            """
             try:
                 return await asyncio.wait_for(self._async_get_current_model(force), timeout=15)
             except TimeoutError:
@@ -586,16 +564,14 @@ class CoolemsClientProvider(BaseProvider):
     async def switch_model(self, model_filename: str) -> Tuple[bool, str]:
             """Switch the SERVER's loaded model (async).
 
-            The global _model_switch_in_progress flag is managed by agent.py router.
+            The global _model_switch_in_progress flag is managed by the agent router.
 
-            Bounded wait (MODEL_SWITCH_CLIENT_BUDGET_SEC): the SERVER's own reload wait
-            (~120s worst case) plus margin fits inside this budget, so a healthy switch
-            always returns its real result. If the budget expires we report it as a clean
-            failure - there is no fallback path.
+            Bounded wait (MODEL_SWITCH_CLIENT_BUDGET_SEC): the SERVER's own wait (~120s worst case)
+            plus margin fits inside the budget, so a healthy switch always returns its real result.
+            A budget expiry is reported as a clean failure - there is no fallback path.
 
-            (2026-09 threadless refactor): the old ThreadPoolExecutor + asyncio.run bridge
-            (which double-threaded when called from an async context) is gone; this awaits
-            the relay/direct implementation directly on the caller's event loop."""
+            Awaits the relay/direct implementation directly on the caller's event loop.
+            """
             try:
                 return await asyncio.wait_for(
                     self._async_switch_model(model_filename), timeout=MODEL_SWITCH_CLIENT_BUDGET_SEC
@@ -675,7 +651,7 @@ class CoolemsClientProvider(BaseProvider):
 
 
     async def ocr_transcribe(self, image_base64: str, ocr_models: List[str]) -> str:
-        """Transcribe an image by delegating to the SERVER (2026-08-23 revive).
+        """Transcribe an image by delegating to the SERVER (revive).
 
         The CLIENT ships pixels + model names over a short-lived authenticated WS;
         the SERVER runs its local LlamaProvider OCR path (the exact GLM-OCR call

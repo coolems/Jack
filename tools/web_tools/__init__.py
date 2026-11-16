@@ -1,5 +1,4 @@
-"""
-Web Tools - Dynamic Entry Point
+"""Web Tools - Dynamic Entry Point
 
 This module auto-discovers all tool functions in the web_tools folder.
 NO Ollama dependencies - all tools are pure functions.
@@ -14,8 +13,7 @@ logger = logging.getLogger("COOLEMS.Tools.Web")
 
 
 class WebTools:
-    """
-    Dynamic web tools wrapper - auto-discovers ALL functions in this folder.
+    """Dynamic web tools wrapper - auto-discovers ALL functions in this folder.
     Each tool function remains in its own file with its __tool_description__.
     This class only provides discovery and access - no function logic here.
     """

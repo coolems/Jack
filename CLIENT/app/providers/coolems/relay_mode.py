@@ -283,16 +283,12 @@ async def switch_model_websocket(provider, model_filename: str):
     """Switch model on remote server via web relay.
 
     Two-phase approach (all budgets from CLIENT config - single source of truth):
-      Phase 1 — send the command inside a bounded window (MODEL_SWITCH_PHASE1_TIMEOUT).
-                If the SERVER answers quickly we get its result; if it drops the
-                connection or stays silent while shutting down for the reload, that is
-                EXPECTED and we simply move to Phase 2.
-      Phase 2 — silently poll health + verify correct model loaded until
                 MODEL_SWITCH_MAX_WAIT_SEC. (Periodic "waiting" progress lines are logged by
                 agent.py's broadcaster so there is exactly ONE progress line per interval.)
 
-    NOTE: All UI broadcasts happen in agent.py on the main event loop.
-          This function only handles server communication and logs one clean line per state change.
+    All UI broadcasts happen in agent.py on the main event loop.
+          This function only handles server communication and logs one clean line per state
+          change.
     """
     import websockets
     import time as _time

@@ -27,19 +27,15 @@ def get_shared_utils_source(tools_dir):
 def get_all_shared_sources(tools_dir):
     """Read ALL shared module sources needed by CLIENT tools.
 
-    Returns a dict mapping module keys to source code strings.
-    Keys use dot notation for subpackages (e.g., 'web_interact.shared_instance').
-
-    This replaces the legacy single-string shared_utils_source with a proper
-    multi-module approach so that subpackage modules (WebInteract, shared_instance)
-    are available on CLIENT via sys.modules['tools.web_interact'] etc.
+    Returns a dict mapping module keys to source code strings. Keys use dot notation for
+    subpackages (e.g., 'web_interact.shared_instance').
 
     Order of installation matters for circular dependencies:
       1. Core top-level modules first (utils, path_guard, ssrf_defense)
       2. Subpackage __init__.py files second
       3. Subpackage child modules last
 
-    The CLIENT's install_shared_modules() handles ordering internally.
+    The CLIENT's install_shared_modules handles ordering internally.
     """
     sources = {}
 

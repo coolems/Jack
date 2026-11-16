@@ -1,5 +1,4 @@
-"""
-Payload builder for llama.cpp /v1/chat/completions requests.
+"""Payload builder for llama.cpp /v1/chat/completions requests.
 
 OPTIMIZED FOR QWEN3.6 — Based on official Qwen3.6 recommendations from Unsloth/Qwen docs:
 - top_p (nucleus sampling): 0.8 — Official default for general tasks
@@ -30,24 +29,8 @@ def build_llama_payload(
     min_p: float = 0.0,
     presence_penalty: float = 0.0,
 ) -> Dict:
-    """
-    Build an OpenAI-compatible /v1/chat/completions payload with official
+    """Build an OpenAI-compatible /v1/chat/completions payload with official
     Qwen3.6 recommended sampling parameters.
-
-    Args:
-        model: Model name/ID to use.
-        messages: List of message dicts with 'role' and 'content'.
-        stream: Whether to stream the response.
-        temperature: Sampling temperature (0.0-2.0). Defaults to config LLAMA_SERVER_TEMP.
-        tools: Optional list of tool definitions for native tool calling.
-        max_tokens: Maximum tokens to generate. Defaults to config LLAMA_SERVER_MAX_NEW_TOKENS.
-        top_p: Nucleus sampling threshold (0.0-1.0, default 0.8 per Qwen3.6 docs).
-        top_k: Top-k sampling limit (>=0, default 20 per Qwen3.6 docs).
-        min_p: Minimum probability ratio (0.0-1.0, default 0.0 per Qwen3.6 docs).
-        presence_penalty: Penalty for repeated tokens (0.0-2.0, default 0.0 to prevent workflow abandonment).
-
-    Returns:
-        Dict ready to send as JSON to /v1/chat/completions.
     """
     # Use config defaults if not explicitly overridden
     if temperature is None:

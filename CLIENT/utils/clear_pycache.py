@@ -1,5 +1,4 @@
-"""
-Clear all Python bytecode cache (.pyc files and __pycache__ directories).
+"""Clear all Python bytecode cache (.pyc files and __pycache__ directories).
 This ensures we rebuild everything from source on server startup.
 """
 import shutil

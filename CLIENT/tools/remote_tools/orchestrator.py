@@ -1,10 +1,10 @@
 """RemoteToolOrchestrator - drop-in replacement for ToolOrchestrator.
 
 Tool source is fetched from the SERVER on demand over WebSocket; the CLIENT starts with
-ZERO tools and builds them in memory. Same public interface, execution stays local:
 lazy fetch on the first get_ollama_tools(), source per tool, compiled with working_root
 injected. Shared modules become a 'tools' namespace package in sys.modules so sibling
-imports resolve, and the SERVER's shared_deps / config_constants reach compile_tool()."""
+imports resolve, and the SERVER's shared_deps / config_constants reach compile_tool().
+"""
 
 import asyncio
 import inspect
@@ -432,10 +432,11 @@ class RemoteToolOrchestrator:
         """Run a python_exec tool call with the chat's relay context registered.
 
         tools.exec_tools.python_exec reads it (threading.local on a sys.modules anchor) to relay
-        out-of-sandbox socket attempts to the UI approval card. Set/restored on THIS thread -
+        out-of-sandbox socket attempts to the UI approval card. Set/restored on THIS thread
         sync calls run via asyncio.to_thread, so chats never cross wires; *loop* must be captured
         on the event-loop thread first. Missing args -> no context. *cycle* is this turn's
-        CycleRecorder, so relay cards become its rows."""
+        CycleRecorder, so relay cards become its rows.
+        """
         import sys as _sys, types as _types, threading as _threading
 
         key = "_coolems_pyexec_context"

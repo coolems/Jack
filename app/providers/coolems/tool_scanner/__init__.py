@@ -1,36 +1,26 @@
-"""Tool scanner package -- AST-based tool definition extraction + source code serving.
+"""Tool scanner package -- AST tool-definition extraction + source code serving.
 
-Split from the original single-file tool_scanner.py (839 lines) on 2026-09-07 into
-small, focused modules for easier maintenance and debugging:
+One concern per module:
+    log.py                       package logger
+    constants.py                 EXCLUDED_TOOL_DIRS / SKIP_FILES
+    paths.py                     _server_root() path helper
+    node_to_python.py            _ast_node_to_python (AST -> Python object)
+    dict_end_line.py             _find_dict_end_line (string-aware brace matching)
+    extract_tool_ast.py          _extract_ollama_tool_ast (__tool_description__)
+    build_def_from_signature.py  _build_def_from_signature (signature fallback)
+    scan.py                      get_client_tools_dir / scan_tool_definitions
+    shared_sources.py            _read_text / get_shared_utils_source / get_all_shared_sources
+    framework_files.py           get_framework_sources (app.providers.* delivery)
+    sha_prefix.py                _sha_prefix (integrity hashing primitive)
+    shared_hashes.py             get_shared_hashes (hashes of all delivered modules)
+    dna_data_files.py            get_dna_data_files (DNA JSON state files)
+    same_package_imports.py      _find_same_package_imports ('from .module import X')
+    tool_source.py               _locate_tool_file / get_tool_source_code(_with_deps)
+    config_constants.py          extract_config_constants (config -> CLIENT constants)
 
-    log.py                     package logger (same name as before)
-    constants.py               EXCLUDED_TOOL_DIRS / SKIP_FILES
-    paths.py                   _server_root() path helper
-    node_to_python.py          _ast_node_to_python (AST -> Python object)
-    dict_end_line.py           _find_dict_end_line (string-aware brace matching)
-    extract_tool_ast.py        _extract_ollama_tool_ast (__tool_description__ extraction)
-    build_def_from_signature.py _build_def_from_signature (signature fallback def builder)
-    scan.py                    get_client_tools_dir / scan_tool_definitions
-    shared_sources.py          _read_text / get_shared_utils_source / get_all_shared_sources
-    framework_files.py         get_framework_sources (app.providers.* delivery)
-    sha_prefix.py              _sha_prefix (integrity hashing primitive)
-    shared_hashes.py           get_shared_hashes (hashes for all delivered modules)
-    dna_data_files.py          get_dna_data_files (DNA JSON state files)
-    same_package_imports.py    _find_same_package_imports ('from .module import X' detection)
-    tool_source.py             _locate_tool_file / get_tool_source_code / get_tool_source_code_with_deps
-    config_constants.py        extract_config_constants (config/config.py -> CLIENT constants)
-
-PUBLIC NAMES are re-exported here, so existing imports keep working:
-    from .tool_scanner import scan_tool_definitions  # etc.
-
-The private helpers listed above (_server_root, _ast_node_to_python, _find_dict_end_line,
-_extract_ollama_tool_ast, _build_def_from_signature, _read_text, _locate_tool_file,
-_find_same_package_imports, logger) are NOT re-exported: every sibling module imports
-them from its own source module (e.g. ``from .log import logger``), and no code outside
-this package ever reaches for them through the facade. Re-exporting them here was dead
-weight -- a name that nothing reads. ``_sha_prefix`` IS re-exported because
-app/providers/coolems/direct_ws/tool_code_handler.py imports it from the package
-(``from ..tool_scanner import _sha_prefix``) for the integrity hash of delivered source.
+Public names are re-exported here so existing imports keep working. Private helpers are
+not: each sibling imports them from its own module and nothing outside the package reads
+them - except _sha_prefix, needed by direct_ws/tool_code_handler.py for integrity hashes.
 """
 
 from .config_constants import extract_config_constants

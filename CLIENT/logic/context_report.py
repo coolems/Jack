@@ -1,5 +1,4 @@
-"""
-Context-budget diagnostics for the agentic loop (2026-11-07).
+"""Context-budget diagnostics for the agentic loop.
 
 WHY THIS EXISTS
     The context guardian fired repeatedly ("97%, injecting finish-current-work")
@@ -17,6 +16,7 @@ CONTRACT
     Pure text building - NO mutation of messages, NO trimming, NO provider call.
     Every helper is defensive: a bad message dict degrades to a placeholder line
     instead of raising. Logging must never break the loop.
+
 """
 
 import json
@@ -105,11 +105,10 @@ def role_histogram(messages: List[Dict]) -> str:
 def protected_breakdown(messages: List[Dict]) -> str:
     """The block the trimmer can NEVER remove - the usual cause of a stuck limit.
 
-    Index 0 (system prompt), any `_protect` message (current user prompt), and any
-    index the caller passed in `protected_ids` are unremovable. Since 2026-11-08 the
-    CURRENT LOOP (everything appended after the protected prompt) is unremovable too -
-    it is the AI's working context. When these alone exceed the budget,
-    safe_trim_history() removes nothing and the guardian fires - this block is what proves it.
+    Index 0 (system prompt), any `_protect` message (the current user prompt) and any index in
+    `protected_ids` are unremovable. Everything appended after the protected prompt is the
+    AI's working context and is unremovable too. When those alone exceed the budget,
+    safe_trim_history() removes nothing and the guardian fires - this block proves it.
     """
     lines = []
     total = 0

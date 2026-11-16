@@ -1,8 +1,7 @@
 """Public entry point: handle one direct WS client connection.
 
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 121-175).
-This function keeps exactly one job: authenticate, then run the message loop;
-disconnect cleanup (stop events + conn_tracker) happens in its finally-block.
+One job: authenticate, then run the message loop. Disconnect cleanup (stop events +
+conn_tracker) happens in the finally block.
 """
 
 from ..connection_enforcement import conn_tracker
@@ -16,11 +15,11 @@ async def handle_direct_ws_client(ws, server_provider):
 
     Requires authentication as first message: {"type":"auth","api_key":"..."}
     Rejects unauthenticated clients immediately. Enforces profile-based permissions.
-    
-    CONNECTION ENFORCEMENT (Fix #2):
+
+    CONNECTION ENFORCEMENT (#2):
         - Checks max_connections limit per API key during auth
         - Rate-limits chat requests using token-bucket algorithm per API key
-    
+
     On disconnect, sets stop events for all active conversations belonging to this client
     so the server aborts generation on llama.cpp side (no orphaned responses).
     """

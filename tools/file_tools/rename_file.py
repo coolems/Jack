@@ -37,25 +37,12 @@ logger = logging.getLogger("COOLEMS.Tools.Files")
 
 
 def rename_file(old_filename: str, new_filename: str, path: str = "") -> str:
-    """
-    Rename a file.
-
-    SECURITY RULE - CRITICAL:
+    """SECURITY RULE - CRITICAL:
         * old_filename / new_filename = JUST THE FILE NAME only (e.g. 'old.py' -> 'new.py'). NO slashes allowed!
         * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
         * To rename 'local_ai/CLIENT/config/old.py':  old_filename='old.py', new_filename='new.py', path='local_ai/CLIENT/config'
-
-    SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
+    All paths are locked inside working_root. Path traversal via '..' is blocked.
               Filenames with embedded separators or traversal sequences are rejected.
-
-    Args:
-        old_filename: Current file name only (no path). NEVER include '/' or '\\'.
-        new_filename: New file name only (no path). NEVER include '/' or '\\'.
-        path: Directory path only (no filename). Relative resolved against working_root.
-              Empty = working_root/. Use '.' or 'root' for work folder.
-
-    Returns:
-        Status message.
     """
     logger.info(f"[RENAME] Renaming '{old_filename}' to '{new_filename}' in '{path}'")
 

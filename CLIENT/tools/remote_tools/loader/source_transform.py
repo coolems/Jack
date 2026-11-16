@@ -1,32 +1,23 @@
-"""Source transformation -- rewrites delivered tool source for exec() execution.
+"""Source transformation -- rewrites delivered tool source for exec execution.
 
-Delivered tools are written as if they lived inside a real 'tools' package on disk
+Delivered tools are written as if they lived in a real 'tools' package on disk
 ('from ..utils import X', 'from .shared_instance import Y', ...). On the CLIENT that
-package only exists in sys.modules, built by shared_modules.py -- so every internal
-import form is rewritten into plain assignments against symbols that are injected
-into the exec globals at compile time (see globals_builder.py).
+package exists only in sys.modules (built by shared_modules.py), so each import form is
+rewritten into plain assignments against symbols injected into the exec globals at
+compile time (see globals_builder.py). Steps run in this order; each owns only its forms:
+  1. from ..utils import X           -> X = utils.X        (multi-dot relative)
+  2. from . import Name as Alias     -> Alias = Name       (bare parent package)
+  3. from .module import (...)       -> pass               (same-package, multi-line)
+  4. from .module import X           -> pass               (plain name: already injected)
+     from .module import X as Y      -> Y = X              (an alias must stay bound)
+  5. from tools.XXX(.YYY) import Z   -> Z = XXX_YYY.Z      (absolute internal, dotted OK)
+  6. import tools.XXX                -> neutralized        (module is in exec globals)
+  7. from utils.XXX import Y         -> Y = XXX.Y          (shared subpackage modules)
+  8. from config import ...          -> pass               (constants injected pre-compile)
+  9. def f(self, ...)                -> def f(...)         (legacy 'self' cleanup)
 
-The pipeline is a sequence of small, independently testable steps. Order matters and
-is documented per step; each step only touches the import forms it owns:
-
-  1.  from ..utils import X            -> X = utils.X        (multi-dot relative)
-  2.  from . import Name as Alias      -> Alias = Name       (bare parent-package)
-  3.  from .module import (...)        -> pass               (same-package, multi-line)
-  4.  from .module import X            -> pass               (same-package single-line plain name;
-                                                              symbol already in injected globals -- a
-                                                              self-assignment here would UnboundLocalError
-                                                              inside function bodies, 2026-08-29 fix)
-       from .module import X as Y      -> Y = X              (alias bound to the injected original
-                                                              name -- 'pass' left aliases unbound and
-                                                              crashed browser_screenshot, 2026-09-14 fix)
-  5.  from tools.XXX(.YYY) import Z    -> Z = XXX_YYY.Z      (absolute internal, dotted OK)
-  6.  import tools.XXX                 -> # neutralized       (module is in exec globals)
-  7.  from utils.XXX import Y          -> Y = XXX.Y          (shared subpackage modules)
-  8.  from config import ...           -> pass               (constants injected at compile time)
-  9.  def f(self, ...)                 -> def f(...)         (legacy 'self' cleanup)
-
-Every rewrite PRESERVES the original line's indentation (anchored leading-whitespace group regexes),
-which is what keeps function-body imports valid after expansion into multiple lines.
+Every rewrite keeps the original line's indentation (anchored leading-whitespace
+regexes), which is what keeps function-body imports valid after expansion.
 """
 
 import logging
@@ -106,9 +97,12 @@ def _strip_multiline_paren_imports(source_code: str, pattern: str, replacement: 
 def _flatten_multi_dot_paren_imports(source_code: str) -> str:
     """Collapse a multi-line parenthesized multi-dot import to one line.
 
-    'from ..utils import (\n A,\n B as C,\n)' becomes
+    'from ..utils import (
+ A,
+ B as C,
+)' becomes
     'from ..utils import A, B as C' -- after which the line-based rewrite below can
-    handle it like any single-line form. FIX (2026-10-09): without this, step 1's
+    handle it like any single-line form. without this, step 1's
     regex matched only the opening line and rewrote it to '( = utils.(', a syntax
     error that made every tool carrying this import form (write_file.py) fail to
     compile on the CLIENT while working fine in the SERVER workspace.
@@ -145,8 +139,8 @@ def _step_multi_dot_relative(source_code: str) -> str:
     Multi-line parenthesized forms are flattened to a single line first (see
     _flatten_multi_dot_paren_imports), then everything is processed LINE BY LINE
     (not one global regex) so that when one import line expands into several
-    assignment lines, indentation is always taken from THIS line -- this fixed
-    position-tracking bugs with multi-name imports inside function bodies.
+    assignment lines, indentation is always taken from THIS line. A single global
+    regex cannot track position for multi-name imports inside function bodies.
     """
     source_code = _flatten_multi_dot_paren_imports(source_code)
     pattern = _re.compile(r'^(\s*)from\s+([.]{2,})([a-zA-Z_][\w.]*)\s+import\s+(.+)$')
@@ -171,12 +165,10 @@ def _step_multi_dot_relative(source_code: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_bare_parent_import(source_code: str) -> str:
-    """Rewrite 'from . import Name as Alias' into 'Alias = Name'.
+    """Rewrite 'from . import Name as Alias' into a plain alias assignment.
 
-    The bare name is resolved from exec globals, where shared_modules.py has already
-    injected the sibling package's public symbols. MUST run before step 4 -- its regex
-    matches a dot followed by whitespace, which 'from .module import X' would not hit,
-    but keeping the order stable avoids any overlap surprises.
+    A bare parent-package import has no module name, so the target is the symbol already
+    injected for the package's own facade; the alias is bound to it directly.
     """
     pattern = _re.compile(r'^(\s*)from\s+\.\s+import\s+(.+)$')
     out_lines: list[str] = []
@@ -217,28 +209,13 @@ def _step_same_package_multiline(source_code: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _step_same_package_single(source_code: str) -> str:
-    """Rewrite 'from .XXX import YYY' for exec() execution.
+    """Rewrite 'from .XXX import YYY' for exec execution.
 
-    The imported symbols are ALREADY present in exec_globals (injected by
-    globals_builder from the installed shared modules / merged by install_shared_deps),
-    so plain names need no import statement at runtime -- they become an indented
-    'pass'. An ALIAS ('from .XXX import YYY as ZZZ') is different: neutralizing it to
-    'pass' leaves the alias name unbound -> NameError on every call. That exact bug hit
-    browser_screenshot.py on 2026-09-14 ('name _ensure_page is not defined': the tool used
-    'from .shared_instance import ensure_page as _ensure_page'). Aliases are now bound with
-    an explicit assignment against the injected original name: 'ZZZ = YYY'. The RHS resolves
-    through module globals (the injected symbol), so this is safe even inside function
-    bodies -- the same pattern step 2 uses for bare parent-package imports.
-
-    FIX (2026-08-29): plain-name self-assignments ('X = X') remain forbidden: that form is
-    fatal when the import sits INSIDE A FUNCTION BODY (Python treats X as local for the whole
-    function and reads the unbound local -> UnboundLocalError on every call). Plain names
-    therefore stay neutralized to 'pass'; only ALIASES get an assignment, and their RHS
-    references a DIFFERENT name that is never local.
-
-    History: 2026-01-31 switched comments -> self-assignments; 2026-08-29 showed the
-    plain-name assignment form unsound for function-body imports (neutralization);
-    2026-09-14 added alias binding after the browser_screenshot NameError incident.
+    The imported symbols are ALREADY in exec_globals (injected by globals_builder from the
+    installed shared modules, merged by install_shared_deps), so a plain name needs no
+    import statement and becomes an indented 'pass'. An ALIAS is different: neutralizing
+    'from .XXX import YYY as ZZZ' to 'pass' leaves ZZZ unbound -> NameError on every call,
+    so aliases become 'ZZZ = YYY'.
     """
     def _replace(match: _re.Match) -> str:
         leading_ws = match.group(1)
@@ -264,9 +241,9 @@ def _step_same_package_single(source_code: str) -> str:
 def _step_absolute_tools_import(source_code: str) -> str:
     """Rewrite 'from tools.utils import X' / 'from tools.a.b import Y' to module refs.
 
-    The dotted tail is flattened with underscores ('web_interact.shared_instance' ->
-    'web_interact_shared_instance') because globals_builder.py registers subpackage
-    modules under exactly that short name in exec_globals (2026-01-31 fix).
+        The dotted tail is flattened with underscores ('web_interact.shared_instance' ->
+        'web_interact_shared_instance') because globals_builder.py registers subpackage
+        modules under exactly that short name in exec_globals.
     """
     def _replace(match: _re.Match) -> str:
         leading_ws, module, names_str = match.groups()
@@ -290,8 +267,8 @@ def _step_absolute_tools_import(source_code: str) -> str:
 def _step_import_tools(source_code: str) -> str:
     """Neutralize bare 'import tools.XXX' statements.
 
-    The module object is injected into exec globals at compile time, so the import
-    itself is replaced by a marker comment (nothing to bind on the CLIENT side).
+    The module object is injected into exec globals at compile time, so the import is
+    replaced by a marker comment - there is nothing to bind on the CLIENT side.
     """
     def _replace(match: _re.Match) -> str:
         return f"# Absolute tools import (module injected): import tools.{match.group(2)}"
@@ -338,7 +315,7 @@ def _strip_config_imports(source_code: str) -> str:
     config_constants in exec_globals (globals_builder.py). Multi-line parenthesized
     forms are handled first, then single lines; both become an indented 'pass' so a
     stripped import that was the ONLY statement of a try/except body cannot leave an
-    empty block behind (2026-07-18 fix -- a bare comment would be a SyntaxError).
+    empty block behind (a bare comment would be a SyntaxError).
     """
     source_code = _strip_multiline_paren_imports(
         source_code,

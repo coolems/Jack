@@ -1,31 +1,24 @@
-"""Tests: the SERVER/CLIENT shared copies must stay byte-identical (2026-11-14, code review #2).
+"""Tests: the SERVER/CLIENT shared copies must stay byte-identical.
 
-Four modules exist twice on purpose - the SERVER and the CLIENT each need their own
-importable copy, so they cannot be merged into one file:
-
-  app/provider_manager.py                 <-> CLIENT/app/provider_manager.py
-      Chicken-and-egg: the CLIENT imports it at boot, before any WebSocket exists, so
-      it cannot be delivered over the wire. Same pattern as ssl_pinning.py.
-  app/providers/coolems/ssl_pinning.py    <-> CLIENT/app/providers/coolems/ssl_pinning.py
-      TLS trust is decided by an exact SHA-256 fingerprint; both ends must apply the
-      identical policy or one side accepts what the other rejects.
-  tools/agent_prompt/get_agent_system_prompt.py
-                          <-> CLIENT/app/prompts/get_agent_system_prompt.py
+Four modules exist twice on purpose - SERVER and CLIENT each need their own importable
+copy, so they cannot be merged into one file:
+  app/provider_manager.py  <->  CLIENT/app/provider_manager.py
+      the CLIENT imports it at boot, before any WebSocket exists, so it cannot be
+      delivered over the wire.
+  app/providers/coolems/ssl_pinning.py  <->  CLIENT/app/providers/coolems/ssl_pinning.py
+      TLS trust is an exact SHA-256 fingerprint; both ends must apply the identical policy
+      or one side accepts what the other rejects.
+  tools/agent_prompt/get_agent_system_prompt.py  <->  CLIENT/app/prompts/get_agent_system_prompt.py
   tools/agent_prompt/get_time_awareness_instruction.py
-                          <-> CLIENT/app/prompts/get_time_awareness_instruction.py
-      The prompt contract both sides build the conversation from.
+      <->  CLIENT/app/prompts/get_time_awareness_instruction.py
+      the prompt contract both sides build the conversation from.
 
-What must hold is that the two copies never drift apart: editing one without the other
-gives SERVER and CLIENT different behavior on the same wire. Same convention as
-test_dna_json_copies_identical.py, which covers the three DNA JSON copies.
-
-PROTOCOL_VERSION parity is also checked here, but only as a tripwire: the real
-enforcement is runtime, not this test - app/providers/coolems/direct_ws/ws_auth.py
-closes the socket on a mismatch and CLIENT/app/providers/coolems/__init__.py raises
-ConnectionError. The version is read from the module source with AST (no import), so
-this test has no config/settings side effects.
-
-Run:  python -m pytest tools/test_tools/test_shared_copies_identical.py -v
+Editing one copy without the other gives SERVER and CLIENT different behaviour on the
+same wire. Same convention as test_dna_json_copies_identical.py.
+PROTOCOL_VERSION parity is checked here as a tripwire only - the real enforcement is
+runtime: ws_auth.py closes the socket on a mismatch and the CLIENT raises ConnectionError.
+The version is read from module source with AST (no import), so this test has no config
+side effects.
 """
 
 import ast

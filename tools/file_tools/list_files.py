@@ -35,7 +35,7 @@ def list_files(path: str = "") -> str:
         * To list 'local_ai/tools/file_tools':  path='local_ai/tools/file_tools'
         * To list working_root directly:  path='' or path='.' or path='root'
 
-    SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
+    All paths are locked inside working_root. Path traversal via '..' is blocked.
 
     Args:
         path: Directory path only (no filename). Relative paths resolved against working_root.

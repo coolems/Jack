@@ -228,7 +228,7 @@ def is_safe_path(
     Returns ``(True, abs_path)`` or ``(False, error_message)``.
     When ``for_write=True`` the check is stricter (must be inside working_root).
 
-    CRITICAL FIX: Relative paths are now resolved against working_root first,
+    Relative paths are now resolved against working_root first,
     NOT against the process CWD. This prevents attacks where CWD != working_root.
     """
     from .working_root import get_working_root

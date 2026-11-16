@@ -1,9 +1,7 @@
-"""Command line argument parser for COOLEMS CLIENT.
+"""Command line argument parser for the COOLEMS CLIENT.
 
-Parses port and provider arguments from sys.argv.
-
-NOTE: The old forced-prompt CLI task mode (prompt='...' mode=...) was removed -
-tasks are only run through the web UI now. See plan_20260823_1133.md in working_root.
+Parses port and provider arguments from sys.argv. Tasks run only through the web UI; the
+parser starts the server, it does not execute a prompt.
 """
 
 import sys

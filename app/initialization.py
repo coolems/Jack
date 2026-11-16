@@ -1,11 +1,10 @@
-"""
-Server provider initialization module.
+"""Server provider initialization module.
 
 SERVER ONLY — Supports 'llama' as local backend via coolems_server.
 Handles initialization for:
   - coolems_server  : Headless WebSocket brain relay (uses SERVER_BACKEND)
   - llama           : Direct llama.cpp backend (legacy mode)
-  - strata          : Direct Strata endpoint (2026-11; SERVER_BACKEND = "strata" picks the
+  - strata          : Direct Strata endpoint (SERVER_BACKEND = "strata" picks the
                       same engine when the relay wrapper is used, which is the normal mode)
 """
 
@@ -75,24 +74,16 @@ def _resolve_ocr_models_from_profiles() -> list:
 
 
 async def init_provider_and_app(provider_name: str, api_url: str):
-    """
-    Initialize the AI provider for server operation.
+    """Boot the provider, agent DNA and app wiring in one pass.
 
-    SERVER ONLY — Supports 'llama' (direct), or 'coolems_server' (relay with configurable backend).
-
+    Async: the boot sequence runs inside ONE top-level asyncio.run(_boot()) in code.py.
     Args:
-        provider_name: "llama" or "coolems_server"
-        api_url: The API endpoint URL for the local LLM backend
-
-    (2026-09 threadless refactor): async def - the boot sequence runs inside ONE top-level
-        asyncio.run(_boot()) in code.py before the relay loop starts. start_server() and
-        health_check() are awaited on that same loop; no threads, no nested loops.
-
-        Returns:
-        Tuple of (provider, tool_orchestrator, agent, model_name)
-        
-        Note: For coolems_server headless mode, tool_orchestrator and agent are None.
-              For llama mode with UI, these are initialized normally.
+        provider_name: resolved provider ('coolems_server' / 'coolems_client').
+        api_url: backend URL for the provider.
+        agent: existing Agent instance, or None to build one.
+    Returns:
+        (provider, agent) ready for the server.
+    Note: for coolems_server headless mode, tool_orchestrator and agent are None.
     """
 
     from app.providers.llama.model_persistence import get_loaded_model_name as _get_last_model_name
@@ -169,8 +160,7 @@ async def init_provider_and_app(provider_name: str, api_url: str):
 
 
 def resolve_provider_and_url(cli_provider: str = None):
-    """
-    Resolve the final provider name and API URL for server operation.
+    """Resolve the final provider name and API URL for server operation.
 
     SERVER ONLY — Supports 'llama' (direct), or 'coolems_server' (relay).
     When coolems_server is used, config.SERVER_BACKEND determines the local LLM engine.

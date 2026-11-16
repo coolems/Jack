@@ -1,5 +1,4 @@
-"""
-Logging configuration for COOLEMS CLIENT.
+"""Logging configuration for COOLEMS CLIENT.
 
 Provides:
 - Rotating file handlers (10 MB max, 3 backups) to prevent log bloat
@@ -13,14 +12,11 @@ Log Files:
     logs/errors.log   - ERROR+ only, always active
 
 Usage:
-    # At startup:
     from app.logging_config import setup_logging
     logger = setup_logging()
 
-    # To go verbose for the whole COOLEMS subtree:
     logging.getLogger("COOLEMS").setLevel(logging.DEBUG)
 
-    # Third-party frame dumps stay pinned; opt in per-library if needed:
     logging.getLogger("websockets").setLevel(logging.DEBUG)
 """
 
@@ -40,8 +36,7 @@ class Colors:
 
 
 class ColoredFormatter(logging.Formatter):
-    """
-    Formatter that adds color to log messages based on severity.
+    """Formatter that adds color to log messages based on severity.
 
     On Windows (no ANSI support), uses text prefixes instead of colors.
     On Unix/Linux/macOS, uses ANSI color codes.
@@ -86,28 +81,13 @@ BACKUP_COUNT: int = 3                   # Keep 3 rotated backups (~40 MB total m
 
 
 def setup_logging() -> logging.Logger:
-    """
-    Configure logging for COOLEMS CLIENT. Returns the main COOLEMS logger.
-
+    """Configure logging for COOLEMS CLIENT. Returns the main COOLEMS logger.
     Sets up:
     - Rotating file handler for all logs (10 MB max, 3 backups)
     - Rotating file handler for errors only
     - ONE colored console handler on the main COOLEMS logger
     - COOLEMS at INFO; third-party WebSocket frame dumps pinned to INFO
-    - SensitiveLogFilter on file + console handlers (2026-10-01 hardening)
-
-    Child loggers (COOLEMS.WebSocket, COOLEMS.Provider, COOLEMS.Agent,
-    COOLEMS.Database, COOLEMS.Tools.*) are deliberately left at NOTSET so they
-    inherit COOLEMS's level through propagation. Setting COOLEMS to DEBUG makes
-    the whole subtree verbose with no per-module plumbing; an explicit
-    setLevel() on a child would FREEZE it and break that.
-
-    (2026-11-07 simplification) The previous version returned a 5-tuple of
-    per-module loggers that nothing consumed (code_client.py unpacked them and
-    discarded them; app/websocket/handler.py creates its own ws_logger), and the
-    four child setLevel(INFO) calls froze those subtrees so verbose logging could
-    never reach them. utils/logging_utils.py, the only "verbose toggle", had zero
-    production callers and is gone. Contract now matches SERVER/app/logging_config.py.
+    - SensitiveLogFilter on file + console handlers
     """
     os.makedirs(_LOGS_DIR, exist_ok=True)
 

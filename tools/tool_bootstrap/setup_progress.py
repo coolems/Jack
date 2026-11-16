@@ -1,22 +1,22 @@
-"""Live setup progress tracking for a tool runtime (2026-09-21).
+"""Live setup progress tracking for a tool runtime.
 
 The long first-run steps (venv creation, pip install of multi-GB wheels, model weight
-downloads by the tool itself) are TRACKED in a tiny JSON file inside the runtime folder:
 <runtime_dir>/.setup_progress.json. It is updated live while each subprocess runs and read
 by the CLIENT's GET /api/setup/status endpoint so the UI can show a "Setup / Downloads"
 section (per-pip-package status; per-model-file size, downloaded bytes, speed and ETA).
 
 DESIGN RULES:
-  * The state file is INFORMATIONAL ONLY. Every tracking call is wrapped in try/except -
+  * The state file is INFORMATIONAL ONLY. Every tracking call is wrapped in try/except
     a progress failure must NEVER break or delay the actual setup.
   * Writes are atomic (tmp + os.replace) so a concurrent reader never sees a torn file.
   * A stage row exists in the file ONLY when that work actually ran this setup call
-    (2026-09-24): an already-existing venv or a satisfied .deps_installed marker writes NO
-    row, so a fully-cached machine shows nothing in the UI's Setup/Downloads section -
+    an already-existing venv or a satisfied .deps_installed marker writes NO
+    row, so a fully-cached machine shows nothing in the UI's Setup/Downloads section
     only a first run (create / install / download) does.
 
 State shape (all stages optional - absent means "not started/not applicable"): see the
 module docstring of tools/tool_bootstrap.py for the full schema.
+
 """
 
 import hashlib
@@ -93,19 +93,16 @@ class SetupProgress:
     def begin_run(self) -> None:
         """Claim this run and retire rows a killed run left marked 'running'.
 
-        A crash / power loss leaves the stage that was mid-flight with status 'running'
-        forever, and the UI treats 'running' as live: the card stays attached and polls
-        frozen numbers indefinitely (field case 2026-10-23: a 17 KB state file left 'venv'
-        and 'model' running for hours, showing 14.9 GB of 57.7 GB). A new run owns the
-        file (its generation is newer), so those rows cannot belong to live work any more:
-
+        A crash leaves the mid-flight stage 'running' forever and the UI treats that as
+        live: the card stays attached and polls frozen numbers. A new run owns the file
+        (its generation is newer), so those rows cannot be live work:
           * pip/venv rows are removed - they carry nothing worth resuming;
-          * the model row keeps its FILE ROWS (that is the resume data
+          * the model row keeps its FILE ROWS (the resume data
             generate_image._ensure_model_cached re-adopts) but loses its status, so the
             UI hides it until the first real progress event rewrites it.
 
-        Writes ONLY when a stale row was actually found, so a fully-cached machine still
-        produces no progress file and no UI card (the 2026-09-24 rule).
+        Writes only when a stale row was found, so a fully-cached machine still produces
+        no progress file and no UI card.
         """
         try:
             state = self.load()
@@ -132,7 +129,7 @@ class SetupProgress:
 
         Without this, a RETRY after an interrupted run would still show the previous
         attempt's 'done' rows while pip is actually installing again - exactly the
-        'UI says completed but venv is still installing' confusion (2026-09-21 field fix).
+        'UI says completed but venv is still installing' confusion (field).
         *stages* names whose old state to wipe; others are left untouched.
         """
         try:

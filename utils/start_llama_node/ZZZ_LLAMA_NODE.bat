@@ -22,12 +22,12 @@ REM ===========================================================================
 REM ---- venv: create + install once on first run (repo-root venv) -------------
 if not exist "venv\Scripts\python.exe" (
     echo [VENV] First run - creating virtual environment...
-    python -m venv venv
-    if errorlevel 1 (
-        echo [ERROR] Could not create the venv. Install Python 3.10+ and retry.
-        pause
-        exit /b 1
-    )
+    py -3.12 -m venv venv 2>nul
+    if errorlevel 1 py -3 -m venv venv 2>nul
+    if not exist "venv\Scripts\python.exe" python -m venv venv 2>nul
+    if not exist "venv\Scripts\python.exe" goto :no_python
+    venv\Scripts\python.exe -c "import sys;sys.exit(0 if sys.version_info>=(3,12) else 3)"
+    if errorlevel 1 goto :no_python
     call "venv\Scripts\activate.bat"
     pip install -r requirements.txt
 ) else (
@@ -68,3 +68,13 @@ if "%CHOICE%"=="7" exit /b 0
 echo.
 pause
 goto menu
+
+:no_python
+echo.
+echo [ERROR] COOLEMS needs Python 3.12 or newer, and this machine has none.
+echo         1. Open   https://www.python.org/downloads/
+echo         2. Install a 3.12+ Windows installer and tick "Add python.exe to PATH".
+echo         3. Run this file again.
+echo.
+pause
+exit /b 1

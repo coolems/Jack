@@ -34,6 +34,13 @@ DEFAULT_ROLE_NO_KEY: str = "user"
 CLIENT_UI_PORT: int = 8000
 
 
+# --- Proxy Header Trust ---
+# When True, X-Forwarded-For may override the socket address as the client identity
+# (conversations.ip_address = workspace owner). The header is client-controlled, so it
+# is honoured only behind a reverse proxy you trust.
+TRUST_PROXY_HEADERS: bool = False
+
+
 # ============================================================
 # Settings Persistence - MUST be defined BEFORE anything uses it
 # settings.json is the SINGLE SOURCE OF TRUTH for server_address
@@ -213,9 +220,9 @@ def get_server_address_list() -> list[str]:
     """Fresh read of the ordered SERVER failover address list from settings.json.
 
     Index 0 is tried FIRST (put 'localhost:8080' there), the rest only when the previous is
-    unreachable, so the folder is portable across machines. Both shapes are accepted:
     "server_addresses" (preferred) and "server_address"; the list wins and a singular value
-    not already in it is appended."""
+    not already in it is appended.
+    """
     settings = _load_settings()
     addrs = _normalize_server_addresses(settings.get("server_addresses"))
     for a in _normalize_server_addresses(settings.get("server_address")):
@@ -267,8 +274,9 @@ def _resolve_client_server_address() -> str:
     """Resolve the PRIMARY server address from settings.json (SINGLE SOURCE OF TRUTH).
 
     The known-good address when recorded and still listed, else the first entry of
-    get_server_address_list(). Empty/missing -> auto-detect the LAN IP, write it, return it.
-    No env overrides, no fallbacks. Called once at import for boot caching and UI display."""
+    get_server_address_list. Empty/missing -> auto-detect the LAN IP, write it, return it.
+    No env overrides, no fallbacks. Called once at import for boot caching and UI display.
+    """
     import logging
     logger = logging.getLogger("COOLEMS")
 
@@ -333,10 +341,10 @@ WEB_RELAY_UI_ENABLED: bool = False
 
 
 def get_connection_mode() -> str:
-    """'direct' | 'web_relay' - how the CLIENT talks to the SERVER.
+    """Connection mode for the SERVER link ('relay' | 'direct').
 
-    settings.json is the source of truth ('connection_mode'); env vars override for non-UI
-    deploys. A missing/unknown value means direct LAN mode."""
+    settings.json is the source of truth ('connection_mode'); env vars override it.
+    """
     if not WEB_RELAY_UI_ENABLED:
         return "direct"  # hard kill switch - relay option disabled by CLIENT config
 
@@ -351,10 +359,11 @@ def get_connection_mode() -> str:
 
 
 def get_web_relay_address() -> Optional[str]:
-    """Relay address 'host[:port]' from settings.json, or None when not configured.
+    """Host and port of the web relay.
 
-    relay_host + relay_port are the source of truth; COOLEMS_RELAY_HOST/PORT override. A
-    bare host is valid - WEB_RELAY_DEFAULT_PORT applies at connect time."""
+    relay_host + relay_port in settings.json are the source of truth;
+    COOLEMS_RELAY_HOST/PORT env vars override them.
+    """
     host = os.environ.get("COOLEMS_RELAY_HOST", "").strip() or \
         str(_load_settings().get("relay_host") or "").strip()
     if not host:
@@ -757,7 +766,7 @@ def estimate_tokens(text: str) -> int:
 # captures of CONTEXT_WINDOW_TOKENS / MODEL_NAME, which the SERVER rewrites at runtime
 # via apply_auth_info() -- a name imported once at module load would keep the stale value.
 def get_context_window() -> int:
-    """Live read of CONTEXT_WINDOW_TOKENS (SERVER may update it after every auth)."""
+    """Live read of CONTEXT_WINDOW_TOKENS (SERVER may it after every auth)."""
     return CONTEXT_WINDOW_TOKENS
 
 

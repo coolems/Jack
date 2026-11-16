@@ -1,10 +1,4 @@
-"""ocr_request handler: SERVER-side OCR via the local LlamaProvider.
-
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 774-825).
-The model-specific exact prompt format lives in app/providers/llama/ocr.py and
-must stay exactly "Text Recognition:" -- the CLIENT never touches the model.
-Only mechanical change: the llama import gained one dot of relative depth.
-"""
+"""ocr_request handler: SERVER-side OCR via the local LlamaProvider."""
 
 import json
 import os

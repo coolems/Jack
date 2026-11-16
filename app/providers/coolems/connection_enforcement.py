@@ -257,11 +257,13 @@ class TokenBucketLimiter:
                 return False
 
     async def refund(self, api_key: str, max_rate_limit: int) -> None:
-        """Give one token back after a SERVER-SIDE rejection (2026-10 fleet).
+        """Give one token back after a SERVER-SIDE rejection.
 
-        A "server is full" rejection is not the user's fault: the request never ran, so
-        charging the rate limiter for it would penalize a legitimate retry. Capped at the
-        bucket capacity. Best-effort - a missing bucket is a no-op.
+                A "server is full" rejection is not the user's fault: the request never ran, so
+                charging the rate limiter for it would penalize a legitimate retry. Capped at the
+                bucket capacity. Best-effort - a missing bucket is a no-op.
+
+
         """
         async with self._lock:
             bucket = self._buckets.get(api_key)

@@ -1,4 +1,4 @@
-"""Regression tests for python_exec and the file line-ending policy (2026-10-23).
+"""Regression tests for python_exec and the file line-ending policy.
 
 Run with:
     venv\\Scripts\\python.exe -m unittest tools.test_tools.test_python_exec_regressions -v
@@ -7,6 +7,9 @@ These tests exercise the REAL tool (a real child process per call), so they catc
 the exact failure classes that were reported: decorators, future imports, wrong
 traceback line numbers, dropped stderr, line-ending corruption and misleading
 error messages.
+
+
+
 """
 
 import os

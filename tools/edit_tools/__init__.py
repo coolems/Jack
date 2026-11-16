@@ -1,11 +1,12 @@
 """Edit Tools - Dynamic Entry Point
 
-Precise in-place patches for existing files (added 2026-11-06, ported from the deepseek-harness
-`edit` / `str_replace_editor` tools). Each function lives in its own file for maintainability.
+Precise in-place patches for existing files, ported from the deepseek-harness
+`edit` / `str_replace_editor` tools. Each function lives in its own file for maintainability.
 
 Import policy: this module imports ONLY stdlib. A bare 'from . import X' would be shipped to the
 CLIENT as a '__init__' shared_dep and exec'd without the tool's own globals, so keep it import-free
 (the same shape as tools/file_tools/__init__.py).
+
 """
 
 import logging

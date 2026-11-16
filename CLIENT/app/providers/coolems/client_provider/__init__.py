@@ -11,7 +11,6 @@ Web relay mode (Settings UI Connection Mode = "web_relay"):
   CLIENT needs. The home SERVER reaches the same relay itself; no SERVER address is
   used or required by this CLIENT in relay mode.
 
-MODULE SPLIT (2026-10):
   - client_provider/connection_modes.py -> model-switch flag + live connection-mode/address helpers
   - client_provider/ws_connect.py       -> _AccumulatingWS + the fail-closed relay_ws_connect helper
   - client_provider/provider_class.py   -> the CoolemsClientProvider class (thin delegations)

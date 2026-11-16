@@ -1,13 +1,10 @@
-"""
-COOLEMS Pydantic Schemas - Input validation for WebSocket and API endpoints.
-"""
+"""COOLEMS Pydantic Schemas - Input validation for WebSocket and API endpoints."""
 from pydantic import BaseModel, Field, field_validator
 from typing import Any, List, Optional
 
 class WebSocketChatMessage(BaseModel):
-    """
-    Validated schema for incoming WebSocket chat messages from the client.
-    
+    """Validated schema for incoming WebSocket chat messages from the client.
+
     Replaces raw json.loads() + .get() pattern with strict validation.
     """
     

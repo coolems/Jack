@@ -1,12 +1,11 @@
-"""Tests: _sandbox_bootstrap.py must be delivery-context-proof (2026-09-23 fix).
+"""Tests: _sandbox_bootstrap.py must be delivery-context-proof.
 
-The 2026-09-18 split made the module read tools/exec_tools/_sandbox_parts/ at import
-time. That killed python_exec on every CLIENT: the SERVER ships this file as a shared
-dep that the client execs in-memory (no __file__, cwd = CLIENT dir / user working_root),
-where no such folder exists -> FileNotFoundError -> required-dep gate -> tool dead.
+The CLIENT loader execs this file in-memory as a shared dep: no __file__, cwd = the CLIENT
+or user working folder, with no repo folders anywhere up the tree. Any import-time disk
+read of tools/exec_tools/_sandbox_parts/ therefore kills python_exec on the CLIENT.
 
-The fix embeds SANDBOX_BOOTSTRAP as an in-file literal (zero disk I/O at import) and
-keeps _sandbox_parts/ only as a provenance view, pinned here byte-for-byte.
+The module must carry its source as an embedded literal; _sandbox_parts/ is only a
+provenance view, pinned byte-for-byte here.
 
 Run:  python -m pytest tools/test_tools/test_sandbox_bootstrap_embed.py -v
 """

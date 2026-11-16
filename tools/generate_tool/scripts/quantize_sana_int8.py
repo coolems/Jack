@@ -1,72 +1,19 @@
-"""One-time builder: int8-quantized SANA-Sprint diffusers repo (v9, 2026-09-24).
-
+"""One-time builder: int8-quantized SANA-Sprint diffusers repo
 WHY THIS EXISTS
----------------
-The low tier (< 12 GB VRAM) of the generate_image tool used to download NVIDIA's
 bf16 SANA-Sprint repos - the 1.6B one is ~9.7 GB (half of which is the Gemma-2-2B text
 encoder in bf16), the 0.6B one ~7.7 GB. This script builds a drop-in replacement
 diffusers-format folder where every nn.Linear weight (text_encoder + transformer) is
 stored as TRUE int8 tensors with a per-channel scale sidecar:
-
     bf16 1.6B repo  ~9.7 GB   ->   int8 build  ~5-6 GB on disk / download
-    bf16 0.6B repo  ~7.7 GB   ->   int8 build  ~4.5-5 GB (v9 LOW TIER default)
-
     (VAE + tokenizer are copied verbatim at ~1.3 GB - the VAE is the hard floor; Gemma's
     embedding table stays bf16, only nn.Linear weights become int8. The script prints the
     exact final size.)
-
-How it works at runtime (see _dequantize_int8_linears in generate_image.py): the
-worker loads the pipeline through the NORMAL bf16 path (int8 tensors pass through
-from_pretrained uncast) and dequantizes each Linear weight in memory at load time
-(w = w_int * scale, back to bf16). So generation runs on exactly the same bf16
-tensors of the matching bf16 SANA-Sprint - same VRAM peak (0.6B: ~4.3 GB offloaded,
-same speed. The win is purely download size + disk footprint - which is what this
-build optimizes for.
-
-Why NOT bitsandbytes Int8Linear: bnb keeps the ORIGINAL float weights in memory and
-applies int8 math only on-the-fly during forward - its saved state dict serializes
-as float32, i.e. LARGER than bf16. True int8-on-disk requires storing the quantized
-tensors themselves (this script) plus a dequant step at load time (the worker).
-
-WHAT IT DOES
-------------
-1. snapshot_download() of the bf16 source repo into its own HF_HOME cache dir
-   (default: <CLIENT_DIR>/tools/runtimes/generate_tool/hf_cache - same place client
-   weights live; when run outside a client tree, next to the output folder).
-2. Loads text_encoder (Gemma2Model) + transformer (SanaTransformer2DModel), converts
-   every nn.Linear weight to int8 (symmetric per-channel: scale = max|w| / 127), saves
-   the modules back as safetensors with their configs - plus one scales.safetensors
-   sidecar per module holding <param_name>.scale tensors.
-3. Copies everything else VERBATIM: VAE (bf16 - precision-critical and small),
-   tokenizer, scheduler config, model_index.json, README/LICENSE.
-
-OUTPUT LAYOUT (a complete SanaSprintPipeline.from_pretrained() folder)
-----------------------------------------------------------------------
-    <dest>/model_index.json            (unchanged copy)
-    <dest>/text_encoder/  int8 shards + configs + index.json + scales.safetensors
-    <dest>/transformer/   diffusion_pytorch_model.safetensors (int8) + config.json
-                          + scales.safetensors
-    <dest>/vae/           bf16, unchanged
-    <dest>/tokenizer/     unchanged
-    <dest>/scheduler/     unchanged
-
-USAGE
------
-    python quantize_sana_int8.py [--size {1.6|0.6}] [--source REPO] [--dest DIR]
-
-Defaults (per --size): 1.6 -> Sana_Sprint_1.6B_1024px_diffusers / sana_sprint_1.6b_int8
-                        0.6 -> Sana_Sprint_0.6B_1024px_diffusers / sana_sprint_0.6b_int8
-          (dest under <CLIENT_DIR>/tools/runtimes/generate_tool/hf_cache/ - the same place
-           client weights live; COOLEMS_CLIENT_ROOT env var, else repo-relative CLIENT/)
-
-After it finishes: publish <dest> as a Hugging Face model repo (Apache-2.0 base),
-then set the matching constant in tools/generate_tool/generate_image.py
-(_SANA_INT8_06_MODEL_ID for --size 0.6, _SANA_INT8_16_MODEL_ID for 1.6) so the low tier picks it up on its next run.
-
-NOTE ON QUALITY: 2-step distilled models are more quantization-sensitive than
-normal ones. Per-channel int8 of Linear weights dequantizes to a near-bf16 tensor,
-so expected loss is small - but A/B a handful of prompts int8 vs bf16 before
-shipping (the tool reports model_loaded=int8|bf16 in its result JSON for exactly this).
+How it works at runtime (see _dequantize_int8_linears in generate_image.py): the worker
+loads the pipeline through the NORMAL bf16 path (int8 tensors pass through from_pretrained
+uncast) and dequantizes each Linear weight in memory at load time (w = w_int * scale, back
+to bf16). So generation runs on exactly the same bf16 tensors of the matching bf16
+SANA-Sprint - same VRAM peak (0.6B: ~4.3 GB offloaded, same speed. The win is purely
+download size + disk footprint - which is what this build optimizes for.
 """
 
 import argparse

@@ -109,7 +109,7 @@ def app_identity(app_handle: str) -> str:
 def consent_identity(selector) -> str:
     """Canonical consent key for an app selector (name / path / pid / bundle id).
 
-    Both sides - the CLIENT's desktop consent card and the tool that binds the handle -
+    Both sides - the CLIENT's desktop consent card and the tool that binds the handle
     derive the SAME key from the SAME selector, so a grant can only cover the app the
     user was actually shown. Paths are normcase'd (Windows is case-insensitive); a pid
     is keyed as 'pid:<n>' because a bare number could collide with a name.
@@ -240,7 +240,7 @@ def get_snapshot(snapshot_id: str):
 def snapshot_element(snapshot_id: str, element_index: int):
     """Resolve an element index against a live snapshot.
 
-    Returns (element, error). error is a string when the snapshot is gone or the index
+    Returns (element, error). error is a string when the snapshot is unavailable or the index
     is out of range - never an exception, so tools report it as a result.
     """
     snap = get_snapshot(snapshot_id)
@@ -267,17 +267,17 @@ def action_error(error: str) -> dict:
 def target_consent_key(snapshot_id: str = None, window_id: str = None) -> tuple:
     """Consent key of an action target, plus the refusal when it cannot be identified.
 
-    Returns (key, error). One definition for every input tool (click/hover/drag/scroll), so
-    a stale snapshotId and an unregistered windowId get their ACTUAL reason instead of a
-    generic 'not granted':
+        Returns (key, error). One definition for every input tool (click/hover/drag/scroll), so
+        a stale snapshotId and an unregistered windowId get their ACTUAL reason instead of a
+        generic 'not granted':
 
-      * snapshot_id given but gone/superseded  -> SNAPSHOT_INVALIDATED
-      * window_id given but not registered     -> WINDOW_REQUIRED
-      * neither given                          -> NO_TARGET
+          * snapshot_id given but gone/superseded  -> SNAPSHOT_INVALIDATED
+          * window_id given but not registered     -> WINDOW_REQUIRED
+          * neither given                          -> NO_TARGET
 
-    Fail-closed either way: an unidentifiable target has no grant key, so no action can run.
-    Resolving the identity is a registry read, not an action - the grant is still verified
-    against that key before anything is dispatched.
+        Fail-closed either way: an unidentifiable target has no grant key, so no action can run.
+        Resolving the identity is a registry read, not an action - the grant is still verified
+        against that key before anything is dispatched.
     """
     if snapshot_id is not None:
         key = snapshot_consent_key(str(snapshot_id))
@@ -298,8 +298,8 @@ def target_consent_key(snapshot_id: str = None, window_id: str = None) -> tuple:
 def invalidate_app(app_handle: str) -> int:
     """Drop every handle, window and snapshot belonging to one app.
 
-    Used by access revocation: after a user revokes an app, no handle may survive, so a
-    later call cannot act on it. Returns how many entries were removed.
+    Used by access revocation: after a user revokes an app, no handle may survive, so a later
+    call cannot act on it. Returns how many entries were dropped.
     """
     st = _state()
     with st.lock:

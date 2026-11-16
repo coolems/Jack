@@ -1,11 +1,9 @@
-"""
-Abstract base provider interface.
+"""Abstract base provider interface.
 All provider implementations must conform to this interface.
 
 TOKEN STATISTICS:
-    The chat_stream() method now returns a tuple of (response_str, TokenStats)
-    instead of just a string. This ensures that every provider call returns
-    real token counts for the UI to display.
+    chat_stream() returns a tuple of (response_str, TokenStats) instead of just a
+    string, so every provider call carries real token counts for the UI to display.
 """
 
 from abc import ABC, abstractmethod
@@ -43,32 +41,10 @@ class BaseProvider(ABC):
         stop_event: Optional[asyncio.Event] = None,
         context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
-        """
-        Stream chat completions from the provider.
-
-        IMPORTANT: Returns a tuple of (response_string, TokenStats) where
-        TokenStats contains REAL token counts from the provider response.
-        This is bulletproof for concurrent users because each call gets
-        its own TokenStats — no shared globals.
-
-        Args:
-            model: Model name to use.
-            messages: List of message dicts with 'role' and 'content'.
-            websocket: FastAPI WebSocket for streaming content chunks.
-            temperature: Sampling temperature (default 0.7).
-            enable_thinking: Whether to enable thinking/reasoning mode.
-            conv_id: Conversation ID for logging and stop control.
-            tools: Optional list of tool definitions for native tool calling.
-            stop_event: asyncio.Event that is set when user clicks stop button.
-                       The streaming loop checks this on every chunk to abort early.
-            context_window: Per-node per-slot context (2026-10 fleet; None = config
-                       default). Used by the context guard and TokenStats.
-
-        Returns:
-            Tuple of (response_string, TokenStats).
-            - response_string: The full response text, or JSON string for tool calls
-            - TokenStats: Token statistics including prompt_tokens, generated_tokens,
-              generation_speed, and tokens_remaining
+        """Stream chat completions from the provider.
+        IMPORTANT: Returns a tuple of (response_string, TokenStats) where TokenStats
+        contains REAL token counts from the provider response. This is bulletproof for
+        concurrent users because each call gets its own TokenStats — no shared globals.
         """
         ...
 
@@ -79,8 +55,7 @@ class BaseProvider(ABC):
         messages: List[Dict],
         temperature: float = 0.7,
     ) -> str:
-        """
-        Non-streaming chat completion.
+        """Non-streaming chat completion.
 
         Returns the response string only (no token stats needed for non-streaming).
 
@@ -105,8 +80,7 @@ class BaseProvider(ABC):
         enable_thinking: bool = False,
         tools: list = None,
     ) -> Dict:
-        """
-        Build the request payload for this provider.
+        """Build the request payload for this provider.
 
         Args:
             model: Model name to use.
@@ -123,8 +97,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
-        """
-        Check provider health.
+        """Check provider health.
 
         Args:
             force: If True, bypass cache and force a fresh health check.
@@ -136,8 +109,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def get_models_list(self) -> List[Dict]:
-        """
-        Return list of available models.
+        """Return list of available models.
         Each dict has at least {'name': str, 'size': int}.
 
         Returns:
@@ -147,8 +119,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def unload_model(self, model: str) -> None:
-        """
-        Unload a model from memory (for memory management during image generation).
+        """Unload a model from memory (for memory management during image generation).
 
         Args:
             model: Model name to unload.
@@ -157,8 +128,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def reload_model(self, model: str) -> None:
-        """
-        Reload a model into memory.
+        """Reload a model into memory.
 
         Args:
             model: Model name to reload.
@@ -167,8 +137,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def status_message(self, error: Exception, model_name: str, timeout: int = None) -> str:
-        """
-        Generate user-friendly error message from an exception.
+        """Generate user-friendly error message from an exception.
 
         Args:
             error: The exception that occurred.
@@ -186,8 +155,7 @@ class BaseProvider(ABC):
         image_base64: str,
         ocr_models: List[str],
     ) -> str:
-        """
-        Transcribe text from an image using OCR.
+        """Transcribe text from an image using OCR.
 
         Args:
             image_base64: Base64-encoded image data.
@@ -200,8 +168,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def start_server(self) -> bool:
-        """
-        Start the provider server process if not already running.
+        """Start the provider server process if not already running.
 
         Returns:
             True if server is running (was already running or just started),
@@ -211,8 +178,7 @@ class BaseProvider(ABC):
 
     # Optional method for multi-instance providers
     def router_status(self) -> Optional[str]:
-        """
-        Return status summary of all instances (for multi-instance providers).
+        """Return status summary of all instances (for multi-instance providers).
         Single-instance providers can return None or a simple status string.
 
         Returns:

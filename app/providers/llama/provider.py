@@ -1,10 +1,9 @@
-"""
-Main LlamaProvider class - thin orchestrator that delegates to submodules.
+"""Main LlamaProvider class - thin orchestrator that delegates to submodules.
 
 TOKEN STATISTICS:
-    The chat_stream() method now returns a tuple of (response_str, TokenStats)
-    instead of just a string. The TokenStats contains real token counts from
-    llama.cpp's final SSE response chunk. This is bulletproof for concurrent users.
+    chat_stream() returns (response_str, TokenStats); TokenStats holds the real token
+    counts from llama.cpp's final SSE response chunk, which keeps per-request accounting
+    correct for concurrent users.
 
 HTTP CLIENT POOL:
     Shared httpx.AsyncClient and requests.Session are managed in http_client.py.
@@ -50,10 +49,11 @@ class LlamaProvider(BaseProvider):
     # ---- Lifecycle --------------------------------------------------------
 
     async def close(self) -> None:
-        """Gracefully shut down shared HTTP clients. Idempotent.
-        
-        (2026-09-08 multi-chat) stops the backend registry first: health poller cancelled,
-        locally-spawned llama-server instances terminated, then the HTTP pool is released."""
+        """Release provider resources.
+
+        Stops the backend registry first (health poller cancelled, locally-spawned llama-server
+        processes terminated), then closes the shared HTTP pool.
+        """
         # (2026-09-08 multi-chat) stop all backends before releasing the shared HTTP pool.
         from . import backend_registry
         _reg = backend_registry.get_registry()
@@ -80,25 +80,9 @@ class LlamaProvider(BaseProvider):
         stop_event: Optional[asyncio.Event] = None,
         context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
-        """
-        Stream chat completions from llama.cpp.
-
-        Returns a tuple of (response_string, TokenStats) where TokenStats
-        contains real token counts from llama.cpp's final SSE response chunk.
-
-        Args:
-            model: Model name to use.
-            messages: List of message dicts with 'role' and 'content'.
-            websocket: FastAPI WebSocket for streaming content chunks.
-            temperature: Sampling temperature (default 0.7).
-            enable_thinking: Whether to enable thinking/reasoning mode.
-            conv_id: Conversation ID for logging and stop control.
-            tools: Optional list of tool definitions for native tool calling.
-            stop_event: asyncio.Event set by the stop endpoint when user
-                       clicks the red stop button. Checked on every SSE chunk.
-
-        Returns:
-            Tuple of (response_string, TokenStats).
+        """Stream chat completions from llama.cpp.
+        Returns a tuple of (response_string, TokenStats) where TokenStats contains real
+        token counts from llama.cpp's final SSE response chunk.
         """
         return await _chat_stream(
             api_url=self._api_url,
@@ -140,8 +124,7 @@ class LlamaProvider(BaseProvider):
         temperature: float = 0.7,
         tools: list = None,
     ) -> Dict:
-        """
-        Build the request payload for llama.cpp (OpenAI-compatible).
+        """Build the request payload for llama.cpp (OpenAI-compatible).
 
         Note: Messages should already be converted for vision format before
         calling this. Use converter.convert_messages_for_vision() if needed.
@@ -155,8 +138,9 @@ class LlamaProvider(BaseProvider):
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
         """Check llama.cpp health. Returns (is_healthy, error_message, model_names).
 
-        (2026-09 threadless refactor): async - awaits the HealthChecker's pooled httpx probe
-        on the caller's loop instead of blocking it with a sync requests call."""
+        Async: awaits the HealthChecker's pooled httpx probe
+        on the caller's loop instead of blocking it with a sync requests call.
+        """
         return await self._health.health_check(force=force)
 
     # ---- get_models_list ----
@@ -169,8 +153,9 @@ class LlamaProvider(BaseProvider):
           - on_disk: True
           - loaded: True if currently loaded in server
 
-        (2026-09 threadless refactor): async - disk scan runs off-loop, /v1/models probe uses
-        the shared httpx pool."""
+        Async: disk scan runs off-loop, /v1/models probe uses
+        the shared httpx pool.
+        """
         return await self._health.get_models_list()
 
     # ---- switch_model (REMOVED 2026-10 fleet) ----
@@ -184,8 +169,9 @@ class LlamaProvider(BaseProvider):
         force=True bypasses the fresh in-memory cache and verifies via /v1/models
         (used right after a switch so the new model is reported immediately).
 
-        (2026-09 threadless refactor): async - the /v1/models verification uses the shared httpx
-        pool; the fresh-cache fast path stays a zero-HTTP in-memory read."""
+        Async: the /v1/models verification uses the shared httpx
+        pool; the fresh-cache fast path stays a zero-HTTP in-memory read.
+        """
         return await _get_current_model(self._api_url, force=force)
 
     # ---- unload/reload ----
@@ -215,9 +201,10 @@ class LlamaProvider(BaseProvider):
     async def start_server(self) -> bool:
         """Start the llama.cpp server process if not already running.
 
-        (2026-09 threadless refactor): async - the startup health wait polls on the shared httpx
-        pool with await asyncio.sleep(); Popen is non-blocking, pipe drainers stay daemon threads
-        (documented Phase C leaf)."""
+        Async: the startup health wait polls on the shared httpx
+        pool with await asyncio.sleep(); Popen is non-blocking, pipe drainers stay daemon
+        threads (documented Phase C leaf).
+        """
         # (2026-09-08 multi-chat) the live instance list comes from config/llama_servers.json.
         # Build the registry, start/attach every configured instance and keep a health poller
         # running so unreachable remotes degrade gracefully instead of breaking chat routing.

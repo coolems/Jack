@@ -47,12 +47,12 @@ def register_write_endpoints(router: APIRouter):
     async def delete_tree(path: str = Query(..., description="Relative path inside working_root folder")):
         """Delete a file or folder (recursively) by relative path.
 
-        SECURITY (2026-11-16): the target must be a real CHILD of working_root.
-        _safe_relative_path() only guarantees containment, and containment includes the
-        base itself - '.', './', 'app/..' and whitespace-only values all resolve to the
-        working root, which used to reach shutil.rmtree() and wipe the whole workspace
-        (the Files tab deletes without a confirmation dialog). An empty/blank path is a
-        missing parameter, and a path that resolves to the root is refused outright.
+        The target must be a real CHILD of working_root. _safe_relative_path() only
+        guarantees containment, and containment includes the base itself - '.', './',
+        'app/..' and whitespace-only values all resolve to the working root, which would
+        reach shutil.rmtree() and wipe the whole workspace (the Files tab deletes without
+        a confirmation dialog). An empty/blank path is a missing parameter, and a path
+        that resolves to the root is refused outright.
         """
         try:
             if not path.strip():
@@ -139,7 +139,7 @@ def register_write_endpoints(router: APIRouter):
     async def run_python_file(path: str = Query(..., description="Relative path inside working_root folder")):
         """Run a Python file and return its output.
 
-        SERVER-side limitation gate (2026-10-01): before spawning any child process the CLIENT
+        SERVER-side limitation gate: before spawning any child process the CLIENT
         checks whether SUBPROCESS execution is allowed by the limitations the SERVER delivered
         for this machine's profile - per-profile python_exec_blocked_libs plus the per-role tool
         allowlist (app.keys.is_subprocess_allowed). No local role verification: whatever
@@ -188,17 +188,11 @@ def register_write_endpoints(router: APIRouter):
     @router.post("/api/working_root")
     async def set_working_root_endpoint(request: Request, data: Dict):
         """Activate a working root for a workspace (UI action) - per-workspace, DB-backed.
-
-        PER-WORKSPACE CONTRACT (2026-10-09): the value is persisted onto the calling
-        conversation's row (conversations.working_root) - each workspace keeps its own
-        folder and switching workspaces never clobbers another one. There is no disk
-        file anymore; the in-memory active value mirrors the workspace open in the UI so
-        HTTP file endpoints operate on it.
-
-        Body: {"working_root": "<path>", "conversation_id": "<conv>"}
-          * working_root set      -> validate + activate, persist for conversation_id (if given)
-          * working_root empty    -> activate the conversation's OWN stored value
-                                     (project-root fallback when the workspace is fresh)
+        PER-WORKSPACE CONTRACT: the value is persisted onto the calling conversation's row
+        (conversations.working_root) - each workspace keeps its own folder and switching
+        workspaces never clobbers another one. There is no disk file anymore; the in-memory
+        active value mirrors the workspace open in the UI so HTTP file endpoints operate on
+        it.
         """
         # No role gate (2026-09-30): changing the working root is a regular UI action available
         # to ANY caller/role at any time - no admin restriction.

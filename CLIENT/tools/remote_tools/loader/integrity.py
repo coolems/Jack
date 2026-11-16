@@ -44,7 +44,7 @@ def verify_shared_module_hash(module_name: str, source_code: str,
                               expected_hash: Optional[str]) -> IntegrityCheckResult:
     """Verify one delivered SHARED/framework module against its promised hash.
 
-    Fail-closed (2026-08-20): when the SERVER shipped a hash for this module and
+    Fail-closed: when the SERVER shipped a hash for this module and
     the bytes do not match, *ok* is False -- the caller must skip exec entirely.
     An absent hash means legacy server: tolerated (ok=True).
     """
@@ -90,10 +90,10 @@ def verify_tool_hash(tool_name: str, source_code: str,
 
 
 def hash_in_allowlist(source_code: str, allowed_hashes: set[str]) -> bool:
-    """True when the source's prefix is in *allowed_hashes* (or no allowlist is active).
+    """Advisory allowlist check for a delivered module hash.
 
-    Legacy advisory path kept from the original loader: some deployments configure a
-    static allowlist of known-good prefixes. Empty allowlist == allow everything.
+    Some deployments configure a hash allowlist instead of per-module promised prefixes;
+    a name present there must match, otherwise the module is refused.
     """
     if not allowed_hashes:
         return True

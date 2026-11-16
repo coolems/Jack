@@ -1,18 +1,11 @@
 """Win32 window/identity/clipboard primitives for computer_use (Windows).
 
-Split from the original single native module so each dep holds ONE concern and stays
-readable: _desktop_input owns SendInput (mouse/keyboard), this module owns windows, process
-identity, session lock and clipboard, _desktop_gdi owns pixel capture.
-
-Deps exec in SEPARATE namespaces (loader.globals_builder.install_shared_deps execs each dep in
-its own globals), so nothing here imports a sibling dep. Public names are unique across the
-folder so the merged exec globals can never shadow one dep's symbol with another's; the raw
-API handles stay PRIVATE for the same reason (_desktop_gdi holds its own user32 handle).
-
-Public API only (no underscore-prefixed functions): install_shared_deps merges only
-non-underscore symbols into the tool's exec globals, so a private name here would be
-invisible to the tools (the 2026-10-23 '_BROWSER_HEADERS' incident). Tool files never import
-ctypes themselves, so the AST guard needs no policy row for this folder.
+One dep per concern: _desktop_input owns SendInput (mouse/keyboard), this module owns
+windows, process identity, session lock and clipboard, _desktop_gdi owns pixel capture.
+Deps exec in SEPARATE namespaces (loader.globals_builder.install_shared_deps execs each
+dep in its own globals), so nothing here imports a sibling dep. Public names are unique
+across the folder so merged exec globals can never shadow one dep's symbol with another's;
+raw API handles stay private for the same reason.
 """
 
 import ctypes
@@ -63,18 +56,11 @@ GENERIC_WRITE = 0x40000000
 
 def cua_focus_allowed(app_pid: int, focused_pid: int, app_exe_path: str = "") -> bool:
     """True when keyboard focus belongs to the granted app.
-
     Fail-closed: anything unreadable or unmatched returns False, so keys are never sent on a
     guess. Two accepted forms of 'the same app':
-
       * the focused pid IS the bound app's pid
       * the focused pid runs the SAME executable as the bound app (identity comparison, the
         same verified identity the consent key is built from)
-
-    The second form is required in practice: Chrome/Edge render web content in CHILD processes
-    that all run chrome.exe, and their UIA elements report the CHILD pid. Strict pid equality
-    would refuse typing into the field the user just allowed. An app running a DIFFERENT
-    executable is still refused - that is the whole point of the guard.
     """
     if not app_pid or not focused_pid:
         return False
@@ -168,8 +154,8 @@ def cua_window_rect(hwnd: int):
 def cua_enum_windows():
     """Every visible top-level window: {hwnd, title, pid, rect}.
 
-    Minimized windows report the off-screen (-32000) sentinel rect; callers keep it so
-    'on_screen' is derived honestly instead of pretending the window is gone.
+    Minimized windows report the off-screen (32000) sentinel rect; callers keep it so
+    'on_screen' is derived honestly instead of pretending the window does not exist.
     """
     _make_dpi_aware()
     found = []
@@ -200,7 +186,7 @@ def cua_enum_windows():
 
 
 def cua_process_image_path(pid: int) -> str:
-    """Full executable path of *pid* (verified identity), '' when unavailable.
+    """Full executable path of *pid* (identity), '' when unavailable.
 
     Uses QUERY_LIMITED_INFORMATION only: no process is opened for writing, and nothing here
     can terminate or inject into a process.

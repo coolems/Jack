@@ -1,26 +1,22 @@
 """COOLEMS distributed provider protocol (CLIENT side).
 
-Shared helpers for WebSocket relay and direct connections.
-API key loading (2026-08-23): the key always comes from app.keys.load_coolems_api_key(),
-which reads <CLIENT>/config/.api_client_keys.json (renamed from .api_keys.json so it is
-not confused with the SERVER's own config/.api_keys.json).
+Shared helpers for WebSocket relay and direct connections. The API key always comes from
+app.keys.load_coolems_api_key(), which reads <CLIENT>/config/.api_client_keys.json - a
+name distinct from the SERVER's config/.api_keys.json.
 
-TRANSPORT REALITY (2026-08-20 doc fix): the wire protocol is WebSocket TEXT frames
-carrying JSON objects -- there is NO binary length-prefix framing. The old
-send_frame()/recv_frame() helpers were dead code and have been removed along with
-the misleading "Binary framing" docstring. See SERVER's app/providers/coolems/__init__.py
-for the full message-type reference (auth, request/content/done, health_check,
-models_request, current_model, model_switch, tools_request, tool_code_request).
+TRANSPORT: the wire protocol is WebSocket TEXT frames carrying JSON objects. There is no
+binary length-prefix framing. See the SERVER's app/providers/coolems/__init__.py for the
+message-type reference (auth, request/content/done, health_check, models_request,
+current_model, model_switch, tools_request, tool_code_request).
 
-PROTOCOL VERSIONING (2026-08-20): every auth frame carries "protocol_version"
-(config.PROTOCOL_VERSION) and the client verifies the value echoed back in auth_ok
-via _check_protocol(). A missing echo means a legacy v1 server -- tolerated for one
-release cycle with a loud warning; an explicit mismatch raises ConnectionError.
+PROTOCOL VERSIONING: every auth frame carries "protocol_version" (config.PROTOCOL_VERSION)
+and the client verifies the value echoed in auth_ok via _check_protocol(). A missing echo
+means a server that predates versioning - tolerated with a loud warning; an explicit
+mismatch raises ConnectionError.
 
-AUTH INFO APPLICATION (2026-08-20): apply_auth_info() is the ONE place where
-auth_ok data mutates client config globals (context_window -> CONTEXT_WINDOW_TOKENS).
-Every auth path (direct, relay, control channel) calls it so the mutation happens in
-exactly one code location with one log line.
+AUTH INFO: apply_auth_info() is the ONE place where auth_ok data mutates client config
+globals (context_window -> CONTEXT_WINDOW_TOKENS). Every auth path (direct, relay, control
+channel) calls it, so the mutation happens in one location with one log line.
 """
 
 import asyncio
@@ -35,12 +31,12 @@ logger = logging.getLogger("COOLEMS.CoolemsProtocol")
 # ─── Protocol version check (shared by all auth paths) ──
 
 def _check_protocol(auth_response: dict, context: str = "") -> None:
-    """Verify the protocol_version echoed back in auth_ok matches ours.
+    """Verify the protocol_version echoed in auth_ok matches ours.
 
-    Called after EVERY successful auth handshake (direct/relay/control channel).
-      - echo == our version  -> OK (silent)
-      - echo missing         -> legacy v1 server: loud warning, tolerated one cycle
-      - explicit mismatch    -> ConnectionError with an actionable message
+    Called after every successful handshake (direct/relay/control channel):
+      - echo == our version -> OK (silent)
+      - echo missing        -> server predates versioning: loud warning, tolerated
+      - explicit mismatch   -> ConnectionError with an actionable message
     """
     if not isinstance(auth_response, dict):
         return
@@ -66,11 +62,12 @@ def _check_protocol(auth_response: dict, context: str = "") -> None:
 
 
 def apply_auth_info(auth_response: dict, context: str = "") -> None:
-    """Apply auth_ok data to client config. THE single mutation point (2026-08-20).
+    """Apply auth_ok data to client config. THE single mutation point.
 
-    Currently: context_window from SERVER becomes the live CONTEXT_WINDOW_TOKENS so
-    history trimming and token budgets use the model's REAL window, not a local guess.
-    Adding new auth-derived fields later means editing exactly this function.
+        Currently: context_window from SERVER becomes the live CONTEXT_WINDOW_TOKENS so
+        history trimming and token budgets use the model's REAL window, not a local guess.
+        Adding new auth-derived fields later means editing exactly this function.
+
     """
     if not isinstance(auth_response, dict):
         return
@@ -187,20 +184,9 @@ def _clear_sticky():
 
 async def open_with_failover(candidates, *, open_timeout: float = 10.0, **connect_kwargs):
     """Connect to the FIRST reachable candidate; return (websocket, ws_url).
-
     candidates: ordered list of (ws_url, ssl_context) - index 0 is tried first
-                (put 'localhost' there so local always wins), each next address is
-                only attempted when the previous one cannot be reached.
-
-    STICKY BEHAVIOR (2026-09-01): if a known-good candidate from an earlier successful
-    connection is still present in *candidates*, it is tried FIRST and - while it keeps
-    answering - the rest of the list is never touched at all. The full scan happens only
-    when there is no sticky memory yet, or when the sticky address fails (it died). Any
-    successful connect becomes the new sticky candidate; when EVERY candidate fails the
-    sticky memory is cleared and NoServerReachable is raised.
-
-    Every attempt is bounded by open_timeout so one dead/hung address cannot stall
-    startup; raises NoServerReachable when every candidate fails.
+                (put 'localhost' there so local always wins), each next address is only
+                attempted when the previous one cannot be reached.
     """
     import websockets
 

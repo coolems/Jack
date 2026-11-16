@@ -1,28 +1,27 @@
-"""CoolemsServerProvider -- Smart Gateway WebSocket server.
+"""CoolemsServerProvider - Smart Gateway WebSocket server.
 
-Accepts encrypted WebSocket connections from coolems_client, authenticates via API key + profile,
-filters models/tools by user role, then relays to the local LLM backend (LlamaProvider or, since
-2026-11, StrataProvider when config.SERVER_BACKEND = "strata"). Enforces permissions.
+Accepts encrypted WebSocket connections from coolems_client, authenticates via API key +
+profile, filters models/tools by user role, then relays to the local LLM backend
+(LlamaProvider or StrataProvider, chosen by config.SERVER_BACKEND). Enforces permissions.
 
 When USE_WEB_SERVER is configured in config.py:
 - Connects TO the web relay as a "brain" server instead of listening locally
 
 The logic here:
 1. Start/attach the local LLM backend (delegated to the selected backend provider; Strata is
-   attach-only — we never spawn it)
+   attach-only - we never spawn it)
 2. Listen on Direct WebSocket port for client connections OR connect to web relay as brain
 3. Authenticate clients via API key + profile lookup (AuthGateway)
 4. Filter models/tools by user role before relaying to LLM
 5. Relay authenticated/filtered requests to the backend provider and responses back
 
-Pure asyncio — no threads. All server tasks run on the main event loop as asyncio.Tasks.
+Pure asyncio - no threads. All server tasks run on the main event loop as asyncio.Tasks.
 
-MODULE SPLIT:
-  - ssl_context.py        → Self-signed cert generation
-  - tool_scanner/         → package: AST tool scanning + source code serving (split 2026-09-07)
-  - direct_ws/            → Direct WS client message routing (split 2026-09-07; ws_client_handler.py is now a shim)
-  - ws_brain_relay.py     → Web relay brain connection logic
-  - chat_relay.py         → Chat forwarding to LLM
+  - ssl_context.py        -> Self-signed cert generation
+  - tool_scanner/         -> package: AST tool scanning + source code serving
+  - direct_ws/            -> Direct WS client message routing (ws_client_handler.py is a shim)
+  - ws_brain_relay.py     -> Web relay brain connection logic
+  - chat_relay.py         -> Chat forwarding to LLM
 """
 
 import asyncio
@@ -88,9 +87,10 @@ class CoolemsServerProvider(BaseProvider):
     def _get_local_provider(self):
         """The local inference backend this relay talks to, chosen by config.SERVER_BACKEND.
 
-        2026-11: "strata" selects StrataProvider (same OpenAI/llama.cpp wire format, plus a
-        Bearer key and attach-only lifecycle). Every relay path below stays identical —
-        queue, worker pool, auth filtering, streaming frames, token stats, OCR refusal.
+        "strata" selects StrataProvider (same OpenAI/llama.cpp wire format, plus a
+        Bearer key and attach-only lifecycle); "llama" selects LlamaProvider. Every relay
+        path below stays identical - queue, worker pool, auth filtering, streaming frames,
+        token stats, OCR refusal.
         """
         if self._local_provider is None:
             import config
@@ -115,9 +115,9 @@ class CoolemsServerProvider(BaseProvider):
     async def _relay_chat_websocket(self, msg: dict, ws, user_info=None):
         """Delegate to chat_relay module.
 
-            (2026-09-01 S1 fix) *user_info* is the RELAYED CLIENT's resolved profile; it drives
+             *user_info* is the RELAYED CLIENT's resolved profile; it drives
             per-client tool-schema filtering and response routing inside relay_chat_websocket().
-            """
+        """
         await relay_chat_websocket(self, msg, ws, user_info)
 
     # --- Direct WebSocket Server (SECURE MODE - TLS encrypted + Auth + Profile Enforcement) ---
@@ -181,14 +181,12 @@ class CoolemsServerProvider(BaseProvider):
     # --- Server Lifecycle Management (asyncio Tasks — no threads) ---
 
     async def _ensure_llm_healthy(self):
-        """Async: start local llama.cpp server and wait for health check.
+        """Async: start the local LLM backend and wait for it to report healthy.
 
-        Called by the boot sequence (code.py wraps init in asyncio.run) - returns True/False.
-        Does NOT start WebSocket tasks — those are started later by code.py via
-        await provider.start_all_servers().
-
-        (2026-09 threadless refactor): async - the LLM launch and health polling run on the
-        same event loop with await asyncio.sleep() backoff instead of blocking time.sleep."""
+        Called by the boot sequence (code.py wraps init in asyncio.run); returns True/False.
+        Does NOT start WebSocket tasks - code.py calls provider.start_all_servers() later.
+        Launch and health polling await on the same event loop.
+        """
         local = self._get_local_provider()
         ok = await local.start_server()
 
@@ -282,7 +280,6 @@ class CoolemsServerProvider(BaseProvider):
 
         Creates WebSocket tasks on the current event loop and awaits them forever
         until cancelled by stop_all_servers(). Assumes LLM is already started/healthy
-        (start_server() was called earlier during initialization).
         """
         # 1. Set running flag and create WebSocket tasks
         self._running = True
@@ -450,11 +447,11 @@ class CoolemsServerProvider(BaseProvider):
         return await self._get_local_provider().health_check(force=force)
 
     async def get_current_model(self, force: bool = False):
-        """Get currently loaded model name from local LlamaProvider.
+        """Get the currently loaded model from the local backend provider.
 
-        2026-08-18 FIX: used the lazy _get_local_provider() like every other method — before,
-        a call before first chat returned None because it read self._local_provider directly
-        (None until lazily initialized)."""
+        Uses the lazy _get_local_provider() like every other method, so a call before the
+        first chat still returns the model instead of None.
+        """
         return await self._get_local_provider().get_current_model(force=force)
 
     async def get_models_list(self) -> List[Dict]:

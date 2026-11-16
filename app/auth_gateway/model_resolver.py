@@ -1,18 +1,17 @@
-"""Model authorization — EXACT model-filename matching (2026-10 fleet).
+"""Model authorization - EXACT model-filename matching.
 
-The fleet runs different models on different machines, and the brain does not hold the
-remote models on disk. Profiles therefore list model FILENAMES explicitly:
-
+The fleet runs different models on different machines and the brain does not hold the
+remote models on disk, so profiles list model FILENAMES explicitly:
     "allowed_models": ["Dirk-Qwen3.8-27B-UD-Q6_K.gguf", "gemma-3-27b-Q6_K.gguf"]
     "allowed_models": null        -> all models (admin)
 
 Authorization compares the GGUF basename, case-insensitively, with the trailing .gguf
-optional on either side. No folders, no normalization beyond case/extension, no
-substring or fuzzy matching - the same fail-closed spirit as the old folder rule.
+optional on either side. No folders, no normalization beyond case/extension, no substring
+or fuzzy matching.
 
-MODEL IDENTITY: a model is identified by its basename (see app/providers/llama/
-model_identity.py). The node's /props.model_path basename, the client's selected model
-name and the profile entry must therefore spell the same file name.
+MODEL IDENTITY: the basename (see app/providers/llama/model_identity.py). The node's
+/props.model_path basename, the client's selected model name and the profile entry must
+spell the same file name.
 """
 
 import logging

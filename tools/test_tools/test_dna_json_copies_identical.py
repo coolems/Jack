@@ -1,4 +1,4 @@
-"""Tests: the three DNA JSON copies must stay byte-identical (2026-11-14, code-review C3).
+"""Tests: the three DNA JSON copies must stay byte-identical.
 
 Jack's identity files (identity.json, intelligence.json, lessons.json) exist in three
 places on purpose:
@@ -7,10 +7,10 @@ places on purpose:
   CLIENT/app/dna/       - CLIENT-side copy (delivered code reads it via app.dna)
   CLIENT/tools/app/dna/ - copy inside the delivered tools tree (remote_tools import path)
 
-They are NOT merged into one file: the delivered CLIENT code needs its own copies, so a
-SERVER-only single source would break the client at runtime. What must hold instead is
-that the three copies never drift apart - editing one DNA file without the other two
-gives the SERVER and the CLIENT different personalities/lessons.
+They are not merged into one file: the delivered CLIENT code needs its own copies, so a
+SERVER-only single source would break the client at runtime. What must hold is that the
+three never drift - editing one DNA file without the other two gives SERVER and CLIENT
+different personalities/lessons.
 
 Run:  python -m pytest tools/test_tools/test_dna_json_copies_identical.py -v
 """

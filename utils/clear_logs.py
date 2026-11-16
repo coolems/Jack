@@ -1,5 +1,4 @@
-"""
-Clear all log files on server startup.
+"""Clear all log files on server startup.
 This ensures we start with a clean log slate.
 """
 from pathlib import Path

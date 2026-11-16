@@ -26,22 +26,22 @@ def ensure_tool_runtime(manifest: dict, worker_source: str = None,
                         bootstrap_timeout: int = 10800) -> dict:
     """Unfold (or reuse) a self-unpacking tool's runtime on the user machine.
 
-    Args:
-        manifest: The tool's TOOL_MANIFEST dict - must carry 'runtime_name' and may
-                  carry 'requirements' (list of pip specifiers).
-        worker_source: Optional embedded worker script source; written to
-                       <runtime_dir>/<worker_filename> when missing or changed.
-        worker_filename: Worker script file name inside the runtime dir.
-        bootstrap_timeout: Max seconds for the one-time pip install (first run only).
+        Args:
+            manifest: The tool's TOOL_MANIFEST dict - must carry 'runtime_name' and may
+                      carry 'requirements' (list of pip specifiers).
+            worker_source: Optional embedded worker script source; written to
+                           <runtime_dir>/<worker_filename> when missing or changed.
+            worker_filename: Worker script file name inside the runtime dir.
+            bootstrap_timeout: Max seconds for the one-time pip install (first run only).
 
-    Returns:
-        {'runtime_dir': str, 'python_exe': str, 'worker_script': str | None}
+        Returns:
+            {'runtime_dir': str, 'python_exe': str, 'worker_script': str | None}
 
-    Raises:
-        ValueError / RuntimeError with a human-readable message on setup failure.
+        Raises:
+            ValueError / RuntimeError with a human-readable message on setup failure.
 
-    While the long steps run, live progress is written to <runtime_dir>/
-    .setup_progress.json (see module docstring) for the UI's Setup/Downloads section.
+        While the long steps run, live progress is written to <runtime_dir>/
+        setup_progress.json (see module docstring) for the UI's Setup/Downloads section.
     """
     if not isinstance(manifest, dict) or not manifest.get("runtime_name"):
         raise ValueError(f"Invalid tool manifest (need 'runtime_name'): {manifest!r}")

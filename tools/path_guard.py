@@ -1,23 +1,21 @@
-"""Canonical path validation module -- single source of truth for ALL path safety checks.
+"""Canonical path validation - single source of truth for ALL path safety checks.
 
-Every tool, every file operation, and every find_file() call must pass through this
-module to ensure we NEVER operate outside allowed directories.
+Every tool, every file operation and every find_file() call passes through this module so
+we NEVER operate outside allowed directories.
 
 Design principles:
   1. ONE canonical function (_is_path_inside_allowed) does the actual check.
   2. All public helpers (guard_*, resolve_*, is_safe_*) delegate to it.
-  3. find_file() only returns paths inside working_root or project_root -- never raw OS paths.
+  3. find_file() returns only paths inside working_root or project_root - never raw OS paths.
 
-Shared between:
-  - tools/utils.py          (SERVER-side)
-  - CLIENT/tools/utils.py   (CLIENT sandbox copy)
-  - CLIENT/app/utils/common.py  (CLIENT infrastructure)
+Consumers: tools/utils.py (SERVER), and the CLIENT through the delivered in-memory
+'tools.path_guard' shared module plus app/utils/common/path_security.py.
 
 Security layers (defense in depth):
   Layer 1: Strip leading separators so "/code.py" becomes relative.
   Layer 2: Reject drive letters and absolute paths after stripping.
   Layer 3: Join with working_root to neutralize any remaining tricks.
-  Layer 4: os.path.realpath() resolves symlinks, UNC escapes, and .. sequences.
+  Layer 4: os.path.realpath() resolves symlinks, UNC escapes and .. sequences.
   Layer 5: Final containment check against allowed_roots using realpath comparison.
 
 Every candidate path MUST pass Layer 4+5 before being returned or used.
@@ -239,7 +237,7 @@ def _has_leading_drive_letter(path: str) -> bool:
     separators before calling this function.  After stripping, any remaining
     drive letter must be at the start of the cleaned string.
 
-    Note: This is intentionally conservative -- it returns True for ANY two-
+    Note: This is intentionally conservative -- it returns True for ANY two
     character prefix where the second character is a colon (e.g. ``9:``).
     False positives are safe because they cause rejection, not acceptance.
     """
@@ -252,51 +250,16 @@ def secure_find_file(
     project_root: Optional[str] = None,
 ) -> Optional[str]:
     r"""Search for *filename* and return the first match **inside** allowed dirs.
-
     Search order (all validated before returning):
-      1. ``working_root / filename``          (relative path)
+      1. ``working_root / filename`` (relative path)
       2. ``working_root / basename(filename)`` (basename only)
-      3. ``project_root / filename``           (if project_root provided)
+      3. ``project_root / filename`` (if project_root provided)
       4. ``project_root / basename(filename)``
-
     **NEVER** returns paths outside allowed directories.
-
     Security layers applied (defense in depth):
-
       Layer 0 -- Strip Windows extended-length prefix::
-
-          Before any other processing, remove \\\\?\\ and \\\\?\\UNC\\ prefixes
-          so that subsequent layers work on the actual path content.
-
-      Layer 1 -- Strip ALL leading separators::
-
-          lstrip("/\\\\") removes every leading ``/`` or ``\\`` character,
-          not just one.  So UNC-style inputs like ``"\\\\server\\share\\file.txt"``
-          become ``"server\\share\\file.txt"`` (fully relative after stripping).
-          This is safe because the remaining path is joined inside working_root.
-
-      Layer 2 -- Reject drive letters and absolute paths::
-
-          After stripping, any path that still contains a drive letter at position
-          [0:1] (e.g. ``C:...``) or passes ``os.path.isabs()`` is rejected with
-          ValueError immediately.  This catches bare Windows paths like
-          ``"C:\\Users\\evil\\file.txt"``.
-
-      Layer 3 -- Join with working_root::
-
-          The cleaned filename is joined into working_root using os.path.join().
-          Because leading separators were stripped, the result is always a child
-          of working_root (e.g. ``working_root + "server/share/file.txt"``).
-
-      Layer 4 -- Final realpath containment check (ultimate safety net)::
-
-          Every candidate is passed through ``os.path.realpath()`` which resolves
-          symlinks, UNC escapes, extended-length prefixes (``\\\\?\\C:\\...``),
-          and ``..`` sequences. The resolved path must be inside allowed_roots
-          via ``_is_path_inside_allowed()`` before being returned.
-
-    This multi-layer approach means even if one layer is bypassed, the final
-    realpath containment check catches the escape attempt.
+          Before any other processing, remove \\\\?\\ and \\\\?\\UNC\\ prefixes so that
+          subsequent layers work on the actual path content.
     """
     # --- Handle empty / whitespace-only input ------------------------------
     if not filename or not filename.strip():
@@ -370,24 +333,24 @@ def validate_file_access(
     working_root: str,
     label: str = "File path",
 ) -> str:
-    r"""Validate a file *exists* and resolves **inside** *working_root*.
+    """Validate a file *exists* and resolves **inside** *working_root*.
 
-    This is the canonical entry point for tools that accept raw path strings
-    from user input (e.g. screenshot_path, image_path).  It performs BOTH
-    existence check AND working_root containment using ``realpath`` to resolve
-    symlinks.
+        This is the canonical entry point for tools that accept raw path strings
+        from user input (e.g. screenshot_path, image_path).  It performs BOTH
+        existence check AND working_root containment using ``realpath`` to resolve
+        symlinks.
 
-    Args:
-        filepath: The file path to validate (may be absolute or relative).
-        working_root: The allowed root directory.
-        label: Human-readable label for error messages.
+        Args:
+            filepath: The file path to validate (may be absolute or relative).
+            working_root: The allowed root directory.
+            label: Human-readable label for error messages.
 
-    Returns:
-        The validated absolute path string (guaranteed inside working_root).
+        Returns:
+            The validated absolute path string (guaranteed inside working_root).
 
-    Raises:
-        ValueError: If the path does not exist, resolves outside working_root,
-                    or is a symlink pointing outside working_root.
+        Raises:
+            ValueError: If the path does not exist, resolves outside working_root,
+                        or is a symlink pointing outside working_root.
     """
     if not filepath or not filepath.strip():
         raise ValueError(f"{label} cannot be empty")

@@ -34,23 +34,24 @@ logger = logging.getLogger("COOLEMS.Tools.Files")
 
 def delete_file(filename: str, path: str = "") -> str:
     """
-    Soft-delete a file by adding .deleted extension.
+        Soft-delete a file by adding .deleted extension.
 
-    SECURITY RULE - CRITICAL:
-        * filename = JUST THE FILE NAME only (e.g. 'myfile.txt'). NO slashes allowed!
-        * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
-        * To delete 'local_ai/CLIENT/logs/app.log':  filename='app.log', path='local_ai/CLIENT/logs'
+        SECURITY RULE - CRITICAL:
+            * filename = JUST THE FILE NAME only (e.g. 'myfile.txt'). NO slashes allowed!
+            * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
+            * To delete 'local_ai/CLIENT/logs/app.log':  filename='app.log', path='local_ai/CLIENT/logs'
 
-    SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
-              Filenames with embedded separators or traversal sequences are rejected.
+        SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
+                  Filenames with embedded separators or traversal sequences are rejected.
 
-    Args:
-        filename: Just the file name (no path). NEVER include '/' or '\\'.
-        path: Directory path only (no filename). Relative resolved against working_root.
-              Empty = working_root/. Use '.' or 'root' for work folder.
+        Args:
+            filename: Just the file name (no path). NEVER include '/' or '\\'.
+            path: Directory path only (no filename). Relative resolved against working_root.
+                  Empty = working_root/. Use '.' or 'root' for work folder.
 
-    Returns:
-        Status message.
+        Returns:
+            Status message.
+
     """
     logger.info(f"[DELETE] Soft-deleting '{filename}' from '{path}'")
 

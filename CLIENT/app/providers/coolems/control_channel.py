@@ -1,25 +1,14 @@
 """Persistent authenticated WebSocket CONTROL CHANNEL for CoolemsClientProvider.
 
-(2026-08-20, review item #6) Before this module existed, every health check / model
-list / current-model call opened a FRESH WebSocket: TLS handshake + auth frame + one
-request + close. Under load (model-switch polling, UI refreshes) that is pure churn.
+Without it, every health check / model list / current-model call would open a FRESH
+WebSocket: TLS handshake + auth frame + one request + close. Under load (model-switch
+polling, UI refreshes) that is pure churn.
 
 This channel keeps ONE authenticated connection alive on the running event loop and
 multiplexes request/response over it using req_id correlation:
 
     client -> {"type": "health_check",  "req_id": "<uuid4hex>", ...}
     server <- {"type": "health_ok",     "req_id": "<same uuid4hex>", ...}   (echoed)
-
-Design notes / boundaries:
-  - Used ONLY from async contexts on the uvicorn loop. Boot-time callers (before the
-    loop exists) keep using the provider's sync methods, which intentionally use
-    short-lived connections -- there is no running loop to host this channel in.
-  - switch_model deliberately does NOT go through the channel: a model switch restarts
-    the SERVER process, so any connection to it dies mid-switch by design. The two-phase
-    poller (relay_mode/direct_mode) already handles that with fresh connections.
-  - On ANY transport error the channel marks itself dead and closes; the next
-    ensure() reconnects lazily. No background reconnection loop -- keep-alive is done
-    by the websockets library's ping/pong, which surfaces dead peers as errors here.
 """
 
 import asyncio

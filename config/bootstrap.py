@@ -1,28 +1,26 @@
 """SERVER config bootstrap - runtime auto-creation of required config files.
 
-CONTRACT (2026-08-23):
+CONTRACT
   * The SERVER must NEVER crash at startup because a config data file is missing.
     If a required file does not exist, it is created FROM ITS EXAMPLE TEMPLATE
-    (``<name>.example.<ext>`` shipped next to the real file) so the user always
-    sees exactly what shape the file has and where to put their own values.
+    (``<name>.example.<ext>`` shipped next to the real file) so the user always sees exactly
+    what shape the file has and where to put their own values.
 
   * Files managed here:
       - ``config/.api_keys.json``   <- seeded from ``config/.api_keys.example.json``
       - ``config/profiles.json``    <- seeded from ``config/profiles.example.json``
       - ``config/llama_servers.json``   <- seeded from ``config/llama_servers.example.json``
-        (hand-editable list of llama server instances the SERVER creates at boot;
-        see config.get_llama_server_instances(); per-machine, gitignored)
+        (hand-editable list of llama server instances the SERVER creates at boot; see
+        config.get_llama_server_instances; per-machine, gitignored)
       - ``config/strata_servers.json``  <- seeded from ``config/strata_servers.example.json``
-        (2026-11 strata backend: hand-editable list of Strata endpoints the SERVER attaches
-        to when SERVER_BACKEND = "strata"; attach-only, per-machine, gitignored)
+        ( backend: hand-editable list of endpoints the SERVER attaches to when
+        SERVER_BACKEND = ""; attach-only, per-machine, gitignored)
 
   * Existing files are NEVER touched (no overwrite, no migration). A missing
-    file is created; a present-but-corrupt file is left alone and reported by
-    the loader with an actionable error.
 
-Call :func:`ensure_server_config_files` once at startup (code.py does this
-before provider initialization). It also exists for tests: pass ``config_dir``
-to operate on any directory instead of the real one.
+Call :func:`ensure_server_config_files` once at startup (code.py does this before provider
+initialization). It also exists for tests: pass ``config_dir`` to operate on any directory
+instead of the real one.
 """
 
 import json

@@ -1,19 +1,8 @@
-"""edit_file - patch a file by replacing literal text, without rewriting the whole file.
+"""Edit a file by replacing literal text, keeping untouched content byte-for-byte.
 
-Ported from deepseek-harness's `edit` / `str_replace_editor` str_replace command (Tier-1 item 2
-in the tool comparison, 2026-11-06). write_file can only overwrite or append, so a small change
-used to require re-emitting the entire file - slow, risks losing untouched content, and fights
-the 10-12 kB per-file rule. This tool replaces an exact literal snippet instead.
-
-MATCHING RULES
-==============
-  * Literal text only - never a regex, never whitespace-insensitive.
-  * old_string must appear EXACTLY ONCE unless replace_all=true. A non-unique match is refused
-    rather than guessed, so the patch is always the one the caller intended.
-  * An empty new_string deletes the matched text.
-  * Matching runs on the LF view of the file, so an LF old_string still matches a CRLF file -
-    the classic Windows mismatch failure. The repository's line-ending policy (LF, CRLF only for
-    .bat/.cmd) is re-applied to the result before writing, so the bytes stay correct.
+Whole-file rewrites are slow, risk losing untouched content and fight the 10-12 kB
+per-file rule, so this tool patches matched text instead. old_string must match exactly
+once unless replace_all=True; matches are literal (no regex).
 """
 
 __tool_description__ = {
@@ -74,24 +63,11 @@ logger = logging.getLogger("COOLEMS.Tools.Edit")
 def edit_file(filename: str, old_string: str, new_string: str,
               path: str = "", replace_all: bool = False) -> str:
     """Replace literal text in an existing file inside working_root.
-
     SECURITY RULE - CRITICAL:
         * filename = JUST THE FILE NAME only (e.g. 'config.py'). NO slashes allowed!
         * path = DIRECTORY ONLY where the file lives (e.g. 'tools/file_tools')
-
-    SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
+    All paths are locked inside working_root. Path traversal via '..' is blocked.
               Filenames with embedded separators or traversal sequences are rejected.
-
-    Args:
-        filename: Just the file name, no path. NEVER include '/' or '\\'.
-        old_string: Exact literal text to replace (whitespace-sensitive).
-        new_string: Replacement text; empty string deletes the match.
-        path: Directory path only, resolved against working_root. Empty = working_root.
-        replace_all: Replace every occurrence; default False requires a unique match.
-
-    Returns:
-        Success message with the changed lines and byte counts, or 'Error: ...' carrying the
-        reason (file not found / match not unique / outside working_root / too large / not text).
     """
     logger.info(f"[edit_file] {filename!r} in {path!r}: old={len(old_string or '')} chars, "
                 f"new={len(new_string or '')} chars, replace_all={replace_all}")

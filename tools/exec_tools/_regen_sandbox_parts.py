@@ -1,10 +1,10 @@
 """Regenerate tools/exec_tools/_sandbox_parts/ from the embedded SANDBOX_BOOTSTRAP literal.
 
 The _sandbox_parts/ folder is a PROVENANCE VIEW of the in-file literal in
-_sandbox_bootstrap.py (one file per original stage). It is NOT read at import time --
+_sandbox_bootstrap.py (one file per original stage). It is NOT read at import time
 the CLIENT execs that module's source in-memory where no repo folder exists, so any
-disk dependency would kill python_exec on every client (2026-09-18 split bug, fixed
-2026-09-23 by embedding the literal).
+disk dependency would kill python_exec on every client ( split bug, fixed
+ by embedding the literal).
 
 Run from anywhere:  python tools/exec_tools/_regen_sandbox_parts.py
 It rewrites each part file as: provenance header + marker line + verbatim fragment.

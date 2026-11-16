@@ -192,10 +192,9 @@ def register_read_endpoints(router: APIRouter):
     async def diff_files(data: Dict):
         """Compare two files and return their contents plus comparison metadata.
 
-        FIX (2026-08-23): was GET with query params, but the UI sends POST /api/diff
-        with JSON body {"path_a": ..., "path_b": ...} - FastAPI answered 405.
-        REWORKED (2026-08-24): response now also carries byte-level identity and file
-        metadata; the actual line diff is computed client-side by DiffCore/DiffView.
+        POST /api/diff with a JSON body {"path_a": ..., "path_b": ...}. The response carries
+        byte-level identity and file metadata; the line diff is computed client-side by
+        DiffCore/DiffView.
         """
         try:
             path_a = (data.get("path_a") or "").strip()
@@ -240,9 +239,9 @@ def register_read_endpoints(router: APIRouter):
     async def save_file_content(data: Dict):
         """Save (overwrite) the content of a text file inside working_root.
 
-        ADDED (2026-08-24): the diff view's Save buttons POST here after the user has
-        moved change blocks between files. Previously only GET existed, so saving from
-        the compare view always failed with 405 Method Not Allowed.
+        The diff view's Save buttons POST here after the user has moved change blocks
+        between files. GET-only endpoints would make saving from the compare view fail
+        with 405 Method Not Allowed.
         """
         try:
             path = (data.get("path") or "").strip()
@@ -288,11 +287,9 @@ def register_read_endpoints(router: APIRouter):
 
     @router.get("/api/file-metadata")
     async def get_file_metadata(path: str = Query(..., description="Relative path inside working_root folder")):
-        """Get rich metadata for a file (size on disk, timestamps; plus image
-        resolution + EXIF + GPS/Google-Maps link when the file is an image).
-
-        ADDED (2026-09-18): powers the preview panel's image metadata card.
-        Non-image files get only the plain file facts (the UI shows them too).
+        """Rich metadata for a file: size on disk, timestamps, plus image resolution, EXIF and
+        GPS/Google-Maps link when the file is an image. Powers the preview panel's metadata card;
+        non-image files get only the plain file facts.
         """
         try:
             if not path:

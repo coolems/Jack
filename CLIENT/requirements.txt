@@ -2,6 +2,9 @@
 # All packages needed for client-side operation (llama + coolems_client providers)
 # NO server secrets, no auth profiles - pure client dependencies
 #
+# INTERPRETER: Python 3.12+ only. code_client.py exits with a clear message below
+# 3.12, and ZZZ_CLIENT.bat builds this venv from `py -3.12`.
+#
 # PINNING POLICY (2026-09-22, fixes code-review finding #8):
 #   Every package is STRICTLY pinned (==) to the exact version verified working
 #   in CLIENT/venv. A fresh `pip install -r` must reproduce it bit-for-bit.

@@ -1,42 +1,21 @@
 """Run Tests Tool - lint + test suite of the ACTIVE project root.
-
-Runs the static linter (ruff) and the test suite of the project currently being
-worked on, then reports both. Use it after any code change.
-
+Runs the static linter (ruff) and the test suite of the project currently being worked on,
+then reports both. Use it after any code change.
 Usage:
-    run_tests()                                  - lint + full suite of the active project
-    run_tests(test_file="test_python_exec")      - one specific test file (lint still runs)
-    run_tests(lint=False)                        - tests only
-    run_tests(project_root="C:\\path\\to\\proj") - explicitly target another project root
-
-PROJECT SCOPING (invariant)
----------------------------
-Discovery is scoped to the working root set in the CLIENT UI - the root itself,
-its immediate parent, then its direct children - and fails loudly when none of
-them holds a suite. It never falls through to the CWD/module path while a working
-root is configured: that used to run THIS repo's suite against another project
-and report a green light for code that was never executed. The CWD/module anchors
-apply only when no working root exists (pure local dev / SERVER). Because this
-tool is delivered to CLIENTs and exec'd there, __file__ may be a sentinel, so
-_resolve_project_root() locates the root from several anchors instead.
-
+    run_tests - lint + full suite of the active project
+    run_tests(test_file="test_python_exec") - one specific test file (lint still runs)
+    run_tests(lint=False) - tests only run_tests(project_root="C:\\path\\to\\proj")
+    explicitly target another project root
+PROJECT SCOPING (invariant) Discovery is scoped to the working root set in the CLIENT UI
+the root itself, its immediate parent, then its direct children - and fails loudly when none
+of them holds a suite. It never falls through to the CWD/module path while a working and
+report a green light for code that was never executed. The CWD/module anchors apply only
+when no working root exists (pure local dev / SERVER). Because this tool is delivered to
+CLIENTs and exec'd there, __file__ may be a sentinel, so _resolve_project_root locates the
+root from several anchors instead.
 SUITE LAYOUT: 'tests/' (the documented per-project layout) or 'tools/test_tools/'
 (this repo's own suite). A file named test_*.py that defines no test is not a
 suite member, so ./tests/ may hold throwaway live-service scripts safely.
-
-RUNNERS: pytest preferred (collects plain ``def test_*`` and unittest.TestCase
-classes); ``python -m unittest discover`` only when the target interpreter has no
-pytest. Both output formats are parsed. Children run with NO_COLOR=1 and explicit
-UTF-8, so output is byte-stable for parsing and a test printing non-Latin text
-cannot kill the reader thread.
-
-LINT (added 2026-11-15, code review finding "no linter")
---------------------------------------------------------
-Defect-only ruff rules, run BEFORE the tests so every early-return path still
-reports lint. The project's own ruff.toml/pyproject.toml is honoured when present
-(per-file ignores included); otherwise the built-in rule set below is applied
-explicitly. ruff is a SERVER-side dev dependency: when no ruff is reachable (the
-CLIENT sandbox), lint reports an explicit [SKIP] - never a fake pass.
 """
 
 import ast
@@ -144,16 +123,16 @@ def _lint_cmd(cmd_prefix: list, root: str) -> list:
 
 
 def _ruff_candidates(root: str) -> list:
-    """ruff launch candidates for *root*, best isolation first.
+    """Ruff launch candidates for *root*, best isolation first.
 
-    1. <project>/venv/Scripts/ruff.exe (or bin/ruff on POSIX) - the project's own
-       pinned ruff, isolated from whatever is on PATH.
+    1. <project>/venv/Scripts/ruff.exe (or bin/ruff on POSIX) - the project's own pinned
+       ruff, isolated from whatever is on PATH.
     2. <project>/venv/.../python.exe -m ruff - same venv, no separate binary.
-    3. sys.executable -m ruff - the interpreter running this tool (SERVER venv).
-    4. bare "ruff" - PATH install.
+    3. sys.executable -m ruff - the interpreter running this tool.
+    4. bare "ruff" - a PATH install.
 
-    Absolute candidates are skipped when the file is missing (an exact venv path
-    is a fact, not a guess); the rest are probed with --version by the caller.
+    Absolute candidates are skipped when the file is missing (an exact venv path is a fact,
+    not a guess); the rest are probed with --version by the caller.
     """
     scripts = ["Scripts", "bin"]
     out = []
@@ -276,8 +255,8 @@ def _file_has_collectable_tests(path: str) -> bool:
     """True when *path* actually DEFINES tests (pytest-style ``def test_*`` or a
     ``unittest.TestCase`` subclass).
 
-    A file named test_*.py that defines no test is not a suite member (2026-11
-    review fix C6): ./tests/ in this repo holds throwaway live-service scripts
+    A file named test_*.py that defines no test is not a suite member:
+    ./tests/ in this repo holds throwaway live-service scripts
     (strata_smoke.py, strata_ctx_check.py) that only print + sys.exit, so naming
     them test_* would make pytest collect them and report rc=5 / import-time
     failures instead of running the real suite.
@@ -346,15 +325,12 @@ def _working_root_anchor() -> Optional[str]:
     """Best-effort read of the system working root (the folder set in the CLIENT UI).
 
     Resolution order, first hit wins:
-      a. injected ``get_working_root`` global (dynamic loader / sandbox),
-      b. live import from tools.utils (on-disk SERVER process) - which itself resolves
-         the per-turn ContextVar and falls back to the project root (2026-10-09).
+      a. injected get_working_root global (dynamic loader / sandbox),
+      b. live import from tools.utils (on-disk SERVER process), which resolves the per-turn
+         ContextVar and falls back to the project root.
 
-    The old step c (direct read of CLIENT/config/.working_root.json) is gone: that file
-    no longer exists; working roots are per-workspace values in the CLIENT database.
-
-    Returns an absolute path when available, else None. Never raises - a missing
-    working root must not break test discovery; the legacy anchors below still apply.
+    Returns an absolute path when available, else None. Never raises - a missing working root
+    must not break test discovery; the legacy anchors below still apply.
     """
     get_wr = globals().get("get_working_root")
     if callable(get_wr):
@@ -398,30 +374,10 @@ def _running_inside_jack_tree() -> bool:
 
 def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str], str, str]:
     """Locate the project root whose test suite should be run.
-
-    Returns (root_or_None, explanation, suite_dir). ``root`` is None when no
-    legitimate target exists - callers must then fail loudly with *explanation*.
-    ``suite_dir`` is the suite directory RELATIVE to root ('tests' for the normal
-    per-project layout, 'tools\test_tools' for this repo's own suite).
-
-    Resolution order:
-      0. Explicit ``project_root`` argument (must exist; a missing or test-less
-         explicit root fails loudly instead of silently re-discovering elsewhere).
-      1. Configured working root (the active workspace's folder from the CLIENT DB) - checked as-is,
-         then its immediate parent only (in case the project wraps the working
-         folder), then among its direct children. Discovery NEVER climbs above
-           that scope, so it cannot escape into an unrelated ancestor tree. This is
-           what makes per-project suites work: a project that has tests/ inside
-           (or around) the working root is tested exactly where it lives.
-      2. NO working root configured at all (pure local dev / SERVER): legacy
-         discovery - on-disk module path, then CWD walk-up for tests/test_*.py.
-
-    IMPORTANT (2026-10-06 fix): before this change, a test-less working root fell
-    through to the step-2 anchors and could land on Jack's own repo (which ships
-    a tests/ folder) - so with working_root set to another project the runner
-    silently executed THIS project's suite while the user's project files were
-    invisible ("path artifact, not a code issue"). Failing loudly is always
-    better than testing the wrong tree.
+    Returns (root_or_None, explanation, suite_dir). ``root`` is None when no legitimate
+    target exists - callers must then fail loudly with *explanation*. ``suite_dir`` is the
+    suite directory RELATIVE to root ('tests' for the normal per-project layout, 'tools
+    est_tools' for this repo's own suite).
     """
     # 0) Explicit target wins outright - but never silently re-discover elsewhere.
     if explicit:
@@ -546,25 +502,7 @@ def _runner_kind(runner: str) -> str:
 
 def run_tests(test_file: Optional[str] = None, project_root: Optional[str] = None,
               verbose: bool = True, lint: bool = True) -> str:
-    """
-    Lint and test the active project, returning one combined report.
-
-    Args:
-        test_file: Optional specific test file to run (with or without .py extension).
-                  If None, runs all tests in the target project's tests/ folder.
-        project_root: Optional absolute path of the project to test. Must contain a
-                     tests/ folder with test files. Defaults to the configured working
-                     root - so each project keeps its own suite inside itself.
-        verbose: Whether to include detailed per-test output.
-        lint: Run the ruff pass before the tests (default True). Reported separately;
-              [SKIP] when no ruff is reachable, never a silent pass.
-
-    Returns:
-        Markdown report: lint findings, then test results (pass/fail counts, execution
-        time, failure details), then the combined verdict. When no legitimate target
-        exists, a [FAIL] message explaining exactly what is missing (never silently
-        runs the wrong project's suite).
-    """
+    """Lint and test the active project, returning one combined report."""
     root, how, suite_dir = _resolve_project_root(project_root)
     if not root:
         return f"[FAIL] No test target resolved - {how}"

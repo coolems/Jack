@@ -6,7 +6,6 @@ architecture (SERVER ships the source, CLIENT compiles and runs it locally).
 Their design kept ONE tool with a {method, params} envelope because it wrapped an
 external driver. Our tools are one callable per action (like every other folder in
 tools/), but the SEMANTICS are ported:
-
   * app/window handles instead of blind screen pixels
   * UIA snapshot + element index, invalidated when the scope is re-observed
   * window-local coordinates tied to the screenshot/snapshot that produced them
@@ -21,8 +20,7 @@ The native layer is split by concern, one dep per file: _desktop_input (SendInpu
 keyboard), _desktop_win (windows, process identity, session lock, clipboard), _desktop_gdi
 (pixel capture), _desktop_uia (UI Automation snapshot + pattern actions). Handle/snapshot/
 coordinate state lives in _desktop_state and the user-consent relay in _consent. Tool files
-import none of ctypes/comtypes directly - the AST guard therefore needs no per-tool
-allowlist row for this folder (see tests/test_computer_use.py).
+import no ctypes/comtypes directly, so the AST guard needs no per-tool allowlist row here.
 """
 
 import logging

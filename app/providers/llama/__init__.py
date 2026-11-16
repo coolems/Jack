@@ -1,5 +1,4 @@
-"""
-llama.cpp provider package.
+"""llama.cpp provider package.
 
 Provides LlamaProvider class and helper functions for interacting with
 llama.cpp via OpenAI-compatible API endpoints.

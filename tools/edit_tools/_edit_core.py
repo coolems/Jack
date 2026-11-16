@@ -3,7 +3,7 @@
 WHY A SEPARATE MODULE
 =====================
 The CLIENT does not import tool files from disk - the SERVER ships each tool's source and the
-CLIENT exec()s it (CLIENT/tools/remote_tools/loader). A tool's same-package imports are detected
+CLIENT execs it (CLIENT/tools/remote_tools/loader). A tool's same-package imports are detected
 by app/providers/coolems/tool_scanner/same_package_imports.py, and the sibling module is delivered
 as a 'shared_dep' whose public symbols are merged into the tool's exec globals. That pipeline
 only works for modules that need NOTHING at exec time, so this core is deliberately import-free:
@@ -22,8 +22,8 @@ replace_all, and an empty replacement deletes text.
 
 BACKUP CONTRACT
 ===============
-copy_backup() is the one byte-level helper here: it snapshots a file to '<file>.backup' before a
-mutation. It uses plain open() binary I/O rather than shutil.copy2 because shutil is
+copy_backup is the one byte-level helper here: it snapshots a file to '<file>.backup' before a
+mutation. It uses plain open binary I/O rather than shutil.copy2 because shutil is
 dangerous-by-default in the remote-tool AST guard (CLIENT/tools/remote_tools/loader/ast_guard.py)
 and is allowlisted per tool name only - a tool that patches tool sources must not depend on it.
 Byte-exact copies keep the original newline convention intact in the backup.

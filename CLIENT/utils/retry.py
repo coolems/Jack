@@ -24,8 +24,8 @@ RECOVERY WARNINGS:
 CANCELLATION HANDLING:
     UserCancelled exceptions (from clicking stop button) are handled gracefully —
     logged at INFO level with NO error traceback or ugly logs.
-    
-    Also recognizes WebSocketDisconnect from FastAPI as cancellation when 
+
+    Also recognizes WebSocketDisconnect from FastAPI as cancellation when
     stop_event is set, since client disconnection IS the user stopping generation.
 
 STALE RESPONSE PREVENTION:
@@ -97,12 +97,12 @@ async def _send_recovery_message(recovery_callback, websocket, message, status="
 
 def _is_user_cancelled(error: BaseException, stop_event=None) -> bool:
     """Check if an exception is a user-initiated cancellation (not a real error).
-    
+
     Recognizes multiple cancellation indicators:
     - UserCancelled class name (from our provider modules)
     - WebSocketDisconnect from FastAPI (client disconnected = user stopped)
     - Any exception with 'cancel' in the module path or class name
-    
+
     When stop_event is provided and set, treats connection-related exceptions as cancellations.
     """
     error_class_name = type(error).__name__
@@ -176,35 +176,16 @@ async def retry_with_backoff(
     recovery_callback: Optional[Callable] = None,
     **kwargs,
 ) -> Tuple[Any, bool]:
-    """
-    Retry a provider call with backoff when transient errors occur.
-
+    """Retry a provider call with backoff when transient errors occur.
     For coolems_client (SERVER connection):
         - Sends ONE clean "Server unavailable" warning to UI on first failure
         - Retries silently in background — no per-attempt spam
         - Cannot auto-restart remote SERVER, so just keeps trying
         - Final message only when all retries exhausted
-
     For local providers (llama, ollama):
         - Full retry logging with per-attempt details
         - Auto-restarts the provider on first connection failure
         - Sends detailed recovery messages to UI
-
-    CANCELLATION:
-        UserCancelled exceptions are handled gracefully — logged at INFO level
-        and returned immediately without retries or error spam.
-        
-        WebSocketDisconnect from FastAPI is also treated as cancellation when 
-        stop_event is set (client disconnected = user stopped generation).
-
-    STALE RESPONSE PREVENTION:
-        After a successful provider call returns, we check if stop_event was set during
-        execution. If yes → raise UserCancelled instead of returning stale result.
-        This prevents old responses from bubbling up as valid after cancellation.
-
-    NON-RETRYABLE ERRORS:
-        ToolCompilationError and similar deterministic failures are returned immediately
-        without any retry attempt, since the same source will always fail identically.
     """
     last_error = None
     start_time = asyncio.get_event_loop().time()

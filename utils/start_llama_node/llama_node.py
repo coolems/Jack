@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""COOLEMS llama-node launcher (2026-10 fleet) - ADMIN path.
+"""COOLEMS llama-node launcher - ADMIN path.
 
 Lives in utils/start_llama_node/ for admins who want to configure and start ANY
 node they like (this machine, a remote GPU box, any port). Regular users never

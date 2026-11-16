@@ -1,9 +1,8 @@
-"""
-Agentic chat mode logic - AI with tool orchestration and ReAct loop.
+"""Agentic chat mode logic - AI with tool orchestration and ReAct loop.
 
 Thin wrapper that imports from focused modules:
 - tool_executor.py: ToolExecutor class
-- react_loop.py: Main ReAct loop control flow  
+- react_loop.py: Main ReAct loop control flow
 - provider_call.py: Provider call with automatic restart
 """
 
@@ -65,21 +64,7 @@ async def agentic_mode(
     enhanced_message: str,
     media_files: List[str] = None
 ) -> str:
-    """Run agentic chat mode with tool orchestration and ReAct loop.
-
-    HISTORY: kept whole; only past the token limit are the oldest ATOMIC UNITS removed - a
-    unit is a user turn + its reply + all tool results, never split. The system prompt, the
-    CURRENT USER PROMPT (`_protect`) and THE CURRENT LOOP (everything appended after
-    build_messages) are never removed, so trimming eats only previous turns; if the loop
-    alone cannot fit, the trim is a no-op and the guardian fires. Usage is SERVER units: the
-    last request's prompt_tokens as an OVERHEAD on the chars/4 estimate, cached per message
-    in `_est_tokens`. At 95% of the history budget one warning fires; at
-    AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION of the full window a [SYSTEM NOTICE] asks the
-    AI to finish its step, write plan_<...>_continue.md in .temp/plans/ and end with
-    TASK DONE - once per crossing, re-armed by a trim.
-
-    PERMISSIONS: the API key goes to ToolExecutor; tools the role forbids are blocked.
-    TOKEN STATS: sent to the UI after EVERY provider call."""
+    """Run agentic chat mode with tool orchestration and ReAct loop."""
     
     logger.info("="*60)
 

@@ -18,15 +18,11 @@ class ToolCache:
 
     """Pure in-memory LRU-style cache for remote tools. No disk persistence.
 
+        Three layers:
 
-
-    Three layers:
-
-      1. definitions   — __tool_description__ dicts sent to LLM (cached on connect)
-
-      2. source_code   — raw .py content from SERVER (fetched on demand)
-
-      3. compiled      — live callable function objects (compiled from source)
+          1. definitions   — __tool_description__ dicts sent to LLM (cached on connect)
+          2. source_code   — raw .py content from SERVER (fetched on demand)
+          3. compiled      — live callable function objects (compiled from source)
 
     """
 
@@ -196,12 +192,10 @@ class ToolCache:
 
 
     def invalidate_source(self, name: str):
-        """Drop cached source (+ hash + compiled copy) for *name* so the next load
-
-        re-fetches fresh code from the SERVER (2026-09-11 audit fix). Used when a
-        CACHED source fails to compile: it may be stale -- delivered by an older
-        SERVER build before this tool file was fixed on disk. The compiled entry is
-        dropped too, so no half-built callable survives the invalidation.
+        """Drop the cached source (+ hash + compiled copy) for *name* so the next load re-fetches
+        it from the SERVER. Used when a CACHED source fails to compile: it may be stale,
+        delivered by a SERVER build that predates the fix on disk. The compiled entry goes
+        too, so no half-built callable survives.
         """
         if name in self._source_code or name in self._compiled:
             self._source_code.pop(name, None)

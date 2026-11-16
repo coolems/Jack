@@ -1,7 +1,7 @@
 """Shared logger for the direct_ws package.
 
-Same logger name as the old monolithic ws_client_handler.py so log output is
-indistinguishable after the 2026-09-07 split.
+Keeps the logger name used by ws_client_handler.py, so log output is identical
+whether the code runs from the package or through the shim.
 """
 
 import logging

@@ -1,22 +1,17 @@
-"""
-WebSocket chat handler - Main orchestrator.
+"""WebSocket chat handler - the main orchestrator.
 
-This is the main WebSocket handler that coordinates:
+Coordinates:
 - Connection setup and cleanup
 - API key authentication with max-connections enforcement
 - Message parsing and validation
 - /search command dispatch
 - File/media processing
 - Tool detection (informational only - agentic mode is enabled ONLY via the UI button)
-    - Live steering: steer=True frames are routed to the live agentic turn instead of submit()
-    - Submitting validated turns to the ChatBus (the turn runs as a background task owned by the chat's channel)
-- Persistence: user messages here; assistant messages + error/retry handling are owned by the ChatBus
-- ROLE-BASED TOOL FILTERING (NEW)
-
-FIXED (2026-01-XX): Agentic AI loop restored to working state.
-    - Removed asyncio.create_task() wrapping that was cancelling agentic loops mid-execution
-    - Reverted to simple linear await retry_with_backoff(...) flow
-    - Partial persistence on UI disconnect is owned by the ChatBus channel capture
+- Live steering: steer=True frames go to the live agentic turn instead of submit()
+- Submitting validated turns to the ChatBus (the turn runs as a background task owned by
+  the chat's channel; partial persistence on UI disconnect is the channel's capture)
+- Persistence: user messages here; assistant messages and error/retry handling in ChatBus
+- Role-based tool filtering
 """
 
 import asyncio
@@ -80,8 +75,7 @@ def create_websocket_handler(
     bus=None,
     api_keys: Set[str] | None = None,
 ):
-    """
-    Factory function that creates the WebSocket chat handler.
+    """Factory function that creates the WebSocket chat handler.
 
     Args:
         db_path: Path to the SQLite database.
@@ -113,7 +107,7 @@ def create_websocket_handler(
     from app.websocket.connections import register_connection, unregister_connection
 
     async def _authenticate_and_setup(websocket, conv_id):
-        """Stage 1 (2026-08-20 split, review #10): authenticate + per-connection setup.
+        """Stage 1: authenticate + per-connection setup.
 
         Returns a context dict on success; None if the client was rejected or closed
         during auth (the connection is already handled by authenticate_websocket).
@@ -199,7 +193,7 @@ def create_websocket_handler(
 
 
     async def _prepare_user_message(payload, ctx):
-        """Stage 2 (2026-08-20 split, review #10): turn one validated payload into a ready-to-dispatch dict.
+        """Stage 2: turn one validated payload into a ready-to-dispatch dict.
 
         Handles: field extraction, stop/capture reset, /search short-circuit, media file
         processing, tool detection + auto agent-mode, user-message persistence and history

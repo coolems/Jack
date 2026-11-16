@@ -1,6 +1,6 @@
 """CLIENT config bootstrap - runtime auto-creation of required CLIENT files.
 
-CONTRACT (2026-08-23):
+CONTRACT
   * The CLIENT must NEVER crash at startup because a config data file is missing.
     If a required file does not exist, it is created FROM ITS EXAMPLE TEMPLATE
     (``<name>.example.<ext>`` shipped next to the real file) so the user always

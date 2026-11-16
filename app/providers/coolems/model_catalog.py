@@ -1,6 +1,6 @@
-"""Model catalog — one list combining local disk models and fleet-served models.
+"""Model catalog - one list combining local disk models and served models.
 
-2026-10 fleet: the brain may not hold every model on disk. Remote nodes run models the
+The brain may not hold every model on disk. Remote nodes run models the
 brain has never downloaded (e.g. Gemma on a GPU box while the brain only has Qwen). The
 CLIENT's model picker must still show them, so the catalog merges:
 

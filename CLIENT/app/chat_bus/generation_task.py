@@ -264,7 +264,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         final_response = ""
 
         async def _dispatch_ai_request():
-            """Dispatch to the correct mode (extracted verbatim from the old handler)."""
+            """Dispatch to the correct chat mode."""
             if agent_mode:
                 agent_config = build_agentic_config(
                     model=model,

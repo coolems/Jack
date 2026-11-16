@@ -1,14 +1,13 @@
-"""
-Async-safe sentence pool for TTS.
+"""Async-safe sentence pool for TTS.
 
-Uses asyncio primitives (Lock, Condition) — no threading.
-Sentences are added, processed, and removed dynamically.
+Uses asyncio primitives (Lock, Condition) - no threading. Sentences are added, processed
+and removed dynamically.
 
 DESIGN:
-- Each add() call receives ONE complete sentence from JS (streaming mode)
-  or RAW text with multiple sentences (click mode)
-- Backend sanitizes and adds to pool
-- No buffering across add() calls - JS handles that
+- Each add() call receives ONE complete sentence (streaming mode) or RAW text with
+  multiple sentences (click mode)
+- The backend sanitizes and adds to the pool
+- No buffering across add() calls - the frontend handles that
 """
 
 import asyncio
@@ -22,12 +21,11 @@ logger = logging.getLogger("COOLEMS.Voice")
 
 
 def find_sentence_boundaries(text: str) -> List[int]:
-    """
-    Find all sentence boundary positions in text.
+    """Find all sentence boundary positions in text.
     A boundary is the position RIGHT AFTER a sentence-ending character.
-    
+
     Sentence-ending: .!? followed by whitespace/end, or a newline.
-    
+
     Returns list of indices where new sentences start.
     """
     boundaries: List[int] = []
@@ -44,8 +42,7 @@ def find_sentence_boundaries(text: str) -> List[int]:
 
 
 def split_text_into_sentences(text: str) -> List[str]:
-    """
-    Split raw text into individual sentences.
+    """Split raw text into individual sentences.
     Each returned sentence is a raw string (not sanitized).
     """
     if not text.strip():
@@ -89,13 +86,12 @@ class SentencePool:
     # ------------------------------------------------------------------
 
     async def add(self, text: str) -> int:
-        """
-        Add text to the pool.
-        
+        """Add text to the pool.
+
         - Splits text into sentences (handles multiple sentences in one call)
         - Sanitizes each sentence
         - Adds to pool
-        
+
         Returns number of sentences added.
         """
         if not text:
@@ -148,8 +144,7 @@ class SentencePool:
         return False
 
     async def get(self, timeout: float = 1.0) -> Optional[str]:
-        """
-        Get the next sentence from the pool.
+        """Get the next sentence from the pool.
         Returns None if timeout expires.
         """
         try:

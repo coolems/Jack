@@ -1,17 +1,13 @@
 """Image metadata extraction for the preview panel (EXIF, GPS, size on disk).
 
-ADDED (2026-09-18): powers GET /api/file-metadata so the UI can show a rich
-metadata card under a previewed image: resolution, format, file size on disk,
-modification time, camera EXIF data and - when present - GPS coordinates with
-a ready-made Google Maps link.
+Feeds GET /api/file-metadata: resolution, format, size on disk, modification time, camera
+EXIF and, when present, GPS coordinates with a ready-made Google Maps link.
 
 Design notes:
-  * Pillow is already a hard project requirement (requirements.txt), so no new
-    dependency is introduced here.
-  * Every extraction step is individually guarded: one broken tag must never
-    fail the whole endpoint.
-  * Pure helper functions are kept free of FastAPI imports so they can be unit
-    tested without an app instance.
+  * Pillow is already a hard requirement (requirements.txt), so no new dependency.
+  * Every extraction step is individually guarded: one broken tag must not fail the
+    whole endpoint.
+  * Pure helpers stay free of FastAPI imports so they can be tested without an app.
 """
 
 import os

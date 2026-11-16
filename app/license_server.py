@@ -1,45 +1,20 @@
 """Coolems KG license module (SERVER side — single owner of ALL license logic).
-
-LICENSING PLAN v14 (2026-10-15): the CLIENT keeps NO license files and never talks to
-coolems.com. This module is the ONLY place that:
-
+LICENSING PLAN: the CLIENT keeps NO license files and never talks to coolems.com. This
+module is the ONLY place that:
   - persists the registration choice + company data in <ROOT>/config/license_state.json
     (server root, gitignored);
   - checks the license with the Coolems KG endpoint on server start and once per day;
-  - feeds the CLIENTs: current_status() returns the SLIM payload that rides on the
-    existing SERVER->CLIENT frames (auth_ok / brain_info on connect, token_stats on
-    every request round-trip):
-
+  - feeds the CLIENTs: current_status returns the SLIM payload that rides on the
+    existing SERVER->CLIENT frames (auth_ok / brain_info on connect, token_stats on every
+    request round-trip):
         {"use": "private" | "company", "company": "<name>" or None,
-         "email": "<e-mail>" or None, "private_licensed": true|false}   (private installs only)
-
-The CLIENT composes the badge text from those two fields only — no license number,
-no dates, nothing else ever leaves this machine.
-
-OFFLINE MODE (2026-11-09, narrowed): the cache fallback applies ONLY when the endpoint is
-genuinely UNREACHABLE (DNS/socket/timeout). An expired cache (valid_until passed) is
-treated as NOT licensed even offline — clients see "not registered" again until renewed.
-
-A TLS TRUST failure or a bad endpoint answer is NOT offline: it raises LicenseCheckError
-with the reason (cert verification, a refused redirect, HTTP status, malformed JSON).
-Falling back to the cache there would let a MITM look like a valid license — the endpoint
-answer is authoritative, so an unverifiable answer must never be answered from cache.
-
-    PRIVATE-USE E-MAIL CONFIRMATION (v15, refined v16 2026-10-12): a private install that HAS an
-    e-mail also asks the web side (POST {"mode":"private","email":...}) on server start + once per day;
-    the endpoint sends a one-time confirmation link and only writes the address into its own
-    private_license.json after the user clicks it. Private individual use is FREE for commercial
-    use, so the badge now reflects the confirmation state: e-mail confirmed on the web side ->
-    "PRIVATE LICENSE · licensed <e-mail> for commercial use"; not (yet) confirmed / no e-mail ->
-    "PRIVATE USE · license not acquired". The slim payload carries {email, private_licensed}
-    for that; nothing else leaves this machine.
-NOTE on IP tracking: ip_history lives on the WEB side now
-(coolems_site/jack/licenses/ip_history.json, written by index.php). The local
-state file no longer stores it.
-
-SECURITY FRAMING (accepted by design): not DRM — the server file + UI badge are a
-visible watermark and audit trail; legal enforcement stays with repository LICENSE §3.
-The endpoint answer is authoritative for licensed status.
+         "email": "<e-mail>" or None, "private_licensed": true|false} (private installs
+         only)
+The CLIENT composes the badge text from those two fields only — no license number, no dates,
+nothing else ever leaves this machine.
+OFFLINE MODE (narrowed): the cache fallback applies ONLY when the endpoint is genuinely
+UNREACHABLE (DNS/socket/timeout). An expired cache (valid_until passed) is treated as NOT
+licensed even offline — clients see "not registered" again until renewed.
 """
 
 import json
@@ -92,8 +67,8 @@ def default_state() -> dict:
 def load_state() -> dict:
     """Read the local license state. Missing/corrupt file -> fresh default, LOUDLY logged.
 
-    Never fatal (the server must boot), but the operator sees WHY the state is empty:
-    a corrupt or unreadable state file used to silently reset licensing to 'not asked'.
+    Never fatal (the server must boot), but the operator must see WHY the state is empty:
+    a corrupt or unreadable state file must not silently reset licensing to 'not asked'.
     """
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -188,10 +163,10 @@ def _parse_valid_until(value: str):
 
 
 def is_expired(cache: dict | None) -> bool:
-    """True when a cached/licensed answer has passed its valid_until date (UTC).
+    """True when the license's valid_until date has passed.
 
-    null/empty valid_until = perpetual (never expires). A malformed date fails closed.
-    A cache that was never licensed cannot be 'expired' — callers check licensed first.
+    A null/empty valid_until is perpetual (never expires). A malformed date fails
+    closed: treated as expired.
     """
     if not isinstance(cache, dict) or not cache.get("licensed"):
         return False
@@ -243,38 +218,21 @@ def _is_unreachable(exc: Exception) -> bool:
 
 def _build_ssl_context() -> ssl.SSLContext:
     """TLS trust for the license endpoint: system CA bundle + hostname verification.
-
-    coolems.com is a public CA-signed host (measured live 2026-11-07: subject
-    CN=coolems.com, issuer "Let's Encrypt / YR1"). ssl.create_default_context() gives
-    CERT_REQUIRED + check_hostname=True against the OS trust store — the correct trust
-    model for a public host, the same one a browser uses.
-
-    NO certificate pin, deliberately (2026-11-07). Let's Encrypt leaf certs are valid for
-    ~90 days (measured window: 89 days), so a leaf SHA-256 pin would break every license
-    check at each rotation and need a manual re-read ~4x per year. The reliable
-    alternative — pinning the ISSUER/chain — is not enforceable here: ssl exposes only the
-    leaf via getpeercert(), and ssl.SSLContext.verify_callback is documented as unreliable
-    across CPython/OpenSSL builds (see app/providers/coolems/ssl_pinning.py header). A pin
-    that cannot be enforced correctly is worse than no pin. ssl_pinning stays for the relay
-    link, where the cert IS self-signed and pinning is the right tool.
-
-    NO local-cert branch either. The old code imported
-    app.providers.coolems.ssl_context.detect_server_certs, a symbol that never existed
-    (git log -S shows only the commit that added the import line), and pointed cafile at
-    the LAN self-signed cert (CN=coolems-direct-ws, no CA extension) — that can never
-    verify a public chain, so the branch would have failed TLS and silently used system CAs.
+    coolems.com is a public CA-signed host (measured live: subject CN=coolems.com, issuer
+    "Let's Encrypt / YR1"). ssl.create_default_context gives CERT_REQUIRED +
+    check_hostname=True against the OS trust store — the correct trust model for a public
+    host, the same one a browser uses.
     """
     return ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 
 
 class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
-    """Never follow a redirect on the license request.
+    """Redirect handler that refuses redirects on the license request.
 
-    urllib follows HTTPS -> HTTP redirects, re-sends the POST body in PLAINTEXT and then
-    accepts the plaintext 200 as the license answer (verified live 2026-11-07). The
-    endpoint answer is authoritative for licensed status, so an answer arriving over an
-    unverified connection must never be used — and the registered e-mail must never leave
-    the box unencrypted. Refusing keeps both guarantees: the failure surfaces as
+    urllib follows HTTPS -> HTTP redirects, re-sends the POST body (the registered
+    e-mail) in plaintext and then accepts the plaintext 200 as the license answer. Both
+    guarantees are kept by refusing: the answer must come from the configured endpoint
+    over TLS, and the e-mail never leaves the box unencrypted. The failure surfaces as
     LicenseCheckError naming the redirect target.
     """
 
@@ -415,26 +373,12 @@ def _perform_one_check(state: dict, payload: dict, method: str, timeout: int) ->
 
 def perform_check(state: dict | None = None, timeout: int = CHECK_TIMEOUT_SEC) -> dict:
     """Check the license with the Coolems KG endpoint.
-
     - private installs WITHOUT e-mail: no network call at all.
     - private installs WITH e-mail: HTTPS POST {mode:"private", email}.
     - company installs: HTTPS POST {company, email} (GET when no e-mail — IP-only match).
     - On success the full answer is cached in last_check + saved.
     - EXPIRY: a licensed cache whose valid_until has passed is treated as NOT licensed
       (live answer or offline fallback alike) — clients see "not registered" again.
-
-    Failure policy (2026-11-09 — no blind fallback):
-      unreachable (DNS / refused / timeout / reset) -> cached last_check, "offline": True.
-      anything else -> raises LicenseCheckError with the reason. TLS trust failures,
-      refused redirects, HTTP != 200 and malformed JSON are NEVER answered from cache:
-      the endpoint answer is authoritative, so an answer we could not verify must not be
-      replaced by a guess.
-
-    Raises:
-      LicenseCheckError  - the endpoint could not be verified.
-    Returns:
-      {"status": "private" | "licensed" | "pending", ...} — "offline": True only on the
-      cache fallback; "reason" carries confirmation_pending / expired / not_registered.
     """
     state = state if state is not None else load_state()
 
@@ -462,22 +406,23 @@ def perform_check(state: dict | None = None, timeout: int = CHECK_TIMEOUT_SEC) -
 def current_status() -> dict:
     """Read-only snapshot for the SERVER->CLIENT frames. NO network call.
 
-    Fields that travel over the wire (plan v16):
-        use              "private" | "company" — what kind of install this server is;
-        company          <name> or None        — only meaningful when use == "company";
-        email            <e-mail> or None      — private installs: the registered e-mail;
-        private_licensed true|false            — private installs: True when the web side has
-                                                 CONFIRMED that e-mail (private_license.json) and the
-                                                 cached answer is not expired.
+        Fields that travel over the wire:
+            use              "private" | "company" — what kind of install this server is;
+            company          <name> or None        — only meaningful when use == "company";
+            email            <e-mail> or None      — private installs: the registered e-mail;
+            private_licensed true|false            — private installs: True when the web side has
+                                                     CONFIRMED that e-mail (private_license.json) and the
+                                                     cached answer is not expired.
 
-    The CLIENT composes its badge from these:
-        private, confirmed   -> PRIVATE LICENSE · licensed <e-mail> for commercial use
-        private, unconfirmed -> PRIVATE USE · license not acquired
-        company + name       -> COMMERCIAL USE — LICENSED · assigned to <name>
-        company, no name     -> COMMERCIAL USE · not registered
+        The CLIENT composes its badge from these:
+            private, confirmed   -> PRIVATE LICENSE · licensed <e-mail> for commercial use
+            private, unconfirmed -> PRIVATE USE · license not acquired
+            company + name       -> COMMERCIAL USE — LICENSED · assigned to <name>
+            company, no name     -> COMMERCIAL USE · not registered
 
-    An EXPIRED / unconfirmed answer sends private_licensed False (and no company name) —
-    clients show the unconfirmed state until the next successful check renews it.
+        An EXPIRED / unconfirmed answer sends private_licensed False (and no company name) —
+        clients show the unconfirmed state until the next successful check renews it.
+
     """
     state = load_state()
     if state["choice"] == "private":

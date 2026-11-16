@@ -59,7 +59,6 @@ class SandboxedASTChecker(ast.NodeVisitor):
         """Reject imports of dangerous modules unless explicitly allowed for this tool.
 
         The check runs INSIDE the loop so EVERY import in a multi-name statement
-        ('import os, subprocess') is validated (2026-08-21 fix -- previously only
         the last alias was checked and earlier dangerous imports slipped through).
         """
         for alias in node.names:
@@ -80,8 +79,7 @@ class SandboxedASTChecker(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         """Reject 'from <dangerous> import ...' unless explicitly allowed for this tool.
 
-        Bare relative imports ('from . import X') have node.module is None -- there is
-        nothing to check there (2026-08-21 fix -- previously that left module_name
+        Bare relative imports ('from. import X') have node.module is None -- there is
         unbound and raised NameError during validation).
         """
         if not node.module:

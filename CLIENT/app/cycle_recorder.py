@@ -214,9 +214,12 @@ class CycleRecorder:
                           "step_no": row["step_no"], "at_ts": row["at_ts"]})
 
     async def announce_final(self, step_no: int) -> None:
-        """Open the answer row, once per turn - a reply to a steer and the real answer are
-                identical content frames, so the UI needs this signal to tell them apart. The
-                step's AI text is flushed FIRST so the answer arrives before the marker."""
+        """Open the answer row, once per turn.
+
+        A reply to a steer and the real answer are identical content frames, so the UI
+        needs this signal to tell them apart. The step's AI text is flushed FIRST so the
+        answer arrives before the marker.
+        """
         if self._final_announced:
             return
         self._final_announced = True

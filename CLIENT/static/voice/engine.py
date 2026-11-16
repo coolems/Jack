@@ -1,5 +1,4 @@
-"""
-TTS Engine — synthesis, playback orchestration, and pool management.
+"""TTS Engine — synthesis, playback orchestration, and pool management.
 
 Pure asyncio implementation.  No threading module.
 """
@@ -22,8 +21,7 @@ logger = logging.getLogger("COOLEMS.Voice")
 # ------------------------------------------------------------------
 
 class TTSManager:
-    """
-    Main TTS manager — orchestrates synthesis, playback, and pool.
+    """Main TTS manager — orchestrates synthesis, playback, and pool.
 
     Singleton (one instance per process).
     """
@@ -83,8 +81,7 @@ class TTSManager:
         return id(asyncio.get_running_loop())
 
     async def _ensure_lock(self) -> asyncio.Lock:
-        """
-        Return a lock bound to the *current* event loop.
+        """Return a lock bound to the *current* event loop.
 
         Because TTSManager is a singleton, asyncio.Lock() created in
         __init__ would bind to whatever loop was active at that moment
@@ -225,11 +222,10 @@ class TTSManager:
         text: str,
         voice_config: Optional[VoiceConfig] = None,
     ):
-        """
-        Core synthesis — returns (waveform, duration).
+        """Core synthesis — returns (waveform, duration).
 
         Runs blocking ML inference in executor so the event loop stays
-        responsive.  Shared by synthesize_to_file() and synthesize_to_bytes().
+        responsive.  Shared by synthesize_to_file and synthesize_to_bytes.
         """
         vc = voice_config or self.get_active_voice_config()
 
@@ -255,8 +251,7 @@ class TTSManager:
         output_path: str,
         voice_config: Optional[VoiceConfig] = None,
     ) -> Optional[str]:
-        """
-        Synthesize text to a WAV file.
+        """Synthesize text to a WAV file.
         Returns the output path on success, None on failure.
         """
         try:
@@ -282,8 +277,7 @@ class TTSManager:
         text: str,
         voice_config: Optional[VoiceConfig] = None,
     ) -> Optional[bytes]:
-        """
-        Synthesize text to WAV bytes.
+        """Synthesize text to WAV bytes.
         Returns WAV bytes on success, None on failure.
         """
         try:
@@ -314,8 +308,7 @@ class TTSManager:
     # -- public API -------------------------------------------------
 
     async def add_text(self, text: str) -> int:
-        """
-        Add text to the sentence pool.
+        """Add text to the sentence pool.
         Returns number of sentences added.
         """
         if not text or not text.strip():
@@ -376,8 +369,7 @@ class TTSManager:
     # -- playback loop ----------------------------------------------
 
     async def start(self) -> None:
-        """
-        Start the TTS playback loop.
+        """Start the TTS playback loop.
         Runs in background, processing sentences from the pool.
         """
         if self._running:
@@ -390,9 +382,8 @@ class TTSManager:
         self._tasks.append(task)
 
     async def restart(self) -> None:
-        """
-        Restart the TTS playback loop after a stop.
-        CRITICAL FIX: Uses a lock to prevent concurrent restarts.
+        """Restart the TTS playback loop after a stop.
+        Uses a lock to prevent concurrent restarts.
         Multiple /api/tts/add calls can arrive simultaneously, and without
         this lock they would all call restart() at once, causing:
         - Multiple stop() calls cancelling each other's tasks

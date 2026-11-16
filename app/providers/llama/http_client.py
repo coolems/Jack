@@ -1,10 +1,8 @@
-"""
-Shared HTTP client pool for llama.cpp provider.
+"""Shared HTTP client pool for the llama.cpp provider.
 
-Centralizes all HTTP connections to llama-server into a single pooled async
-client (httpx) and a single sync session (requests). This eliminates the old
-pattern of creating/destroying clients on every request, which wasted TCP
-handshakes and TLS negotiation under load.
+All HTTP to llama-server goes through one pooled async client (httpx) and one sync
+session (requests), so TCP/TLS handshakes are reused instead of created and destroyed
+per request.
 """
 import logging
 from typing import Optional

@@ -1,20 +1,17 @@
 """Cycle-history (turn_log) database operations.
 
-`turn_log` holds one row per agentic turn: the collapsed cycle block the UI renders
-(steps, tool calls, consent dialogs, steers, notices, final answer).
+turn_log holds one row per agentic turn: the collapsed cycle block the UI renders (steps,
+tool calls, consent dialogs, steers, notices, final answer).
 
-THE DELETE CONTRACT (why workspace deletion used to fail):
-    turn_log.conversation_id is a CHILD of conversations.id
-    (FOREIGN KEY ... REFERENCES conversations(id)) and app/db_manager sets
-    PRAGMA foreign_keys=ON on EVERY connection. Deleting the workspace row while
-    its cycle rows still reference it raises
-    sqlite3.IntegrityError("FOREIGN KEY constraint failed") -> HTTP 500 ->
-    "Failed to delete workspace" in the UI. Children must be cleared FIRST, so all
-    workspace deletes go through delete_conversation_rows() below.
+turn_log.conversation_id is a CHILD of conversations.id (FOREIGN KEY) and app/db_manager
+sets PRAGMA foreign_keys=ON on EVERY connection. Deleting the workspace row while its
+cycle rows still reference it raises sqlite3.IntegrityError("FOREIGN KEY constraint
+failed") -> HTTP 500 -> "Failed to delete workspace" in the UI. Children are cleared
+FIRST, so all workspace deletes go through delete_conversation_rows() below.
 
-Same reason for truncation (edit / resend): cycle rows are children of the
-CONVERSATION, not of the answer they describe, so truncate_turn_logs() must prune
-them too - otherwise a reload rebuilds cycle blocks for answers that are gone.
+Truncation (edit / resend) has the same reason: cycle rows are children of the
+CONVERSATION, not of the answer they describe, so truncate_turn_logs() must prune them
+too - otherwise a reload rebuilds cycle blocks for answers that are gone.
 """
 
 import json
@@ -31,13 +28,10 @@ logger = logging.getLogger("COOLEMS.TurnOps")
 
 def save_turn_log(conn_path: str, conv_id: str, payload: Dict,
                   message_id: Optional[str] = None) -> bool:
-    """Persist one turn's cycle history.
+    """Persist one agentic turn's cycle block.
 
-    message_id is NULL for a turn that never produced an answer (stopped / failed),
-    so the row is placed by timestamp instead of by message.
-
-    Returns True on success. History is best-effort: a failure must never break a
-    finished turn, so this logs and returns False instead of raising.
+    message_id is NULL for a turn that never produced an answer (stopped / failed), so the UI
+    can still render the block without linking it to a message.
     """
     try:
         conn = get_db_connection()
@@ -139,10 +133,10 @@ def truncate_turn_logs(cursor, conv_id: str, message_ids: List[str],
 
 
 def prune_orphan_turn_logs(conn) -> int:
-    """Clean cycle rows left by an older build that deleted without FK enforcement.
+    """Delete cycle rows left by removes that ran without foreign-key enforcement.
 
-    Runs at startup: those rows are not owned by any workspace but are still returned
-    by the history API, so a workspace that no longer exists would keep a history entry.
+    Runs at startup: those rows belong to no workspace but are still returned by the history
+    API, so a deleted workspace would keep showing a history entry.
     """
     cursor = conn.cursor()
     cursor.execute(

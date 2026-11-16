@@ -12,27 +12,17 @@ logger = logging.getLogger("COOLEMS")
 
 def register(router: APIRouter, provider, model_name: str, api_timeout: int,
              agent, stop_events) -> None:
-    """Attach the /api/auth/* endpoints to *router* (same order as the original file)."""
+    """Attach the /api/auth/* endpoints to *router*."""
 
     # ===== SETUP MODE ENDPOINT (2026-09-01) =====
     @router.post("/api/auth/set-key")
     async def set_api_key(request: Request, data: Dict):
         """Record the credential row {email, date_acquired, key} in CLIENT/config/.api_client_keys.json.
-
         This is the ONLY endpoint that works while no real key exists yet (setup mode)
-        - APIMiddleware routes it through for loopback callers and rejects everything
-        else with an actionable 401 until this succeeds. In keyed mode it stays
-        available so the owner can change the key from Settings; the NEW key is still
-        validated by the SERVER on connect, so nothing untrusted ever gets access.
-
-        STORAGE (2026-10-08): the key IS written to this file in PLAINTEXT (plain mode -
-        deliberate trade-off; per-machine, gitignored config file, no registry writes). It
-        becomes the persistent outbound-auth source for every future headless start. The
-        SERVER's config/.api_keys.json remains the authoritative store on the server side.
-        *email* comes from the X-User-Email header when present, otherwise an optional
-        "email" body field.
-
-        Body: {"key": "<api key>", "email": "<optional>"}
+        - APIMiddleware routes it through for loopback callers and rejects everything else
+          with an actionable 401 until this succeeds. In keyed mode it stays available so
+          the owner can change the key from Settings; the NEW key is still validated by the
+          SERVER on connect, so nothing untrusted ever gets access.
         """
         try:
             import app.keys as _keys_mod
@@ -62,10 +52,9 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
     async def issue_media_token(data: Dict):
         """Mint a short-lived, single-use media token for ONE exact file path.
 
-        Reached only AFTER the APIMiddleware passed header auth (X-API-Key + X-User-Email),
-        so it grants nothing beyond what the caller already proved. The returned ?t= token is
-        bound to that exact path, expires in 60 s and allows at most 3 uses - a leaked URL is
-        useless afterwards (replaces the old ?api_key=...&email=... sub-resource pattern).
+        Reached only after APIMiddleware passed header auth (X-API-Key + X-User-Email), so it
+        grants nothing beyond what the caller already proved. The returned ?t= token is bound to
+        that path, expires in 60 s and allows at most 3 uses, so a leaked URL is dead quickly.
 
         Body: {"path": "<working_root-relative file path>"}
         Returns: {"token": "...", "expires_in": 60}

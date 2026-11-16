@@ -1,7 +1,7 @@
 """glob_files - list FILES by name pattern inside working_root, newest first.
 
 Ported from deepseek-harness's `packages/fs/tool-fs-search` glob tool (Tier-1 item 1 in
-the tool comparison, 2026-11-06). Named glob_files rather than glob for two reasons: the
+the tool comparison). Named glob_files rather than glob for two reasons: the
 CLIENT loader blocks 'import glob' (ast_guard.DANGEROUS_MODULES) and globals_builder
 injects delivered modules by short name into every tool's exec globals, so a module named
 'glob' would shadow that name repo-wide.

@@ -1,8 +1,4 @@
-"""tool_code_request handler: ship source for a single tool (+ deps + hash).
-
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 719-771).
-Only mechanical change: the tool_scanner imports gained one dot of depth.
-"""
+"""tool_code_request handler: ship source for a single tool (+ deps + hash)."""
 
 import json
 

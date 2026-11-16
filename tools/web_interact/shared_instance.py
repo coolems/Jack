@@ -4,13 +4,12 @@ When tools are compiled via exec() by RemoteToolOrchestrator, they cannot receiv
 a 'self' parameter. This module provides a global singleton that all web_interact
 tools can import and use instead of 'self'.
 
-CROSS-COPY ANCHOR (2026-09-14 reliability fix -- the 'goto: No page available' bug):
+CROSS-COPY ANCHOR (reliability -- the 'goto: No page available' bug):
   The CLIENT loader re-executes this source once PER TOOL COMPILATION as a shared_dep
   (install_shared_deps), so a live client process can hold SEVERAL module copies of it,
   each with its own private '_instance'. connect() populated copy #1 while goto()'s
   bound functions closed over copy #2 -- which was empty -- and every tool that tried to
   auto-reconnect hit an unbound name (same-package imports are neutralized by the source
-  transform). The fix: the real singleton lives in a process-wide anchor module stored
   under a fixed sys.modules key. Every exec'd copy of this file reads/writes that ONE
   anchor, so all tools -- whatever copy they closed over -- always see the same
   WebInteract instance and the same registered connect() function.
@@ -44,10 +43,10 @@ _anchor = _ensure_anchor()
 
 
 def get_web_interact():
-    """Get or create the global WebInteract instance (anchor-backed, 2026-09-14).
+    """Get or create the global WebInteract instance (anchor-backed,).
 
-    Returns:
-        WebInteract instance, or None if not available.
+        Returns:
+            WebInteract instance, or None if not available.
     """
     global _instance
 
@@ -95,11 +94,10 @@ def set_web_interact(instance):
 def reset_web_interact():
         """Reset the global instance (for cleanup/reconnection).
 
-        2026-08-29 threadless refactor: this used to fiddle with event loops
         (get_event_loop/close) which was both pointless and unsafe. It now only
         drops the reference -- callers that want a clean browser teardown should
         `await instance.disconnect()` BEFORE resetting.
-        2026-09-14: also clears the anchor so no copy can resurrect a stale instance.
+        also clears the anchor so no copy can resurrect a stale instance.
         """
         global _instance
         if _instance is not None:
@@ -119,7 +117,7 @@ def set_connect_function(fn):
     Called at module level by connect.py right after it is exec'd on the CLIENT.
     Same-package imports are neutralized by the source transform, so ensure_connected /
     ensure_page CANNOT import connect directly -- they resolve it through this anchor
-    instead (2026-09-14 fix for the unbound 'do_connect' NameError path).
+    instead (for the unbound 'do_connect' NameError path).
     """
     try:
         _ensure_anchor().connect_fn = fn
@@ -152,8 +150,7 @@ async def do_connect_fallback():
 async def _acquire_live_page(wi):
     """Best effort: return a LIVE Page from *wi*'s current state, or None.
 
-    Tries in order (2026-09-14 reliability fix -- the old version gave up after a
-    single failed step and returned None even when a perfectly good context existed):
+    Tries in order, because one failed step does not mean the state is unusable:
       1. wi.page still alive            -> fast path (title check)
       2. any other open tab in the same browser/context is alive -> re-acquire it
       3. create a fresh page in the existing context (up to 3 tries with a short
@@ -205,20 +202,10 @@ async def _acquire_live_page(wi):
 
 async def ensure_page():
         """Ensure a usable Playwright Page exists and return it.
-
         Handles every known edge case:
           * wi.page already valid           -> fast path (title check)
           * wi.page is None but context has open pages -> re-acquire first live page
-          * browser/context gone            -> full reconnect via the registered connect()
-
-        Returns the live Page object, or None if no browser could be reached.
-        Callers should use the returned page (or wi.page afterwards).
-        2026-09-10 fix: tools previously hard-failed with 'No page available' when
-        wi.page was None even though a perfectly good context existed.
-        2026-09-14 fix: the instance is anchor-backed (all tool copies share ONE), and
-        the reconnect goes through do_connect_fallback() -- the old inline
-        'from .connect import connect' was neutralized by the CLIENT source transform
-        and raised NameError at runtime, so this path could never actually reconnect.
+          * browser/context gone            -> full reconnect via the registered connect
         """
         wi = get_web_interact()
         if wi is None:

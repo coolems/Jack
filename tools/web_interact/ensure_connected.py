@@ -16,18 +16,9 @@ logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 
 async def ensure_connected() -> bool:
     """Ensure a usable browser page exists before running a command.
-
-    Calls connect() (which may auto-start Chrome and create a new tab) whenever the
-    shared WebInteract instance is missing, disconnected, or has no live page. Returns
-    True only if a page object is available afterwards.
-
-    2026-09-14 reliability fix: the old code did 'from .connect import connect' inside
-    this function -- on the CLIENT that same-package import is NEUTRALIZED by the source
-    transform (it becomes a bare pass), and connect.py is not in ensure_connected's
-    shared_deps, so 'do_connect' was an unbound name: every auto-reconnect raised
-    NameError and tools failed with 'No page available'. The reconnect now goes through
-    the anchor-registered function (shared_instance.do_connect_fallback), which works no
-    matter which exec'd copy of this file is running.
+    Calls connect (which may auto-start Chrome and create a new tab) whenever the shared
+    WebInteract instance is missing, disconnected, or has no live page. Returns True only if
+    a page object is available afterwards.
     """
     from .shared_instance import get_web_interact, do_connect_fallback
 

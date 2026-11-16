@@ -131,7 +131,7 @@ def normalize_options(options: Optional[list], requirement: str = "") -> Tuple[L
 
 
 def question_definition() -> Dict:
-    """The OpenAI-shaped definition the model sees, in the same shape as delivered tools."""
+    """The OpenAI-shaped definition the model sees, same shape as delivered tools."""
     return {
         "type": "function",
         "function": {

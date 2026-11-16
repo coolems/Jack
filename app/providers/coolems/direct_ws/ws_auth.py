@@ -1,7 +1,6 @@
 """Direct WS client authentication handshake (first message MUST be auth).
 
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 318-487):
-protocol-version negotiation, API-key check via AuthGateway, per-profile
+Protocol-version negotiation, API-key check via AuthGateway, per-profile
 connection-limit enforcement and rate-limiter bootstrap.
 """
 
@@ -21,23 +20,22 @@ from .log import logger
 async def _authenticate_direct_client(ws, server_provider, peer):
     """Authenticate a direct WS client.
 
-    Returns:
-        Tuple of (user_info_dict, api_key_string, conn_id) on success, or
-        (None, None, None) when the client is rejected/disconnects during auth.
-        (2026-09-01 B2 doc fix: the old one-line summary described a 2-tuple; the
-        connection-tracking conn_id has been part of the return since Fix #2.)
-    
-    CONNECTION ENFORCEMENT (Fix #2):
-        - After successful auth, checks max_connections limit per API key.
-        - Registers the connection in conn_tracker for cleanup on disconnect.
-        - Returns tuple of (user_info, api_key) so caller can track enforcement state.
-    
-    ROLE PROPAGATION (Fix #3 - 2026-05-28, superseded):
-        - Stores user_info on ws._user_info for downstream access in chat_relay.py.
-        - The old set_current_user_role()/set_python_exec_blocked_libs() calls were
-          removed 2026-08-28: this SERVER never executes tools, so those stores had no
-          live consumer. Profile data (role + blocked-libs) reaches tool code via the
-          tools_response payload instead.
+        Returns:
+            Tuple of (user_info_dict, api_key_string, conn_id) on success, or
+            (None, None, None) when the client is rejected/disconnects during auth.
+
+
+        CONNECTION ENFORCEMENT:
+            - After successful auth, checks max_connections limit per API key.
+            - Registers the connection in conn_tracker for cleanup on disconnect.
+            - Returns tuple of (user_info, api_key) so caller can track enforcement state.
+
+        ROLE PROPAGATION:
+            - Stores user_info on ws._user_info for downstream access in chat_relay.py.
+            - set_current_user_role()/set_python_exec_blocked_libs() are not called here: this
+              SERVER never executes tools, so those stores have no live consumer. Profile data
+              (role + blocked-libs) reaches tool code through the tools_response payload.
+
     """
     import websockets.exceptions as ws_exc
 

@@ -163,9 +163,10 @@ def dedup_key(url: str) -> str:
 
 
 def locale_marked(url: str) -> bool:
-    """True when the URL carries a locale marker (de.wikipedia.org, /de-DE/ path).
+    """True when a URL carries a locale marker (``/en-US/``, ``?mkt=``, ``cc=`` ...).
 
-    Used to prefer the un-localised variant of a page when Bing returns twins.
+    Lets the result list prefer the un-localised variant of a page when Bing returns
+    language twins.
     """
     base = normalize_url(url)
     if not base:
@@ -248,7 +249,7 @@ def route_providers(query: str, enabled_ids) -> list:
 
     Specialists come FIRST because general engines are the unreliable ones: Bing's
     RSS endpoint returns geo/localisation junk for technical queries (measured
-    2026-11-06: 'transformer attention paper' -> YouTube and dictionary pages),
+    : 'transformer attention paper' -> YouTube and dictionary pages),
     while arxiv/wikipedia/github answer the intent directly.
     """
     enabled = [eid for eid in enabled_ids if eid]
@@ -307,7 +308,7 @@ def rank_by_relevance(items, tokens: set) -> tuple:
 def select_relevant(ranked, tokens: set, limit: int) -> tuple:
     """Fill the result budget with query-matching items when there are enough.
 
-    Engines return geo/localisation junk (measured 2026-11-06: Bing RSS answered
+    Engines return geo/localisation junk (measured: Bing RSS answered
     'qwen3.6 release date' with Trader Joe's pages). When enough items share a query
     word, the zero-overlap ones are dropped instead of occupying visible slots; when
     they are the only material available, they are kept so a search never comes back

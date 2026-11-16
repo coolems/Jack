@@ -4,127 +4,9 @@ This module is the THIN LAYER on top of the guardrail package:
 
     tools/exec_tools/
         _policy.py         pure security-policy data (blocklists, patterns)  -> POLICY namespace
-        _ast_guard.py      AST visitor: profile import checks + hard floor   -> run_ast_check()
-        _pattern_scan.py   tokenize-based string masking + regex fallback    -> run_pattern_scan()
+        _ast_guard.py      AST visitor: profile import checks + hard floor   -> run_ast_check
+        _pattern_scan.py   tokenize-based string masking + regex fallback    -> run_pattern_scan
         python_exec.py     THIS FILE: config resolution, guardrail orchestration, subprocess
-
-SPLIT HISTORY (2026-07-14 refactor)
-===================================
-This used to be a ~50 KB single file ("FULLY SELF-CONTAINED" by design). The
-security logic was buried in module-level functions next to the runner, which
-made it hard to test and audit. It is now split into small, documented modules:
-
-  * _policy.py      -- DATA ONLY (frozensets + regex dict), zero logic.
-                       config/blocked_libs_set01.json must equal DEFAULT_FORBIDDEN_MODULES.
-  * _ast_guard.py   -- the AST visitor with the two-layer model:
-                         LAYER 1 profile-driven import checks (soft, per-profile set)
-                         LAYER 2 hard floor (always on for non-empty sets): blocks the
-                                 generic escape primitives -- attribute calls to
-                                 open/exec/eval/compile/__import__ on ANY object,
-                                 subscript lookups through globals()/vars(), dynamic
-                                 getattr, and taint propagation from dangerous
-                                 expressions. This closes the verified 2026-07-14
-                                 exploit: b = globals()['__builtins__']; f = b.open;
-                                 f(r'<SYSTEM_DIR>\\sensitive.txt')  # example path -- which previously passed
-                                 every guardrail and read outside working_root (rc=0).
-  * _pattern_scan.py-- regex defense-in-depth over tokenize-masked source, so string
-                       literals can neither trigger rules nor hide payloads.
-
-PREDICTABILITY PASS (2026-10-23)
-================================
-Three classes of real-world failures were reproduced and fixed here:
-
-  1. USER SOURCE IS NO LONGER REWRITTEN. The child compiles the submitted snippet
-     as-is under the stable filename "<python_exec>". This fixes:
-       - decorated defs/classes (the old marker injection split "@deco" from "def"),
-       - "from __future__ import ..." (the old __main__ indentation made it illegal),
-       - tracebacks/SyntaxErrors that pointed at payload line ~1670 instead of the
-         user's real line,
-       - "__file__" raising NameError.
-     Debug breadcrumbs now use sys.settrace (opt-in), not inserted code lines.
-  2. LINE ENDINGS ARE NEVER TRANSLATED BY PYTHON_EXEC. The sandbox's text-mode open()
-     wrapper defaults writes to newline="\\n" (no OS CRLF translation). Previously
-     "open(p, 'w')" on Windows wrote CRLF, and a read-modify-write of an LF file
-     converted the WHOLE file to CRLF; content that already contained CRLF became
-     "\\r\\r\\n" (observed corruption, e.g. tools/web_interact/goto.py). The write_file
-     tool applies the repository policy instead (LF everywhere, CRLF for .bat/.cmd).
-  3. BAD-CASE RESULTS ARE DIAGNOSTIC. Internal frames are stripped, user line numbers
-     are preserved, stderr is surfaced even on success, partial stdout is kept when
-     code fails or times out, sandbox denials are labeled, and a user sys.exit(3) is
-     no longer mistaken for a bootstrap init failure.
-
-CLIENT DELIVERY: the CLIENT's dynamic_loader compiles this file with exec() and
-cannot resolve package imports -- BUT same-package relative imports ARE handled:
-tool_scanner._find_same_package_imports() detects 'from ._x import y' lines, ships
-the sibling source as shared_deps, and dynamic_loader rewrites them to bare-name
-assignments with the symbols injected at compile time (same mechanism web_interact
-uses). Each helper module therefore imports ONLY stdlib + takes its policy data as
-an argument -- no cross-imports between helpers.
-
-ROLE PROPAGATION (Fix #4 - 2026-01-31): the SERVER ships CURRENT_USER_ROLE in
-config_constants; dynamic_loader injects it into tool globals. NOTE (2026-08-28):
-the guardrails below are driven by the per-profile blocked-libs SET, not by role --
-nothing in this module reads the role for a security decision anymore.
-
-PER-PROFILE BLOCKED LIBS (2026-08-20 feature, preserved exactly):
-    _get_blocked_libs() resolution order:
-      1. globals().get("PYTHON_EXEC_BLOCKED_LIBS") -- per-profile set shipped by the
-         SERVER in tools_response and injected into tool globals by dynamic_loader
-         (CLIENT sandbox path). An EMPTY list means "no restrictions at all"
-         (admin clean set) and skips EVERY guardrail below -- BY DESIGN.
-      2. tools.utils.get_python_exec_blocked_libs() -- legacy store kept as a safety
-         net for direct callers/tests; in the live architecture no production path
-         populates it (the SERVER never executes tools).
-      3. DEFAULT_FORBIDDEN_MODULES -- fail-safe built-in defaults when no profile
-         set is available (never fail-open).
-
-FIX (2026-08-26): an EMPTY list skips EVERY guardrail below -- module import
-         blocks, hard floor, regex layer AND the path-scope pre-exec scan. The 2026-08-23
-         path-scope check used to run ALWAYS (even for the admin clean set), which blocked
-         legitimate client work that passed absolute paths to subprocess even though the
-         profile listed nothing to block -- contradicting this contract. Only what a
-         profile explicitly lists is enforced; empty = unrestricted.
-
-RUNTIME SANDBOX (2026-08-31): unconditional working_root containment at RUNTIME.
-    Every execution prepends _sandbox_bootstrap.SANDBOX_BOOTSTRAP to the child payload:
-      * a sys.addaudithook checks every open() / enumeration / native-code import
-        against working_root (realpath + separator-anchored prefix -- same semantics
-        as tools/path_guard.py::_is_path_inside_allowed); writes are ROOT-only, reads
-        additionally allow the Python home tree so stdlib imports keep working.
-      * child-process EXEC POLICY (2026-09-15): shells (cmd/powershell/sh/bash/...),
-        interpreters (python/node/perl/...) and network tools (curl/wget/scp/...) can
-        never be spawned; shell-context strings must contain no shell operators
-        (| & ; < > ...); os.popen/os.exec* denied outright, os.fork child dies at 97.
-      * socket.connect / create_connection: loopback-only by default (exfiltration
-        channel closed); ADMIN opt-out via JACK_PYEXEC_NETWORK=1 in the calling process env
-        (2026-09-30) -- full outbound network for admins, forwarded to the child sandbox.
-      * import blocks in the child: ctypes/_ctypes/cffi plus multiprocessing/pty/
-        webbrowser/venv/ensurepip (unsandboxed-child escape classes).
-      * non-audited primitives (os.open flag-aware, stat/lstat/access/truncate/
-        readlink, mutation ops, nt.open, sqlite3.connect) get patched with the same
-        check as a second net.
-      * missing/invalid JACK_PYEXEC_ROOT -> the child exits 3 BEFORE any user code
-        runs (fail-closed; os._exit is C-level and cannot be intercepted).
-    This is a HARD FLOOR: it runs for EVERY execution, including the EMPTY admin
-    clean set that skips all STATIC guardrails by design -- filesystem containment no
-    longer depends on profile configuration. The static layers above are unchanged
-    and still gate imports/patterns per profile. Residuals (documented in
-    _sandbox_bootstrap.py): fd-level I/O after a legal open; bare allowed external
-    commands run at OS level with their own tool semantics.
-
-CROSS-PLATFORM NOTE (2026-09-15, macOS fix): the runtime sandbox is pure CPython
-    stdlib -- sys.addaudithook + builtin/module patching -- with NO platform APIs, so it
-    runs identically on Windows and macOS. The 2026-08-31 revision that broke on Mac failed
-    because (a) only TEMP/TMP were pinned to the sandbox tmp dir while macOS/Python tempfile
-    consult TMPDIR, and (b) READ_ROOTS covered only dirname(sys.executable)/sys.prefix/
-    sys.base_prefix -- a macOS Homebrew python reads stdlib from /opt/homebrew or /usr/local,
-    which is NOT under those roots, so ordinary imports died. Both are fixed: TMPDIR is pinned
-    here, and the bootstrap READ_ROOTS now also include every sys.path entry (see
-    _sandbox_bootstrap.py).
-
-COMPATIBILITY SHIMS: _check_forbidden_ast / _check_forbidden_patterns /
-ASTSecurityVisitor are re-exported so external references to these names keep
-working unchanged.
 """
 
 __tool_description__ = {
@@ -433,15 +315,16 @@ def _make_net_ask_callback(ctx, working_dir):
 # ============================================================================
 
 def _pyexec_dbg(msg, working_dir=None):
-    """Emit a numbered debug marker -- OPT-IN ONLY (2026-09-30 client-console cleanup).
+    """Emit a numbered debug marker -- OPT-IN ONLY (client-console cleanup).
 
     OFF by default: normal runs print NOTHING to stderr and write no log file, keeping
     the client console clean (the always-on [PYEXEC] #N stderr markers were needed while
-    fixing hang bugs but are pure noise now -- user request 2026-09-30). Set env
+    fixing hang bugs but are pure noise now -- user request ). Set env
     JACK_PYEXEC_DEBUG=1 in the CALLING process to opt back in: then every marker prints
     to stderr AND appends to <working_root>/.temp/.jack_pyexec_debug.log (the LAST line =
     where a hang stopped). The flag is forwarded to the child, so one switch re-enables
-    parent #N markers and child C*/B* file logs together."""
+    parent #N markers and child C*/B* file logs together.
+    """
     if os.environ.get("JACK_PYEXEC_DEBUG", "0") == "0":
         return  # default: fully silent -- no stderr clutter, no log files (2026-09-30)
     import time as _t_dbg
@@ -541,7 +424,7 @@ def _cfg(name, default):
     """Resolve a config constant from utils module or globals.
 
     Resolution order:
-      1. globals().get(name) -- CLIENT sandbox injection by dynamic_loader
+      1. globals.get(name) -- CLIENT sandbox injection by dynamic_loader
       2. sys.modules['tools.utils'].name -- SERVER normal import / CLIENT shared_utils
       3. default -- ultimate fallback (should never be reached in practice)
     """
@@ -570,23 +453,7 @@ FILE_EXEC_TIMEOUT = _cfg("FILE_EXEC_TIMEOUT", 300)
 # ============================================================================
 
 def _get_blocked_libs():
-    """Resolve the ACTIVE python_exec module blocklist for this execution.
-
-    Resolution order:
-      1. globals().get("PYTHON_EXEC_BLOCKED_LIBS") -- per-profile set shipped by the
-         SERVER in tools_response and injected into tool globals by dynamic_loader
-         (CLIENT sandbox path). An EMPTY list here means "no restrictions at all"
-         (admin clean set) and skips EVERY guardrail below.
-      2. tools.utils.get_python_exec_blocked_libs() -- legacy store kept as a safety
-         net for direct callers/tests; in the live architecture no production path
-         populates it (the SERVER never executes tools).
-      3. DEFAULT_FORBIDDEN_MODULES -- fail-safe built-in defaults when no profile
-         set is available (never fail-open).
-
-    Returns:
-        frozenset of module names to block on import, or an EMPTY frozenset()
-        meaning "allow everything" (admin clean set).
-    """
+    """Resolve the ACTIVE python_exec module blocklist for this execution."""
     injected = globals().get("PYTHON_EXEC_BLOCKED_LIBS")
     if isinstance(injected, list):
         return frozenset(m for m in injected if isinstance(m, str) and m.strip())
@@ -604,15 +471,9 @@ def _get_blocked_libs():
 def _path_scope_enabled():
     """Whether the path-scope guardrail is active for this execution.
 
-    Gated by the per-profile blocked-libs set alone (see python_exec()): it runs
-    only when the active profile set is NON-EMPTY; an EMPTY admin clean set skips
-    every guardrail BY DESIGN, including this one.
-
-    NOTE (2026-08-28): a former second resolution tier read the flag from
-    tools.utils.get_python_exec_path_scope_guard() -- that store was broken
-    (NameError on every call) and never wired to any profile key or injection, so
-    it was removed along with its utils.py functions. There is no individual flag
-    for this guardrail; only the per-profile blocked-libs set governs it.
+    Gated by the per-profile blocked-libs set alone (see python_exec()): it runs only when the
+    active profile set is NON-EMPTY; an EMPTY admin clean set skips every guardrail BY DESIGN,
+    including this one. There is no separate flag for it.
     """
     return True
 
@@ -620,10 +481,9 @@ def _path_scope_enabled():
 def _get_working_dir():
     """Resolve working directory -- MUST be a configured working_root.
 
-    SECURITY FIX (2026-07-15): previously fell back to ``os.getcwd()`` when the
-    working_root could not be resolved, which let executed code operate in an
-    arbitrary directory OUTSIDE the working_root lock. It now raises instead so
-    we fail loud and never silently escape the tree.
+    A missing working_root raises instead of falling back to os.getcwd(): a fallback
+    would let executed code operate in an arbitrary directory OUTSIDE the working_root
+    lock, so we fail loud and never silently escape the tree.
 
     Resolution order:
       1. globals()['get_working_root']          -- CLIENT sandbox injection by dynamic_loader
@@ -734,8 +594,8 @@ def _to_lf(text, lone_cr=False):
 def _clean_output(text):
     """Normalize stdout to LF and drop only TRAILING newlines.
 
-    Leading whitespace is significant for tables/JSON/CSV, so this deliberately
-    does not use .strip() (the old code silently ate the first indent of output).
+    Leading whitespace is significant for tables/JSON/CSV, so .strip() is deliberately not
+    used - it would eat the first indent of the output.
     """
     return _to_lf(text).rstrip("\n")
 
@@ -753,9 +613,8 @@ def _truncate(text, limit, label="truncated"):
 def _truncate_tail(text, limit, label="truncated"):
     """Truncate while keeping the END of *text* -- tracebacks put the exception last.
 
-    Keeping only the first N chars used to cut off the actual error line of a long
-    traceback, which is the one line an AI needs. This keeps a small head plus the
-    tail (where the exception is).
+    Keeping only the first N chars cuts off the actual error line of a long traceback,
+    which is the one line an AI needs. This keeps a small head plus the tail.
     """
     if text is None:
         return ""
@@ -994,40 +853,23 @@ def _format_timeout(exc, effective_timeout):
 
 
 def _wrap_user_code(user_code):
-    """Build the child-side exec block for *user_code* (2026-10-23 rewrite).
+    """Build the child-side exec block for *user_code*.
 
-    WHY THIS IS NO LONGER A TEXT WRAPPER
-    ====================================
-    The old implementation physically inserted ``_jpsd_log(...)`` lines between
-    top-level statements and indented everything under ``if __name__ == "__main__":``.
-    That looked harmless but produced three verified classes of failures:
-
-      1. DECORATOR SPLIT: a decorated ``def``/``class`` has ``node.lineno`` on the
-         ``def``/``class`` keyword, NOT on the ``@decorator`` line. The marker was
-         inserted between them, so ANY decorated function/class died with
-         ``SyntaxError: invalid syntax`` -- and decorators are everywhere
-         (``@dataclass``, ``@property``, ``@pytest.fixture``, Flask routes, ...).
-      2. FUTURE IMPORTS: ``from __future__ import annotations`` must be the first
-         statement in the file. Indented inside the ``if`` block it raised
-         ``SyntaxError: from __future__ imports must occur at the beginning``.
-      3. USELESS LINE NUMBERS: markers shifted user lines, so tracebacks pointed at
-         ``<python_exec_payload>`` line ~1670 instead of the user's line 3.
-
-    The fix is to stop rewriting the user's source entirely. The child compiles the
-    ORIGINAL source with a stable filename (``<python_exec>``) and executes it at
-    module scope. This:
-      * preserves exact user line numbers in SyntaxError/traceback output;
+    The user's source is never rewritten: it is compiled as-is under a stable filename
+    (<python_exec>) and executed at module scope. Rewriting it - inserting log markers
+    between top-level statements, indenting under ``if __name__ == "__main__":`` - breaks
+    decorated defs/classes (the marker lands between ``@decorator`` and ``def``), moves
+    ``from __future__`` imports out of position and shifts traceback line numbers.
+    Compiling the source directly:
+      * keeps user line numbers exact in SyntaxError/traceback output;
       * keeps decorators, future imports, multi-line statements and comments intact;
       * makes ``__file__`` deterministic instead of raising NameError;
-      * allows debug breadcrumbs via ``sys.settrace`` (only when JACK_PYEXEC_DEBUG=1),
-        so the C4 line markers no longer mutate the code at all.
+      * allows debug breadcrumbs via ``sys.settrace`` (JACK_PYEXEC_DEBUG=1).
 
-    SECURITY NOTE: the old ``if __name__ == "__main__":`` wrapper was believed to be
-    what makes ``globals()['__builtins__']`` a builtins MODULE in the child. That is
-    actually a property of ``python -c`` script context, not of the guard: the child
-    entry already runs as ``__main__`` and ``exec`` shares those globals, so the
-    guardrail model in _ast_guard.py is unchanged. The full escape battery is rerun
-    by the regression tests in tools/test_tools/test_python_exec_regressions.py.
+    ``python -c`` already runs the child as ``__main__`` with ``__builtins__`` as a
+    builtins MODULE, so ``exec`` sharing those globals leaves the _ast_guard.py model
+    unchanged. The escape battery is rerun by
+    tools/test_tools/test_python_exec_regressions.py.
     """
     return "\n".join([
         "_USER_FILENAME = '<python_exec>'",
@@ -1067,32 +909,7 @@ def _wrap_user_code(user_code):
 
 def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
                               net_ask_callback=None):
-    """Run a sandbox-prefixed payload in an isolated child process.
-
-    * Prepends SANDBOX_BOOTSTRAP (the runtime containment layer) to the wrapped
-      user code -- UNCONDITIONAL: every execution gets it, admin clean set included.
-    * Exposes the lock via JACK_PYEXEC_ROOT; the bootstrap exits 3 fail-closed if
-      that env var is missing or invalid (before any user code runs).
-    * Pins TEMP/TMP/TMPDIR to <working_root>/.temp so every temp file created by an
-      execution lands in one dedicated folder (never scattered across working_root).
-    * Delivers the payload via STDIN (`python -c "<entry>"`) instead of `python -c <payload>`:
-      Windows caps the command line at 32,768 chars and the bootstrap alone is ~23 KB --
-      stdin delivery removes that limit for user code (up to the 1 MB tool cap) on every
-      platform. The entry (_CHILD_ENTRY) reads the payload from stdin and CLOSES fd 0 in
-      the child first, so spawned tools inherit EOF instead of a live pipe (macOS hang fix
-      2026-09-17).
-    * macOS hang fix 2026-09-17: the bare subprocess.run() was replaced by a manual Popen
-      loop -- stdin is fed from a dedicated thread, stdout/stderr are drained continuously
-      (no pipe-fill deadlock), a heartbeat (#8.x) is logged every 10s while the child runs,
-      and on timeout the WHOLE process group is killed (POSIX start_new_session + killpg;
-      Windows kills the direct child). The raised TimeoutExpired always carries partial
-      stdout+stderr so python_exec() can surface the child's last C* marker in the TIMEOUT
-      result.
-
-    * Byte-exact payload delivery (2026-09-22): stdin is a BINARY pipe -- text-mode
-      pipes on Windows translate newlines on write and corrupted every payload with
-      CR/LF bytes. stdout/stderr are drained as bytes and decoded once at the edge.
-    """
+    """Run a sandbox-prefixed payload in an isolated child process."""
     env = os.environ.copy()
     for _k in list(env.keys()):
         if _k.startswith("JACK_PYEXEC_"):
@@ -1228,8 +1045,7 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
     _err_thread.start()
 
     def _close_proc_pipes():
-        """Close every pipe exactly once. Prevents ResourceWarning/handle leaks on
-        repeated calls (the old code relied on GC for stdout/stderr)."""
+        """Close every pipe exactly once, so repeated calls leak no handles."""
         for _p in (proc.stdin, proc.stdout, proc.stderr):
             try:
                 if _p is not None:
@@ -1366,28 +1182,16 @@ def _run_sandboxed_subprocess(wrapped_code, working_dir, effective_timeout,
 
 def python_exec(code, timeout=None):
     """Execute Python code in an isolated child process.
+        An EMPTY profile blocklist skips the STATIC guardrails by design, but the runtime
+        sandbox still enforces containment.
+                Args:
+            code: Python source to execute as a string. May use imports/subprocess/os/
+                sys/json/math/re etc., subject to the active guardrails. Output is truncated at
+                ~10 KB; errors at ~2 KB.
+            timeout: Optional timeout in seconds. Defaults to the configured value
+                (FILE_EXEC_TIMEOUT, typically 300). On expiry the process is killed and a
+                TIMEOUT message with any partial output is returned.
 
-    Runs the code as a separate ``python -c`` subprocess pinned to working_root
-    (no CWD fallback), captures stdout/stderr, and enforces the active profile's
-    security guardrails (import blocklist + AST hard floor + pattern scan; see
-    module docstring), and the UNCONDITIONAL runtime sandbox that pins all filesystem
-    access to working_root for every execution. An EMPTY profile blocklist skips the
-    STATIC guardrails by design, but the runtime sandbox still enforces containment.
-
-    Args:
-        code: Python source to execute as a string. May use imports/subprocess/os/
-            sys/json/math/re etc., subject to the active guardrails. Output is
-            truncated at ~10 KB; errors at ~2 KB.
-        timeout: Optional timeout in seconds. Defaults to the configured value
-            (FILE_EXEC_TIMEOUT, typically 300). On expiry the process is killed and
-            a TIMEOUT message with any partial output is returned.
-
-    Returns:
-        str - the subprocess stdout on success ("Executed successfully (no output)"
-        when empty). Non-fatal stderr is appended under a clearly marked block.
-        Failures return a one-line category, the failing user line + source, a
-        cleaned traceback whose line numbers refer to the SUBMITTED code, and any
-        stdout produced before the failure. Timeouts include partial stdout/stderr.
     """
 
     if not isinstance(code, str):

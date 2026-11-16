@@ -3,14 +3,15 @@
 The AI thinks on a remote SERVER, but python_exec runs code ON THE CLIENT MACHINE, so
 the local user has veto power: ToolExecutor emits an 'exec_approval_request' frame with
 the exact payload (build_approval_frame()) unless a grant is active, and the turn AWAITs
-the decision through deliver_decision() -> ExecApprovalState.resolve(). Two transports
+the decision through deliver_decision -> ExecApprovalState.resolve. Two transports
 feed that one function: the chat's 'exec_approval_decision' frame and
 POST /api/exec-approval/{conv}/{req}. "Allow until task done" sets THAT kind's flag so
 later requests of the same kind skip the question; the state is fresh each turn.
 
 NO timeout - the await blocks until resolve() or the turn stops; fail-closed only where
 asking is impossible. Futures live on the SAME uvicorn loop, so no cross-thread
-plumbing; cancel_all() withdraws cards a turn leaves unanswered."""
+plumbing; cancel_all() withdraws cards a turn leaves unanswered.
+"""
 
 import asyncio
 import logging
@@ -100,7 +101,8 @@ class ExecApprovalState:
 
     allow_<kind>_till_task_done: ONE flag PER card kind, set by "Allow until task done" on
     a card of that kind - later requests of the same kind skip the question, other kinds
-    still ask. All reset by a new state for the next turn."""
+    still ask. All reset by a new state for the next turn.
+    """
 
     def __init__(self):
         # 2026-07-18 rev4: per-category grants - each dialog's "Allow until task done"
@@ -191,10 +193,11 @@ class ExecApprovalState:
         return [(rid, self._request_kind.get(rid, "python")) for rid in list(self._pending)]
 
     def cancel_all(self) -> list:
-        """Drop every pending request (turn ended/stopped) and report what was dropped.
+        """Drop every pending request (turn ended or stopped) and report what was dropped.
 
-        Returns [(request_id, kind)] so the caller emits one 'consent_cancelled' frame per
-        card - a card whose future is gone can never be answered. Fail-closed: 'deny'."""
+        Returns [(request_id, kind)] so the caller emits one 'consent_cancelled' frame per card -
+        a card with no future can never be answered. Fail-closed: 'deny'.
+        """
         dropped = self.pending_requests()
         for rid, fut in list(self._pending.items()):
             if not fut.done() and not fut.cancelled():

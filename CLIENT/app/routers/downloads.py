@@ -1,24 +1,19 @@
-"""Setup/Downloads progress endpoints (2026-09-21).
+"""Tool setup-progress endpoints (GET /api/setup/status, GET /api/setup/tools).
 
-Live view of a self-unpacking tool's first-run setup - venv creation, pip installs
-and model weight downloads. The data comes from the tiny state file each tool runtime
-writes while its setup subprocesses run:
+Live view of a self-unpacking tool's first-run setup - venv creation, pip installs and
+model weight downloads. The data comes from the state file each runtime writes while its
+setup subprocesses run, written by tools/tool_bootstrap.py (venv + pip stages) and by the
+tool itself (model stage, e.g. generate_image):
 
     <runtimes_root>/<tool>/.setup_progress.json
 
-written by tools/tool_bootstrap.py (venv + pip stages) and the tool itself (model
-stage, e.g. generate_image). This router only READS that file - it is a pure
-information channel for the UI's "Setup / Downloads" section:
-
-    GET /api/setup/status?tool=generate_tool -> {"tool", "updated_at", "stages": {...}}
+This router only READS that file for the UI's "Setup / Downloads" section;
+_public_stage() strips internal fields from each stage.
 
 The runtimes root resolves with the SAME rule as tools/tool_bootstrap.py:
-COOLEMS_CLIENT_ROOT/tools/runtimes when running inside the CLIENT process, otherwise
-<working_root>/tools (local dev). Any future self-unpacking tool gets this endpoint
-for free - no per-tool code needed.
-
-Auth comes from the standard APIMiddleware (this is a normal /api/* route) - nothing
-extra to wire here.
+COOLEMS_CLIENT_ROOT/tools/runtimes inside the CLIENT process, otherwise
+<working_root>/tools (local dev). Any future self-unpacking tool gets the endpoint
+without extra code. Normal /api/* routes, so APIMiddleware applies.
 """
 
 import json

@@ -7,7 +7,7 @@ The user's clipboard is PRESERVED: it is read first, the text is written, Ctrl+V
 sent, and the original content is restored afterwards. Focus is verified against the
 granted app's pid, so the paste cannot land in an app the user did not allow.
 
-Consumption is foreground-dependent in some apps, so this never retries automatically -
+Consumption is foreground-dependent in some apps, so this never retries automatically
 it reports dispatched/verified=false and tells you to inspect the target.
 """
 

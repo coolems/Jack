@@ -15,9 +15,7 @@ from typing import Dict, Callable
 logger = logging.getLogger("COOLEMS.Tools.Test")
 
 class TestTools:
-    """
-    Testing tools - dynamically loaded from .py files in this folder.
-    """
+    """Testing tools - dynamically loaded from .py files in this folder."""
 
     def __init__(self):
         self._tools: Dict[str, Callable] = {}

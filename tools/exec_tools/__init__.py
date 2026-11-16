@@ -1,15 +1,12 @@
-"""Execution Tools - Dynamic Entry Point
+"""Execution Tools - dynamic entry point.
 
-This module provides code execution capabilities (Python, and future languages).
-Each function is in its own .py file for maintainability.
-Tools are auto-discovered at runtime - just add a .py file to this folder.
+Code execution capabilities; each function is its own .py file and tools are
+auto-discovered at runtime - add a file, it loads; remove one, it stops loading.
 
-Example:
-    - Add cpp_exec.py with a function named `cpp_exec` -> it's automatically loaded
-    - Remove a file -> it's automatically excluded on next run
+    - Add cpp_exec.py with a function named `cpp_exec` -> automatically loaded
+    - Remove a file -> automatically excluded on the next run
 
-Note: calculator.py has been moved to _old/ and is no longer active.
-      Use python_exec for all calculations instead.
+All calculations go through python_exec.
 """
 
 import logging
@@ -23,8 +20,7 @@ logger = logging.getLogger("COOLEMS.Tools.Exec")
 
 
 class ExecTools:
-    """
-    Execution tools - dynamically loaded from .py files in this folder.
+    """Execution tools - dynamically loaded from .py files in this folder.
 
     Current tools:
         - python_exec: Execute arbitrary Python code
@@ -42,8 +38,7 @@ class ExecTools:
         logger.info(f"ExecTools initialized with {len(self._tools)} tools: {list(self._tools.keys())}")
 
     def _discover_tools(self) -> None:
-        """
-        Auto-discover all tool functions in this directory.
+        """Auto-discover all tool functions in this directory.
 
         Rules:
         - Only files in the immediate folder (not subdirectories) are scanned

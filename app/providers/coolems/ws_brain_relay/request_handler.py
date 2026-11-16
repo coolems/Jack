@@ -5,12 +5,11 @@ _handle_relay_request() runs every 'request' frame through, in order:
   2. per-client rate limiting (bucket keyed 'relay:<client_id>'),
   3. per-client model authorization (exact folder-name match via auth_gateway),
   4. owner-scoped stop-event registration (SERVER-side stop propagation),
-  5. enqueue into the shared server queue with a RelayTargetSink (multi-chat).
+  5. enqueue into the shared server queue with a RelayTargetSink
 
-Kept out of connection.py so the reconnect/auth loop stays readable; it is called from
-the main message loop in connect_to_web_relay() when msg_type == 'request'. Every denial
-sends its error frame and returns - exactly what the original inline branch did with a
-'continue' back to the message loop.
+Separate from connection.py so the reconnect/auth loop stays readable; called from the
+main message loop in connect_to_web_relay() when msg_type == 'request'. Every denial
+sends its error frame and returns, so the loop continues to the next frame.
 """
 
 import logging

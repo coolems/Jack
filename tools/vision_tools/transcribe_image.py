@@ -1,6 +1,6 @@
 """Transcribe image function - extracts text from images using OCR model
 
-UPDATED (2026-08-26):
+UPDATED
   - Optional `image_base64` parameter: when the caller already has the raw pixels
     (e.g. an image just uploaded in this chat turn), they are used DIRECTLY -- no
     disk read needed at all.
@@ -10,7 +10,7 @@ UPDATED (2026-08-26):
   - Auto-save: when transcribing pixels that do not exist as a file yet (direct
     base64 with no saved name), the image is saved into .temp/images/ under a clear
     name and that name is reported in the result, so it can be referenced later
-    (scratch policy 2026-11-09: images never land in the working_root root).
+    (scratch policy: images never land in the working_root root).
 """
 
 __tool_description__ = {
@@ -59,7 +59,7 @@ def _looks_like_base64(data: str) -> bool:
 def _auto_save_name() -> str:
     """Build a unique auto-save filename for pixels that have no saved name yet.
 
-    SCRATCH POLICY (2026-11-09, user request): the auto-save lands in
+    SCRATCH POLICY: the auto-save lands in
     <working_root>/.temp/images/, never in the working_root root.
     """
     import os
@@ -88,8 +88,7 @@ def get_working_root_safe() -> str:
 
 
 def transcribe_image(filename: str = "", image_base64: str = "") -> str:
-    """
-    Transcribe/extract text from an image using OCR.
+    """Transcribe/extract text from an image using OCR.
     Uses the active provider (Ollama or llama.cpp) from ProviderManager.
     Returns extracted text.
 

@@ -1,6 +1,6 @@
 """Certificate pinning for TLS client links (SHA-256 fingerprint of peer cert).
 
-(2026-09-01 S3) Shared between SERVER and CLIENT -- the two copies MUST stay
+Shared between SERVER and CLIENT -- the two copies MUST stay
 byte-identical (same pattern as provider_manager.py; enforced by
 tools/test_tools/test_shared_copies_identical.py).
 
@@ -11,9 +11,9 @@ certificate (even one signed by a trusted CA) fails before application data -- e
 API key -- flows.
 
 Enforcement points (both verified live against websockets 12 / Python 3.12):
-  - wrap_socket(): blocking sockets (selector loops, direct use).
-  - wrap_bio(): the asyncio proactor transport calls context.wrap_bio() and then drives
-    the returned SSLObject via do_handshake()/read()/write(). We return a thin proxy that
+  - wrap_socket: blocking sockets (selector loops, direct use).
+  - wrap_bio: the asyncio proactor transport calls context.wrap_bio and then drives
+    the returned SSLObject via do_handshake/read/write. We return a thin proxy that
     re-checks the fingerprint after each of those calls until it has seen the peer cert
     (checked-once afterwards: the certificate cannot change mid-connection).
 

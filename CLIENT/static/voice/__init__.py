@@ -1,5 +1,4 @@
-"""
-Voice module — TTS (Text-to-Speech) system using Supertonic.
+"""Voice module — TTS (Text-to-Speech) system using Supertonic.
 
 Modules:
   config      — VoiceConfig, TTSConfig dataclasses

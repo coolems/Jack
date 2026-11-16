@@ -18,10 +18,11 @@ async def _wait_for_health(api_url: str, max_attempts: int, sleep_sec: int = Non
                            headers: Optional[dict] = None) -> bool:
     """Wait for llama.cpp to respond to /health. Returns True if healthy.
 
-    (2026-09 threadless refactor): async - polls on the shared httpx pool with
+    Async - polls on the shared httpx pool with
     await asyncio.sleep() between attempts instead of blocking time.sleep().
 
-    headers (2026-11 strata): optional auth headers; None = llama.cpp as before."""
+    headers: optional auth headers; None = no auth headers.
+    """
     from config import LLAMA_SERVER_STARTUP_WAIT_SEC
 
     if sleep_sec is None:
@@ -41,15 +42,14 @@ async def _wait_for_health(api_url: str, max_attempts: int, sleep_sec: int = Non
 
 async def _verify_model_loaded(api_url: str, expected_filename: str,
                                headers: Optional[dict] = None) -> bool:
-    """Check if the expected model is actually loaded in the server.
+    """Check that the expected model is actually loaded in the server.
 
-    (2026-08-23 security fix) EXACT match only: strip .gguf from both sides,
-    compare basenames case-insensitively for equality. The old bidirectional
-    substring fallback could let a wrong/shorter id pass verification.
+    EXACT match only: strip .gguf from both sides and compare basenames case-insensitively.
+    A substring match would let a wrong or shorter id pass verification.
 
-    (2026-09 threadless refactor): async - /v1/models via the shared httpx pool.
-
-    headers (2026-11 strata): optional auth headers; None = llama.cpp as before."""
+    async - /v1/models through the shared httpx pool.
+    headers: optional auth headers; None = plain llama.cpp request.
+    """
     try:
         client = await get_async_client()
         models_resp = await client.get(f"{api_url}/v1/models", headers=headers)
@@ -81,20 +81,15 @@ async def _verify_model_loaded(api_url: str, expected_filename: str,
 
 async def get_current_model(api_url: str, force: bool = False,
                             headers: Optional[dict] = None) -> Optional[str]:
-    """Get the currently loaded model name from the server.
+    """Get the currently loaded model name from the server - cache-first, pooled HTTP.
 
-    2026-08-18 OPTIMIZED — cache-first, pooled HTTP:
-      1) Fresh in-memory state (model_state, written by server.py after every
-         verified launch) is returned with ZERO HTTP calls. This is what the WS
-         'current_model' handlers and UI polling hit — they used to pay a full
-         /v1/models round-trip per call.
-      2) Stale/empty cache -> ONE pooled /v1/models fetch (async httpx), then the
-         answer is cached for subsequent calls within the TTL.
+      1) Fresh in-memory state (model_state, written by server.py after every verified
+         launch) is returned with ZERO HTTP calls - what the WS 'current_model' handlers
+         and UI polling hit.
+      2) Stale/empty cache -> ONE pooled /v1/models fetch (async httpx), cached for
+         subsequent calls within the TTL.
       3) API unreachable -> fall back to the tracked state (we know what we launched).
-
-    force=True skips the fresh-cache shortcut and always verifies via /v1/models
-    first (used right after a model switch so confirmation is immediate, not
-    limited by LLAMA_MODEL_STATE_TTL_SEC)."""
+    """
     from config import LLAMA_MODEL_STATE_TTL_SEC
     from . import model_state
 

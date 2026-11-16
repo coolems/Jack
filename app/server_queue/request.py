@@ -1,6 +1,6 @@
 """ChatRequest — one queued chat request travelling from a client to an LLM backend.
 
-2026-09-08 multi-chat (Phase 2); 2026-10 fleet: a request now carries its MODEL GROUP
+a request now carries its MODEL GROUP
 and its USER identity, because the queue is per model and per-user slot caps are
 enforced while picking the next request.
 
@@ -24,30 +24,7 @@ from app.providers.llama.model_identity import model_key as model_key_of
 
 @dataclass
 class ChatRequest:
-    """One chat turn submitted by one client conversation.
-
-    Attributes:
-        req_id: unique id (uuid4 hex) — used in logs and stats.
-        conv_id: the CLIENT-side conversation id (may be "" for anonymous turns).
-        owner_key: who owns this request; cancellation is always scoped to an owner:
-            direct path  -> the connection id (``conn_id``),
-            relay path   -> ``f"relay:{client_id}"``.
-        user_key: stable USER identity (email), shared by all of that user's
-            connections/conversations. Per-user slot caps count against this.
-        max_parallel: how many generations this user may run at once (profile
-            ``max_parallel_slots``). <= 0 means unlimited (internal/test use only).
-        model_key: canonical model group (basename, lowercase, no .gguf). Derived from
-            ``model`` when not supplied; the queue is keyed by it.
-        context_window: per-slot context of the backend that runs this request
-            (filled at dispatch; 0 = use CONTEXT_WINDOW_TOKENS).
-        backend: label of the node that ran it (error provenance / logs).
-        sink: transport-agnostic frame sink that delivers response frames back to the
-            requesting chat channel (see :mod:`app.server_queue.sink`).
-        model / messages / temperature / enable_thinking / tools: generation parameters,
-            already profile-filtered by the WS layer before enqueueing.
-        stop_event: shared cancellation event (owner-scoped); set = abort.
-        created_at: monotonic timestamp for queue-age stats.
-    """
+    """One chat turn submitted by one client conversation."""
 
     owner_key: str
     sink: Any  # FrameSink (kept untyped to avoid a circular import at module load)

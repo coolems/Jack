@@ -259,8 +259,9 @@ async def connect_to_web_relay(server_provider):
                         logger.error(f"[SERVER] Web relay sent invalid protocol_version={_echoed_proto!r} - refusing")
                         return
                     if _echoed_proto != PROTOCOL_VERSION:
+                        side = "relay" if _echoed_proto < PROTOCOL_VERSION else "brain"
                         logger.error(f"[SERVER] Protocol mismatch: brain v{PROTOCOL_VERSION}, relay v{_echoed_proto} "
-                                       f"- update the {"relay" if _echoed_proto < PROTOCOL_VERSION else "brain"} so both ends agree")
+                                       f"- update the {side} so both ends agree")
                         return
 
 

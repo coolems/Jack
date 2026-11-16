@@ -1,12 +1,5 @@
-"""
-WebSocket /search command handler.
-
-Handles the `/search <query>` command which triggers a web search,
-optionally translates non-English queries, summarizes results, and
-compares with a previous answer if provided.
-
-UPDATED: Passes API key to tool orchestrator for role-based permission checking.
-FIXED: Lazy import of call_ollama_non_streaming to break circular import chain.
+"""/search command handler: runs the web search, translates a non-English query when
+needed, summarizes the results and compares them with a previous answer if one was given.
 """
 
 import logging
@@ -42,25 +35,21 @@ async def handle_search_command(
     conversation_history: list,
     api_key: str = None,  # NEW: API key for permission checking
 ):
-    """
-    Handle a /search command end-to-end.
+    """Handle a /search command end-to-end.
 
     Args:
-        user_msg: The original user message (e.g. "/search what is X")
-        search_query: The extracted search query (without /search prefix)
-        model: Model name to use for summarization
-        provider: The AI provider instance
-        tool_orchestrator: Tool orchestrator for executing web_search
-        websocket: The WebSocket connection
-        agent: The agent DNA instance
-        db_path: Path to SQLite database
-        conv_id: Conversation ID
-        search_engines: Dict of search engine config
-        conversation_history: Current conversation history list
-        api_key: API key for role-based permission checking (NEW)
-
-    Returns:
-        True if handled successfully, False on error.
+        user_msg: the original message (e.g. "/search what is X").
+        search_query: the query without the /search prefix.
+        model: model used for summarization.
+        provider: the AI provider instance.
+        tool_orchestrator: orchestrator used to run web_search.
+        websocket: the WebSocket connection.
+        agent: the agent DNA instance.
+        db_path: SQLite database path.
+        conv_id: conversation ID.
+        search_engines: search engine config dict.
+        conversation_history: current history list.
+        api_key: key used for the role-based permission check.
     """
     # Parse optional "Previous answer for comparison:" block
     previous_answer = None
@@ -165,9 +154,7 @@ async def _summarize_search_results(
     provider: Any,
     agent: Any,
 ) -> str:
-    """
-    Summarize web search results, optionally comparing with a previous answer.
-    """
+    """Summarize web search results, optionally comparing with a previous answer."""
     # FIXED: Lazy import to break circular import
     from logic.normal import call_ollama_non_streaming
 

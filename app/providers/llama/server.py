@@ -1,33 +1,19 @@
 """Server management for llama.cpp provider.
-
-Handles starting llama-server, finding model files, and vision projector setup.
-OPTIMIZED FOR QWEN3.6 - Based on research from aminr.com and llama.cpp best practices:
-- KV cache quantization (--cache-type-k q8_0, --cache-type-v q8_0) halves VRAM for context
-- Flash attention (--flash-attn on) cuts VRAM by ~30% and improves throughput
-- Single parallel slot (--parallel 1) for stability
-- Cache RAM limit (--cache-ram 2048) prevents OOM on parallel tool calls
+Handles starting llama-server, finding model files, and vision projector setup. OPTIMIZED
+FOR QWEN3.6 - Based on research from aminr.com and llama.cpp best practices:
+- KV cache quantization (cache-type-k q8_0, --cache-type-v q8_0) halves VRAM for context
+- Flash attention (flash-attn on) cuts VRAM by ~30% and improves throughput
+- Single parallel slot (parallel 1) for stability
+- Cache RAM limit (cache-ram) prevents OOM on parallel tool calls
 - Reasoning mode for Qwen3.6 thinking models
 - MTP speculative decoding for >2x speedup
-
 ALL PARAMETERS ARE CENTRALIZED IN config.py - modify there, not here.
-
 This module is the orchestrator. Implementation details are split into:
   - path_utils.py       : Server root & model path resolution
   - command_builder.py  : llama-server CLI argument construction
   - health_check.py     : HTTP health checks & model verification
   - process_mgmt.py     : Subprocess lifecycle (start/stop/kill) + foreign-process inspection
   - model_discovery.py  : .gguf & mmproj file discovery on disk
-
-(2026-10-31 VERIFIED ATTACH): start_server() no longer blindly reuses whatever answers
-/health on our port. A FOREIGN llama-server (started outside us, e.g. manually) is only
-accepted when its command line carries ALL the flags we would have used ourselves
-(expected_flag_signatures: ctx-size / cache-ram / flash-attn + MTP spec-decode for MTP
-models). Anything else - or anything uninspectable - is killed and relaunched from zero,
-so an MTP model ALWAYS gets its --spec-type draft-mtp flags no matter how the port got
-occupied. The old blind shortcut ("llama.cpp is already running.") silently ran models
-WITHOUT MTP whenever a manually-started server owned the port first.
-
-# (2026-09-09 switch-timeout fix): the post-/health model-load budget is config.LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC.
 """
 
 import os
@@ -141,17 +127,18 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 def _resolve_startup_model() -> Optional[str]:
-    """Resolve which model file to load on startup (2026-08-23).
+    """Resolve which model file to load on startup.
 
-    Resolution chain — .last_model_loaded.json is the SOURCE OF TRUTH:
-      1. Persisted model name from config/.last_model_loaded.json, resolved
-         through the local model scan dirs (strict matching in path_utils).
-      2. If nothing persisted / not resolvable -> FIRST model available on disk
-         (deterministic scan order), so a fresh machine still boots with something
-         valid.
+        Resolution chain — .last_model_loaded.json is the SOURCE OF TRUTH:
+          1. Persisted model name from config/.last_model_loaded.json, resolved
+             through the local model scan dirs (strict matching in path_utils).
+          2. If nothing persisted / not resolvable -> FIRST model available on disk
+             (deterministic scan order), so a fresh machine still boots with something
+             valid.
 
-    Returns:
-        Full path to the .gguf file, or None when no model exists at all.
+        Returns:
+            Full path to the .gguf file, or None when no model exists at all.
+
     """
     from .path_utils import _collect_all_gguf, _get_model_scan_dirs, _get_default_models_dir
 
@@ -187,16 +174,15 @@ def _resolve_startup_model() -> Optional[str]:
 
 async def _spawn_and_verify(api_url: str, cmd: list, model_file: str,
                             inst_key: Optional[Tuple[str, int]]) -> bool:
-    """Spawn llama-server with *cmd*, wait for health + verified model load.
+    """Spawn llama-server with *cmd*, wait for health and a verified model load.
 
-    (2026-10-31) Shared by start_server(): Popen with pipe
-    drainers, /health within PROVIDER_STARTUP_TIMEOUT, then the budget-derived
-    model-load verification loop. On success: process registered, model-state cache
-    updated, .last_model_loaded.json persisted. On failure: process terminated,
-    state invalidated, False returned.
+    Shared by start_server(): Popen with pipe drainers, /health within
+    PROVIDER_STARTUP_TIMEOUT, then the budget-derived model-load verification loop.
+    Success: process registered, model-state cache updated, .last_model_loaded.json written.
+    Failure: process terminated, state invalidated, False returned.
 
-    NOTE (2026-10 fleet): the old model-switch/reload path was removed; nodes keep the
-    model they were launched with and routing picks the matching model group."""
+    Nodes keep the model they were launched with; routing picks the matching model group.
+    """
     global _last_loaded_model, _last_loaded_model_full_path
 
     try:
@@ -260,7 +246,7 @@ async def _attach_foreign_if_verified(api_url: str, model_file: str,
                                       host: str, port: int,
                                       inst_key: Optional[Tuple[str, int]],
                                       parallel: int = 1) -> bool:
-    """(2026-10-31 verified attach) Decide whether a FOREIGN server on our port is good enough.
+    """(attach) Decide whether a FOREIGN server on our port is good enough.
 
     Called only when /health answers 200 but we do NOT own the process (no tracked Popen).
     Returns True ONLY when the foreign command line carries every flag signature we would
@@ -269,7 +255,8 @@ async def _attach_foreign_if_verified(api_url: str, model_file: str,
     model running without --spec-type draft-mtp) or an uninspectable command line means
     False -> the caller kills and relaunches from zero with our full flags.
 
-    The decision is always logged explicitly so "is MTP on?" is answerable from coolems.log."""
+    The decision is always logged explicitly so "is MTP on?" is answerable from coolems.log.
+    """
     _eff_port = port or LLAMA_SERVER_PORT
     _bind_host = host or "127.0.0.1"
 
@@ -329,25 +316,14 @@ async def _attach_foreign_if_verified(api_url: str, model_file: str,
 async def start_server(api_url: str, host: str = None, port: int = None,
                        concurrency: int = 1) -> bool:
     """Start llama.cpp server if not already running.
-
-    (2026-09 threadless refactor): async. The /health probe and the startup wait loop
+    async. The /health probe and the startup wait loop
     run on the shared httpx pool with await asyncio.sleep(); Popen is non-blocking; pipe
     drainers stay daemon threads (documented Phase C leaf - blocking pipe reads have no
-
-    (2026-09-08 multi-chat) *host*/*port* parameterize the instance (from config/llama_servers.json);
-    they default to the legacy local single instance. Remote instances (non-loopback host) are
-    ATTACH-ONLY: we never spawn processes on other machines - a healthy remote is simply used,
-    an unhealthy one reports False and the registry marks it unavailable.
-
-    (2026-10-31 verified attach): "already running" is no longer enough for LOCAL instances.
-    A foreign server on our port must carry all of OUR expected flags (see
-    _attach_foreign_if_verified) or it is killed and relaunched from zero - this guarantees
-    an MTP model always boots with speculative decoding, even when a manually-started
-    llama-server owned the port first.
-
-    (2026-10 fleet) *concurrency* is this LOCAL instance's slot count: we pass
-    --parallel N and scale --ctx-size to N x CONTEXT_WINDOW_TOKENS so every slot keeps
-    the full context. Remote instances ignore it (attach-only; slots come from /props)."""
+     *host*/*port* parameterize the instance (from config/llama_servers.json);
+    they default to the legacy local single instance. Remote instances (non-loopback host)
+    are ATTACH-ONLY: we never spawn processes on other machines - a healthy remote is simply
+    used, an unhealthy one reports False and the registry marks it unavailable.
+    """
     global _last_loaded_model, _last_loaded_model_full_path
 
     # (2026-09-08 multi-chat) per-instance key for the model-state cache + process registry.

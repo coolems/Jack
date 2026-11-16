@@ -15,7 +15,7 @@ logger = logging.getLogger("COOLEMS")
 
 def register(router: APIRouter, provider, model_name: str, api_timeout: int,
              agent, stop_events) -> None:
-    """Attach this endpoint group to *router* (verbatim move from the original flat file)."""
+    """Attach the search-engine endpoints to *router*."""
     # ===== SEARCH ENGINES ENDPOINTS =====
     # <CLIENT>/config/search_engines.json is the single source of truth for web search.
     # The Settings UI renders/edits it through these two endpoints; the web_search tool
@@ -25,7 +25,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
     async def get_search_engines():
         """Return the full engine list from config/search_engines.json.
 
-        On a missing/corrupt file load_search_engines() returns [] and logs an error -
+        On a missing/corrupt file load_search_engines() returns [] and logs an error
         the UI then shows that state instead of inventing engines (no fallback lists).
         """
         try:

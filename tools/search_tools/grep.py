@@ -1,18 +1,15 @@
 """grep - search file CONTENTS inside working_root with ripgrep, with line numbers.
 
-Ported from deepseek-harness's `packages/fs/tool-fs-search` (Tier-1 item 1 in the tool
-comparison, 2026-11-06). Before this tool existed, content search meant reading files one
-by one - the biggest gap in my toolset. ripgrep 15 is spawned as a plain argv vector
-(never a shell string), so a pattern can never inject a command, and its NDJSON output
-gives real line numbers plus optional context lines.
+ripgrep is spawned as a plain argv vector (never a shell string), so a pattern cannot
+inject a command, and its NDJSON output gives real line numbers plus optional context.
 
 WHY THE SPAWN LIVES HERE AND NOT IN _search_core.py: the CLIENT loader AST-validates the
 TOOL source against policy.py's per-tool allowlist, but shared deps are exec'd WITHOUT
-that validation. Keeping subprocess.run in this file means the trust decision stays
-auditable per tool (see CLIENT/tools/remote_tools/loader/policy.py).
+that validation. Keeping subprocess.run in this file keeps the trust decision auditable
+per tool (see CLIENT/tools/remote_tools/loader/policy.py).
 
-Exit codes are ripgrep's contract: 0 = matches found, 1 = zero matches (NOT an error),
->=2 = real failure (bad pattern, unreadable path, etc.).
+Exit codes are ripgrep's contract: 0 = matches, 1 = zero matches (NOT an error),
+>=2 = real failure (bad pattern, unreadable path).
 """
 
 __tool_description__ = {
@@ -83,22 +80,22 @@ def grep(pattern: str, path: str = "", include: str = "", context_lines: int = 0
          max_matches: int = MAX_MATCHES) -> str:
     """Search file contents inside working_root; returns matches with line numbers.
 
-    SECURITY RULE - CRITICAL:
-        * path = DIRECTORY only (e.g. 'tools/search_tools'), resolved against working_root.
-        * '..' traversal and absolute paths outside working_root are refused.
+        SECURITY RULE - CRITICAL:
+            * path = DIRECTORY only (e.g. 'tools/search_tools'), resolved against working_root.
+            * '..' traversal and absolute paths outside working_root are refused.
 
-    Args:
-        pattern: ripgrep regular expression.
-        path: Directory to search (empty = working_root).
-        include: One file-type glob ('*.py', '*.md').
-        context_lines: 0-10 context lines around each match.
-        ignore_case: Case-insensitive search.
-        include_ignored: Include gitignored/hidden files (heavy folders stay excluded).
-        max_matches: Cap for the returned result (1-250).
+        Args:
+            pattern: ripgrep regular expression.
+            path: Directory to search (empty = working_root).
+            include: One file-type glob ('*.py', '*.md').
+            context_lines: 0-10 context lines around each match.
+            ignore_case: Case-insensitive search.
+            include_ignored: Include gitignored/hidden files (heavy folders stay excluded).
+            max_matches: Cap for the returned result (1-250).
 
-    Returns:
-        'Found N match(es) for ...' with per-file groups of 'Line N: text', or
-        'No matches ...', or 'Error: ...' carrying the reason.
+        Returns:
+            'Found N match(es) for ...' with per-file groups of 'Line N: text', or
+            'No matches ...', or 'Error: ...' carrying the reason.
     """
     logger.info(f"[grep] {pattern!r} in {path!r} include={include!r} ctx={context_lines} "
                 f"ic={ignore_case} ignored={include_ignored}")

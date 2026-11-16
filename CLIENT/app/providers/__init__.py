@@ -1,31 +1,19 @@
-"""
-COOLEMS Client - Provider package (LAZY SHELL).
+"""COOLEMS CLIENT provider package - LAZY SHELL, no local provider code.
 
-(2026-08-20 dedup) This used to be a plain package containing local copies of
-base.py (BaseProvider ABC) and token_stats.py (TokenStats dataclass) that had to
-be hand-synced with the SERVER's app/providers/ modules. Those disk copies are GONE:
+BaseProvider (ABC) and TokenStats have no CLIENT disk copy: the SERVER delivers both with
+every tools_response under 'framework_sources' ('app.providers.base',
+'app.providers.token_stats'), and DynamicModuleLoader installs them IN MEMORY only
+(sys.modules). This shell resolves names lazily from those delivered modules, so
+`from app.providers import BaseProvider` works. The SERVER is the single source of truth
+for the provider contract, as it already is for tools/DNA/prompts.
 
-  - The SERVER now delivers both modules with every tools_response under
-    'framework_sources' ('app.providers.base', 'app.providers.token_stats').
-  - DynamicModuleLoader installs them IN MEMORY only (sys.modules), never on disk.
-  - This shell resolves names lazily from the delivered modules, so
-    `from app.providers import BaseProvider` keeps working exactly as before.
+Boot order guarantee: RemoteToolOrchestrator.initialize_from_server runs during
+init_provider_and_app BEFORE get_provider is called and BEFORE uvicorn starts, so anything
+that subclasses BaseProvider or reads TokenStats does so after delivery.
 
-Boot order guarantee: RemoteToolOrchestrator.initialize_from_server() runs during
-init_provider_and_app() BEFORE get_provider() is called and BEFORE uvicorn starts,
-so by the time any code subclasses BaseProvider or reads TokenStats the delivered
-modules are already in sys.modules.
-
-Pre-delivery safety net: if something imports this package before delivery has run
-(e.g. a module-level annotation evaluated at import time), __getattr__ returns a
-clear pending placeholder for BaseProvider (annotations only -- never used for
-isinstance/subclassing pre-init) and raises an actionable RuntimeError for anything
-else. There is NO local fallback copy by design: the SERVER is the single source of
-truth for the provider contract, same as it already is for tools/DNA/prompts.
-
-app.provider_manager intentionally keeps its local disk copy (chicken-and-egg: it is
-imported at boot before any WS exists) and stays byte-identical with the SERVER's --
-enforced by tools/test_tools/test_shared_copies_identical.py.
+Pre-delivery safety net: an import that runs before delivery gets a clear pending
+placeholder for BaseProvider (annotations only - never usable for isinstance/subclassing
+pre-init) and an actionable RuntimeError for anything else.
 """
 
 import logging

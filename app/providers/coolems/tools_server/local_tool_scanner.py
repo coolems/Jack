@@ -82,7 +82,7 @@ class LocalToolScanner:
     @property
     def all_shared_sources(self) -> Dict[str, str]:
         """Return ALL shared module sources as a dict.
-        
+
         Keys are module names (e.g., 'utils', 'path_guard'), values are source strings.
         None values indicate the module was not found on disk.
         """

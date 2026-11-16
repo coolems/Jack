@@ -187,9 +187,10 @@ def _normalize_legacy_grant_lines(data: Dict) -> Dict:
 def _normalize_legacy_tool_rows(data: Dict) -> Dict:
     """Rebuild the input frame of rows written before the input formatter.
 
-    Those rows store `args` as json.dumps(...), so a multi-line payload reads as one glued
+    Those rows store `args` as json.dumps, so a multi-line payload reads as one glued
     line and carries no `target`. Only the three content tools are rebuilt; a row with
-    `target` is untouched, and a clipped args string stays exactly as stored."""
+    `target` is untouched, and a clipped args string stays exactly as stored.
+    """
     for row in data.get("tools") or []:
         if "target" in row or not isinstance(row.get("args"), str):
             continue
@@ -357,8 +358,9 @@ class TurnLog:
 
     def add_consent(self, step_no: int, kind: str, decision: str,
                     request_id: str = "", payload: Any = "") -> Dict:
-        """Record an answer. If the card was opened first, the SAME row is folded -
-        an answered card must never produce two history lines."""
+        """Record an answer. If the card was opened first, the SAME row is folded
+        an answered card must never produce two history lines.
+        """
         row = self.find_consent(request_id) if request_id else None
         if row is None:
             row = {

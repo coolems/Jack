@@ -5,11 +5,11 @@ import ast
 def _find_same_package_imports(file_content, tool_name):
     """Find same-package imports (from .module import X) in the source code.
 
-    Returns a dict mapping module_name -> set of imported names.
-    Example: {'shared_instance': {'get_web_interact', 'set_web_interact'}}
+        Returns a dict mapping module_name -> set of imported names.
+        Example: {'shared_instance': {'get_web_interact', 'set_web_interact'}}
 
-    Also detects bare imports from parent package (__init__.py):
-      'from . import WebInteract as WI' → mapped to '__init__' key
+        Also detects bare imports from parent package (__init__.py):
+          'from . import WebInteract as WI' → mapped to '__init__' key
     """
     try:
         tree = ast.parse(file_content)

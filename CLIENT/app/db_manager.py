@@ -1,5 +1,4 @@
-"""
-Centralized SQLite database manager.
+"""Centralized SQLite database manager.
 
 Provides:
     - Helper to create connections with WAL mode and proper settings enabled
@@ -10,7 +9,7 @@ Provides:
 Why not a shared connection?
     SQLite connections are NOT thread-safe. FastAPI runs concurrent requests,
     so sharing one connection would cause ProgrammingError or data corruption.
-    
+
     Instead, we create NEW connections per-request but ensure:
     1. WAL journal mode is set (DB-level setting, persists across connections)
     2. Busy timeout prevents immediate failures on lock contention
@@ -44,8 +43,7 @@ _db_path: Optional[str] = None
 _initialized = False
 
 def init_db_manager(db_path: str) -> None:
-    """
-    Initialize the database manager. Sets WAL mode and safe defaults on the DB.
+    """Initialize the database manager. Sets WAL mode and safe defaults on the DB.
 
     This MUST be called once at application startup before any DB operations.
     Subsequent calls are no-ops (safe to call from multiple places).
@@ -84,8 +82,7 @@ def init_db_manager(db_path: str) -> None:
         conn.close()
 
 def get_db_connection() -> sqlite3.Connection:
-    """
-    Create a NEW safe database connection with proper settings.
+    """Create a NEW safe database connection with proper settings.
 
     Each call creates a fresh connection configured with:
     - Busy timeout (5 seconds) to handle lock contention gracefully
@@ -115,8 +112,7 @@ def get_db_connection() -> sqlite3.Connection:
     return conn
 
 def close_db_connection(conn) -> None:
-    """
-    Close a database connection safely.
+    """Close a database connection safely.
 
     Call this in finally blocks to ensure connections are always released.
 
@@ -135,8 +131,7 @@ def close_db_connection(conn) -> None:
 
 @contextmanager
 def db_connection():
-    """
-    Context manager for safe database access.
+    """Context manager for safe database access.
 
     Usage:
         with db_connection() as conn:
@@ -155,8 +150,7 @@ def db_connection():
         close_db_connection(conn)
 
 def shutdown_db_manager() -> None:
-    """
-    Safely shut down the database manager.
+    """Safely shut down the database manager.
 
     Call this on application exit to ensure WAL checkpointing completes.
     This is a no-op since we don't maintain persistent connections,

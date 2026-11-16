@@ -1,5 +1,4 @@
-"""
-Text sanitization and sentence splitting for TTS.
+"""Text sanitization and sentence splitting for TTS.
 
 Two public functions:
   - sanitize_text(text)   → clean string (letters, numbers, spaces, periods, commas, apostrophes, hyphens)
@@ -11,8 +10,7 @@ from typing import List
 
 
 def sanitize_text(text: str) -> str:
-    """
-    Sanitize text: keep letters (including accented/Unicode), numbers,
+    """Sanitize text: keep letters (including accented/Unicode), numbers,
     spaces, periods, commas, apostrophes, and hyphens.
     Everything else is replaced with a comma.
     Consecutive commas are collapsed into a single comma.
@@ -46,8 +44,7 @@ def sanitize_text(text: str) -> str:
 
 
 def split_into_sentences(text: str) -> List[str]:
-    """
-    Split text into individual sentences.
+    """Split text into individual sentences.
 
     Calls sanitize_text first, then splits on periods.
     Each returned sentence ends with a period.

@@ -1,41 +1,20 @@
 """python_exec security policy -- pure data, zero logic, zero dependencies.
-
-This module is DELIBERATELY DATA-ONLY so it can be shipped to the CLIENT sandbox
-without any import machinery (the CLIENT's dynamic_loader rewrites same-package
-imports into bare-name assignments; see _policy loading in python_exec.py).
-
+This module is DELIBERATELY DATA-ONLY so it can be shipped to the CLIENT sandbox without any
+import machinery (the CLIENT's dynamic_loader rewrites same-package imports into bare-name
+assignments; see _policy loading in python_exec.py).
 WHAT LIVES HERE
----------------
-  * FORBIDDEN_MODULES           -- default per-profile import blocklist data
+  * FORBIDDEN_MODULES -- default per-profile import blocklist data
                                    (config/blocked_libs_set01.json must equal this)
   * DANGEROUS_MODULES_FROM_IMPORT / SAFE_OS_IMPORTS -- os/importlib from-import policy
-  * DEFAULT_FORBIDDEN_MODULES   -- fail-safe set used when no profile set is available
-  * FORBIDDEN_FUNCTIONS         -- builtins that can never be CALLED (directly or via alias)
-  * HARD_FLOOR_ATTR_CALL_NAMES  -- builtin names blocked as attribute calls on ANY object
-                                   (the hard floor added by the 2026-07-14 refactor:
-                                    closes the globals()['__builtins__'].open / .exec route)
-  * DANGEROUS_ATTR_ACCESS       -- dunder attributes blocked at ACCESS time
-  * TINTED_CALL_NAMES           -- calls whose RESULT is always dangerous (globals/vars/...)
-  * HIGHER_ORDER_FUNCTIONS      -- functions checked for forbidden-function arguments
-  * FORBIDDEN_ATTR_CALLS        -- module.function pairs that are never allowed
-  * FORBIDDEN_PATTERNS          -- regex defense-in-depth rules (run on string-masked code)
-
-WHY A HARD FLOOR EXISTS (2026-07-14 security audit, verified live exploit)
---------------------------------------------------------------------------
-The per-profile blocked-libs set only governs IMPORT statements. An empty admin
-set means "no restrictions at all" BY DESIGN -- that is the user requirement and
-must be preserved. For every NON-empty profile (e.g. blocked_libs_set01.json) a
-hard floor of checks runs REGARDLESS of what the profile set contains, because
-the AST/regex guardrails over arbitrary Python are fundamentally whack-a-mole:
-
-    b = globals()['__builtins__']   # in `python -c` context this is the BUILTINS MODULE
-    f = b.open                      # no forbidden token anywhere in source
-    print(f(r'<SYSTEM_DIR>\\sensitive.txt').read())   # example path -- reads OUTSIDE working_root (proven, rc=0)
-
-The hard floor blocks: attribute access to open/exec/eval/compile/__import__ on
-ANY object, subscript chains rooted at globals()/vars() calls, and getattr with a
-dynamic name. The AST visitor in _ast_guard.py implements it; the regex rules
-here are the second layer.
+  * DEFAULT_FORBIDDEN_MODULES -- fail-safe set used when no profile set is available
+  * FORBIDDEN_FUNCTIONS -- builtins that can never be CALLED (directly or via alias)
+  * HARD_FLOOR_ATTR_CALL_NAMES -- builtin names blocked as attribute calls on ANY object
+                                    closes the globals['__builtins__'].open / .exec route)
+  * DANGEROUS_ATTR_ACCESS -- dunder attributes blocked at ACCESS time
+  * TINTED_CALL_NAMES -- calls whose RESULT is always dangerous (globals/vars/...)
+  * HIGHER_ORDER_FUNCTIONS -- functions checked for forbidden-function arguments
+  * FORBIDDEN_ATTR_CALLS -- module.function pairs that are never allowed
+  * FORBIDDEN_PATTERNS -- regex defense-in-depth rules (run on string-masked code)
 """
 
 

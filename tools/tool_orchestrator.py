@@ -165,7 +165,7 @@ class ToolOrchestrator:
     
     def _auto_inject_context_params(self, tool_name: str, tool_func: Callable, tool_params: Dict, api_key: str = None) -> None:
         """Dynamically inject work_folder and working_root based on function signature.
-        
+
         COMPLETELY DYNAMIC - inspects the actual function parameters to decide what to inject.
         No hardcoded tool names required.
         """

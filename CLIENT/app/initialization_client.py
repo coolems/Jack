@@ -1,36 +1,13 @@
-"""
-Shared provider initialization module for COOLEMS CLIENT.
+"""Shared provider initialization for COOLEMS CLIENT (client-side only).
 
-Client-side only - no server providers, no auth keys.
-Both code_client.py and manager.py use this function.
+CLIENT supports only the 'coolems_client' provider (WebSocket to SERVER); direct LLM
+access is BLOCKED - every request goes through the SERVER relay.
 
-CRITICAL: CLIENT ONLY supports 'coolems_client' provider (WebSocket connection to SERVER).
-Direct LLM access (llama.cpp) is BLOCKED — all requests MUST go through the SERVER relay.
-
-BOOT ORDER (2026-08-21, dedup fix):
-  The 2026-08-20 dedup change removed the CLIENT's local disk copies of
-  app/providers/base.py and token_stats.py — they now live ONLY in SERVER and are
-  delivered with every tools_response. CoolemsClientProvider subclasses BaseProvider
-  at class-definition time, so the framework modules MUST be installed into
-  sys.modules BEFORE get_provider() runs:
-
-    1. bootstrap_framework()          raw WS fetch of tools_response (no provider needed)
-    2. RemoteToolOrchestrator(provider=None).install_from_response(response)
-                                       installs app.providers.base + token_stats in memory,
-                                       plus all shared modules / DNA / config constants / prompt
-    3. get_provider("coolems_client") imports client_provider -> class definition binds the
-                                       REAL delivered BaseProvider; provider instance created
-    4. orchestrator.provider = provider (ToolFetcher now functional for later tool_code_requests)
-    5. agent, health check, model selection
-
-      (2026-09 threadless refactor): init_provider_and_app() and _fetch_and_install_from_server()
-      are now async def - the whole boot sequence runs inside ONE top-level asyncio.run(boot())
-      in code_client.py before uvicorn starts. No ThreadPoolExecutor / nested asyncio.run left.
-
-  While the SERVER is still booting / loading its model, bootstrap_framework() WAITS for it
-  (time budget: BOOTSTRAP_MAX_WAIT_SEC in config/config.py) instead of crashing. A bootstrap
-  that fails AFTER the wait budget is exhausted is FATAL at startup with an actionable error -
-  there is no local fallback copy by design (SERVER is the single source of truth).
+BOOT ORDER: CoolemsClientProvider subclasses BaseProvider at class-definition time, so
+the delivered framework modules must be in sys.modules before get_provider runs -
+bootstrap_framework(), then RemoteToolOrchestrator.install_from_response(), then
+get_provider(). While the SERVER is still booting the fetch waits (BOOTSTRAP_MAX_WAIT_SEC)
+and a failure after that budget is fatal: there is no local fallback copy.
 """
 
 import logging
@@ -103,8 +80,7 @@ def _target_display() -> str:
 
 
 async def init_provider_and_app(provider_name: str, api_url: str):
-    """
-    Initialize the AI provider for CLIENT operation.
+    """Initialize the AI provider for CLIENT operation.
 
     CLIENT-SIDE ONLY - supports 'coolems_client' provider exclusively.
     All requests flow through SERVER relay (WebSocket). Direct LLM access is blocked.
@@ -237,8 +213,7 @@ async def init_provider_and_app(provider_name: str, api_url: str):
 
 
 def resolve_provider_and_url(cli_provider: str = None):
-    """
-    Resolve the final provider name and API URL for CLIENT operation.
+    """Resolve the final provider name and API URL for CLIENT operation.
 
     CLIENT-SIDE - ONLY supports coolems_client. All other providers are BLOCKED.
 

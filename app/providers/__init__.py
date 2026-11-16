@@ -1,10 +1,9 @@
-"""
-Provider factory — SERVER ONLY.
+"""Provider factory — SERVER ONLY.
 
 Exposes only providers needed for coolems_server operation:
-  - CoolemsServerProvider : WebSocket brain server (headless relay to local LLM)
+  - CoolemsServerProvider: WebSocket brain server (headless relay to local LLM)
   - LlamaProvider         : Local llama.cpp backend (used internally by CoolemsServerProvider)
-  - StrataProvider        : Local Strata endpoint (2026-11, SERVER_BACKEND = "strata")
+  - StrataProvider        : Local Strata endpoint (SERVER_BACKEND = "strata")
 """
 from .base import BaseProvider
 
@@ -22,8 +21,8 @@ def get_provider(provider_name: str, api_url: str, timeout: int) -> BaseProvider
 
     Supported (server):
       - 'llama':           llama.cpp server (local backend)
-      - 'strata':          Strata inference endpoint (2026-11; same wire format, Bearer
-                           auth, attach-only - the brain never spawns Strata)
+      - 'strata':          Strata inference endpoint (same wire format, Bearer
+                           auth, attach-only - the brain never spawns )
       - 'coolems_server':  Headless WebSocket brain relay
 
     Client providers (coolems_client) live in CLIENT/ folder.

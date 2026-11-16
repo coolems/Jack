@@ -1,5 +1,4 @@
-"""
-TTS Configuration Dataclasses.
+"""TTS Configuration Dataclasses.
 
 VoiceConfig  — per-voice settings (name, speed, quality, etc.)
 TTSConfig    — global TTS settings (pool size, model, voices, etc.)

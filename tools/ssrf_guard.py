@@ -1,66 +1,16 @@
-"""ssrf_guard -- professional SSRF defense for asyncio HTTP clients. SINGLE SOURCE OF TRUTH.
+"""ssrf_guard - SSRF defense for asyncio HTTP clients. SINGLE SOURCE OF TRUTH.
 
-Rewrite of tools/ssrf_defense.py (2026-09). The old module closed the DNS-rebinding /
-TOCTOU window by monkeypatching socket.getaddrinfo for the duration of a request:
-global, process-wide state with non-atomic save/restore that could not be made safe
-under concurrency (a second overlapping pin destroyed or leaked the first -- a live
-SSRF bypass). That mechanism is GONE.
-
-THE PRINCIPLE (why this design is bulletproof)
+THE PRINCIPLE
     The IP that gets validated must be the SAME ip the socket connects to, by
     construction. PinnedConnector resolves each hostname exactly ONCE, validates every
-    answer against the private/reserved policy below, and then feeds ONLY those exact
-    addresses to aiohttp's connector. There is no second resolution -- not at connect
-    time, not on redirects, not after a cache expiry -- so there is no window to bind
-    into. DNS rebinding is eliminated by construction, not policed afterwards.
+    answer against the private/reserved policy below, and feeds ONLY those addresses to
+    aiohttp's connector. There is no second resolution - not at connect time, not on
+    redirects, not after a cache expiry - so there is no window to bind into. DNS
+    rebinding is eliminated by construction, not policed afterwards.
 
-WHAT THIS MODULE CONTAINS
-  * IP policy (Layer 2 core) -- private/reserved classification incl. IPv6 embedded-IPv4
-    notations (v4-mapped / 6to4 / Teredo). Fail-closed: unparseable input is blocked.
-  * URL validation API -- validate_url_not_ssrff() / ensure_url_not_ssrff(): protocol
-    whitelist, double-decode substring block list, IP-literal classification, and a
-    single resolution check for hostnames. Used as the pre-navigation GATE by browser
-    tools (check_url/goto) where Chrome does its own DNS and we cannot pin it from
-    Python.
-  * PinnedConnector -- an aiohttp.TCPConnector subclass that enforces the principle at
-    the transport layer: every hostname (initial URL AND every redirect hop, literal or
-    name) is resolved once, validated, and pinned for the lifetime of the session.
-  * safe_session() -- one-line factory producing a fully guarded ClientSession.
-
-ASYNCIO-ONLY CONTRACT
-    No threads are spawned anywhere in this module and no threading primitives are used.
-    All state (pin cache, in-flight dedup) lives on per-session connector objects owned
-    by one event loop; dict operations between awaits are atomic on a single loop, so
-    no locks exist or are needed. The only executor involvement is asyncio's own
-    non-blocking DNS offload (loop.getaddrinfo), which is part of the event loop
-    machinery itself -- our code never creates a worker thread.
-
-FAIL-CLOSED CONTRACT (no fallbacks)
-    If validation is unavailable or fails in ANY way, the request is BLOCKED and an
-    error is logged. There is no silent pass-through path anywhere in this module:
-      * unparseable IP literal          -> blocked
-      * hostname resolving to ANY private/reserved/embedded address -> blocked
-      * DNS failure / empty answer set  -> blocked
-      * redirect target that is a blocked IP literal -> blocked (caught at connect time,
-        which the old redirect-hook design had to special-case)
-
-DELIVERY NOTE (server/client split)
-    This file is the single source of truth and is delivered to CLIENTs with every
-    tools_response (see app/providers/coolems/tool_scanner/shared_sources.py::get_all_shared_sources
-    and tools_server/local_tool_scanner.py -- 'ssrf_guard' MUST stay in both lists,
-    ordered BEFORE 'ssrf_defense'). The old name tools/ssrf_defense.py remains as a
-    thin deprecation shim so already-delivered tool code keeps working.
-
-CLIENT usage requires aiohttp (listed in CLIENT/requirements.txt). Browser navigation
-tools do NOT need it -- they only use the sync-free validation gate above.
-
-    URL CONSENT (2026-07-15, extended 2026-10-23): blocked targets may be passed after
-    an explicit user Allow via grant_url() -- a one-shot exact-match ledger consumed by
-    validate/ensure on first use. Consentable categories: file:// inside the working
-    root ('local_file'), loopback http(s) ('loopback') and private/reserved http(s)
-    targets such as LAN / link-local / CGNAT IPs ('private_ip') -- the user decides in
-    a consent card which of these to open. Only non-URL/undecidable input stays hard-
-    blocked (no channel, no meaning for a click). See classify_blocked_url()."""
+A process-wide getaddrinfo monkeypatch cannot be made safe under concurrency: the
+save/restore is non-atomic and an overlapping pin destroys or leaks the first.
+"""
 
 import asyncio
 import ipaddress
@@ -114,10 +64,9 @@ def _extract_embedded_v4(ipv6: ipaddress.IPv6Address) -> List[ipaddress.IPv4Addr
     """Return every IPv4 address embedded inside an IPv6 literal.
 
     Covers the three notations that can hide a private v4 behind a public-looking
-    v6 literal (all previously passed the old v6-only check -- 2026-08-28 fix):
       * ::ffff:a.b.c.d   -> stdlib .ipv4_mapped
-      * 2002:<v4>::/48   -> stdlib .sixtofour
-      * Teredo 2001::/32 -> RFC 4380 sec. 4: last 4 bytes = client IPv4, always
+      * :<v4>::/48   -> stdlib .sixtofour
+      * Teredo ::/32 -> RFC 4380 sec. 4: last 4 bytes = client IPv4, always
         bit-reversed (XOR 0xFFFFFFFF) per the RFC's obfuscation rule
     """
     found: List[ipaddress.IPv4Address] = []
@@ -249,22 +198,11 @@ def validate_url_not_ssrff(
     resolve_hook: Optional[Callable[[str], List[str]]] = None,
 ) -> Tuple[bool, str]:
     """Validate that a URL does not target internal / private addresses.
-
     Defense-in-depth with 3 layers:
-      Layer 0 -- Protocol whitelist (only http/https allowed)
-      Layer 1 -- Double URL-decode + substring block list check
-      Layer 2 -- Target classification, fail-closed on ANY error:
+      Layer 0 -- Protocol whitelist (only http/https allowed) Layer 1 -- Double URL-decode +
+      substring block list check Layer 2 -- Target classification, fail-closed on ANY error:
                   * IP literals are classified directly (no DNS involved);
                   * hostnames are resolved ONCE and every answer must be public.
-
-    Args:
-        url: The URL to validate.
-        resolve_hook: Optional callable hostname -> list of IP strings for the Layer-2
-            resolution step. When None, socket.getaddrinfo is used (a single sync call --
-            appropriate for the pre-navigation GATE in browser tools).
-
-    Returns:
-        Tuple of (is_safe, reason_string). is_safe=True means URL passed all checks.
     """
     # --- Consent ledger (2026-07-15): an explicit one-shot user grant passes this exact URL.
     # The consent decision itself was made in ToolExecutor via classify_blocked_url();
@@ -409,7 +347,8 @@ def _file_url_local_path(url: str):
 
 def _ip_class_label(ip_obj) -> str:
     """Human-readable class for a blocked IP -- shown on the consent card so the user
-    can decide with full context (2026-10-23)."""
+        can decide with full context.
+    """
     if isinstance(ip_obj, ipaddress.IPv4Address):
         if ip_obj.is_loopback:
             return "loopback"
@@ -437,24 +376,17 @@ def _ip_class_label(ip_obj) -> str:
 
 
 def classify_blocked_url(url: str):
-    """Classify a BLOCKED url as consentable (user may be asked) or hard-blocked.
+    """Classify a BLOCKED url as consentable (the user may be asked) or hard-blocked.
 
-    Returns (is_consentable, reason). The *reason* doubles as the card's context line,
-    so it names the exact target and its class. Consentable categories (2026-10-23 --
-    extended from local-only to every blocked http(s)/file:// target, so the USER
-    decides what is ok for him):
+    Returns (is_consentable, reason). *reason* doubles as the consent card's context line,
+    so it names the exact target and its class.
 
-      * 'local_file'  -- file:// whose local path is INSIDE the current working root;
-      * 'loopback'    -- http(s) targeting localhost / 127.x / ::1 (dev server etc.);
-      * 'private_ip'  -- http(s) targeting private/reserved ranges: LAN, link-local
-        metadata IPs, CGNAT, multicast, reserved, IPv6 ULA/link-local.
-
-    Hard blocks remain for what a click cannot meaningfully decide: other schemes
-    (ftp://, data:, ...), URLs with no hostname, hostnames whose answers are mixed or
-    undecidable (at least one public/unparseable answer), and any internal error
-    (fail-closed by construction).
-
-    Never raises.
+    Consentable: 'local_file' (file:// whose path is INSIDE the current working root),
+    'loopback' (localhost / 127.x / ::1), 'private_ip' (LAN, link-local metadata IPs,
+    CGNAT, multicast, reserved, IPv6 ULA/link-local).
+    Hard-blocked: what a click cannot decide - other schemes (ftp://, data:), a URL with
+    no hostname, hostnames whose answers are mixed or undecidable (any public/unparseable
+    answer), and any internal error. Fail-closed by construction; never raises.
     """
     try:
         if not isinstance(url, str):
@@ -599,29 +531,29 @@ def _pinned_connector_base():
 
 
 class PinnedConnector(_pinned_connector_base()):
-    """aiohttp connector that makes SSRF pinning a property of the connection itself.
+    """Aiohttp connector that makes SSRF pinning a property of the connection itself.
 
-    Overrides _resolve_host() -- the SINGLE point through which every new TCP
-    connection (initial URL, reconnects, and every redirect hop) obtains its target
-    addresses:
+        Overrides _resolve_host -- the SINGLE point through which every new TCP
+        connection (initial URL, reconnects, and every redirect hop) obtains its target
+        addresses:
 
-      * IP-literal hosts are classified directly and blocked if private/reserved
-        (aiohttp's own resolver would short-circuit literals without any policy check);
-      * hostnames are resolved exactly ONCE via the loop's non-blocking getaddrinfo,
-        every answer is validated against the Layer-2 policy, and the resulting address
-        list is PINNED on this connector for its lifetime. Later connections to the same
-        host reuse the pinned set -- DNS is never asked again, so a rebinding attack's
-        second answer can never be seen or used;
-      * any failure (DNS error, empty set, private answer) raises SSRFError BEFORE a
-        socket exists. Nothing is pinned on failure, so a later request may retry the
-        resolution fresh.
+          * IP-literal hosts are classified directly and blocked if private/reserved
+            (aiohttp's own resolver would short-circuit literals without any policy check);
+          * hostnames are resolved exactly ONCE via the loop's non-blocking getaddrinfo,
+            every answer is validated against the Layer-2 policy, and the resulting address
+            list is PINNED on this connector for its lifetime. Later connections to the same
+            host reuse the pinned set -- DNS is never asked again, so a rebinding attack's
+            second answer can never be seen or used;
+          * any failure (DNS error, empty set, private answer) raises SSRFError BEFORE a
+            socket exists. Nothing is pinned on failure, so a later request may retry the
+            resolution fresh.
 
-    Per-session state only: two sessions never share pins, and all dict operations run
-    on one event loop between awaits -- no locks, no threads, no global state.
+        Per-session state only: two sessions never share pins, and all dict operations run
+        on one event loop between awaits -- no locks, no threads, no global state.
 
-    TLS stays correct by construction: aiohttp connects to our pinned IP but performs
-    SNI + certificate verification against the ORIGINAL hostname (see
-    TCPConnector._create_direct_connection: server_hostname = req.server_hostname or host).
+        TLS stays correct by construction: aiohttp connects to our pinned IP but performs
+        SNI + certificate verification against the ORIGINAL hostname (see
+        TCPConnector._create_direct_connection: server_hostname = req.server_hostname or host).
     """
 
     def __init__(self, *args, dns_lookup=None, **kwargs):
@@ -717,18 +649,18 @@ class PinnedConnector(_pinned_connector_base()):
 def safe_session(timeout=30.0, **connector_kwargs):
     """Create a fully SSRF-guarded aiohttp.ClientSession (asyncio-only).
 
-    Every connection made through this session -- including all redirect hops and any
-    IP-literal target -- passes PinnedConnector's resolve-once-validate-pin contract.
-    Callers should still run ensure_url_not_ssrff() on the initial URL for a fast,
-    logged pre-check; the connector is the enforcement layer that cannot be bypassed by
-    redirects or re-resolution.
+        Every connection made through this session -- including all redirect hops and any
+        IP-literal target -- passes PinnedConnector's resolve-once-validate-pin contract.
+        Callers should still run ensure_url_not_ssrff on the initial URL for a fast,
+        logged pre-check; the connector is the enforcement layer that cannot be bypassed by
+        redirects or re-resolution.
 
-    Args:
-        timeout: Total request budget -- seconds (float) or an aiohttp.ClientTimeout.
-        **connector_kwargs: Forwarded to PinnedConnector/TCPConnector (ssl, limit, ...).
+        Args:
+            timeout: Total request budget -- seconds (float) or an aiohttp.ClientTimeout.
+            **connector_kwargs: Forwarded to PinnedConnector/TCPConnector (ssl, limit, ...).
 
-    Returns:
-        An open ClientSession -- use as an async context manager ('async with').
+        Returns:
+            An open ClientSession -- use as an async context manager ('async with').
     """
     aiohttp = _import_aiohttp()
     if isinstance(timeout, aiohttp.ClientTimeout):

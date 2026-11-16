@@ -1,13 +1,7 @@
-"""
+"""Health check and model listing for llama.cpp provider.
 
-
-Health check and model listing for llama.cpp provider.
-
-
-Uses shared sync HTTP session from http_client module instead of bare requests.get()
-— enables TCP connection pooling across all health checks.
-
-
+Uses the shared sync HTTP session from the http_client module instead of bare
+requests.get(), which enables TCP connection pooling across all health checks.
 """
 
 
@@ -62,11 +56,11 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Health")
 # _resolve_server_root imported from .path_utils (single source of truth)
 
 def _get_all_model_folders() -> list:
-    """(2026-10 fleet) Local model scan dirs.
+    """Local model scan dirs.
 
-    Profiles no longer carry model folders (they authorize by filename), so the scan
-    path lives in path_utils: llama_server/models (flat + one subfolder deep),
-    config.LLAMA_MODEL_DIRS and the folder of the persisted .last_model_loaded.json.
+    Profiles authorize by filename, so the scan path lives in path_utils:
+    llama_server/models (flat + one subfolder deep), config.LLAMA_MODEL_DIRS and the
+    folder of the persisted .last_model_loaded.json.
     """
     from .path_utils import _get_model_scan_dirs
     return _get_model_scan_dirs()
@@ -77,8 +71,9 @@ class HealthChecker:
 
     """Caches health state and model list for a llama.cpp-shaped endpoint.
 
-    label/start_hint (2026-11 strata) word the probe failures: the llama path keeps
-    "llama.cpp"/"llama-server", a Strata endpoint is described as "Strata"."""
+    label/start_hint name the engine in probe failures: the llama path keeps
+    "llama.cpp"/"llama-server", a Strata endpoint is described as "Strata".
+    """
 
 
 
@@ -118,9 +113,10 @@ class HealthChecker:
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
             """Check if llama.cpp is healthy. Returns (healthy, error_msg, models).
 
-            (2026-09 threadless refactor): the old sync requests.Session version froze the event
-            loop for up to HEALTH_CHECK_TIMEOUT per probe. It now uses the shared httpx.AsyncClient
-            pool and awaits on the caller's loop."""
+            A sync requests.Session probe would freeze the event loop for up to
+            HEALTH_CHECK_TIMEOUT per call, so this uses the shared httpx.AsyncClient pool
+            and awaits on the caller's loop.
+            """
             current_time = time.time()
             if not force and self._is_healthy and (current_time - self._last_check) < self._check_interval:
                 return True, "", self._available_models
@@ -172,7 +168,7 @@ class HealthChecker:
               - on_disk: True (always, since we scan the disk)
               - loaded: True if this model is currently loaded in the server
 
-            (2026-09 threadless refactor): the .gguf glob/scan is blocking filesystem work, so it
+            The .gguf glob/scan is blocking filesystem work, so it
             runs off-loop via asyncio.to_thread; the /v1/models probe uses the shared httpx pool.
             """
             disk_models = await asyncio.to_thread(self._get_disk_models)
@@ -200,9 +196,8 @@ class HealthChecker:
     def _get_disk_models(self) -> List[Dict]:
         """Scan local model directories for .gguf files (flat + one subfolder deep).
 
-        2026-10 fleet: profiles no longer carry model folders; path_utils owns the scan
-        path. Entries are deduplicated by filename and mmproj/projector files are skipped.
-        The "folder" field is kept for display and backward compatibility.
+        path_utils owns the scan path. Entries are deduplicated by filename and
+        mmproj/projector files are skipped. The "folder" field is kept for display.
         """
         all_folders = _get_all_model_folders()
         seen_names = set()

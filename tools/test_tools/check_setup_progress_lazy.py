@@ -1,4 +1,4 @@
-"""Behavior check for the 2026-09-24 'show setup only when needed' fix.
+"""Behavior check for the 'show setup only when needed' fix.
 
 Simulates the .setup_progress.json state file through the REAL code:
 
@@ -9,7 +9,7 @@ Simulates the .setup_progress.json state file through the REAL code:
   B) fresh machine: the model stage appears only on the first REAL progress event,
      previous attempt's rows are re-adopted (no reset - sequential rework),
      then finalized done (live download still fully visible).
-  C) crashed run (2026-10-23): a killed setup leaves stages marked 'running'. begin_run()
+  C) crashed run: a killed setup leaves stages marked 'running'. begin_run()
      must retire those zombie rows (the UI treats 'running' as live and would poll a
      frozen card forever) while KEEPING the model row's file rows for resume.
 

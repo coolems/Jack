@@ -3,7 +3,7 @@
 _RelayTargetAdapter tags every outgoing JSON frame with 'target_client' so the shared
 brain socket can route frames to exactly one client; _relay_send() is the one-frame
 helper around it. The model_switch / tools_request / tool_code_request handlers all run
-their authorization against the RELAYED CLIENT's profile (S1 fix) - never the brain
+their authorization against the RELAYED CLIENT's profile - never the brain
 socket's own admin profile.
 """
 
@@ -17,11 +17,11 @@ logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 class _RelayTargetAdapter:
     """WebSocket wrapper that tags EVERY outgoing JSON frame with target_client.
 
-    (2026-09-01 S1 fix / Phase 3) The brain<->relay link is ONE shared socket for N clients;
-    the relay only routes a brain frame to a client when it carries a valid 'target_client'.
-    llama streaming writes raw frames through this adapter, so every content/thinking/
-    tool_calls chunk reaches exactly the requesting client. Non-JSON or already-tagged
-    frames pass through unchanged (idempotent).
+        The brain<->relay link is ONE shared socket for N clients;
+        the relay only routes a brain frame to a client when it carries a valid 'target_client'.
+        llama streaming writes raw frames through this adapter, so every content/thinking/
+        tool_calls chunk reaches exactly the requesting client. Non-JSON or already-tagged
+        frames pass through unchanged (idempotent).
     """
 
     def __init__(self, ws, target_client: str):
@@ -52,7 +52,7 @@ async def _relay_send(ws, msg: dict, target_client: str = ""):
 
 
 async def _handle_relay_model_switch(ws, server_provider, model_filename, msg):
-    """Handle a 'model_switch' frame as a ROUTING CHECK (2026-10 fleet, never reloads).
+    """Handle a 'model_switch' frame as a ROUTING CHECK (never reloads).
 
     *msg* carries '_relay_from' so the check runs against the RELAYED CLIENT's profile.
     The brain socket's own user info is NEVER consulted here.
@@ -92,22 +92,11 @@ async def _handle_relay_model_switch(ws, server_provider, model_filename, msg):
     }, client_id)
 async def _resolve_relay_client_user_info(ws, msg: dict, server_provider):
     """Resolve the RELAYED CLIENT's user_info for a proxied frame.
-
-    (2026-09-23 v4) KEY-BASED AUTHENTICATION - same logic as direct mode:
+     KEY-BASED AUTHENTICATION - same logic as direct mode:
       The relay tags every client frame with '_relay_from' = that client's id and, in
-      'client_connected', forwards the client's own API key (the one it used to
-      authenticate against the relay). We run that key through OUR OWN AuthGateway
-      against config/.api_keys.json + profiles.json: role/email/permissions come from
-      server-side key lookup - never from a name the relay or the client sends.
-
-    Returns None (fail-closed) when:
-      - no _relay_from tag (frame not attributable to a known client), or
-      - the client is unknown on this link / its key was never forwarded, or
-      - that key has no valid profile in our config (unknown/inactive/no profile).
-
-    Never falls back to the brain socket's own user info attribute -- that holds the
-    BRAIN's own (admin) profile, and falling back to it would silently re-grant admin
-    privileges to every client behind the relay.
+      authenticate against the relay). We run that key through OUR OWN AuthGateway against
+      config/.api_keys.json + profiles.json: role/email/permissions come from server-side
+      key lookup - never from a name the relay or the client sends.
     """
     client_id = msg.get("_relay_from") or ""
     keys: dict = getattr(ws, "_relay_client_keys", None) or {}
@@ -129,7 +118,7 @@ async def _resolve_relay_client_user_info(ws, msg: dict, server_provider):
 
 
 async def _handle_relay_tools_request(ws, msg: dict, server_provider):
-    """Answer a relayed tools_request using the RELAYED CLIENT's permissions (S1 fix)."""
+    """Answer a relayed tools_request using the RELAYED CLIENT's permissions."""
     client_id = msg.get("_relay_from") or "unknown"
     user_info = await _resolve_relay_client_user_info(ws, msg, server_provider)
     if not user_info:
@@ -144,7 +133,7 @@ async def _handle_relay_tools_request(ws, msg: dict, server_provider):
 
 
 async def _handle_relay_tool_code_request(ws, msg: dict, server_provider):
-    """Answer a relayed tool_code_request using the RELAYED CLIENT's permissions (S1 fix)."""
+    """Answer a relayed tool_code_request using the RELAYED CLIENT's permissions."""
     client_id = msg.get("_relay_from") or "unknown"
     user_info = await _resolve_relay_client_user_info(ws, msg, server_provider)
     if not user_info:

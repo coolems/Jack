@@ -1,9 +1,8 @@
-"""direct_ws -- direct WebSocket client handler package (split 2026-09-07).
+"""direct_ws -- direct WebSocket client handler package.
 
-The former single-file ws_client_handler.py (825 lines) is now one small module
-per concern, each moved verbatim from the original:
+One small module per concern:
 
-    log.py                    shared logger (same name as before)
+    log.py                    shared logger
     active_conversations.py   _ActiveConversations + _active_convs singleton
     model_filters.py          _tool_name_of / _normalize_model_entry / _filter_models_by_user
     ws_auth.py                _authenticate_direct_client (handshake, protocol, limits)
@@ -13,9 +12,6 @@ per concern, each moved verbatim from the original:
     tool_code_handler.py      _handle_tool_code_request
     ocr_handler.py            _handle_ocr_request
     ws_entry.py               handle_direct_ws_client (public entry point)
-
-The old module path app.providers.coolems.ws_client_handler remains a thin
-compatibility shim that re-exports everything from this package.
 """
 
 from .active_conversations import _ActiveConversations, _active_convs

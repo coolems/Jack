@@ -6,7 +6,7 @@ This file is intentionally a thin lazy shell: it only defines the package so
 that `from app.dna import get_agent` works, then pulls names from the delivered
 modules. No DNA logic may be duplicated here -- SERVER is the source of truth.
 
-CRITICAL (2026-08): NO FALLBACKS allowed. All agent data comes from SERVER only.
+CRITICAL: NO FALLBACKS allowed. All agent data comes from SERVER only.
 If called before delivery completes, functions will raise RuntimeError instead
 of using hardcoded values. This ensures identity/intelligence/lessons always
 come from SERVER (source of truth), same as system prompts.

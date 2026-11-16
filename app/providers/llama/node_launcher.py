@@ -1,19 +1,18 @@
-"""Standalone llama-node launcher (2026-10 fleet).
+"""Standalone llama-node launcher.
 
 Runs on a GPU machine that is NOT the brain. It starts ONE llama-server with the same
 settings the brain would use, verifies it, prints a summary + the brain entry, and EXITS
 leaving llama-server running detached. The brain then attaches to it (attach-only) and
-discovers its slots/model via /props.
+discovers its slots and model through /props.
 
 Why a dedicated launcher instead of starting the whole SERVER here: a node does not need
-auth/queue/relay, and this launcher only spawns + verifies. (2026-10-25: the brain's own
-SERVER no longer kills arbitrary loopback llamas on exit - it terminates ONLY backends it
-spawned itself; attached nodes survive SERVER shutdown.)
+auth/queue/relay, and this launcher only spawns + verifies. The SERVER terminates ONLY
+backends it spawned itself, so a node started here survives SERVER shutdown.
 
 TWO WAYS TO USE THIS MODULE:
   * ADMIN path   : utils/start_llama_node/llama_node.py + ZZZ_LLAMA_NODE.bat (interactive
                    wizard, start/stop/status/restart/cmd - configure ANY node you like).
-  * REGULAR path : the SERVER boot calls ensure_local_node() for each LOCAL instance in
+  * REGULAR path : the SERVER boot calls ensure_local_node for each LOCAL instance in
                    config/llama_servers.json. It reconciles against config/llama_node.json
                    (init writes sane defaults there): healthy matching node -> attach;
                    nothing running -> spawn detached with those settings. Set
@@ -30,6 +29,7 @@ Commands (see utils/start_llama_node/llama_node.py / ZZZ_LLAMA_NODE.bat):
 `start` is reconciliation, not blind spawning: if a healthy llama on the configured port
 already serves the configured model with the configured slot count, it does nothing -
 which makes a scheduled task ("run start every 5 minutes") a free watchdog.
+
 """
 
 import asyncio
@@ -62,25 +62,12 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Node")
 
 
 def _emit(message: str) -> None:
-    """Console line for the launcher AND the same line in the COOLEMS log (C1 fix).
+    """Print a launcher line AND write the same line to the COOLEMS log.
 
-    node_launcher.py is BOTH an interactive admin CLI (configure/start/status via
+    node_launcher.py is both an interactive admin CLI (configure/start/status via
     utils/start_llama_node/ZZZ_LLAMA_NODE.bat) and a module the SERVER calls at boot
-    (app/providers/llama/backend_registry.py -> ensure_local_node -> start()). The old
-    code used bare print() for every step, so when the SERVER ran it those lines went
-    to stdout only and never reached logs/coolems.log - the one real print-vs-logging
-    inconsistency in runtime code (code.py even tells the operator "see [NODE] lines
-    above", which were unloggable).
-
-    Policy (documented in app/logging_config.py): standalone console scripts may print;
-    anything running INSIDE a SERVER/CLIENT process must log. _emit satisfies both -
-    the wizard keeps its formatted console output, and every line is also logged.
-
-    FIX (2026-10-26): the body called _emit(message) instead of print(message), so every
-    emitted line recursed into itself until RecursionError - the admin menu's "1) Start"
-    died before spawning anything (dispatch's own error handler then recursed too, so the
-    real error was never shown). Console output goes to stdout via print(); the logger
-    writes the log file and, inside a SERVER run, the COOLEMS console handler.
+    (backend_registry.ensure_local_node -> start). Logging is what makes those lines
+    reachable in logs/coolems.log when the SERVER runs them.
     """
     print(message, flush=True)
     # Most call sites already carry the [NODE] tag; strip it before logging so the log
@@ -751,26 +738,12 @@ def get_last_start_action() -> str:
 
 async def ensure_local_node(instance) -> tuple[bool, bool]:
     """SERVER-boot reconcile for ONE LOCAL instance: attach if healthy+matching, else spawn.
-
     *instance* is a config.LlamaServerInstance (loopback host only - remotes never come here).
-
     Returns ``(spawned_by_us, ok)``:
       spawned_by_us=True  -> WE launched llama-server; the SERVER owns it and may terminate
                              it on shutdown / restart.
       spawned_by_us=False -> we attached to a node started OUTSIDE us (admin launcher or
                              manual); the SERVER must NEVER kill it - it survives shutdown.
-
-    Behavior:
-      * config/llama_node.json exists AND its port matches this instance's port:
-          auto_start=true  -> full idempotent reconcile via start(): healthy matching llama
-                              on the port is attached; otherwise (nothing there, or a
-                              misconfigured one) we spawn detached with those settings.
-          auto_start=false -> probe only: attach when healthy+matching, else report down and
-                              NEVER spawn (the admin owns this node's lifecycle).
-      * no config file / different port / unreadable: fall back to the legacy start_server()
-        path (spawn with generic defaults) - exactly the pre-2026-10 behavior.
-
-    Never raises: any failure is logged and reported as ok=False so boot can continue.
     """
     from .server import start_server
     from .model_state import key_for_api_url
@@ -871,12 +844,12 @@ async def ensure_local_node(instance) -> tuple[bool, bool]:
 
 
 def _reacquire_by_pid(pid: int):
-    """Re-open a handle to an already-running detached llama-server so the SERVER can
-    terminate it on exit. Returns a Popen-like shim (poll/terminate/wait) or None.
+    """Re-open a handle to an already-running detached llama-server so it can be terminated.
 
-    We cannot re-attach a real HANDLE to a foreign process, so termination goes through
-    taskkill /PID - which is exactly what _terminate_process() needs: poll() tells it the
-    process is gone, terminate()/wait() do the kill and confirm exit."""
+    Returns a Popen-like shim (poll/terminate/wait) or None. A real HANDLE cannot be
+    re-attached to a foreign process, so termination goes through taskkill /PID - exactly
+    what _terminate_process() needs: poll() reports exit, terminate()/wait() kill and confirm.
+    """
     import subprocess as _sp
 
     def _alive(pid_: int) -> bool:

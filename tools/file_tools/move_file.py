@@ -43,29 +43,15 @@ logger = logging.getLogger("COOLEMS.Tools.Files")
 
 
 def move_file(source_filename: str, destination_path: str, source_path: str = "", new_filename: str = None) -> str:
-    """
-    Move a file to another directory.
-
+    """Move a file to another directory.
     SECURITY RULE - CRITICAL:
         * source_filename = JUST THE FILE NAME only (e.g. 'myfile.txt'). NO slashes allowed!
         * source_path = SOURCE DIRECTORY ONLY (e.g. 'local_ai/config')
         * destination_path = DESTINATION DIRECTORY ONLY (e.g. 'local_ai/CLIENT/data')
         * new_filename = NEW FILE NAME ONLY if renaming during move (e.g. 'newfile.txt')
-
-    SECURITY: All paths are locked inside working_root. Path traversal via '..' is blocked.
-              Filenames with embedded separators or traversal sequences are rejected.
-              BOTH source and destination are validated independently.
-
-    Args:
-        source_filename: Source file name only (no path). NEVER include '/' or '\\'.
-        destination_path: Destination directory path only (no filename). Relative resolved against working_root.
-                          Empty = working_root/. Use '.' or 'root' for work folder.
-        source_path: Source directory path only (no filename). Relative resolved against working_root.
-                     Empty = working_root/. Use '.' or 'root' for work folder.
-        new_filename: Optional new filename (just the name, no slashes).
-
-    Returns:
-        Status message.
+    All paths are locked inside working_root. Path traversal via '..' is blocked.
+              Filenames with embedded separators or traversal sequences are rejected. BOTH
+              source and destination are validated independently.
     """
     logger.info(f"[MOVE] Moving '{source_filename}' from '{source_path}' to '{destination_path}'")
 

@@ -1,6 +1,4 @@
-"""
-User-facing status/error messages for llama.cpp provider.
-"""
+"""User-facing status/error messages for llama.cpp provider."""
 from config import MODEL_NAME, LLAMA_URL
 from typing import Optional
 

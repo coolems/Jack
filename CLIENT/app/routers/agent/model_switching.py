@@ -1,12 +1,11 @@
-"""Model endpoints: /api/models, POST /api/llama/load-model (2026-10 fleet: a ROUTING
-request, not a reload), provider health/status endpoints, agent DNA/learning and the
-role display endpoint.
+"""Model endpoints: /api/models, POST /api/llama/load-model (a ROUTING request, not a
+reload), provider health/status endpoints, agent DNA/learning and the role display route.
 
-2026-10 fleet: nodes keep the model they were started with. Selecting a model asks the
-SERVER whether the swarm serves it; if yes the chat requests are routed to a matching
-node, if not the SERVER returns a clear "no node is serving X" message. There is no
-reload/restart path any more, so the old long MODEL_SWITCH_* wait budget is effectively
-instant (it is kept for compatibility with older SERVERs)."""
+Nodes keep the model they were started with. Selecting a model asks the SERVER whether the
+swarm serves it: if yes, chat requests route to a matching node; if not, the SERVER returns
+a clear "no node is serving X" message. There is no reload/restart path, so the
+MODEL_SWITCH_* wait budget resolves immediately.
+"""
 
 from typing import Dict
 
@@ -29,23 +28,17 @@ _model_switch_tasks: list = []
 
 def register(router: APIRouter, provider, model_name: str, api_timeout: int,
              agent, stop_events) -> None:
-    """Attach this endpoint group to *router* (verbatim move from the original flat file)."""
+    """Attach the model/status/settings endpoints to *router*."""
     @router.get("/api/models")
     async def get_models():
-        """Return available models.
+        """Models available to this caller.
 
-        Each model dict has:
-          - name: the model filename
-          - size: file size in bytes
-          - on_disk: True
-          - loaded: True if currently loaded in server
+        Each entry: name (model filename), size in bytes, on_disk, loaded (currently in server).
+        FILTERING IS DONE ON THE SERVER: the provider's WS connection authenticates with the
+        user's key and the SERVER returns only models allowed for that role - no local filtering.
 
-        ROLE-BASED FILTERING IS DONE ON THE SERVER: the provider's WS
-        connection authenticates with the user's key, and the SERVER only
-        returns models allowed for that role. No local filtering here.
-
-        During a model switch the SERVER is down/reloading - an empty list then
-        is EXPECTED, so it is logged as INFO (one clean line) instead of an ERROR.
+        While a model switch is running the SERVER is reloading, so an empty list is EXPECTED and
+        is logged as INFO, not ERROR.
         """
         try:
             # (2026-08-20) persistent control channel (async); role filtering still done on SERVER

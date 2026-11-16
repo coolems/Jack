@@ -23,12 +23,10 @@ def _pip_size_to_bytes(text: str):
 
 
 def _split_output_lines(raw: str):
-    """Split a child's raw stdout into logical lines on BOTH '\n' and '\r'.
+    """Split pip/venv output into real lines.
 
-    pip redraws its download progress bar in place with carriage returns - no newline
-    arrives until the wheel finishes (minutes for torch). Splitting on '\r' too turns
-    every bar repaint into an event, so the UI gets live percent/speed/ETA instead of a
-    silent 'downloading' line that only ends at EOF.
+    pip redraws its download progress bar in place with carriage returns, so no newline
+    arrives per update; each \r segment is its own line.
     """
     return [seg for seg in re.split(r"[\r\n]+", raw) if seg.strip()]
 
@@ -82,7 +80,7 @@ def parse_pip_progress_line(line: str):
     """Parse one pip in-place progress repaint into {'percent','speed_bps','eta_sec'}.
 
     Handles BOTH bar styles (percent and downloaded/total) and both ETA shapes
-    (M:SS / H:MM:SS). Returns None for anything that is not a progress repaint -
+    (M:SS / H:MM:SS). Returns None for anything that is not a progress repaint
     those lines go through parse_pip_line as usual. Informational only: the UI shows
     the numbers on the package that is currently downloading.
     """

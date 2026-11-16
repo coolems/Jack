@@ -1,5 +1,4 @@
-"""
-Non-streaming chat for llama.cpp provider.
+"""Non-streaming chat for llama.cpp provider.
 
 Uses shared async HTTP client pool from http_client module instead of sync
 requests.post() — this unblocks the event loop and enables connection reuse.
@@ -29,8 +28,9 @@ async def chat_non_streaming(
 ) -> str:
     """Call llama.cpp model without streaming using shared async client pool.
 
-    headers (2026-11 strata): optional per-request headers (Bearer auth for a Strata
-    endpoint). None keeps the llama.cpp request exactly as before."""
+    headers: optional per-request headers (Bearer auth for a
+    endpoint). None keeps the llama.cpp request exactly as before.
+    """
     messages = convert_messages_for_vision(messages)
 
     llama_payload = build_llama_payload(

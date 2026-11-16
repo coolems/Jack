@@ -51,8 +51,7 @@ def _get_mouse_position():
     return None
 
 def _find_window_by_title(page_title):
-    """
-    Find the Win32 HWND of the Chrome window that matches the page title.
+    """Find the Win32 HWND of the Chrome window that matches the page title.
     Returns the FULL window rectangle (including title bar, tabs, address bar, borders).
     """
     found = [None]
@@ -92,16 +91,15 @@ def _find_window_by_title(page_title):
     return found[0]
 
 def _draw_cursor_marker(screenshot_img, mouse_abs_x, mouse_abs_y, win_left, win_top):
-    """
-    Draw a red circle on the screenshot at the mouse cursor position.
-    
+    """Draw a red circle on the screenshot at the mouse cursor position.
+
     Args:
         screenshot_img: PIL Image object
         mouse_abs_x: Absolute screen X of mouse
         mouse_abs_y: Absolute screen Y of mouse
         win_left: Absolute screen X of window top-left
         win_top: Absolute screen Y of window top-left
-    
+
     Returns:
         Modified PIL Image with red circle drawn
     """

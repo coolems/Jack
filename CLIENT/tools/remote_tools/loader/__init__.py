@@ -1,22 +1,19 @@
-"""loader -- split of the former single-file dynamic_loader.py (2026-08-21).
-
-Public surface (imported by orchestrator/tools/__init__/logic modules):
+"""Public surface of the tool loader package (imported by orchestrator/tools/logic):
 
     from tools.remote_tools.loader import DynamicModuleLoader, ToolCompilationError
 
-Internal layout (one concern per module, for maintenance/debugging):
+Internal layout, one concern per module:
 
     errors           ToolCompilationError + subclasses   -- non-retryable compile failures
     policy           ALLOWED_TOOL_IMPORTS / _CALLS       -- auditable per-tool trust table
     ast_guard        SandboxedASTChecker                 -- AST security validation
     integrity        sha_prefix + fail-closed checks     -- SERVER hash verification
-    source_transform transform_tool_source pipeline      -- import rewrites for exec()
+    source_transform transform_tool_source pipeline      -- import rewrites for exec
     shared_modules   install_shared_modules + DNA sync   -- sys.modules installation
     globals_builder  exec-globals assembly               -- symbols/config/shared_deps
     loader           DynamicModuleLoader                 -- stateful public facade
 
-The old file tools/remote_tools/dynamic_loader.py is now a thin compatibility shim
-that re-exports from here, so every existing import path keeps working unchanged.
+tools/remote_tools/dynamic_loader.py re-exports from here so existing import paths work.
 """
 
 from .errors import IntegrityError, LoaderError, SourceValidationError, ToolCompilationError

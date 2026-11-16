@@ -36,18 +36,19 @@ __tool_description__ = {
 def read_file(filename: str, path: str = "") -> str:
     """Read a file's content from the working_root directory.
 
-    SECURITY RULE - CRITICAL:
-        * filename = JUST THE FILE NAME only (e.g. 'config.py'). NO slashes allowed!
-        * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
-        * To read 'local_ai/CLIENT/config/config.py':  filename='config.py', path='local_ai/CLIENT/config'
+        SECURITY RULE - CRITICAL:
+            * filename = JUST THE FILE NAME only (e.g. 'config.py'). NO slashes allowed!
+            * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
+            * To read 'local_ai/CLIENT/config/config.py':  filename='config.py', path='local_ai/CLIENT/config'
 
-    Args:
-        filename: Just the file name (no path). Example: 'myfile.txt'. NEVER include '/' or '\\'.
-        path: Directory path only (no filename). Relative paths resolve against working_root ONLY.
-              Empty string reads from working_root. Use dot or root for working_root.
+        Args:
+            filename: Just the file name (no path). Example: 'myfile.txt'. NEVER include '/' or '\\'.
+            path: Directory path only (no filename). Relative paths resolve against working_root ONLY.
+                  Empty string reads from working_root. Use dot or root for working_root.
 
-    Returns:
-        The content of the file as a string, or an error message on failure.
+        Returns:
+            The content of the file as a string, or an error message on failure.
+
     """
     try:
         # GUARD 1 — validate filename contains no traversal / separators

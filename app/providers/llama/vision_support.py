@@ -1,33 +1,10 @@
-"""Vision (image input) support detection + typed error for llama.cpp.
+"""Vision (multimodal input) support detection + typed error for llama.cpp.
 
 WHY THIS EXISTS
----------------
-When llama-server is started WITHOUT a multimodal projector (mmproj), any request
-that carries image content is rejected with HTTP 500 and this body:
-
-    {"error":{"code":500,
-     "message":"image input is not supported - hint: if this is unexpected, you may need to provide the mmproj",
-     "type":"server_error"}}
-
-Before this module that raw JSON was dumped straight into the UI as a generic
-"Provider Error" card with useless suggestions ("restart the provider"). Now:
-
-  * streaming.py / non_streaming.py detect this exact condition in the HTTP 500
-    body and raise VisionNotAvailableError carrying a CLEAN, human-friendly
-    message (no raw JSON leaks into logs or chat).
-  * The message is built from check_model_vision(), which answers the user's real
-    question: does this model HAVE vision, or does it NEED an mmproj file that
-    sits next to the model? That makes the error actionable instead of opaque.
-
-The exception carries error_type="vision_not_available" (class attribute) and
-survives the WebSocket pipe: chat_relay catches it specifically, logs ONE clean line
-(no traceback — this is an expected condition, not a server fault) and tags the WS
-error frame with that type so the CLIENT can render a dedicated "Vision Not Available"
-card and, crucially, NOT retry 60 times for something that cannot fix itself by waiting.
-
-Import note: this module is dependency-light on purpose (mmproj lookups are done
-lazily inside functions) so both the llama provider package AND the coolems chat
-relay can import it without circular-import risk.
+When llama-server is started WITHOUT an mmproj file it accepts image input and answers
+with HTTP 500 - an opaque failure the user reads as "the model is broken". This module
+checks whether the loaded model actually has a projector and raises VisionNotAvailableError
+with the actionable message instead, so the turn fails with a reason the user can act on.
 """
 
 import logging
@@ -66,24 +43,15 @@ def _looks_like_mmproj_error(err_text: str) -> bool:
 
 
 def check_model_vision(model_filename: str) -> Dict:
-    """Answer: does this model have vision, or does it NEED an mmproj next to it?
+    """Report whether a model has vision, or needs an mmproj next to it.
 
-    Resolution:
-      1. Resolve the requested model filename to a real path (may be None if the
-         server can't resolve it — we still return useful info in that case).
-      2. Search for a compatible multimodal projector using the SAME logic the
-         launcher uses (_find_mmproj_file): the model's own folder first, then the
-         default models dir, dedicated-match before generic.
+      1. Resolve the requested model filename to a real path (may be None - info is still
+         useful in that case).
+      2. Search for a compatible multimodal projector with the same logic as
+         model_utils._find_dedicated_mmproj.
 
-    Returns a dict:
-        {
-          "model":        requested name (str),
-          "resolved_path": full path or None,
-          "mmproj_found": bool,
-          "mmproj_path":  full path to projector or "",
-        }
-
-    Never raises — any lookup problem degrades to mmproj_found=False.
+    Returns a dict with bool "mmproj_found" and "mmproj_path" ("" when none).
+    Never raises - any lookup problem degrades to mmproj_found=False.
     """
     from .path_utils import _resolve_model_path
     from .model_discovery import _find_mmproj_file

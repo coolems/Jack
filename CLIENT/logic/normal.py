@@ -1,5 +1,4 @@
-"""
-Normal chat mode logic - standard AI conversation without tools.
+"""Normal chat mode logic - standard AI conversation without tools.
 
 Handles:
 - Building system prompt with agent DNA

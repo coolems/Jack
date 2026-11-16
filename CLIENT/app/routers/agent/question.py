@@ -26,7 +26,8 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
     async def question_answer(conv_id: str, request_id: str, data: Dict):
         """Answer one ask_user_question card.
 
-        Body: {"answer": "..."} - a chosen option or free text. 409 when the card is gone."""
+        Body: {"answer": "..."} - a chosen option or free text. 409 when no card is pending.
+        """
         from app.chat_bus import get_chat_bus
 
         answer = str((data or {}).get("answer", "")).strip()

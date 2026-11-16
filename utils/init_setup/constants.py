@@ -1,6 +1,6 @@
-"""Constants - verified 2026-10-05 against HuggingFace + GitHub APIs."""
+"""Constants - verified against HuggingFace + GitHub APIs."""
 
-MIN_PYTHON = (3, 10)
+MIN_PYTHON = (3, 12)
 
 HF_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF"
 # Faster sibling of the same Qwen3.8-27B weights: Dirk's UD quants keep the MTP head and

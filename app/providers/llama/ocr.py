@@ -1,25 +1,18 @@
-"""
-OCR transcription for llama.cpp provider.
+"""OCR transcription for the llama.cpp provider.
 
-Uses multimodal vision models to extract text from images.
+Extracts text from images with a multimodal vision model, using the shared async HTTP
+pool from http_client (no blocking requests.post).
 
-Uses shared async HTTP client pool from http_client module instead of sync
-requests.post() — this unblocks the event loop and enables connection reuse.
-
-(2026-08-26 DEDICATED OCR FALLBACK)
-The primary attempt POSTs to the main llama-server (config.LLAMA_URL). When that
-server is running a NON-vision model (no mmproj loaded), llama.cpp answers:
-
+DEDICATED OCR FALLBACK
+The primary attempt POSTs to the main llama-server (config.LLAMA_URL). When that server
+runs a non-vision model (no mmproj loaded), llama.cpp answers:
     HTTP 500 {"error": "image input is not supported - ... you may need to provide the mmproj"}
+Only then does this module ensure a dedicated OCR instance (profiles.json 'ocr_model' dir,
+e.g. GLM-OCR + its mmproj) on its own side port (config.LLAMA_OCR_SERVER_PORT) and retry
+the same payload there. The main chat server is never touched or restarted.
 
-In that case — and only in that case — this module transparently ensures a small
-DEDICATED OCR instance (profiles.json 'ocr_model' dir, e.g. GLM-OCR + its mmproj)
-is running on its own side port (config.LLAMA_OCR_SERVER_PORT) and retries the
-EXACT same payload there. The main chat server is never touched or restarted.
-
-The request format below MUST stay byte-for-byte what the OCR model likes:
-prompt exactly "Text Recognition:", image as data-URL base64, temperature 0.0,
-stream false. Changing it breaks OCR model performance.
+The OCR prompt must stay exactly "Text Recognition:", image as a base64 data URL,
+temperature 0.0, stream false - changing it degrades OCR quality.
 """
 import asyncio
 import logging
@@ -38,10 +31,9 @@ async def ocr_transcribe(
     image_base64: str,
     ocr_models: List[str],
 ) -> str:
-    """
-    Transcribe text from an image using llama.cpp vision models.
+    """Transcribe text from an image using llama.cpp vision models.
 
-    NOTE: The prompt MUST remain exactly "Text Recognition:"
+    The prompt MUST remain exactly "Text Recognition:"
     Changing it breaks OCR model performance.
 
     Flow:

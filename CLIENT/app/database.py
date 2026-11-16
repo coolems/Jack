@@ -132,8 +132,7 @@ def init_db(db_path: str):
 # ---- Conversation color & sort support (added 2025-07-12) ----
 
 def migrate_conversation_colors(db_path: str):
-    """
-    Migration: Add optional 'color' column to conversations table.
+    """Migration: Add optional 'color' column to conversations table.
 
     The color column stores one of 8 predefined color names (e.g. 'red', 'blue').
     NULL means no color assigned (default / transparent).

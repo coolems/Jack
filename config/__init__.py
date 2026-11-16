@@ -1,5 +1,4 @@
-"""
-COOLEMS Configuration Package (SERVER) — single source of truth.
+"""COOLEMS Configuration Package (SERVER) — single source of truth.
 
 This package centralizes all SERVER configuration:
 
@@ -14,7 +13,7 @@ Import everything from this package:
 NOTE on CLIENT: the CLIENT has its own separate config package under CLIENT/config/.
 Values that must be identical on both sides (WEB_RELAY_* connection constants) are
 kept in sync manually; values consumed by shipped tools are delivered at runtime via
-tools_response 'config_constants' (see app/providers/coolems/tool_scanner/config_constants.py -- package split 2026-09-07).
+tools_response 'config_constants' (see app/providers/coolems/tool_scanner/config_constants.py -- package).
 """
 
 from .config import (

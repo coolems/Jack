@@ -1,5 +1,8 @@
 # COOLEMS Requirements (SERVER + CLIENT)
 #
+# INTERPRETER: Python 3.12+ only. code.py / code_client.py exit with a clear
+# message below 3.12, and the launchers build their venv from `py -3.12`.
+#
 # PINNING POLICY (2026-09-22, fixes code-review finding #8):
 #   Every package is STRICTLY pinned (==) to the exact version verified working
 #   in this project's venv. No >= / < ranges: a fresh `pip install -r` must

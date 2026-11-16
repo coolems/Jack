@@ -1,7 +1,6 @@
 """Per-application access consent for computer_use (fail-closed).
 
-Ported from the harness's application-consent layer. Their rule, kept in behaviour:
-an app is only readable/controllable after the LOCAL USER said yes; a denial stops
+An app is only readable/controllable after the LOCAL USER said yes; a denial stops
 repeat prompts for that session; revocation drops every handle so no later call can
 act on the app.
 
@@ -104,7 +103,6 @@ def register_context(conversation_id: str, websocket=None) -> None:
     """Attach this call's consent channel to CONTEXT_ANCHOR (orchestrator-side helper).
 
     Kept here so both the CLIENT gate and the tools use one anchor definition. The
-    websocket is stored for the tool's own 'cannot ask' reporting; it is never used to
     send anything from this module.
     """
     import types

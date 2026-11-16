@@ -43,11 +43,10 @@ logger = logging.getLogger("COOLEMS.Tools.ComputerUse.Screenshot")
 
 
 def _encode_png(raw: bytes, width: int, height: int) -> bytes:
-    """RGB bytes -> PNG bytes. Pillow is a pinned dependency of this repo.
+    """Encode a captured BGRA buffer as PNG bytes.
 
-    _desktop_gdi already returns tightly packed RGB (stride padding removed, blue/red
-    swapped), so this only encodes. Live check on 2026-11-07: the page's green #2f6f4f
-    button now reads as (47,111,79) in the PNG, matching the browser's own screen grab.
+    Colour is preserved exactly, so a pixel read from the PNG matches the browser's own
+    screen grab (the page's green #2f6f4f encodes as (47,111,79)).
     """
     from PIL import Image
     image = Image.frombytes("RGB", (width, height), raw)

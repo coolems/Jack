@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""
-Generate THIRD-PARTY-NOTICES.txt from requirements.txt (SERVER root).
+"""Generate THIRD-PARTY-NOTICES.txt from requirements.txt (SERVER root).
 
-Why this exists (licensing plan v9, Phase 1): every direct dependency in
+Why this exists: every direct dependency in
 requirements.txt is permissive-licensed (MIT/BSD/Apache/HPND), which means NO
 source-disclosure obligation — but attribution IS required for redistribution.
 This script keeps the notices file honest: it reads the pinned requirements and
 emits one block per package with license + copyright holder, taken from a local
 table that was verified against the installed dist-info METADATA/LICENSE files.
 
-RULES BAKED IN (licensing plan v9, Phase 4 guardrail):
+RULES BAKED IN (guardrail):
   - A dependency NOT in the table is emitted as "UNVERIFIED" and the script EXITS NON-ZERO
     -> a CI job running this script fails the build if someone adds an unknown
     (potentially copyleft) dependency. That permanently locks in low coverage.

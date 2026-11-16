@@ -150,7 +150,7 @@ Follow the steps **in order**. After step 6 you have a fully working UI ↔ CLIE
 ### Fastest path: `ZZZ_initial_init.bat` (recommended for a fresh clone)
 
 On Windows, just **double-click `ZZZ_initial_init.bat`** at the repo root. It checks that you have
-Python 3.10+ (and tells you where to get it if not), then runs `utils/zzz_init.py`, which in one go:
+Python 3.12+ (and tells you where to get it if not), then runs `utils/zzz_init.py`, which in one go:
 
 - detects your NVIDIA GPU and recommends a Qwen3.8-27B quant that fits its VRAM (you can override);
 - downloads the model from HuggingFace (resumable, size-verified) into `llama_server/models/<quant>/`;
@@ -171,7 +171,7 @@ manual steps below describe what that script does, for reference / non-Windows m
 
 ### Step 1 — Install prerequisites & get the model binaries
 
-1. Clone the repo and install Python 3.10+.
+1. Clone the repo and install Python 3.12+ (the launchers create their venv from `py -3.12`).
 2. Get the `llama_server` binaries — follow **`llama_server/download llama_server files.md`** (~1.3 GB of llama.cpp Windows CUDA release; not shipped in git).
 3. Put your model weights into **one folder per model** under `llama_server/models/`, e.g.:
 

@@ -1,5 +1,6 @@
 """Unified consent dialog - ONE shared code path for every consent card kind.
 
+Card kinds:
     kind        what it gates                                          payload
     python      AI runs Python code on THIS machine                    the source code
     url         a browser tool going to a local/private target         the URL
@@ -17,7 +18,8 @@ Decisions: 'allow' | 'deny' | 'allow_category_until_done' (per KIND, this run on
 'explain' (nothing allowed - the caller returns explain_instruction() and re-asks).
 Auto-approve timers are settings.json pairs <kind>_consent_auto_approve[_seconds],
 counted down by the FRONTEND. Fail-closed: no state or an undeliverable frame =>
-'unavailable'."""
+'unavailable'.
+"""
 
 import json
 import logging

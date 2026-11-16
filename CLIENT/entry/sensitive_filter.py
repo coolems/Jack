@@ -1,12 +1,12 @@
 """Sensitive data redaction for COOLEMS CLIENT logs and stderr.
 
-Handles: API keys, URL-encoded values, base64 tokens, bearer tokens,
-access_tokens, secrets, Authorization headers, and email addresses -- in BOTH
-URL-parameter form (api_key=...) and JSON form ("api_key": "..."). The JSON
-rules were added 2026-10-01 after the log audit found websockets frame dumps
-leaking auth handshakes raw to disk.
+Handles API keys, URL-encoded values, base64 tokens, bearer tokens, access_tokens,
+secrets, Authorization headers and email addresses - in URL-parameter form (api_key=...)
+AND JSON form ("api_key": "..."). JSON matters because websockets frame dumps leak auth
+handshakes raw to disk.
 
-Used to filter both Python logging output and raw stderr from uvicorn/websockets.
+Filters both Python logging output and raw stderr: uvicorn/websockets print straight to
+stderr, bypassing the logging system.
 """
 
 import re
@@ -17,15 +17,15 @@ import logging
 def redact_sensitive_data(text):
     """Comprehensive sensitive data redaction for logs/stderr.
 
-    Handles: standard keys, URL-encoded key/values, base64 tokens,
-    bearer tokens, access_tokens, secrets, Authorization headers -- in both
-    URL-parameter form (api_key=...) and JSON object form ("api_key": "...").
+    Handles keys, URL-encoded key/value pairs, base64 and bearer tokens, access_tokens,
+    secrets and Authorization headers, in URL-parameter form (api_key=...) and JSON form
+    ("api_key": "...").
 
     Args:
-        text: Raw text string that may contain sensitive data
+        text: Raw text that may contain sensitive data.
 
     Returns:
-        str: Text with all sensitive patterns replaced by [REDACTED]
+        The text with every sensitive pattern replaced by [REDACTED].
     """
     # 1. api_key with any value
     text = re.sub(r'(?i)api_key=(?:%[0-9a-fA-F]{2}|[A-Za-z0-9_\-.])+(?:={0,2})?', 'api_key=[REDACTED]', text)
@@ -77,25 +77,15 @@ def redact_sensitive_data(text):
 
 
 def redact_email(text):
-    """Remove email=... parameters from URLs (2026-10-01 hardening).
+    """Remove email=... parameters from URLs.
 
     Matches BOTH forms directly, without percent-decoding the message:
         ?email=bob@example.com   -> removed
-        ?email=bob%40example.com -> removed  (the encoded form leaked to disk -
-                                             found by the 2026-10-01 audit)
-    Decoding the whole line first (the original implementation) corrupted
-    unrelated text -- any %20/%40 outside the email param became a space/@, so
-    logged URLs stopped matching reality. The pattern accepts %xx escapes as
-    value characters instead, so only the email parameter is touched.
-
-    Only params prefixed with 'email=' are removed, so bare addresses inside
-    ordinary log text (chat echoes, docs) are intentionally left alone.
-
-    Args:
-        text: Text that may contain email parameters
-
-    Returns:
-        str: Text with email= parameters removed
+        ?email=bob%40example.com -> removed  (the encoded form leaks to disk)
+    Percent-decoding the whole line first would corrupt unrelated text: any %20/%40
+    outside the email param becomes a space/@ and logged URLs stop matching reality. The
+    pattern accepts %xx escapes as value characters instead, so only the email parameter
+    is touched.
     """
     # Local-part and domain both accept literal chars and %xx escapes; the '@'
     # may be literal or %40. Trailing %xx in the domain is consumed so nothing
@@ -106,10 +96,10 @@ def redact_email(text):
 
 
 class SensitiveStderr:
-    """Simple wrapper that filters sensitive data from all stderr output.
+    """Wrapper that filters sensitive data from all stderr output.
 
-    Used to wrap sys.stderr before starting uvicorn, since libraries like
-    websockets print directly to stderr bypassing Python logging system.
+    Installed over sys.stderr before uvicorn starts, because libraries like websockets
+    print directly to stderr and bypass the Python logging system.
     """
 
     def __init__(self, wrapped):

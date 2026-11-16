@@ -1,29 +1,4 @@
-"""Short-lived single-use capability tokens for sub-resource URLs (SECURITY fix 2026-10-05).
-
-Background
-----------
-<img>/<iframe>/anchor tags cannot send custom headers, so the UI used to pass the
-MASTER API key as ?api_key=... on /api/download and /api/open. Query strings are part
-of the request line: they land in browser history, the Network tab, Referer headers
-leaked to third-party origins, and any logging hop - a long-lived credential (file
-R/W + code execution on this machine) was exposed far beyond TLS-protected headers.
-
-This module replaces that with capability tokens (?t=<token>):
-  * random 256-bit value from secrets.token_urlsafe(32), in-memory only, never logged;
-  * bound to ONE exact file path - a token minted for "a.txt" cannot be replayed
-    against "b.txt";
-  * short-lived (TTL_S) and limited-use (MAX_USES covers <img> retry + click-to-open);
-  * consumed on every ATTEMPT (valid or not), so an attacker probing a leaked token
-    gets no "still valid?" oracle.
-
-Issuance happens at POST /api/auth/media-token, which the APIMiddleware only reaches
-AFTER header auth passed - minting a token grants nothing beyond what the caller
-already proved. The middleware accepts ?t= ONLY on MEDIA_TOKEN_PATHS and early-returns
-with sentinel state; it never calls note_presented_key() for tokens, so a leaked
-token can never fill the outbound-provider runtime credential store.
-
-Run standalone:  python -c "import sys; sys.path.insert(0, 'CLIENT'); import app.media_tokens"
-"""
+"""Short-lived single-use capability tokens for sub-resource URLs"""
 
 from __future__ import annotations
 

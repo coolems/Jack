@@ -9,7 +9,7 @@ logger = logging.getLogger("COOLEMS")
 
 def _safe_relative_path(base: str, rel: str):
     """Compute a safe full path under base, rejecting traversal escapes.
-    
+
     Uses realpath to resolve symlinks and .. sequences before containment check.
     Returns None if the resolved path escapes *base*.
     """
@@ -25,7 +25,7 @@ def _safe_relative_path(base: str, rel: str):
 def _is_working_root_base(base: str, candidate: str) -> bool:
     """True when *candidate* resolves to *base* itself, not to something inside it.
 
-    _safe_relative_path() guarantees containment, and containment INCLUDES the base -
+    _safe_relative_path() guarantees containment, and containment INCLUDES the base
     which is right for listings and uploads, but never for a delete target: wiping the
     whole working root must be impossible. realpath() on both sides also catches the
     spellings that look like children but are not ('.', './', 'app/..', whitespace-only
@@ -37,7 +37,7 @@ def _is_working_root_base(base: str, candidate: str) -> bool:
 
 def _get_working_root_dir():
     """Return the current dynamic working root directory.
-    
+
     Raises RuntimeError if working_root cannot be determined — NO silent fallback.
     This ensures we NEVER operate on an unintended directory.
     """

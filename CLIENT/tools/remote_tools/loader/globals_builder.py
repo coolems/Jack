@@ -1,25 +1,14 @@
 """Exec-globals builder -- assembles the global namespace a delivered tool runs in.
-
-A compiled tool does not run "bare": it needs (a) proper module identity so relative
-imports and __spec__ behave, (b) every public symbol of the installed shared modules
-injected for BARE access ('from ..utils import X' was rewritten to 'X = utils.X', and
-same-package imports were rewritten to bare-name assignments), (c) subpackage modules
-registered under their short underscored name ('web_interact.shared_instance' ->
+A compiled tool does not run "bare": it needs (a) proper module identity so relative imports
+and __spec__ behave, (b) every public symbol of the installed shared modules injected for
+BARE access ('from ..utils import X' was rewritten to 'X = utils.X', and same-package
+imports were rewritten to bare-name assignments), (c) subpackage modules registered under
+their short underscored name ('web_interact.shared_instance' ->
 'web_interact_shared_instance'), and (d) the SERVER-shipped config constants.
-
-Shared deps (sibling tool sources shipped in 'tool_code_response.shared_deps') get
-their own exec context built from the same ingredients, are executed, registered as
-real modules under tools.<dep>, and their public symbols flow into the tool's globals --
-that is what makes 'from .shared_instance import get_web_interact' work at runtime.
-
-FAIL-LOUD CONTRACT (2026-09-20 fix for the python_exec SANDBOX_BOOTSTRAP NameError):
-install_shared_deps() used to swallow every per-dep failure as a WARNING and return,
-so a tool whose rewritten source referenced an injected symbol compiled fine but died
-at RUNTIME with 'NameError: name X is not defined' (the import line had been neutralized
-to 'pass' by source_transform). Now install_shared_deps() returns the list of failed dep
-names, compile_tool() scans the delivered source for same-package imports (AST) and RAISES
-ToolCompilationError when a required shared_dep failed to install -- the tool fails at
-compile time with an actionable message instead of half-wired at runtime.
+Shared deps (sibling tool sources shipped in 'tool_code_response.shared_deps') get their own
+exec context built from the same ingredients, are executed, registered as real modules under
+tools.<dep>, and their public symbols flow into the tool's globals - that is what makes
+'from .shared_instance import get_web_interact' work at runtime.
 """
 
 import ast
@@ -49,18 +38,11 @@ def _iter_remote_shared_modules():
 
 
 def inject_remote_shared_symbols(exec_globals: Dict[str, Any]) -> None:
-    """Inject every public symbol of all installed shared modules into *exec_globals*.
+    """Inject shared-module symbols into exec globals so tool imports resolve.
 
-    Three layers (kept identical to the original loader's behavior):
-
-      1. Core modules ('utils', 'path_guard', 'ssrf_guard', 'ssrf_defense'): the module object under
-         its short name AND each public attribute for bare access.
-      2. Subpackage modules: every public symbol of every other tools.* delivered module
-         (e.g. WebInteract from web_interact) -- needed by rewritten bare-name imports.
-      3. Subpackage module objects registered under their SHORT UNDERSCORED name so the
-         transformed 'web_interact_shared_instance.get_web_interact' style refs resolve.
-
-    Later modules win on symbol collisions (dict update order), same as before.
+    Three layers, in this order (each is what a delivered tool's import form expects):
+    the 'tools' namespace package, the individual module objects, and the config
+    constants.
     """
     # Layer 1 -- core shared modules: module object + individual public attributes.
     for short_name in CORE_SHARED_MODULES:
@@ -139,7 +121,7 @@ def build_dep_exec_globals(dep_name: str, config_constants: Optional[Dict[str, A
 
     Deps get module identity under tools.<dep>, pre-injected stdlib modules, ALL already
     installed shared-module symbols (module objects AND individual public attributes so
-    bare names work inside deps -- 2026-01-31 fix), and the config constants.
+    bare names work inside deps -- fix), and the config constants.
     """
     # Module identity (2026-07-14 fix for the connect NameError incident): tool modules get
     # '__file__'/'__spec__' from build_tool_exec_globals(), but shared_deps were exec'd WITHOUT
@@ -182,9 +164,9 @@ def _same_package_dep_names(source_code: str) -> List[str]:
     Mirrors the SERVER's tool_scanner._find_same_package_imports(): every level-1
     'from .module import ...' statement. Used by compile_tool() to decide which shared_deps
     are REQUIRED: if one of these failed to install, the rewritten source references a
-    symbol that does not exist in exec_globals -> guaranteed runtime NameError (2026-09-20).
+    symbol that does not exist in exec_globals -> guaranteed runtime NameError.
 
-    'from . import Name' (level 1, no module) is NOT counted -- those symbols come from
+    'from. import Name' (level 1, no module) is NOT counted -- those symbols come from
     already-installed shared modules, not from the tool's own shared_deps dict.
     Returns [] when the source cannot be parsed (compile_tool raises on that upstream).
     """
@@ -205,25 +187,27 @@ def install_shared_deps(tool_name: str, shared_deps: Optional[Dict[str, str]],
                         config_constants: Optional[Dict[str, Any]] = None):
     """Compile same-package dependencies and merge their symbols into the tool's globals.
 
-    Each dep source is transformed with the SAME pipeline as the tool itself (so its own
-    internal imports are rewritten identically), executed in a dedicated context, then
-    registered as a real module under tools.<dep> in sys.modules -- which also makes it
-    visible to any LATER-compiled sibling that imports it.
+        Each dep source is transformed with the SAME pipeline as the tool itself (so its own
+        internal imports are rewritten identically), executed in a dedicated context, then
+        registered as a real module under tools.<dep> in sys.modules -- which also makes it
+        visible to any LATER-compiled sibling that imports it.
 
-    Must run BEFORE the tool source is exec'd: the symbols are what its rewritten
-    same-package assignments resolve against (2026-01 fix).
+        Must run BEFORE the tool source is exec'd: the symbols are what its rewritten
+        same-package assignments resolve against.
 
-    Args:
-        tool_name: Tool being compiled (for logging only -- deps register under their own names).
-        shared_deps: Optional {dep_name: source_code} from 'tool_code_response.shared_deps'.
-        exec_globals: The tool's globals dict; every public dep symbol is merged into it.
-        config_constants: SERVER constants, injected into the deps' contexts too.
+        Args:
+            tool_name: Tool being compiled (for logging only -- deps register under their own names).
+            shared_deps: Optional {
+            dep_name: source_code} from 'tool_code_response.shared_deps'.
+            exec_globals: The tool's globals dict; every public dep symbol is merged into it.
+            config_constants: SERVER constants, injected into the deps' contexts too.
 
-    Returns:
-        (installed, failed) -- installed: number of deps successfully installed;
-        failed: list of 'dep_name: <error>' strings for deps that could not be exec'd.
-        A dep failure is NOT fatal by itself (the tool may genuinely not use it), but the
-        CALLER must check compile_tool()'s required-dep gate -- see _same_package_dep_names().
+        Returns:
+            (installed, failed) -- installed: number of deps successfully installed;
+            failed: list of '
+            dep_name: <error>' strings for deps that could not be exec'd.
+            A dep failure is NOT fatal by itself (the tool may genuinely not use it), but the
+            CALLER must check compile_tool's required-dep gate -- see _same_package_dep_names.
     """
     from .source_transform import transform_tool_source
 
@@ -266,11 +250,10 @@ def install_shared_deps(tool_name: str, shared_deps: Optional[Dict[str, str]],
 
 
 def extract_tool_function(tool_name: str, exec_globals: Dict[str, Any]) -> Callable[..., Any]:
-    """Pull the compiled tool callable out of its exec globals.
+    """Pull the callable named *tool_name* out of a compiled exec namespace.
 
-    Contract (unchanged from the original loader): the module must define a top-level
-    function whose name is EXACTLY *tool_name*. Anything else is a compilation failure --
-    the caller raises ToolCompilationError with this message verbatim.
+    Contract: the module must define a top-level function with that exact name, or a
+    ToolCompilationError is raised - nothing is guessed.
     """
     func = exec_globals.get(tool_name)
     if func is None or not callable(func):

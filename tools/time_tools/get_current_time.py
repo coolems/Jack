@@ -23,8 +23,7 @@ logger = logging.getLogger("COOLEMS.Tools.Time")
 
 
 def get_current_time(timezone: str = None, system_timezone: str = "UTC") -> str:
-    """
-    Get current local time and GMT time with timezone offset.
+    """Get current local time and GMT time with timezone offset.
 
     Args:
         timezone: Optional IANA timezone name (e.g., 'America/New_York', 'Europe/London').
@@ -35,7 +34,7 @@ def get_current_time(timezone: str = None, system_timezone: str = "UTC") -> str:
 
     Returns:
         Formatted string with local time, GMT time, and timezone offset
-    
+
     Returns:
         Formatted string with local time, GMT time, and timezone offset
     """

@@ -16,7 +16,7 @@ logger = logging.getLogger("COOLEMS.AuthGateway")
 
 
 def _keys_equal(stored_key, provided_key: str) -> bool:
-    """Constant-time API key comparison (H2 fix).
+    """Constant-time API key comparison
 
     Plain `==` short-circuits on the first differing byte, leaking how much of a
     guessed prefix is correct via timing. hmac.compare_digest compares in constant
@@ -141,7 +141,6 @@ class AuthGateway:
 
         MODEL RESOLUTION:
           - Model identity is the GGUF FILENAME; profiles.json lists allowed filenames
-            explicitly (2026-10 fleet - folders are no longer used).
         """
         if self._should_reload():
             self._reload_databases()

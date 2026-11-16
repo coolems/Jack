@@ -1,25 +1,17 @@
-"""
-History management module.
+"""History management.
 
 Provides:
 - Token-aware sliding window trimming
 - Image base64 replacement with file-path references
 - Combined load-and-prepare function for the WebSocket handler
-- Cross-task memory: load last N conversations for context
+- Cross-task memory: load the last N conversations for context
 
-UPDATED (2025-06-25):
-    - Refactored to use centralized db_manager for safe pooled connections with WAL mode
-
-FIXED (2026-08):
-    - estimate_message_tokens() now properly handles base64 data in tool results
-    - sanitize_images_in_history() also cleans base64 embedded in string content
-
-FIXED (2026-08, atomic-trim rewrite):
-    - estimate_message_tokens() CACHES its result on the message dict (`_est_tokens`)
-      so a message's token length is computed once, not re-calculated every loop pass.
-    - estimate_message_tokens() now counts `tool_calls` JSON — previously assistant
-      tool-call messages cost 0 tokens while their arguments ate real context.
-    - invalidate_message_tokens() drops the cache after in-place content mutations.
+Notes:
+- estimate_message_tokens() handles base64 in tool results and caches its result on the
+  message dict, so a message's length is computed once per loop pass. Tool-call messages
+  cost 0 tokens while their arguments still consume real context.
+- invalidate_message_tokens() drops that cache after in-place content mutations.
+- sanitize_images_in_history() also cleans base64 embedded in string content.
 """
 
 import json
@@ -48,22 +40,22 @@ logger = logging.getLogger("COOLEMS.History")
 def _sanitize_base64_in_string(content: str) -> str:
         """Remove base64 image data from string content and replace with lightweight reference.
 
-        Defense-in-depth: catches any base64 that slipped through tool_executor sanitization.
+                Defense-in-depth: catches any base64 that slipped through tool_executor sanitization.
 
-        CRITICAL: Python str(dict) uses SINGLE quotes ('), not double quotes (").
-        The regex must match BOTH formats since tool results may come as either.
+                CRITICAL: Python str(dict) uses SINGLE quotes ('), not double quotes (").
+                The regex must match BOTH formats since tool results may come as either.
 
-        FIXED (2026-08, atomic-trim rewrite): the old re.sub() callback only replaced
-        the matched span ("key": "<opening quote") and LEFT the base64 value plus its
-        closing quote in place - so "sanitized" content was actually LONGER than the
-        original. Now the whole key:value pair (through the closing quote) is consumed,
-        mirroring the proven scanner in tool_executor._sanitize_image_result().
+                The whole key:value pair (through the closing quote) is consumed, mirroring
+                tool_executor._sanitize_image_result: replacing only the opening-quote span
+                would leave the base64 value behind and make the result LONGER than the input.
 
-        Args:
-            content: String content (may contain base64 from tool results).
+                Args:
+                    content: String content (may contain base64 from tool results).
 
-        Returns:
-            Sanitized string with base64 replaced by references.
+                Returns:
+                    Sanitized string with base64 replaced by references.
+
+
         """
         import re as _re
 
@@ -122,26 +114,10 @@ def _sanitize_base64_in_string(content: str) -> str:
 
     
 def estimate_message_tokens(msg: dict) -> int:
-    """Estimate the token cost of a single message dict (CACHED).
+    """Estimate the token cost of one message dict (CACHED on the dict as `_est_tokens`).
 
-    FIXED (2026-08): Now properly handles base64 data in string content by
-    sanitizing it first before counting tokens. This prevents ~939K token
-    estimates for screenshots that should only be ~10 tokens.
-
-    FIXED (2026-08, atomic-trim rewrite):
-      - The result is cached on the message dict itself under `_est_tokens`,
-        so a message's token length is computed ONCE and every later
-        get_token_count()/trim pass is just a cheap sum of ints — no
-        re-tokenization or base64 regex scans per loop iteration.
-        (The key is internal metadata only: the SERVER strips it in
-        build_llama_payload() before anything reaches llama.cpp.)
-      - `tool_calls` are now counted via json.dumps(). The old code ignored
-        them entirely, so every assistant tool-call message (content="")
-        cost 0 tokens while its python_exec arguments silently ate real
-        context — the main reason prompts drifted past the window.
-
-    If a message's content is mutated in place later, call
-    invalidate_message_tokens(msg) to force a recompute on next use.
+    Images are replaced with a short path reference before counting, so a screenshot costs
+    ~10 tokens instead of its base64 length.
     """
     if isinstance(msg, dict):
         cached = msg.get("_est_tokens")
@@ -214,11 +190,10 @@ def trim_history_to_token_limit(
     max_tokens: Optional[int] = None,
     reserve_for_system: int = SYSTEM_PROMPT_TOKENS_ESTIMATE,
 ) -> List[Dict]:
-    """
-    Return a sub-list of *messages* that fits within *max_tokens* tokens.
+    """Return a sub-list of *messages* that fits within *max_tokens* tokens.
     The most-recent messages are kept; the oldest are dropped.
 
-    There is NO minimum-message floor (2026-09-18): if the budget requires it,
+    There is NO minimum-message floor: if the budget requires it,
     every message may be dropped and only system prompt + current user prompt
     remain - same contract as safe_trim_history() in utils/history_trimmer.py.
     """
@@ -247,14 +222,13 @@ def trim_history_to_token_limit(
 
 
 def sanitize_images_in_history(messages: List[Dict]) -> List[Dict]:
-    """
-    Replace any base64 image data in messages with a lightweight reference
+    """Replace any base64 image data in messages with a lightweight reference
     string like "[image: filename.png]".
 
     This prevents the history list from ballooning with megabytes of base64.
     The actual image files remain on disk and can be re-loaded when needed.
 
-    FIXED (2026-08): Also sanitizes base64 data embedded in string content
+    FIXED: Also sanitizes base64 data embedded in string content
     (from tool results) not just the separate 'images' key.
     """
     cleaned = []
@@ -299,8 +273,7 @@ def count_messages_for_conv(
     conv_id: str,
     db_path: str = None,
 ) -> int:
-    """
-    Lightweight COUNT query for a conversation. Returns message count without loading content.
+    """Lightweight COUNT query for a conversation. Returns message count without loading content.
     Used by the WebSocket handler to detect history changes without full DB scan.
     """
     if db_path is None:
@@ -328,8 +301,7 @@ def load_conversation_history(
     include_images: bool = False,
     db_path: str = None,
 ) -> List[Dict]:
-    """
-    Load messages from the DB for *conv_id*, apply token-aware trimming,
+    """Load messages from the DB for *conv_id*, apply token-aware trimming,
     and optionally strip image base64 data.
 
     Returns a list of dicts suitable for sending to Ollama.
@@ -392,22 +364,22 @@ def load_last_n_conversations(
     max_context_tokens: Optional[int] = None,
 ) -> List[Dict]:
     """
-    Load the last N completed conversations from the DB and return them
-    as a list of messages with conversation boundary markers.
+        Load the last N completed conversations from the DB and return them
+        as a list of messages with conversation boundary markers.
 
-    Each conversation is prefixed with a user-role message like:
-        "--- Context from recent conversation: <title> ---"
+        Each conversation is prefixed with a user-role message like:
+            "--- Context from recent conversation: <title> ---"
 
-    Args:
-        n: Number of recent conversations to load (default from config)
-        exclude_conv_id: Conversation ID to skip (e.g. the current one).
-        db_path: Path to SQLite DB. Defaults to config DB_PATH.
-        max_context_tokens: Max tokens for the combined cross-task context.
-                           If None, defaults to CROSS_TASK_MEMORY_CONTEXT_FRACTION
-                           of context window.
+        Args:
+            n: Number of recent conversations to load (default from config)
+            exclude_conv_id: Conversation ID to skip (e.g. the current one).
+            db_path: Path to SQLite DB. Defaults to config DB_PATH.
+            max_context_tokens: Max tokens for the combined cross-task context.
+                               If None, defaults to CROSS_TASK_MEMORY_CONTEXT_FRACTION
+                               of context window.
 
-    Returns:
-        List of message dicts ready to prepend to conversation history.
+        Returns:
+            List of message dicts ready to prepend to conversation history.
     """
     if db_path is None:
         db_path = DB_PATH

@@ -8,7 +8,7 @@ in its own globals), so nothing here imports a sibling dep - the DPI check is lo
 
 Public API only (no underscore-prefixed functions): install_shared_deps merges non-underscore
 symbols into the tool's exec globals, so a private name here would be invisible to the tools
-(the 2026-10-23 '_BROWSER_HEADERS' incident). Tool files never import ctypes themselves, so
+(the '_BROWSER_HEADERS' incident). Tool files never import ctypes themselves, so
 the AST guard needs no policy row for this folder.
 """
 
@@ -227,19 +227,17 @@ def cua_wheel_delta(direction: str, amount: int) -> int:
 def cua_drag(from_xy: tuple, to_xy: tuple, button: str = "left", steps: int = 20) -> bool:
     """Hold a button while moving the pointer from one absolute point to another.
 
-    Shape of a gesture apps accept (verified live against Chrome):
+    Shape of a gesture apps accept (live against Chrome):
       1. put the pointer ON the start point first (SetCursorPos - no button involved),
       2. press with a SendInput button event,
       3. move with SendInput MOUSE_MOVE|MOUSE_ABSOLUTE events, spaced apart,
       4. release at the end point.
 
-    Absolute SendInput events are used for the path because relocating the cursor does not
-    deliver mousemove events to the app: a gesture an app only recognises when it sees
-    mousemove events *with the button held* (Chrome's HTML5 drag-and-drop, slider dragging)
-    would silently ignore plain cursor relocation. The spacing matters too - a burst of
-    events collapses and Chrome's drag manager starts nothing.
+    The spacing matters too - a burst of events collapses and Chrome's drag manager starts
+    nothing.
 
-    The release is in a finally block: a failure mid-drag must never leave the button pressed.
+    The release is in a finally block: a failure mid-drag must never leave the button
+    pressed.
     """
     if button not in MOUSE_BUTTONS:
         return False

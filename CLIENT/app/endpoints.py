@@ -1,18 +1,13 @@
-"""
-COOLEMS API Endpoints - Thin orchestrator that assembles all route modules.
-WebSocket is handled separately in websocket.py.
+"""COOLEMS API Endpoints - thin orchestrator assembling all route modules.
+
+WebSocket chat is handled separately in the app/websocket package.
 
 Route modules:
-  - conversations.py : /api/conversations/* (CRUD, messages, truncate, reset)
-  - files.py         : /api/upload, /api/tree, /api/download, /api/file-content, /api/open
-  - agent.py         : /api/models, /api/status, /api/agent/*, /api/stop/*, /api/my-permissions
-  - downloads.py     : /api/setup/status?tool=... (live venv/pip/model setup progress)
-  - this module      : GET /api/setup/boot (live boot status, public read-only)
-
-UPDATED (2025-06-25):
-    - Added init_db_manager() call in startup for safe DB pooling with WAL mode
-
-UPDATED: Passes API key through to WebSocket handler for role-based tool filtering.
+    conversations.py  /api/conversations/* (CRUD, messages, truncate, reset)
+    files/            /api/upload, /api/tree, /api/download, /api/file-content, /api/open
+    agent.py          /api/models, /api/status, /api/agent/*, /api/stop/*, /api/my-permissions
+    downloads.py      /api/setup/status?tool=... (live venv/pip/model setup progress)
+    this module       GET /api/setup/boot (live boot status, public read-only)
 """
 
 import os
@@ -45,14 +40,14 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
                deferred_boot=None):
     """Create and configure the FastAPI application with all endpoints.
 
-        deferred_boot (2026-10-07 setup-mode UI fix): an async callable that performs the
+        deferred_boot: an async callable that performs the
         provider/agent boot in the BACKGROUND on this app's event loop. Setup mode (no API key
         configured yet) passes it so the UI starts IMMEDIATELY instead of blocking for up to
         30 minutes behind a bootstrap that cannot authenticate without a key; every non-public
         /api/* stays locked by APIMiddleware until a key exists, and while the boot task is
         still running keyed requests get 503 "retry shortly" (see app.auth + keys.is_boot_pending).
         Normal boots pass None - behavior is exactly as before.
-        """
+    """
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles

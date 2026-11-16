@@ -1,7 +1,6 @@
-"""
-Provider call handling with automatic restart on connection errors.
+"""Provider call handling with automatic restart on connection errors.
 
-UPDATED (2026-08-24): Vision self-healing fallback — when the loaded model has
+Vision self-healing fallback — when the loaded model has
 no multimodal projector (mmproj), llama.cpp rejects ANY image input with HTTP 500.
 Instead of killing the whole agentic turn, we strip the base64 images from the
 message list and retry once: the prompt text already lists every attached file's
@@ -17,8 +16,7 @@ logger = logging.getLogger("COOLEMS.Logic.ProviderCall")
 
 
 async def call_provider_with_retry(config: Any, messages: List[Dict]) -> Tuple[Any, Any]:
-    """
-    Call provider with automatic restart on connection error.
+    """Call provider with automatic restart on connection error.
 
     Args:
         config: AgenticModeConfig instance (provider, websocket, etc.).

@@ -1,15 +1,8 @@
-"""Common utilities package - modularized from the original monolithic common.py.
+"""Common utilities package - path/working-root handling and file I/O.
 
-This package re-exports **every public name** from the sub-modules so that
-existing import statements continue to work without changes::
-
-    # Old style - still works exactly the same
+Re-exports **every public name** from the sub-modules, so both import styles work:
     from app.utils.common import get_working_root, guard_path_inside_working_root
-
-    # New explicit style (recommended for new code)
     from app.utils.common.working_root import get_working_root
-    from app.utils.common.path_security import guard_path_inside_working_root
-
 """
 
 # ---- Working root ----------------------------------------------------------

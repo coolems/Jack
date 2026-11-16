@@ -4,11 +4,13 @@ A ChatChannel outlives any UI WebSocket: a generating chat keeps running inside 
 channel, pushing frames live while a socket is attached and buffering them (bounded)
 when none is. The final answer is always persisted by the bus.
 
+Fields:
   status        where the session is right now (drives the sidebar dot)
   stop_event    cancellation
   frame buffer  bounded deque for background frames
   subscribers   UI WebSockets attached to this conversation
-  steer queue   messages typed WHILE the agent runs, drained at the next safe boundary"""
+  steer queue   messages typed WHILE the agent runs, drained at the next safe boundary
+"""
 
 import asyncio
 import json
@@ -245,7 +247,8 @@ class ChannelWebSocket:
     send_text() parses JSON, captures content/thinking chunks into captured_text (partial
     persistence on cancel) and routes every frame through channel.emit_frame() - live push
     or the bounded background buffer. Any other attribute is forwarded to an attached UI
-    socket. A dead subscriber never breaks generation."""
+    socket. A dead subscriber never breaks generation.
+    """
 
     def __init__(self, channel):
         self._channel = channel

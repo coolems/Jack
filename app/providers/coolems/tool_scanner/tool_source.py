@@ -24,7 +24,7 @@ def get_tool_source_code_with_deps(tools_dir, tool_name):
     Returns dict with 'source_code' and 'shared_deps' (dict of dep_name -> source_code).
 
     Handles both regular same-package imports ('from .module import X')
-    and bare parent package imports ('from . import ClassName as Alias').
+    and bare parent package imports ('from. import ClassName as Alias').
     """
     result = {"source_code": None, "shared_deps": {}, "manifest": None}
 

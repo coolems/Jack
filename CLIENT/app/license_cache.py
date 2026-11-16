@@ -1,26 +1,24 @@
-"""License info cache (CLIENT side) — IN-MEMORY ONLY, no files ever.
+"""License info cache (CLIENT side) - IN-MEMORY ONLY, no files ever.
 
-LICENSING PLAN v16 (2026-10-15): the CLIENT keeps NO license state on disk and never
-talks to coolems.com. The SERVER is the single owner of all license logic and feeds us
-a slim payload over the existing WebSocket path:
-
+The CLIENT keeps no license state on disk and never talks to the vendor site. The SERVER
+owns all license logic and feeds a slim payload over the existing WebSocket path:
     {"use": "private" | "company", "company": "<name>" or None,
-     "email": "<e-mail>" or None, "private_licensed": true|false}   (last two: private only)
+     "email": "<e-mail>" or None, "private_licensed": true|false} (last two: private only)
 
-delivered in two frames (direct AND relay modes):
-  - auth_ok / brain_info-merged auth_ok   -> apply_auth_info() calls update_from_frame();
-  - token_stats on every request round-trip -> the provider recv loops call it.
+Delivered in two frames (direct AND relay modes):
+  - auth_ok / brain_info-merged auth_ok  -> apply_auth_info calls update_from_frame
+  - token_stats on every round-trip      -> the provider recv loops call it
 
-badge_status() composes the exact shape license-badge.js renders:
-    use=private + private_licensed      -> PRIVATE LICENSE · licensed <e-mail> for commercial use
+badge_status() composes the shape license-badge.js renders:
+    use=private + private_licensed        -> PRIVATE LICENSE · licensed <e-mail>
     use=private (unconfirmed / no e-mail) -> PRIVATE USE · license not acquired
-    use=company + name                  -> COMMERCIAL USE — LICENSED · assigned to <name>
-    use=company, no name                -> COMMERCIAL USE · not registered
-    nothing received yet                -> LICENSE NOT SET · pending server connection
+    use=company + name                    -> COMMERCIAL USE — LICENSED · assigned to <name>
+    use=company, no name                  -> COMMERCIAL USE · not registered
+    nothing received yet                  -> LICENSE NOT SET · pending server connection
 
-Private individual use is FREE for commercial use: the SERVER only sets private_licensed
-when the e-mail has been CONFIRMED on the web side (private_license.json). Old servers
-that send no email/private_licensed fields simply render the unconfirmed state.
+Private individual use is free for commercial use: the SERVER sets private_licensed only
+when the e-mail is CONFIRMED on the web side. A server that sends no email/private_licensed
+fields renders the unconfirmed state.
 """
 
 import logging

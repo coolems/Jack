@@ -1,6 +1,5 @@
 """Model/tool name filtering helpers shared by direct + relay WS paths.
 
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 494-554).
 _tool_name_of is also imported by chat_relay so both paths filter identically.
 """
 
@@ -51,8 +50,8 @@ def _filter_models_by_user(models, user_info, server_provider):
     Returns filtered list of dict entries in consistent format.
 
     CRITICAL: Must NOT double-wrap entries that are already dicts!
-    - health_check() returns: ["model1.gguf", "model2.gguf"]  (list of strings)
-    - get_models_list() returns: [{"name":"m1.gguf","size":...}, ...]  (list of dicts)
+    - health_check returns: ["model1.gguf", "model2.gguf"]  (list of strings)
+    - get_models_list returns: [{"name":"m1.gguf","size":...}, ...]  (list of dicts)
     """
     # Normalize all entries to dict format first (no double-wrapping!)
     normalized = []

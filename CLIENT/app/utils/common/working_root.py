@@ -1,23 +1,21 @@
-"""Working root management - PER-WORKSPACE, database as source of truth (2026-10-09).
+"""Working root management - PER-WORKSPACE, database as source of truth.
 
-CONTRACT (rewritten 2026-10-09):
+CONTRACT (rewritten):
   * The ONLY persistence for working roots is the CLIENT database: each conversation
-    ("workspace") has its own ``conversations.working_root`` column. There is NO disk
-    file anymore - the old single ``CLIENT/config/.working_root.json`` was removed
-    because it held ONE value for the whole process, so switching workspaces in the UI
-    overwrote it and silently broke every other workspace's tools.
+    ("workspace") has its own ``conversations.working_root`` column.
   * Resolution per conversation: :func:`resolve_working_root_for_conv` returns the row's
-    stored path when it still exists as a directory, otherwise the PROJECT ROOT (parent
-    of CLIENT/) - a valid default until the user sets that workspace's own folder in the
-    UI ("Working Folder" chip).
+    stored path when it still exists as a directory, otherwise the PROJECT ROOT (parent of
+    CLIENT/) - a valid default until the user sets that workspace's own folder in the UI
+    ("Working Folder" chip).
   * There is exactly ONE in-memory variable holding the ACTIVE value per process:
-    ``_WORKING_ROOT_CACHE``. It mirrors whichever workspace the UI has open right now,
-    so HTTP file endpoints (which have no conversation context) operate on the folder
-    of the currently viewed workspace. No other module may keep its own copy - they
-    must call :func:`get_working_root`.
-  * Tools never read this cache: agentic_mode() resolves the active turn's conversation
-    row and publishes it via tools.utils.set_current_working_root() (a ContextVar), so
+    ``_WORKING_ROOT_CACHE``. It mirrors whichever workspace the UI has open right now, so
+    HTTP file endpoints (which have no conversation context) operate on the folder of the
+    currently viewed workspace. No other module may keep its own copy - they must call
+    func:`get_working_root`.
+  * Tools never read this cache: agentic_mode resolves the active turn's conversation
+    row and publishes it via tools.utils.set_current_working_root (a ContextVar), so
     concurrent workspaces execute against their OWN folders.
+
 """
 
 import logging
@@ -165,23 +163,17 @@ def set_working_root(path: str, conv_id: str | None = None) -> str:
     persisted onto that conversation's row - that DB row is the per-workspace source of
     truth; switching back to this workspace later restores exactly this folder.
 
-    Parameters
-    ----------
-    path : str
-        Directory path (absolute or relative to CWD). Must point at an existing
-        directory, unless *conv_id* is given and *path* is empty - then the
-        conversation's OWN stored value (or project root fallback) is activated
-        instead. This is how "open workspace" pins a fresh workspace to its folder.
+    Args:
+        path: Directory path (absolute or relative to CWD). Must point at an existing
+            directory, unless *conv_id* is given and *path* is empty - then the
+            conversation's OWN stored value (or the project root fallback) is activated
+            instead. That is how "open workspace" pins a fresh workspace to its folder.
 
-    Returns
-    -------
-    str
+    Returns:
         The active working root after this call.
 
-    Raises
-    ------
-    ValueError
-        If *path* is non-empty but does not exist as a directory.
+    Raises:
+        ValueError: *path* is non-empty but does not exist as a directory.
     """
     global _WORKING_ROOT_CACHE
 

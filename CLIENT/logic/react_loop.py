@@ -1,7 +1,6 @@
 """
 ReAct (Reasoning + Acting) loop control for agentic mode.
 
-
 Handles:
 - Main tool iteration loop with provider-native tool calling
 - Token stats pushing after every provider call
@@ -12,8 +11,8 @@ Handles:
 - Safe-margin token warning + context-guardian finish/plan message before hard trim
 - Temp thinking array to preserve all AI reasoning steps in final history
 
-FIXED (2026-01-XX): Restored loop exit logic from working version.
-FIXED (2026-01-XX): ToolCompilationError now terminates loop immediately without retry.
+ToolCompilationError terminates the loop immediately, without retry.
+
 """
 
 
@@ -130,19 +129,9 @@ def _has_pending_steers(config: Any) -> bool:
 
 async def _apply_pending_steers(config: Any, messages: List[Dict]) -> SteerOutcome:
     """Drain queued steering messages and append them to *messages* as user turns.
-
     Ordering contract: callers that are about to inject after a streamed assistant answer
     must append that assistant message FIRST, then call this helper - so the steer is the
     final user message the next provider call sees.
-
-    Side effects per message (best-effort, never fatal):
-      * the steer id is marked applied on the source, so a second drain injects nothing;
-      * `config.on_steer_applied(item)` persists the raw text exactly once, in order;
-      * a `steer_applied` frame settles the UI bubble (correlated by steer id, carrying
-        `at_ts` = the moment the user typed it);
-      * `config.cycle.steer(text, seq, at_ts)` records ONE cycle-history row per steer.
-
-    Returns a SteerOutcome (int-compatible count + interjection/stop classification).
     """
     source = getattr(config, "steer_source", None)
     drain = getattr(source, "drain_steer", None)
@@ -258,10 +247,9 @@ _TOOL_COMPILATION_ERROR_RESOLVED = False
 def _get_tool_compilation_error():
     """Get the ToolCompilationError class (lazy import, resolved ONCE).
 
-    (2026-11 review fix B8) The old version re-ran the import on EVERY exception,
-    so a hot error path paid two failed imports per occurrence. The class is a
-    constant: resolve it once and cache the result (including the "not available"
-    result), so repeated calls are a dict-free attribute read.
+    The class is a constant: resolve it once and cache the result (including the
+    "not available" result), so repeated calls are a dict-free attribute read instead of
+    two failed imports per occurrence on a hot error path.
     """
     global _TOOL_COMPILATION_ERROR, _TOOL_COMPILATION_ERROR_RESOLVED
     if _TOOL_COMPILATION_ERROR_RESOLVED:
@@ -287,36 +275,36 @@ async def run_react_loop(
     conversation_history: List[Dict],
 ) -> str:
     """
-    Run the ReAct loop for agentic mode.
+        Run the ReAct loop for agentic mode.
 
-    Args:
-        config: AgenticModeConfig with provider, websocket, etc.
-        messages: Initial messages list (system + history + user).
-        tool_executor: ToolExecutor instance for tool execution.
-        conversation_history: Original full conversation history.
+        Args:
+            config: AgenticModeConfig with provider, websocket, etc.
+            messages: Initial messages list (system + history + user).
+            tool_executor: ToolExecutor instance for tool execution.
+            conversation_history: Original full conversation history.
 
-    Returns:
-        Final AI response string (includes all accumulated thinking steps).
+        Returns:
+            Final AI response string (includes all accumulated thinking steps).
 
-    HISTORY TRIMMING CONTRACT (atomic units):
-        - messages[0] (system prompt) is NEVER removed.
-        - The CURRENT USER PROMPT (tagged `_protect` by build_messages) is NEVER
-          removed - it must remain in the list at all times.
-        - THE CURRENT LOOP IS NEVER REMOVED. `_loop_boundary(messages)` is the boundary:
-          boundary: everything appended after build_messages() - this loop's
-          assistant replies, tool_calls, tool results and mid-run steering - is the
-          working context and stays available for the whole run. Trimming eats only
-          the PREVIOUS turns of the session.
-        - Everything removable is grouped into atomic units (a turn = user msg + the
-          AI reply that answered it + ALL its tool results) and only whole units are
-          ever removed, oldest first. An assistant message with `tool_calls` can
-          therefore never be separated from its tool results.
-        - When the loop alone cannot fit the budget, the trim is a no-op and the
-          context guardian fires: the AI writes plan_<...>_continue.md (in .temp/plans/) and stops, so
-          the NEXT loop resumes from user input + AI output + that plan. Only after
-          the guardian has spoken may a trim shrink the loop (allow_loop_trim=True),
-          to give the wrap-up answer room. Per-message token counts are cached on the
-          dicts by estimate_message_tokens(), so trimming is a cheap sum of ints.
+        HISTORY TRIMMING CONTRACT (atomic units):
+            - messages[0] (system prompt) is NEVER removed.
+            - The CURRENT USER PROMPT (tagged `_protect` by build_messages) is NEVER
+              removed - it must remain in the list at all times.
+            - THE CURRENT LOOP IS NEVER REMOVED. `_loop_boundary(messages)` is the boundary:
+              boundary: everything appended after build_messages - this loop's
+              assistant replies, tool_calls, tool results and mid-run steering - is the
+              working context and stays available for the whole run. Trimming eats only
+              the PREVIOUS turns of the session.
+            - Everything removable is grouped into atomic units (a turn = user msg + the
+              AI reply that answered it + ALL its tool results) and only whole units are
+              ever removed, oldest first. An assistant message with `tool_calls` can
+              therefore never be separated from its tool results.
+            - When the loop alone cannot fit the budget, the trim is a no-op and the
+              context guardian fires: the AI writes plan_<...>_continue.md (in .temp/plans/) and stops, so
+              the NEXT loop resumes from user input + AI output + that plan. Only after
+              the guardian has spoken may a trim shrink the loop (allow_loop_trim=True),
+              to give the wrap-up answer room. Per-message token counts are cached on the
+              dicts by estimate_message_tokens, so trimming is a cheap sum of ints.
     """
     func_start = time.time()
 
@@ -1355,14 +1343,15 @@ async def run_react_loop(
 
 def _format_turn_stats_line(last_stats: Any, loop_tools: int, loop_no_tools: int,
                             session_generated_tokens: int, elapsed_sec: float) -> str:
-    """Format the FINAL turn-stats line for an agentic run (2026-10-10).
+    """Format the FINAL turn-stats line for an agentic run.
 
-    Renders EXACTLY like the UI status bar ("Loop stats: ... | 177K ctx | 9.3K sent |
-    167.4K left | \u26a1 20.6 tok/s | \U0001F4DD 0.1K gen | \u23f1 0:08") so the user sees in the
-    answer the same statistics that were live during the thinking process. Spliced directly
-    above "Agentic AI: TASK DONE" and sent as a "turn_stats" frame for the live bubble.
+        Renders EXACTLY like the UI status bar ("Loop stats: ... | 177K ctx | 9.3K sent |
+        167.4K left | ⚡ 20.6 tok/s | 📝 0.1K gen | ⏱ 0:08") so the user sees in the
+        answer the same statistics that were live during the thinking process. Spliced directly
+        above "Agentic AI: TASK DONE" and sent as a "turn_stats" frame for the live bubble.
 
-    Returns "" when there is no provider stats object yet (nothing to report).
+        Returns "" when there is no provider stats object yet (nothing to report).
+
     """
     if last_stats is None:
         return ""
@@ -1396,10 +1385,10 @@ def _format_turn_stats_line(last_stats: Any, loop_tools: int, loop_no_tools: int
 
 def _is_valid_tool_call(tc: Dict) -> bool:
     """Validate a tool call has a non-empty function name.
-    
+
     Filters out malformed tool calls where the model returned empty/whitespace names.
     This prevents 'unknown' tool errors when the model hallucinates incomplete tool calls.
-    
+
     Tool call structure from llama.cpp streaming:
         {
             "id": "call_xxx",

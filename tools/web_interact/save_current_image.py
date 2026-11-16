@@ -24,8 +24,7 @@ from urllib.parse import unquote
 logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 
 async def save_current_image(filename: str = None, download_dir: str = "") -> str:
-    """
-    Save the currently displayed image from the browser page.
+    """Save the currently displayed image from the browser page.
     This is useful for sites that block direct downloads but display images.
     """
     from .ensure_connected import ensure_connected

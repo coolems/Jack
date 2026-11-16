@@ -86,16 +86,14 @@ def is_image_file(filename: str) -> bool:
 def _compress_image_to_jpeg_bytes(image_bytes: bytes, max_bytes: int = VISION_IMAGE_MAX_BYTES):
     """Compress an in-memory image to JPEG so its payload stays <= ~max_bytes.
 
-    Strategy (2026-09-10 multi-image fix - see plan_20260910_1835.md):
+    Strategy:
       1. Try the original size at decreasing quality steps until it fits.
-      2. If even the smallest quality is too big, downscale (Lanczos) in 0.7x
-         steps and retry - resolution costs more tokens than mild JPEG artifacts.
+      2. If even the lowest quality is too big, downscale (Lanczos) in 0.7x steps and retry -
+         resolution costs more tokens than mild JPEG artifacts.
 
-    Returns JPEG bytes on success, or None when Pillow is unavailable / the image
-    cannot be decoded (caller then falls back to encoding the original file).
-
-    Note: GIF/WebP/TIFF are flattened to their FIRST frame; alpha is composited
-    onto white so screenshots keep readable text.
+    Returns JPEG bytes, or None when Pillow is unavailable or the image cannot be decoded
+    (the caller then encodes the original file). GIF/WebP/TIFF are flattened to their FIRST
+    frame; alpha is composited onto white so screenshots keep readable text.
     """
     try:
         from PIL import Image, ImageOps  # lazy: Pillow is optional at runtime
@@ -136,10 +134,9 @@ def _compress_image_to_jpeg_bytes(image_bytes: bytes, max_bytes: int = VISION_IM
 def encode_image_to_base64(filepath: str) -> Optional[str]:
     """Read an image file and return its base64 payload for vision processing.
 
-    BIG-IMAGE FIX (2026-09-10): when the raw file would produce a base64 string
+    BIG-IMAGE when the raw file would produce a base64 string
     larger than VISION_IMAGE_MAX_BASE64_CHARS (~500KB of pixels), the image is
     re-encoded as a downscaled JPEG capped at ~VISION_IMAGE_MAX_BYTES. A 7MB PNG
-    screenshot used to ride into the prompt as 9.3M base64 chars, which alone
     nearly filled the whole context window and starved the output (the clamp hit
     its 1024-token floor and every answer was cut off mid-sentence).
 
@@ -178,18 +175,14 @@ def encode_image_to_base64(filepath: str) -> Optional[str]:
 def read_docx_as_text(filepath: str, max_size: int = MAX_TEXT_CONTENT_SIZE) -> str:
     """Extract readable text from a .docx (Office Open XML) file.
 
-    ADDED 2026-10-24: the previews panel rendered raw ZIP bytes for .docx files
-    because read_text_file() decoded them as utf-8-with-ignore. A .docx is a ZIP
-    archive; its visible text lives in word/document.xml, one <w:t> run per
-    fragment and one <w:p> paragraph per line. This extracts that plain text so
-    the preview shows real content (read-only - saving extracted text back would
+    A .docx is a ZIP archive; its visible text lives in word/document.xml - one <w:t> run per
+    fragment and one <w:p> paragraph per line. This returns that plain text so the preview
+    panel shows content instead of raw ZIP bytes (read-only: saving extracted text back would
     corrupt the document).
 
-    Raises
-    ------
-    Exception
-        Re-raises any exception (bad ZIP, missing document.xml, parse error) -
-        the caller turns it into an HTTP 500 with a clear message.
+    Raises:
+        Any exception (bad ZIP, missing document.xml, parse error) is re-raised so the caller
+        turns it into an HTTP 500 with a clear message.
     """
     import zipfile
     from xml.etree import ElementTree as ET
@@ -214,13 +207,11 @@ def read_docx_as_text(filepath: str, max_size: int = MAX_TEXT_CONTENT_SIZE) -> s
 def read_text_file(filepath: str, max_size: int = MAX_TEXT_CONTENT_SIZE) -> str:
     """Read text file with encoding detection.
 
-    Tries multiple encodings (UTF-8 first), falls back to binary decode
-    with ``errors='ignore'`` when all named encodings fail.
+    Tries multiple encodings (UTF-8 first), then falls back to a binary decode with
+    ``errors='ignore'`` when every named encoding fails.
 
-    Raises
-    ------
-    Exception
-        Re-raises any exception that occurs during reading.
+    Raises:
+        Exception: any error raised while reading is re-raised.
     """
     try:
         size = os.path.getsize(filepath)

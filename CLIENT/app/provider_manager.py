@@ -1,8 +1,7 @@
-"""
-Global provider manager singleton.
+"""Global provider manager singleton.
 Allows any module (including standalone tool functions) to access the active provider.
 
-DELIVERY NOTE (2026-08-16): This file is a process-local startup singleton, so it
+This file is a process-local startup singleton, so it
 exists on BOTH sides by design -- CLIENT needs it at boot time BEFORE any WebSocket
 connection exists (chicken-and-egg: init imports it before tools can be fetched).
 In addition the SERVER delivers its copy to each client via shared_sources under

@@ -1,4 +1,4 @@
-"""What a mid-run steering message MEANS (client side, 2026-11).
+"""What a mid-run steering message MEANS (client side).
 
 A message typed while a task is running is an INTERJECTION by default: the user wants an
 answer / a correction and the job must keep going. Only an EXPLICIT stop request may close

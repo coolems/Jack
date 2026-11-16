@@ -1,24 +1,8 @@
-"""ToolExecutionLock — serializes screen/browser tools across concurrent agentic chats.
+"""ExecutionLock - serializes screen/browser tools across concurrent agentic chats.
 
-2026-09-08 multi-chat (Phase 5). When multiple chats generate simultaneously, their
-agentic loops may both want to use mouse/keyboard/screenshot tools at the same time.
-The physical screen and browser are SINGLETON resources — two tool calls fighting over
-the cursor produce garbage screenshots and broken automation.
-
-Design:
-  * One module-level asyncio.Lock shared by ALL ToolExecutor instances in this process.
-  * Only tools in SCREEN_BROWSER_TOOLS acquire the lock; file/HTTP/search/vision tools
-    run in parallel (they don't touch the screen).
-  * Owner tag = conversation ID, so logs show WHICH chat is holding the lock and how
-    long others wait.
-  * The lock is re-entrant per owner: if the same chat calls two browser tools back-to-
-    back it doesn't deadlock on itself (it already holds the slot).
-
-Usage in ToolExecutor.execute():
-    from .tool_lock import tool_lock, SCREEN_BROWSER_TOOLS
-    if tool_name in SCREEN_BROWSER_TOOLS:
-        async with tool_lock(conv_id):
-            ... execute ...
+When multiple chats generate at once, desktop and browser tools must not interleave: one
+chat driving the mouse while another types produces unusable input. The lock serializes
+those tools per conversation.
 """
 
 import asyncio
@@ -193,7 +177,7 @@ def tool_lock(owner: str) -> _OwnerScopedLock:
 
     Usage:
         async with tool_lock(conv_id):
-            result = await orchestrator.execute_tool(...)
+            result = await orchestrator.execute_tool
     """
     return _OwnerScopedLock(_SHARED_LOCK, owner)
 

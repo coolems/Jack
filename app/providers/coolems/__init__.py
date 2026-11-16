@@ -1,19 +1,12 @@
-"""
-    COOLEMS distributed provider protocol (SERVER side).
-
-    TRANSPORT REALITY (2026-08-20 doc fix): the wire protocol is WebSocket TEXT frames
-    carrying JSON objects -- there is NO binary length-prefix framing anywhere in this
-    codebase. The old send_frame()/recv_frame() helpers described below were dead code
-    (never called) and have been removed along with the misleading docstring.
-
+"""COOLEMS distributed provider protocol (SERVER side).
+    TRANSPORT REALITY: the wire protocol is WebSocket TEXT frames carrying JSON objects
+    there is NO binary length-prefix framing anywhere in this codebase.
     Message types (JSON, one object per WS text frame):
-
         Handshake:
             auth          -> {type:"auth", api_key, role_type, protocol_version}
             auth_ok       <- {type:"auth_ok", protocol_version, role, email, allowed_models,
                               allowed_tools, context_window}
             error         <- {type:"error", message}
-
         Chat (long-lived connection; one in-flight request per connection):
             request       -> {type:"request", model, messages, temperature, enable_thinking,
                               conv_id, tools}
@@ -24,24 +17,7 @@
             response      <- {type:"response", content}
             done          <- {type:"done"}
             stop          -> {type:"stop", conv_id}
-
-        Control (short round-trips; see CLIENT control_channel for the persistent variant):
-            health_check  -> {}            health_ok     <- {models:[...]} | error
-            models_request-> {}            models_response <- {models:[{name,size}]}
-            current_model -> {}            current_model_response <- {model}
-            model_switch  -> {model}       model_switch_response <- {success, message}
-            tools_request -> {}            tools_response <- {definitions, allowed_tools,
-                                    shared_sources, config_constants, python_exec_blocked_libs,
-                                    dna_data, system_prompt, shared_hashes, tool_hashes}
-            tool_code_request -> {name}    tool_code_response <- {source_code, shared_deps}
-
-    PROTOCOL VERSIONING (2026-08-20): every auth frame carries "protocol_version" and the
-    server echoes it back in auth_ok. The authoritative value is config.PROTOCOL_VERSION;
-    a mismatch is rejected with an actionable error (legacy clients without the field are
-    tolerated for one release cycle with a loud warning).
-
-    Shared helpers below: WebSocket URL/address parsing, API key loading.
-    """
+"""
 
 import json
 import logging

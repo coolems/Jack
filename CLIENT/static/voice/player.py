@@ -1,5 +1,4 @@
-"""
-Cross-platform audio player using pygame with pure asyncio.
+"""Cross-platform audio player using pygame with pure asyncio.
 
 All playback is non-blocking — uses asyncio.sleep() so the event loop
 stays responsive.  Pygame init is tracked so we don't re-initialize
@@ -58,8 +57,7 @@ class AudioPlayer:
                 self._playing = False
 
     async def play_wav_bytes(self, wav_bytes: bytes) -> None:
-        """
-        Play WAV data from bytes asynchronously — does not block event loop.
+        """Play WAV data from bytes asynchronously — does not block event loop.
 
         Writes bytes to a temp file because pygame.mixer.Sound(BytesIO)
         is unreliable across pygame versions.

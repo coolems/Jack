@@ -5,7 +5,7 @@ Includes stderr polling during startup to diagnose failures early.
 
 Module-level globals track the running server process state across calls.
 
-(2026-10-31 verified attach): also provides _find_pid_on_port() /
+(attach): also provides _find_pid_on_port() /
 _get_process_commandline() so start_server() can inspect a FOREIGN
 llama-server already bound to our port and decide whether it carries our
 expected flags (MTP spec-decode etc.) before reusing or restarting it.
@@ -72,17 +72,9 @@ def _drain_stream(stream, tag: str, process: subprocess.Popen) -> None:
 
 def _start_pipe_drainers(process: subprocess.Popen) -> None:
     """Start daemon threads that drain stdout+stderr of llama-server forever.
-
-    Must be called right after Popen(). Prevents the pipe-buffer deadlock and
-    gives us a live log of everything llama.cpp prints (model load, spec
-    decoding stats, errors, OOM messages...).
-
-    PHASE C LEAF (2026-09 threadless refactor): these daemon threads are the ONE deliberate
-    exception to the no-threads rule. Blocking pipe reads have no asyncio equivalent on
-    Windows (no non-blocking readline for subprocess pipes), and they must run FOREVER - a
-    task-based drain would need an OS read primitive that does not exist in stdlib. They are
-    daemon threads: pure I/O, no shared state, killed with the process. Everything else in
-    this module is thread-free.
+    Must be called right after Popen. Prevents the pipe-buffer deadlock and gives us a live
+    log of everything llama.cpp prints (model load, spec decoding stats, errors, OOM
+    messages...).
     """
     if process.stdout:
         t = _threading.Thread(
@@ -102,7 +94,7 @@ def _start_pipe_drainers(process: subprocess.Popen) -> None:
 def _poll_stderr(process: subprocess.Popen, attempt_num: int) -> None:
     """Poll stderr from a running process during startup wait loop.
 
-    NOTE: when pipe drainers are active they own the pipes — reading here would
+    When pipe drainers are active they own the pipes - reading here would
     race with them and could swallow lines, so this becomes a no-op in that case.
     The drainer threads already log every line to COOLEMS logs in real time.
     """
@@ -121,8 +113,8 @@ def _poll_stderr(process: subprocess.Popen, attempt_num: int) -> None:
 def _check_stderr_early(process: subprocess.Popen) -> None:
     """Try to read stderr from a running process without killing it.
 
-    NOTE: with pipe drainers active the pipes are owned by the drainer threads,
-    so this is intentionally a no-op — any stderr output is already in the logs
+    With pipe drainers active the pipes are owned by the drainer threads,
+    so this is intentionally a no-op - any stderr output is already in the logs
     under [LLAMA STDERR].
     """
     logger.debug(f"[LLAMA] Early stderr check for PID {process.pid}: pipe drainers own the streams (see [LLAMA STDERR] log lines)")
@@ -176,10 +168,9 @@ def _terminate_process(process: subprocess.Popen) -> None:
 
 
 def _kill_orphaned_process(key=None) -> None:
-    """Kill any previously tracked server process before starting a new one.
-
-    (2026-09-08 multi-chat) *key* selects the instance ((host, port)); legacy no-key
-    calls target the default local key so old call sites keep working unchanged."""
+    """*key* selects the instance ((host, port)); legacy no-key
+    calls target the default local key so old call sites keep working unchanged.
+    """
 
     proc = _server_processes.get(key or _DEFAULT_KEY)
     if proc is not None:
@@ -188,19 +179,9 @@ def _kill_orphaned_process(key=None) -> None:
 
 def _pids_listening_on_port(port: int) -> list[int]:
     """PIDs of the processes LISTENING on exactly *port* (netstat -ano, field-anchored).
-
-    (2026-10-31 verified attach): netstat parse extracted from
-    _kill_llama_server_by_port() so start_server() can identify a foreign
-    llama-server before deciding to reuse or kill it. Never raises.
-
-    (2026-11-02 review fix): the filter used to be a raw substring test
-    (f":{port}" in line), so a listener whose port merely CONTAINS the target
-    (5040 vs 50407, 80 vs 8080/8000, 1850 vs 18500) was reported as the owner,
-    and _kill_llama_server_by_port() force-killed an unrelated process. The port
-    is now compared as a FIELD: the digits after the LAST ':' of the local
-    address, which also covers the bracketed IPv6 form Windows prints
-    ("[::]:135" -> "135"), with TCP/TCP6 protocol and LISTENING state checked
-    explicitly. IPv4 + IPv6 listeners on the same port are deduplicated."""
+    (attach): netstat parse extracted from _kill_llama_server_by_port so start_server can
+    identify a foreign llama-server before deciding to reuse or kill it. Never raises.
+    """
     target = str(port)
     pids: list[int] = []
     try:
@@ -242,11 +223,11 @@ def _find_pid_on_port(port: int) -> Optional[int]:
 def _get_process_commandline(pid: int) -> Optional[str]:
     """Return the full command line of a Windows process, or None if uninspectable.
 
-    (2026-10-31 verified attach): used to verify that a foreign llama-server on our
-    port was launched with OUR expected flags before we trust it. Tries wmic first
-    (fast), falls back to PowerShell Get-CimInstance, and returns None when neither
-    works (missing tools, access denied) — callers treat None as 'cannot verify'
-    and take the safe path (restart from zero). Never raises."""
+    Used to confirm a process on the port was launched with OUR expected flags before it is
+    trusted. Tries wmic first (fast), falls back to PowerShell Get-CimInstance, and returns
+    None when neither works (missing tools, access denied) - callers treat None as
+    'cannot verify' and take the safe path. Never raises.
+    """
     if not pid or pid <= 0:
         return None
 
@@ -282,11 +263,12 @@ def _get_process_commandline(pid: int) -> Optional[str]:
 def _kill_llama_server_by_port(port: int) -> None:
     """Kill the process(es) LISTENING on exactly *port* (fallback for untracked processes).
 
-    (2026-11-02 review fix): shares _pids_listening_on_port() with
+    (review): shares _pids_listening_on_port() with
     _find_pid_on_port() instead of re-parsing netstat with its own substring
     filter. Same owner set as the attach/status lookups, so node_launcher's
     "is it a llama-server?" guard now inspects exactly the PIDs this kill can
-    reach - a prefix-port listener (:80800 when we want :8080) is never killed."""
+    reach - a prefix-port listener (80800 when we want :8080) is never killed.
+    """
     for pid in _pids_listening_on_port(port):
         try:
             subprocess.run(
@@ -303,9 +285,10 @@ def _kill_llama_server_by_port(port: int) -> None:
 async def wait_for_port_free_async(port: int) -> bool:
     """Wait for a TCP port to become free. Used during model reload.
 
-    (2026-09 threadless refactor): async - polls with await asyncio.sleep() on the
+    Async: polls with await asyncio.sleep() on the
     caller's loop instead of blocking time.sleep(); the connect_ex probe itself is a
-    non-blocking socket call."""
+    non-blocking socket call.
+    """
     import socket as _socket
 
     # Wait for port to actually become free (max 30s)

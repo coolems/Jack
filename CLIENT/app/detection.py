@@ -1,7 +1,6 @@
-"""Tool detection utilities - moved from tools/tool_detection.py
+"""Tool detection utilities - analyze a user message to determine required tools.
 
-Analyzes user messages to determine required tools.
-Now lives in app/ since it's core logic, not a tool itself.
+Core logic rather than a tool, so it lives in app/ and ships with the CLIENT.
 """
 
 import re

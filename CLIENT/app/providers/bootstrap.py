@@ -1,27 +1,27 @@
 """Bootstrap framework fetch - runs BEFORE CoolemsClientProvider is instantiated.
 
-Solves the chicken-and-egg problem introduced by the 2026-08-20 dedup change:
+Solves the chicken-and-egg problem introduced by the dedup change:
   - BaseProvider / TokenStats now live ONLY in SERVER (delivered via tools_response)
   - CoolemsClientProvider subclasses BaseProvider at class-definition time
   - But we cannot instantiate the provider until app.providers.base is in sys.modules
 
 This module opens a RAW WebSocket connection (config values only - no provider
 class needed), authenticates, sends ONE tools_request, and returns the full
-tools_response. The caller then installs it via RemoteToolOrchestrator.install_from_response()
+tools_response. The caller then installs it via RemoteToolOrchestrator.install_from_response
 (same single install code path as every other init - no duplicated bookkeeping).
 
 After that runs, `from app.providers import BaseProvider` resolves to the real
-SERVER-delivered class and get_provider() can build CoolemsClientProvider.
+SERVER-delivered class and get_provider can build CoolemsClientProvider.
 
-Why a separate raw fetch instead of reusing tool_requests.send_tool_request()?
+Why a separate raw fetch instead of reusing tool_requests.send_tool_request?
 That helper takes a provider instance as its first argument - which is exactly the
 object we cannot construct yet. Everything else (URL/SSL/auth helpers, protocol
 check) IS reused from app.providers.coolems so there is one source of truth for
 the wire format.
 
-WAITING FOR SERVER (2026-08-26): the CLIENT commonly starts while the COOLEMS
+WAITING FOR SERVER : the CLIENT commonly starts while the COOLEMS
 SERVER is still booting / loading its model - a refused TCP connection at that
-moment is NORMAL, not an error. bootstrap_framework() therefore waits patiently:
+moment is NORMAL, not an error. bootstrap_framework therefore waits patiently:
 time-budgeted retries with capped backoff and periodic progress logs (see
 BOOTSTRAP_* constants in config.py). It only gives up after BOOTSTRAP_MAX_WAIT_SEC
 (env override COOLEMS_CLIENT_BOOTSTRAP_MAX_WAIT) - then the caller raises ONE clean,
@@ -105,22 +105,7 @@ def _classify_failure(e: Exception) -> tuple[str, str]:
 
 
 def _classify_auth_failure(auth_resp) -> str:
-    """Map a non-auth_ok SERVER response to a short failure class (2026-10-05 KEY-DRIFT DX).
-
-    'auth_rejected'  - SERVER refused the presented key ("Authentication failed or no
-                       valid profile"): the CLIENT is presenting a key that does not match
-                       config/.api_keys.json on the SERVER.
-    'empty_key'      - (2026-10-07) SERVER rejected an EMPTY api_key: this machine has no
-                       outbound credential configured yet (SETUP MODE). Waiting never helps
-                       by itself - a key must be entered in UI Settings -> Authentication (which
-                       writes CLIENT/config/.api_client_keys.json). The wait loop keeps retrying so the
-                       very next attempt after the user sets the key succeeds.
-    'protocol'       - explicit protocol version mismatch (fatal - retrying never helps).
-    'other'          - anything else (malformed responses...).
-
-    The class drives the wait-loop diagnostics: repeated 'auth_rejected' attempts print ONE
-    actionable key-mismatch hint; a single 'empty_key' attempt prints the setup-mode hint.
-    """
+    """Map a non-auth_ok SERVER response to a short failure class (KEY-DRIFT DX)."""
     if not isinstance(auth_resp, dict):
         return "other"
     msg = str(auth_resp.get("message", ""))
@@ -138,7 +123,7 @@ async def _bootstrap_fetch_once() -> dict | None:
     Returns None on any failure; the retry wrapper decides whether to try again.
 
     Raises:
-        ConnectionError: protocol version mismatch (fatal - retrying will never fix it).
+        ConnectionError: protocol version mismatch (fatal - retrying will never it).
     """
     from config import (
         COOLEMS_CLIENT_SERVER_ADDRESS,
@@ -300,7 +285,7 @@ async def _bootstrap_fetch_once() -> dict | None:
 
 
 def _refresh_phase(budget: float) -> None:
-    """Keep _status["phase"] honest (2026-10-07 setup-mode UI).
+    """Keep _status["phase"] honest (setup-mode UI).
 
     No key available right now  -> "waiting_key"  (the actionable state the user must fix);
     a key exists                 -> "bootstrapping" (normal SERVER-still-loading wait).
@@ -314,7 +299,7 @@ def _refresh_phase(budget: float) -> None:
     _status["budget_sec"] = float(budget)
 
 def _all_addresses_loopback() -> bool:
-    """True when EVERY configured SERVER address is a loopback one (2026-10-07 LAN hint).
+    """True when EVERY configured SERVER address is a loopback one (LAN hint).
 
     A fresh machine ships with ['localhost:8080'] only; if the real SERVER lives on
     another LAN box, every attempt fails with NoServerReachable and this helper lets the
@@ -345,31 +330,16 @@ def _all_addresses_loopback() -> bool:
     return True
 
 async def bootstrap_framework() -> dict | None:
-    """Async entry point for the boot-time framework fetch (2026-09 threadless refactor).
+    """Async boot-time framework fetch: get the full tools_response from SERVER.
 
-    Fetches the full tools_response from SERVER and WAITS for it when the SERVER is
-    not up yet (the normal case right after boot, while it loads its model):
+    Waits while the SERVER is still booting - budget BOOTSTRAP_MAX_WAIT_SEC (env
+    COOLEMS_CLIENT_BOOTSTRAP_MAX_WAIT), backoff BOOTSTRAP_RETRY_INITIAL_DELAY up to
+    BOOTSTRAP_RETRY_MAX_DELAY, progress log every BOOTSTRAP_PROGRESS_LOG_SEC - all on the
+    caller's event loop, no threads.
 
-      - time budget: config.BOOTSTRAP_MAX_WAIT_SEC (default 30 min; env override
-        COOLEMS_CLIENT_BOOTSTRAP_MAX_WAIT in seconds)
-      - backoff between attempts: BOOTSTRAP_RETRY_INITIAL_DELAY growing per attempt,
-        capped at BOOTSTRAP_RETRY_MAX_DELAY
-      - progress log every BOOTSTRAP_PROGRESS_LOG_SEC so the user sees the CLIENT is
-        alive and waiting (not frozen/crashed)
-
-    The old sync version ran a time.sleep retry loop that asyncio.run()ed one fetch
-    per attempt. It is now a single async coroutine awaited from the boot sequence
-    (code_client.py wraps init_provider_and_app in ONE top-level asyncio.run before
-    uvicorn starts), so the whole wait happens on one event loop - no threads, no
-    nested loops.
-
-    Returns:
-        The full tools_response dict for the caller to install via
-        RemoteToolOrchestrator.install_from_response(), or None after the wait budget
-        is exhausted.
-
-    Raises:
-        ConnectionError: protocol version mismatch (fatal - do not retry).
+    Returns the tools_response dict for RemoteToolOrchestrator.install_from_response(),
+    or None once the budget is exhausted.
+    Raises ConnectionError on a protocol mismatch: fatal, do not retry.
     """
     from config import (
         BOOTSTRAP_MAX_WAIT_SEC,

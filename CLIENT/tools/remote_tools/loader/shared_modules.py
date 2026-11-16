@@ -1,37 +1,24 @@
 """Shared/framework module installation -- builds a real importable tree in sys.modules.
 
-The SERVER ships shared sources ('utils', 'path_guard', 'ssrf_defense', the
-'web_interact' subpackage, 'app.provider_manager', 'app.dna.*') as plain text. This
-module turns that dict into LIVE modules registered in sys.modules so delivered tool
-code can import them through Python's normal machinery -- nothing is written to disk:
-
+The SERVER ships shared sources ('utils', 'path_guard', 'ssrf_guard', 'ssrf_defense',
+the 'web_interact' subpackage, 'app.provider_manager', 'app.dna.*') as plain text. This
+turns that dict into LIVE modules registered in sys.modules -- nothing is written to disk:
   * non-'app.' keys live under the synthetic 'tools' namespace package
     ('utils' -> tools.utils, 'web_interact.shared_instance' -> tools.web_interact.shared_instance);
-  * 'app.*' keys are registered under their LITERAL name so normal client imports
-    resolve to SERVER-delivered code (e.g. from app.dna import get_agent).
+  * 'app.*' keys are registered under their LITERAL name so normal client imports resolve
+    to SERVER-delivered code (from app.dna import get_agent).
 
-Guarantees kept from the original implementation (do not regress):
-
-  * Idempotent -- modules already carrying '_remote_shared_module' are skipped, so a
-    bootstrap install followed by an orchestrator install is safe.
-  * Dependency order -- keys sorted by dot-depth (STABLE), parents before children;
-    same-depth modules keep the SERVER's send order (base.py imports token_stats at
-    module level and must come after it).
-    DELIVERY-ORDER CONTRACT (2026-11-14, code-review C5): 'ssrf_guard' must arrive
-    BEFORE 'ssrf_defense'. Both are dot-depth 0, so this installer keeps the SERVER's
-    send order - and tools/ssrf_defense.py is a deprecation shim that imports
-    ssrf_guard at exec time. If the SERVER ever reorders its shared-source list
-    (app/providers/coolems/tool_scanner/shared_sources.py get_shared_sources()), the
-    shim's import fails closed and every network tool loses SSRF protection. The same
-    note is recorded beside that loop; keep both in sync.
-  * Fail-closed integrity -- when the SERVER promised a SHA-256 prefix for a module,
-    a mismatch REFUSES exec instead of warning (see integrity.py).
-  * Import-clean sources -- single-dot relative imports are rewritten to absolute form
-    against the delivered package, and 'from config import X' lines become real
-    assignments from SERVER-shipped constants BEFORE exec.
-  * DNA anchoring -- app.dna.core's CWD-relative dna_dir line is rewritten (in the
-    DELIVERED copy only) to _CLIENT_DNA_DIR so agent data lives in <CLIENT>/app/dna,
-    never in working_root or wherever the process happens to run.
+Guarantees:
+  * Idempotent -- modules already carrying '_remote_shared_module' are skipped.
+  * Dependency order -- keys sorted by dot-depth, parents before children; same-depth keys
+    keep the SERVER's send order, so 'ssrf_guard' arrives BEFORE the 'ssrf_defense' shim
+    that imports it. Reordering get_shared_sources() breaks every network tool's SSRF
+    protection; keep both places in sync.
+  * Fail-closed integrity -- a promised SHA-256 prefix mismatch refuses exec.
+  * Import-clean sources -- single-dot relative imports become absolute, and
+    'from config import X' becomes an assignment from SERVER-shipped constants pre-exec.
+  * DNA anchoring -- app.dna.core's CWD-relative dna_dir is rewritten (delivered copy
+    only) to _CLIENT_DNA_DIR, so agent data lives in <CLIENT>/app/dna.
 """
 
 import importlib.machinery
@@ -55,9 +42,9 @@ def _client_root() -> str:
     """Absolute path of the CLIENT root folder (four levels up from this file).
 
     This file lives at <CLIENT>/tools/remote_tools/loader/shared_modules.py, so the
-    chain is loader -> remote_tools -> tools -> CLIENT. (2026-10-31 fix: it used to go
-    only three levels up and returned <CLIENT>/tools -- which made _client_dna_dir()
-    point at the stray <CLIENT>/tools/app/dna instead of <CLIENT>/app/dna.)
+    chain is loader -> remote_tools -> tools -> CLIENT. Going only three levels up would
+    return <CLIENT>/tools and make _client_dna_dir point at the stray
+    <CLIENT>/tools/app/dna instead of <CLIENT>/app/dna.
     """
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -75,8 +62,8 @@ def ensure_tools_namespace() -> types.ModuleType:
     """Create (once) the synthetic 'tools' namespace package in sys.modules.
 
     Without it Python cannot resolve 'from tools.XXX import YYY'. A real ModuleSpec is
-    attached so importlib.util.find_spec('tools') inside compile_tool() does not raise
-    ValueError("tools.__spec__ is None") when building exec_globals (2026-07-18 fix).
+    attached so importlib.util.find_spec('tools') inside compile_tool does not raise
+    ValueError("tools.__spec__ is None") when building exec_globals.
     """
     existing = sys.modules.get('tools')
     if existing is not None:
@@ -122,9 +109,9 @@ def build_base_exec_globals() -> Dict[str, Any]:
 def sort_module_keys(keys) -> list[str]:
     """Sort module keys so parents install before children.
 
-    Sort by dot-depth ONLY (stable), preserving the SERVER's send order among
-    same-depth modules -- e.g. app.dna.name/learning before app.dna.core/get_agent,
-    which import their siblings at module level (2026-08-16 fix).
+        Sort by dot-depth ONLY (stable), preserving the SERVER's send order among
+        same-depth modules -- e.g. app.dna.name/learning before app.dna.core/get_agent,
+        which import their siblings at module level.
     """
     return sorted(keys, key=lambda k: k.count('.'))
 
@@ -132,9 +119,9 @@ def sort_module_keys(keys) -> list[str]:
 def full_module_name(key: str) -> str:
     """Map a SERVER delivery key to the sys.modules name used on the CLIENT.
 
-    Keys with an explicit top-level package ('app.dna.name') are registered under that
-    EXACT name so normal client imports resolve to SERVER-delivered code; everything
-    else goes under the 'tools' namespace (2026-08-16 fix).
+        Keys with an explicit top-level package ('app.dna.name') are registered under that
+        EXACT name so normal client imports resolve to SERVER-delivered code; everything
+        else goes under the 'tools' namespace.
     """
     return key if key.startswith('app.') else f'tools.{key}'
 
@@ -146,7 +133,7 @@ def ensure_ancestor_packages(full_mod_name: str) -> None:
     ancestors get lightweight namespace modules (empty __path__). A plain synthetic
     module is created ONLY when the real package cannot be imported -- creating one for
     'app.dna' would shadow the thin shell's lazy callables and break
-    `from app.dna import get_agent` (2026-08 fix).
+    `from app.dna import get_agent`
     """
     parts = full_mod_name.split('.')
     client_root = _client_root()
@@ -199,10 +186,10 @@ def build_module_exec_globals(full_mod_name: str, mod_key: str, base_globals: Di
 def attach_to_parent(mod: types.ModuleType, mod_key: str) -> None:
     """Register a freshly installed module on its parent package (or 'tools').
 
-    Nested modules ('web_interact.shared_instance', 'app.dna.core') are attached to
-    their literal parent so `import tools.web_interact` / `from app.dna import core`
-    resolve; top-level modules go straight onto the 'tools' namespace. A REAL package's
-    own non-module attribute is never clobbered by a delivered submodule (2026-08 fix).
+        Nested modules ('web_interact.shared_instance', 'app.dna.core') are attached to
+        their literal parent so `import tools.web_interact` / `from app.dna import core`
+        resolve; top-level modules go straight onto the 'tools' namespace. A REAL package's
+        own non-module attribute is never clobbered by a delivered submodule.
     """
     if '.' in mod_key:
         # Parent name = literal ancestor for app.* keys, tools-prefixed otherwise.
@@ -329,8 +316,6 @@ def rewrite_dna_dir(source_code: str) -> str:
     created. This rewrites ONLY that one line in the delivered copy to use _CLIENT_DNA_DIR,
     which install_shared_modules() injects into exec_globals for key 'app.dna.core'.
 
-    Guarded: if the server ever changes that line's shape, this is a no-op (returns source
-    unchanged) and logs at debug level -- nothing breaks, just falls back to old behavior.
     The SERVER-side file is never modified; only the in-memory delivered copy is rewritten.
     """
     target_line = 'self.dna_dir = os.path.join(base_dir, "tools", "dna")'
@@ -354,12 +339,13 @@ def rewrite_dna_dir(source_code: str) -> str:
 def sync_dna_data(dna_data: Optional[Dict[str, str]]) -> None:
     """Sync SERVER-shipped DNA JSON state files into the CLIENT's own app/dna directory.
 
-    The SERVER sends identity/intelligence/lessons JSON in tools_response 'dna_data'.
-    Files are written to <CLIENT>/app/dna -- NEVER working_root or any user folder -- so
-    the delivered app.dna.* modules find them at their proper CLIENT location (2026-08-17).
+        The SERVER sends identity/intelligence/lessons JSON in tools_response 'dna_data'.
+        Files are written to <CLIENT>/app/dna -- NEVER working_root or any user folder -- so
+        the delivered app.dna.* modules find them at their proper CLIENT location.
 
-    Each payload is validated as JSON before writing; a corrupt entry aborts the sync
-    with a warning (the SERVER is the source of truth, but we never write garbage).
+        Each payload is validated as JSON before writing; a corrupt entry aborts the sync
+        with a warning (the SERVER is the source of truth, but we never write garbage).
+
     """
     if not dna_data:
         return
@@ -406,25 +392,10 @@ def install_shared_modules(sources: Dict[str, str],
                            config_constants: Optional[Dict[str, Any]] = None,
                            dna_data: Optional[Dict[str, str]] = None) -> bool:
     """Install shared utility modules for remote tool execution.
-
     Creates proper namespace package structure in sys.modules so that Python's import
     machinery can resolve 'from tools.utils import X' etc. Subpackage keys use dot
     notation ('web_interact.shared_instance'); parents are always installed first and
-    nested modules are attached to their literal parent package (2026-01/2026-01-31 fixes).
-
-    Args:
-        sources: Dict mapping module names to source code strings. Values may be None
-            when a key is known but unavailable -- such keys are skipped.
-        expected_hashes: Optional dict of SERVER-promised SHA-256 prefixes, keyed like
-            *sources*. A promised hash that does not match REFUSES exec (fail-closed,
-            2026-08-20); absent hashes are tolerated for legacy servers.
-        config_constants: Optional SERVER-shipped constants used to rewrite module-level
-            'from config import X' lines in delivered sources into real assignments.
-        dna_data: Optional dict of DNA JSON state files to sync into <CLIENT>/app/dna
-            after installation (see :func:`sync_dna_data`).
-
-    Returns:
-        True if installation succeeded, False otherwise.
+    nested modules are attached to their literal parent package (/).
     """
     try:
         # Step 1: 'tools' namespace package must exist for any tools.* resolution.

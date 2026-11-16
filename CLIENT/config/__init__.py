@@ -26,6 +26,9 @@ from .config import (
     # mirror of SERVER config/config.py CLIENT_UI_PORT - change both together) ---
     CLIENT_UI_PORT,
 
+    # --- Proxy Header Trust ---
+    TRUST_PROXY_HEADERS,
+
     # --- Coolems Client Connection Settings ---
     COOLEMS_CLIENT_SERVER_ADDRESS,
     USE_WEB_SERVER,

@@ -1,17 +1,15 @@
 """Canonical model identity used for routing, queueing and profile authorization.
 
-2026-10 fleet: a llama request is routed to the MODEL GROUP it asks for. The identity
-must be identical everywhere it is derived from, otherwise a request would never meet
-its nodes:
-
-  * CLIENT picks a model from the list the SERVER sent (a GGUF filename)
+A llama request is routed to the MODEL GROUP it asks for, so the identity must be derived
+the same way everywhere, otherwise a request never meets its nodes:
+  * the CLIENT picks a model from the list the SERVER sent (a GGUF filename)
   * SERVER profile authorization lists GGUF filenames (profiles.json "allowed_models")
   * a NODE reports its loaded model via /props.model_path (a full path)
   * llama-server reports /v1/models ids that may be a path or an alias
 
-So the canonical key is the file BASENAME, case-insensitive, with a trailing .gguf
-removed. Display names keep the original spelling. No fuzzy matching, no substrings -
-the same rule the old folder-based auth used (exact, case-insensitive only).
+The canonical key is the file BASENAME, case-insensitive, with a trailing .gguf removed.
+Display names keep the original spelling. Exact match only - no substrings, no fuzzy
+matching (the fail-closed spirit of the authorization rule).
 """
 
 import os

@@ -1,4 +1,4 @@
-"""Package logger (same name as the old single-file tool_scanner used)."""
+"""Package logger, named to match the tool_scanner log stream."""
 
 import logging
 

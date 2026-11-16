@@ -1,10 +1,10 @@
 """Search Tools - Dynamic Entry Point
 
-Content and filename search inside working_root, backed by ripgrep (added 2026-11-06,
+Content and filename search inside working_root, backed by ripgrep (added
 ported from the deepseek-harness `packages/fs/tool-fs-search` tools). Before this folder
 existed, searching file contents meant reading files one by one.
 
-Import policy: this module imports ONLY stdlib. A bare 'from . import X' would be shipped
+Import policy: this module imports ONLY stdlib. A bare 'from. import X' would be shipped
 to the CLIENT as a '__init__' shared_dep and exec'd without the tool's own globals, so keep
 it import-free (the same shape as tools/file_tools/__init__.py and tools/edit_tools/__init__.py).
 """

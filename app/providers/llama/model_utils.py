@@ -1,5 +1,4 @@
-"""
-Shared utility functions for the llama.cpp provider.
+"""Shared utility functions for the llama.cpp provider.
 
 Centralizes common helpers to avoid duplication across modules.
 """
@@ -61,26 +60,10 @@ _MTP_CONTENT_CACHE = {}
 
 def _gguf_has_mtp_content(path):
     """Inspect a .gguf file's HEADER and report whether MTP weights are baked in.
-
-    Reads only the GGUF header (magic + metadata KV pairs + tensor-info table —
-    typically ~10-30 MB even for 27B+ models with full tokenizer arrays), never
-    the multi-GB tensor data section. One chunked read keeps this fast on slow /
-    network drives where many small reads are painful.
-
-    MTP evidence (either one is sufficient):
-      * metadata key '<arch>.nextn_predict_layers' > 0   (e.g. 'qwen35.nextn_predict_layers')
-      * any tensor name containing 'nextn' or an mtp segment
-        (baked-in heads look like 'blk.64.nextn.eh_proj.weight'; separate draft
-         files in bytkim's mtp/ folder are named the same way)
-
-    Args:
-        path: Full path to a .gguf file.
-
-    Returns:
-        True  - MTP content detected inside the file.
-        False - header parsed cleanly and contains no MTP evidence.
-        None  - undeterminable (not a parseable GGUF, truncated by the probe cap,
-                unreadable). Callers should fall back to their filename heuristic.
+    Reads only the GGUF header (magic + metadata KV pairs + tensor-info table — typically
+    ~10-30 MB even for 27B+ models with full tokenizer arrays), never the multi-GB tensor
+    data section. One chunked read keeps this fast on slow / network drives where many small
+    reads are painful.
     """
     import struct as _struct
 
@@ -218,27 +201,16 @@ def _gguf_has_mtp_content(path):
 
 
 def _is_mtp_model(filename_or_path: str) -> bool:
-    """Check if a .gguf model has an MTP (Multi-Token Prediction) head.
+    """Check whether a .gguf model carries an MTP (Multi-Token Prediction) head.
 
     Two-stage detection:
-      1. FILENAME heuristic (legacy behavior, zero I/O): 'mtp' in the name,
-         e.g. 'Qwen3.6-27B-MTP-Q5_K_M.gguf'. Kept first so renamed files and
-         non-existent paths behave exactly as before.
-      2. FILE CONTENT check (new, 2026-10-31): when the argument is a path to a
-         real .gguf on disk whose filename has no 'mtp', parse its header and
-         look for baked-in MTP weights ('<arch>.nextn_predict_layers' > 0 or
-         tensor names containing 'nextn'/'mtp'). This catches files like
-         'Dirk-Qwen3.8-27B-UD-Q6_K.gguf' that carry the MTP head inside without
-         saying so in the name — no more renaming required.
+      1. FILENAME check: 'mtp' in the name, e.g. 'Qwen3.6-27B-MTP-Q5_K_M.gguf'. Checked first
+         so renamed files and missing paths behave the same as a plain name scan.
+      2. FILE CONTENT check: when the argument is a real .gguf path whose name has no 'mtp',
+         parse the header for baked-in MTP weights ('<arch>.nextn_predict_layers' > 0, or
+         tensor names containing 'nextn'/'mtp').
 
-    When detected, the server should start with --spec-type draft-mtp params
-    to enable speculative decoding for >2x speedup.
-
-    Args:
-        filename_or_path: Basename or full path of a .gguf model file.
-
-    Returns:
-        True if MTP is detected (by name or by content), False otherwise.
+    When detected the server starts with --spec-type draft-mtp for speculative decoding.
     """
     name = os.path.basename(filename_or_path)
     if 'mtp' in name.lower():
@@ -270,23 +242,23 @@ def _is_mtp_model(filename_or_path: str) -> bool:
 def _get_model_base_prefix(model_filename: str) -> str:
     """Extract the base prefix of a model name for mmproj matching.
 
-    Strips quantization suffixes and extensions to find the core model identifier.
-    The quantization suffix is typically the LAST segment after a dot or dash
-    that contains patterns like Q4_K_M, Q6_K, Q8_0, F16, etc.
+        Strips quantization suffixes and extensions to find the core model identifier.
+        The quantization suffix is typically the LAST segment after a dot or dash
+        that contains patterns like Q4_K_M, Q6_K, Q8_0, F16, etc.
 
-    Examples:
-        >>> _get_model_base_prefix('GLM-OCR.Q4_K_M.gguf')
-        'GLM-OCR'
-        >>> _get_model_base_prefix('Qwen3.6-27B-MTP-Q6_K.gguf')
-        'Qwen3.6-27B-MTP'
-        >>> _get_model_base_prefix('Qwen3.6-27B-Abliterated-Heretic-Uncensored-Q6_K.gguf')
-        'Qwen3.6-27B-Abliterated-Heretic-Uncensored'
+        Examples:
+            >>> _get_model_base_prefix('GLM-OCR.Q4_K_M.gguf')
+            'GLM-OCR'
+            >>> _get_model_base_prefix('Qwen3.6-27B-MTP-Q6_K.gguf')
+            'Qwen3.6-27B-MTP'
+            >>> _get_model_base_prefix('Qwen3.6-27B-Abliterated-Heretic-Uncensored-Q6_K.gguf')
+            'Qwen3.6-27B-Abliterated-Heretic-Uncensored'
 
-    Args:
-        model_filename: The .gguf filename.
+        Args:
+            model_filename: The .gguf filename.
 
-    Returns:
-        Base prefix string for matching against mmproj filenames.
+        Returns:
+            Base prefix string for matching against mmproj filenames.
     """
     import re
     name = os.path.basename(model_filename)
@@ -304,23 +276,19 @@ def _get_model_base_prefix(model_filename: str) -> str:
 
 
 def _find_dedicated_mmproj(models_dir: str, model_filename: str):
-    """Find a dedicated mmproj file that matches the model by prefix.
+    """Find a dedicated mmproj for a model (prefix match, then substring fallback).
 
-    Matching logic (PREFIX-based + SUBSTRING fallback):
-    1. Extract base prefix from model name (e.g., 'GLM-OCR' from 'GLM-OCR.Q4_K_M.gguf')
-    2. Look for an mmproj file whose name contains '<prefix>.mmproj' or starts with it
-       - GLM-OCR.Q4_K_M.gguf -> matches: GLM-OCR.mmproj-Q8_0.gguf
-
-    3. SUBSTRING FALLBACK: If no prefix match, check if the model's core tokens
-       appear inside the mmproj filename (handles 'mmproj-gemma-4-26B-A4B-it-BF16.gguf')
-       - gemma-4-26B-A4B-it-uncensored-heretic-Q6_K -> matches: mmproj-gemma-4-26B-A4B-it-BF16.gguf
+      1. Extract the base prefix from the model name ('GLM-OCR' from 'GLM-OCR.Q4_K_M.gguf').
+      2. Match an mmproj whose name starts with '<prefix>.mmproj' or contains it
+         - GLM-OCR.Q4_K_M.gguf -> GLM-OCR.mmproj-Q8_0.gguf
+      3. Substring fallback, for names where the base model name appears inside the mmproj
+         filename - gemma-4-26B-A4B-it-... -> mmproj-gemma-4-26B-A4B-it-BF16.gguf
 
     Args:
-        models_dir: Path to the models directory.
-        model_filename: The .gguf model filename (or full path).
+        model_filename: the .gguf filename (or full path).
 
     Returns:
-        Full path to matching mmproj file, or None if no dedicated match found.
+        Path to the matching mmproj, or None when there is no dedicated match.
     """
     base_prefix = _get_model_base_prefix(model_filename)
 

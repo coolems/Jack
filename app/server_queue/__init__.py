@@ -1,4 +1,4 @@
-"""app.server_queue — SERVER-side chat request queue + worker pool (2026-09-08 multi-chat, Phase 2).
+"""app.server_queue — SERVER-side chat request queue + worker pool.
 
 Every chat request from any client lands in a FIFO :class:`RequestQueue`; one worker per
 llama backend pulls the next request as soon as its instance is free. With N configured
@@ -11,7 +11,7 @@ Public API (kept minimal on purpose):
     WorkerPool      — N workers ↔ N backends, auto-dispatch (worker_pool.py)
     FrameSink & co  — transport-agnostic frame delivery adapters (sink.py)
 
-Singletons: set_queue()/get_queue(), set_worker_pool()/get_worker_pool() — wired at boot
+Singletons: set_queue/get_queue, set_worker_pool/get_worker_pool — wired at boot
 by CoolemsServerProvider; unit tests construct their own instances.
 """
 

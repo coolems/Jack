@@ -1,58 +1,8 @@
-"""
-    COOLEMS CLIENT - Key Module (CLIENT-SIDE)
-
+"""COOLEMS CLIENT - Key Module (CLIENT-SIDE)
     Handles:
     - Determining whether a REAL API key is available for outbound SERVER auth
     - Setup-mode detection (nothing configured yet -> only POST /api/auth/set-key works)
     - Authoritative role/email lookup (from the SERVER's last auth_ok, in-memory)
-
-    SECURITY MODEL (2026-10-08): THE KEY LIVES IN THE CLIENT CONFIG FILE.
-      * The on-disk file ``CLIENT/config/.api_client_keys.json`` holds exactly ONE
-        entry at a time: {"email", "date_acquired", "key"}. The key is stored in
-        PLAINTEXT - this is a deliberate, documented trade-off (plain mode): the
-        file is per-machine, gitignored and sits next to every other config file.
-        NO registry writes anywhere (no setx / HKCU\\Environment) - the previous
-        plaintext-in-registry persistence was removed because any local user could
-        `reg query` it; a config file in the project folder has no worse exposure
-        than the SERVER's own config/.api_keys.json on this same machine.
-      * The real key lives in exactly two places:
-          1. This CLIENT config file (plaintext, per-machine) - the persistent store
-             for headless / non-UI startup and every future process start.
-          2. The SERVER's config/.api_keys.json (the authoritative credential store).
-        Plus a transient copy in the UI browser (localStorage 'coolems_api_key') -
-        the UI injects it into every request/WebSocket via static/ui/api-key.js, so
-        ALL user-facing traffic carries the key in headers/query params only.
-      * Outbound provider auth frames (CLIENT -> SERVER WebSocket: bootstrap at boot,
-        control channel, tool requests) need a key without any UI involvement. Their
-        source, in priority order (2026-10-08 file-first):
-                a. the runtime key held IN MEMORY for this process lifetime - filled by
-                   POST /api/auth/set-key or automatically when the UI presents its
-                   localStorage key on an authenticated request (note_presented_key).
-                   Authoritative while set: a key entered/changed in the UI must work
-                   immediately, even if the config file still holds an OLDER value.
-                b. CLIENT/config/.api_client_keys.json ("key" field of the single row) -
-                   the persistent per-machine store; written by "Set API Key" (UI) and
-                   by the init script. Beats a stale COOLEMS_CLIENT_API_KEY env var, so
-                   a key rotation can never be shadowed by an old shell environment.
-                c. COOLEMS_CLIENT_API_KEY environment variable - OPTIONAL fallback for
-                   headless / CI flows (export it manually if you prefer); the config
-                   file takes precedence over it.
-
-    LEGACY MIGRATION: pre-2026-10-08 builds stored {email, date_acquired} only in this
-    file (the key lived in the per-user registry via setx). At import time a row that
-    carries no "key" field is left as-is - it simply provides NO credential and the
-    CLIENT starts in SETUP MODE until the user sets a key in the UI (which writes the
-    full row) or exports COOLEMS_CLIENT_API_KEY. Rows from even older builds that carry
-    extra confidential fields (role, is_active, max_connections, last_used) are cleaned
-    to {email, date_acquired, key?} - those fields were SERVER-side concepts and never
-    belong in this file.
-
-    RENAME (2026-08-23): the file was renamed from ``.api_keys.json`` to
-    ``.api_client_keys.json`` so it is not confused with the SERVER's own
-    config/.api_keys.json. On import this module self-heals: if the file is
-    missing it is seeded from its example template (config/bootstrap.py) so a
-    fresh checkout never fails - until a real key exists, load_coolems_api_key()
-    returns "" and the CLIENT stays in SETUP MODE with an actionable message.
 """
 
 import json
@@ -108,7 +58,7 @@ _server_email: Optional[str] = None
 def _self_heal_keys_file() -> None:
     """Create a missing .api_client_keys.json from its example template (once).
 
-    Never overwrites an existing file. On any failure it gives up silently -
+    Never overwrites an existing file. On any failure it gives up silently
     the loaders below already handle a missing file gracefully, and
     config/bootstrap.py runs this same seeding at startup for real.
     """
@@ -123,16 +73,14 @@ def _self_heal_keys_file() -> None:
 
 
 def _migrate_legacy_file() -> None:
-    """One-time LEGACY CLEANUP (2026-10-08), runs at import time.
+    """One-time cleanup of the key file, run at import time.
 
-    Pre-2026-10-08 builds stored {email, date_acquired} only here (the key lived in
-    the per-user registry via setx - that persistence is gone now). Such rows carry
-    no credential and are left as-is: they simply do not end setup mode. Rows from
-    even older builds may still hold SERVER-side fields (role, is_active,
-    max_connections, last_used) - those never belong in this file, so when present
-    the row is rewritten atomically to {email, date_acquired, key?}. A clean or
-    missing file is left untouched. Never blocks startup; any failure just leaves
-    the file as-is (the loaders below handle that gracefully).
+    Older builds stored only {email, date_acquired} here (the credential lived in the per-user
+    registry). Those rows carry no key and are left as-is: they simply do not end setup mode.
+    Rows that also hold runtime bookkeeping (max_connections, last_used) never belong in this
+    file, so when present the row is rewritten atomically to {email, date_acquired, key?}.
+    A clean or missing file is untouched. Never blocks startup - a failure leaves the file as
+    the loaders below expect.
     """
     if not os.path.exists(_KEYS_FILE):
         return
@@ -246,23 +194,7 @@ def _file_api_key() -> str:
 # ===== API Key Loading =====
 
 def load_coolems_api_key() -> str:
-    """Return the REAL key used for OUTBOUND CLIENT->SERVER provider auth.
-
-    Source (in priority order, 2026-10-08 file-first):
-      1. Runtime in-memory key - set via UI during this process's lifetime
-         (POST /api/auth/set-key or note_presented_key). Authoritative for THIS
-         process: a key entered/changed in the UI must take effect immediately, even
-         when the config file still holds an OLDER value from before the change.
-      2. CLIENT/config/.api_client_keys.json ("key" field) - the persistent per-machine
-         store; used at boot while no UI session has presented a key yet (then it is
-         the only source). Beats a stale COOLEMS_CLIENT_API_KEY env var, so a rotated
-         key can never be shadowed by an old shell environment.
-      3. COOLEMS_CLIENT_API_KEY environment variable - optional headless/CI fallback.
-
-    Returns "" when no real key is available -> the CLIENT is in SETUP MODE and the
-    SERVER simply rejects auth with an actionable message. The user-facing flow never
-    depends on this value: the browser injects its localStorage key into every request.
-    """
+    """Return the REAL key used for OUTBOUND CLIENT->SERVER provider auth."""
     if _runtime_key:
         return _runtime_key
 
@@ -307,18 +239,7 @@ def get_api_keys() -> set:
 
 
 def is_setup_mode() -> bool:
-    """True while NO usable outbound credential exists for THIS process (SETUP MODE).
-
-    Setup mode ends when a real key source exists: the runtime in-memory key, the
-    config file's "key" field, or the COOLEMS_CLIENT_API_KEY env var. Rows with only
-    {email, date_acquired} prove that setup was RUN on some machine at some point -
-    they carry no credential. A CLIENT copied to another PC keeps those rows but has
-    no key source, and the bootstrap cannot authenticate without one; treating such
-    bookkeeping as "configured" made code_client.py take the blocking boot path there
-    while the UI (the only place a key can be entered) never started - a deadlock.
-    This also matches APIMiddleware._is_local_mode(), which gates on get_api_keys()
-    being empty, so both surfaces agree on what setup mode means.
-    """
+    """True while NO usable outbound credential exists for THIS process (SETUP MODE)."""
     # The ONLY thing that matters is whether outbound SERVER auth can succeed right
     # now - i.e. whether a real key source exists for this process. Bookkeeping rows
     # (email/date_acquired only) never count; see the docstring above.
@@ -326,17 +247,17 @@ def is_setup_mode() -> bool:
 
 
 def is_api_key_valid(key: str) -> bool:
-    """Check whether *key* matches a real key this CLIENT process knows about.
+    """True when *key* matches a real key this CLIENT process knows about.
 
-    STRICT MEMBERSHIP (2026-10-01 hardening): the key must be present in one of this
-    process's local sources - runtime in-memory key, config file, or COOLEMS_CLIENT_API_KEY
-    env var. When NO source exists yet (clean install), EVERY presented key is rejected:
-    that state IS SETUP MODE and both auth surfaces refuse all non-setup traffic before
-    reaching this function; the one unlocked endpoint (POST /api/auth/set-key) validates
-    length itself and populates runtime + config file BEFORE any other request can run.
+    STRICT MEMBERSHIP: the key must be present in one of this process's local sources - the
+    runtime in-memory key, the config file, or COOLEMS_CLIENT_API_KEY. There is no fallback to
+    a placeholder: setup-mode state is decided by is_setup_mode(), and both auth surfaces
+    refuse non-setup traffic before reaching here. The one unlocked endpoint
+    (POST /api/auth/set-key) validates length itself and populates runtime + config file
+    before any other request can run.
 
-    The SERVER remains the authoritative validator of every presented key over
-    WebSocket; this function only gates which keys are worth presenting locally.
+    The SERVER stays the authoritative validator of every presented key over WebSocket; this
+    only decides which keys are worth presenting locally.
     """
     if not isinstance(key, str):
         return False
@@ -387,26 +308,12 @@ def _sync_outbound_credential_sources(key: str) -> None:
 
 def set_client_api_key(key: str = "", email: str = "") -> dict:
     """Record {email, date_acquired, key} in .api_client_keys.json and return a result dict.
-
-    Used by POST /api/auth/set-key (loopback-only via APIMiddleware). This is the ONLY
-    way to leave SETUP MODE from the UI - before it succeeds, nothing else on the
-    CLIENT works at all.
-
-    STORAGE (2026-10-08): the key IS written to this file, in PLAINTEXT (plain mode -
-    deliberate trade-off; the file is per-machine and gitignored). It replaces every
-    previous row (SINGLE-KEY CONTRACT: one credential per machine) and becomes the
-    persistent outbound-auth source for every future headless start. The SERVER's
-    config/.api_keys.json remains the authoritative credential store on the server side.
-
-    Behavior:
-      * validates the key (non-empty string after trim, 8..256 chars) -> error dict
-      * SINGLE-KEY CONTRACT: writes exactly ONE row {email, date_acquired, key},
-        replacing every previous row - this machine holds one credential at a time
-      * an idempotent re-set for the same email keeps that row's original date_acquired
-
-    Returns:
-        {"ok": True,  "message": ...} on success
-        {"ok": False, "error":   ...} on validation/write failure
+    Used by POST /api/auth/set-key (loopback-only via APIMiddleware). This is the ONLY way
+    to leave SETUP MODE from the UI - before it succeeds, nothing else on the CLIENT works
+    at all.
+    STORAGE: the key IS written to this file, in PLAINTEXT (plain mode deliberate trade-off;
+    the file is per-machine and gitignored). The SERVER's config/.api_keys.json remains the
+    authoritative credential store on the server side.
     """
     key = (key or "").strip() if isinstance(key, str) else ""
     email = (email or "").strip() if isinstance(email, str) else ""
@@ -460,7 +367,7 @@ def set_client_api_key(key: str = "", email: str = "") -> dict:
 def get_key_role(key: str = "") -> Optional[str]:
     """Return the caller's role for logging/display/gating.
 
-    The CLIENT stores NO role in its config file (2026-09-29). The authoritative value is
+    The CLIENT stores NO role in its config file. The authoritative value is
     the one the SERVER sends in auth_ok after validating the key against its own
     config/.api_keys.json + profiles.json; apply_auth_info() caches it in-memory on
     every successful WebSocket auth. Before any WS auth has happened yet (e.g. early
@@ -507,16 +414,16 @@ def get_key_email(key: str = "") -> Optional[str]:
 def _get_tool_orchestrator():
     """Return the process-wide RemoteToolOrchestrator singleton, or None.
 
-    code_client.py declares it as a module global (`tool_orchestrator = None`) and assigns
-    it under `if __name__ == "__main__":` only after the SERVER bootstrap succeeds (L149),
-    so by the time uvicorn serves any request that global exists on the __main__ module
-    - the CLIENT is always run as `python code_client.py`. We read it from
-    sys.modules['__main__'] instead of importing 'code_client' by name: that would
-    re-execute the entry-point file as a SECOND module object with real side effects
-    (setup_logging(), init_db(), double atexit registration). Read-only, no import.
+        code_client.py declares it as a module global (`tool_orchestrator = None`) and assigns
+        it under `if __name__ == "__main__":` only after the SERVER bootstrap succeeds,
+        so by the time uvicorn serves any request that global exists on the __main__ module
+        - the CLIENT is always run as `python code_client.py`. We read it from
+        sys.modules['__main__'] instead of importing 'code_client' by name: that would
+        re-execute the entry-point file as a SECOND module object with real side effects
+        (setup_logging, init_db, double atexit registration). Read-only, no import.
 
-    Before boot completes (or in non-code_client hosts such as tests) this returns
-    None - callers then fail CLOSED for exec gates, which is the documented posture.
+        Before boot completes (or in non-code_client hosts such as tests) this returns
+        None - callers then fail CLOSED for exec gates, which is the documented posture.
     """
     try:
         import sys as _sys
@@ -531,30 +438,30 @@ def _get_tool_orchestrator():
 def is_subprocess_allowed() -> tuple[bool, str]:
     """Decide whether this CLIENT may spawn child processes (run-file/run-python).
 
-    The decision uses ONLY limitations delivered by the SERVER - no local role
-    verification (the 2026-09-30 role-gate removal stands): whatever profile/role the
-    SERVER authenticated this machine as, its restrictions are what apply here.
+        The decision uses ONLY limitations delivered by the SERVER - no local role
+        verification (the role-gate removal stands): whatever profile/role the
+        SERVER authenticated this machine as, its restrictions are what apply here.
 
-    Returns:
-        (True, "") when execution is allowed, or (False, reason) with a human-readable
-        denial message suitable for an HTTP 403 response body.
+        Returns:
+            (True, "") when execution is allowed, or (False, reason) with a human-readable
+            denial message suitable for an HTTP 403 response body.
 
-    Denial rules (first match wins):
-      1. SERVER profile blocklist contains "subprocess" -> denied. The per-profile
-         python_exec_blocked_libs set is the SERVER's explicit statement that this
-         profile must not use subprocess; it applies to every execution surface on the
-         CLIENT, HTTP endpoints included. (An EMPTY list = admin clean set = allow all -
-         the documented server contract for that value.)
-      2. The SERVER's per-role tool ALLOWLIST is a non-None list that contains neither
-         "python_exec" nor "subprocess" -> denied: this profile was told it has no
-         execution tools at all, so an HTTP exec endpoint must not grant one either.
-      3. Neither limitation set has been delivered yet (boot window before the first
-         successful SERVER auth) -> fail CLOSED with an actionable message instead of
-         guessing "allowed".
+        Denial rules (first match wins):
+          1. SERVER profile blocklist contains "subprocess" -> denied. The per-profile
+             python_exec_blocked_libs set is the SERVER's explicit statement that this
+             profile must not use subprocess; it applies to every execution surface on the
+             CLIENT, HTTP endpoints included. (An EMPTY list = admin clean set = allow all -
+             the documented server contract for that value.)
+          2. The SERVER's per-role tool ALLOWLIST is a non-None list that contains neither
+             "python_exec" nor "subprocess" -> denied: this profile was told it has no
+             execution tools at all, so an HTTP exec endpoint must not grant one either.
+          3. Neither limitation set has been delivered yet (boot window before the first
+             successful SERVER auth) -> fail CLOSED with an actionable message instead of
+             guessing "allowed".
 
-    Allow rules: blocklist available and subprocess-free -> allowed; or tool allowlist
-    explicitly lists python_exec/subprocess -> allowed. A missing/None field means
-    "SERVER did not restrict this dimension", never "SERVER forbade it".
+        Allow rules: blocklist available and subprocess-free -> allowed; or tool allowlist
+        explicitly lists python_exec/subprocess -> allowed. A missing/None field means
+        "SERVER did not restrict this dimension", never "SERVER forbade it".
     """
     orch = _get_tool_orchestrator()
     if orch is None:

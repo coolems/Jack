@@ -57,33 +57,8 @@ def _build_server_cmd(llama_server_exe: str, model_file: str,
                       gpu_layers: Optional[int] = None,
                       extra_args: Optional[list] = None) -> list:
     """Build the llama-server command with optimal parameters for Qwen3.6.
-
     All parameters come from config.py — modify there, not here.
-
-    Auto-enables MTP speculative decoding when enable_mtp=True and the model
-    is an MTP model. MTP provides >2x speedup with ~75% token acceptance rate.
-
-    Args:
-        host: Bind address for this instance (default "0.0.0.0" = all interfaces).
-        port: TCP port for this instance's HTTP endpoint (default LLAMA_SERVER_PORT).
-        llama_server_exe: Path to llama-server.exe
-        model_file: Path to the .gguf model file
-        mmproj_file: Optional path to mmproj file for vision
-        enable_mtp: Whether to enable MTP speculative decoding params
-        parallel: Number of inference slots (llama.cpp --parallel). Each slot gets
-            ctx_per_slot tokens of context (default CONTEXT_WINDOW_TOKENS), so the TOTAL
-            --ctx-size passed to llama.cpp is ctx_per_slot x parallel (llama.cpp divides
-            the total across slots - see server-context.cpp n_ctx_slot).
-        ctx_per_slot: Optional per-machine context override (node launcher).
-        threads / gpu_layers: Optional per-machine overrides (node launcher).
-        extra_args: Optional raw extra flags appended verbatim (node launcher).
-
-    NOTE (2026-09-19): NO --model-draft is ever emitted. The unsloth Qwen3.8 GGUFs bake the
-    full MTP layer + head INTO the main file; with only --spec-type draft-mtp, llama.cpp
-    creates a second MTP context on top of the SAME model (no extra weights loaded).
-
-    Returns:
-        The command list ready for subprocess.Popen.
+    MTP provides >2x speedup with ~75% token acceptance rate.
     """
     slots = max(1, int(parallel or 1))
     ctx_per_slot = int(ctx_per_slot) if ctx_per_slot else CONTEXT_WINDOW_TOKENS
@@ -193,26 +168,21 @@ def expected_flag_signatures(model_file: str, enable_mtp: bool,
                              host: str = "0.0.0.0",
                              port: int = LLAMA_SERVER_PORT,
                              parallel: int = LLAMA_SERVER_PARALLEL) -> list[str]:
-    """Return the distinctive flag substrings OUR OWN launch command would contain.
+    """Return the flag substrings OUR OWN launch command would contain.
 
-    (2026-10-31 verified attach): start_server() uses this to verify that a FOREIGN
-    llama-server already bound to our port was launched with equivalent flags before
-    reusing it. Instead of duplicating literals here, we build the real command via
-    _build_server_cmd() and extract the parts that identify "a server started by us":
+    start_server uses this to check that a FOREIGN llama-server already bound to our port
+    was launched with equivalent flags before reusing it. Instead of duplicating literals,
+    the real command is built via _build_server_cmd and the identifying parts extracted:
+      --ctx-size <N>   total context window (per-slot budget x slots)
+      --parallel <N>   inference slots
+      --cache-ram <N>  KV-cache RAM limit
+      --flash-attn <v> flash attention setting
+      --spec-type draft-mtp (+ companions) only for MTP models
 
-      - --ctx-size <N>   : TOTAL context window (per-slot budget x slots)
-      - --parallel <N>   : number of inference slots (concurrency)
-      - --cache-ram <N>  : KV-cache RAM limit (our config value)
-      - --flash-attn <v> : flash attention setting (our config value)
-      - --spec-type draft-mtp (+ its companions): only for MTP models
-
-    A foreign command line that contains ALL of these is treated as equivalent to one
-    we would have built; missing any -> start_server() restarts from zero so the model
-    gets exactly our flags (MTP + slots included). The model path itself is deliberately
-    NOT a signature: a healthy server may legitimately run a different model than the one
-    we are about to launch - routing owns that decision now.
-
-    Args mirror _build_server_cmd() so the signatures always match what we would spawn.
+    A foreign command containing ALL of them counts as equivalent to ours; missing any
+    makes start_server() restart from zero so the model gets exactly our flags. The model
+    path is deliberately NOT a signature - routing owns that decision. Args mirror
+    _build_server_cmd() so the signatures always match what we would spawn.
     """
     slots = max(1, int(parallel or 1))
     cmd = _build_server_cmd(

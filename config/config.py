@@ -1,5 +1,4 @@
-"""
-COOLEMS SERVER configuration — SINGLE SOURCE OF TRUTH for all server-side values.
+"""COOLEMS SERVER configuration — SINGLE SOURCE OF TRUTH for all server-side values.
 
 Conventions:
   - All values are set directly here (no env-var overrides in this file).
@@ -328,12 +327,13 @@ def get_provider_name() -> str:
 
 
 def set_server_backend(name: str) -> None:
-    """Runtime override of the local LLM engine ("llama" | "strata").
+    """Runtime override of the local LLM engine ("llama" | "").
 
-    Used by code.py when the CLI names the engine explicitly (provider=llama / provider=strata),
+    Used by code.py when the CLI names the engine explicitly (provider=llama / provider=),
     which is the more specific request than config.SERVER_BACKEND. Both copies are updated:
     get_api_url() reads this module's global, while app code reads config.SERVER_BACKEND from
-    the package re-export - keeping them apart would make the URL and the provider disagree."""
+    the package re-export - keeping them apart would make the URL and the provider disagree.
+    """
     global SERVER_BACKEND
     SERVER_BACKEND = name
     try:
@@ -352,25 +352,7 @@ _logger = _logging.getLogger("COOLEMS.Config")
 
 @_dataclass(frozen=True)
 class LlamaServerInstance:
-    """One llama-server instance to create/attach at boot.
-
-    Mirrors the shape of CLIENT's settings.json server_addresses pattern, but for
-    SERVER-side LLM instances: a plain hand-editable JSON list in config/.
-      name        - human label only (logs/startup table); optional, defaults to host:port.
-      host        - "127.0.0.1"/"localhost" for same-machine instances, or a LAN IP of a
-                    remote machine running its own llama-server.
-      port        - integer TCP port of that instance's HTTP endpoint.
-      concurrency - requests this instance may run at once (llama.cpp --parallel N).
-                    OPTIONAL everywhere (2026-10 discovery model): None = DISCOVERED from
-                    the node's /props.total_slots, which is then the routing capacity.
-                    LOCAL entries: an explicit int is also used to SPAWN the process
-                    (--parallel N, scaling --ctx-size by N); with None the spawn falls
-                    back to LLAMA_SERVER_PARALLEL and discovery takes over afterwards.
-                    REMOTE entries: attach-only - set an int only to CAP a remote node.
-
-    Every LOCAL instance runs the SAME model + launch args from this config module
-    (LLAMA_SERVER_*) - one knob stays in one place.
-    """
+    """One llama-server instance to create/attach at boot."""
     name: str
     host: str
     port: int
@@ -390,7 +372,7 @@ def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Opti
     """Validate one llama_servers.json 'concurrency' (alias 'parallel') value.
 
     LOCAL and REMOTE alike: returns None on missing/bad input - None means "DISCOVER
-    from /props.total_slots" (the 2026-10 discovery model; the node owns its slot count).
+    from /props.total_slots" (the discovery model; the node owns its slot count).
     A local instance with concurrency=None is SPAWNED with --parallel LLAMA_SERVER_PARALLEL
     as a launch fallback, after which discovery takes over and the worker pool reconciles.
     An explicit int is an UPPER BOUND (and the exact spawn value for local instances).
@@ -431,7 +413,7 @@ def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Opti
 def _parse_instance_ctx_per_slot(entry: dict, source: str, index: int) -> Optional[int]:
     """Validate an optional ``ctx_per_slot`` override on a server instance entry.
 
-    (2026-11 strata) Only a fallback for an endpoint whose /props reports no n_ctx: a
+     Only a fallback for an endpoint whose /props reports no n_ctx: a
     reported per-slot context always wins (backend_registry.refresh_props overwrites this).
     Bad input is said and ignored - it must never stop a boot.
     """
@@ -457,7 +439,7 @@ def _default_local_instance() -> "LlamaServerInstance":
 
 
 def _write_default_local_file(path: str) -> None:
-    """(2026-09-09 default-local fix) Re-create a missing llama_servers.json with the
+    """Re-create a missing llama_servers.json with the
     default local entry. Best-effort - a write failure only costs one boot cycle.
     """
     try:
@@ -473,20 +455,9 @@ def _write_default_local_file(path: str) -> None:
 
 def get_llama_server_instances() -> list["LlamaServerInstance"]:
     """Fresh read + validation of config/llama_servers.json.
-
-    Same contract as CLIENT's get_server_address_list(): the file is the single
-    source of truth for WHICH llama servers we create, and it is re-read on every
-    call (boot reads it once; tests may point LLAMA_SERVERS_FILE elsewhere).
-
-    Validation rules (hand-edited file - be forgiving but loud):
-      * entry not an object / missing host / non-integer port -> skipped with a warning.
-      * duplicate host:port -> deduped, first occurrence wins, warning logged.
-      * empty list after validation, OR file corrupt/non-list -> FALL BACK to the default
-        local instance (127.0.0.1:LLAMA_SERVER_PORT). A MISSING file is re-seeded on disk
-        with that same default local entry (2026-09-09), so there is always a local server
-        in the list that we can spawn and start with the last-loaded model.
-
-    Returns a non-empty list of LlamaServerInstance.
+    Same contract as CLIENT's get_server_address_list: the file is the single source of
+    truth for WHICH llama servers we create, and it is re-read on every call (boot reads it
+    once; tests may point LLAMA_SERVERS_FILE elsewhere).
     """
     path = LLAMA_SERVERS_FILE
     try:
@@ -569,23 +540,7 @@ STRATA_SERVERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "
 
 @_dataclass(frozen=True)
 class StrataServerInstance(LlamaServerInstance):
-    """One Strata endpoint to attach to at boot.
-
-    Shares the shape of LlamaServerInstance (name/host/port/concurrency) plus:
-      api_key   - Bearer token for /props, /v1/models and /v1/chat/completions.
-                  OPTIONAL: falls back to config.STRATA_API_KEY, then env STRATA_API_KEY.
-                  /health needs no key, so a missing key still health-probes (but /props
-                  fails, and the registry refuses to route on a failed /props).
-      concurrency - OPTIONAL cap; the node's own /props.total_slots is the routing
-                  capacity (Strata reports what it actually runs). THIS is the knob for
-                  "how many sessions may generate at once" on a Strata endpoint: Jack
-                  spawns one worker per slot up to this cap.
-      ctx_per_slot - OPTIONAL per-slot context used for client trim math. The endpoint's
-                  /props n_ctx wins whenever it reports one; this only covers an endpoint
-                  that answers /props without a context figure.
-
-    Strata instances are NEVER spawned or terminated by the SERVER.
-    """
+    """One endpoint to attach to at boot."""
     api_key: Optional[str] = None
     ctx_per_slot: Optional[int] = None
 
@@ -595,12 +550,12 @@ class StrataServerInstance(LlamaServerInstance):
 
     @property
     def is_spawnable(self) -> bool:
-        """False always: Strata owns its process, the brain only attaches."""
+        """False always: owns its process, the brain only attaches."""
         return False
 
 
 def strata_auth_headers(api_key: Optional[str]) -> Optional[dict]:
-    """Bearer auth headers for a Strata endpoint, or None when no key is configured."""
+    """Bearer auth headers for a endpoint, or None when no key is configured."""
     key = (api_key or "").strip()
     if not key:
         return None
@@ -608,7 +563,7 @@ def strata_auth_headers(api_key: Optional[str]) -> Optional[dict]:
 
 
 def _default_strata_instance() -> "StrataServerInstance":
-    """The always-present local Strata endpoint (127.0.0.1:STRATA_SERVER_PORT)."""
+    """The always-present local endpoint (127.0.0.1:STRATA_SERVER_PORT)."""
     return StrataServerInstance("strata", "127.0.0.1", STRATA_SERVER_PORT, None, None)
 
 

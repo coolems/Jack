@@ -1,34 +1,12 @@
 """UI Automation snapshot + pattern actions for computer_use (Windows).
-
 The ported core of the harness's accessibility layer: instead of guessing pixels from a
-screenshot, an app's control tree is OBSERVED (a snapshot with element indices) and
-actions run through UIA patterns. Indices belong to ONE snapshot - _desktop_state
-invalidates them when the window is re-observed.
-
-Thread model: tools execute inside asyncio.to_thread workers, so a COM pointer created
-in one call's thread must NEVER be reused in another call's thread (undefined
-behaviour). A snapshot therefore stores each element's PATH from the window root
-(child indices), and uia_resolve() re-walks that path in the CURRENT thread.
-
-Verified against comtypes 1.4.6 + UIAutomationCore on this machine:
-  * pattern ids: Invoke 10000, Value 10002, RangeValue 10003, Scroll 10004,
-    ExpandCollapse 10005, SelectionItem 10010, Text 10014, Toggle 10015,
-    LegacyIAccessible 10018  (Selection 10001 / Window 10009 / Transform 10016 are
-    deliberately NOT used - WindowPattern.Close() and Transform move/resize are not
-    safe operations)
-  * GetCurrentPattern(id) returns POINTER(IUnknown): a missing pattern is a NULL
-    pointer (falsy), and the real methods only appear after QueryInterface to the
-    typed pattern interface
-  * element properties are the Current* names (CurrentIsOffscreen, CurrentIsEnabled,
-    CurrentName, CurrentControlType, CurrentBoundingRectangle)
-  * GetClickablePoint() returns a (POINT, ok_flag) TUPLE, not an object with .x
-  * text content comes from TextPattern.DocumentRange.GetText(n) - there is no
-    GetTextRange() on this binding
-  * tree walking uses RawViewWalker (FindAll raises COMError on some providers, e.g.
-    Chrome's UIA provider, so the walker is the reliable path)
-
-Only UIAutomationCore's COM object is used. Nothing here closes, minimizes, moves or
-resizes a window, and no process is touched.
+screenshot, an app's control tree is OBSERVED (a snapshot with element indices) and actions
+run through UIA patterns. Indices belong to ONE snapshot - _desktop_state invalidates them
+when the window is re-observed.
+Thread model: tools execute inside asyncio.to_thread workers, so a COM pointer created in
+one call's thread must NEVER be reused in another call's thread (undefined behaviour). A
+snapshot therefore stores each element's PATH from the window root (child indices), and
+uia_resolve re-walks that path in the CURRENT thread.
 """
 
 import ctypes
@@ -194,12 +172,12 @@ def uia_focused_element():
 
 
 def uia_focused_pid():
-    """pid of the element holding keyboard focus, or None when UIA cannot read it.
+    """PID of the element holding keyboard focus, or None when UIA cannot read it.
 
     PUBLIC on purpose: install_shared_deps() merges only non-underscore dep symbols, so a
-    private helper in a sibling TOOL module would be invisible to the delivered tool
-    (the CLIENT neutralises 'from .cua_type_text import _focused_pid' to `pass`). The
-    focus guard therefore lives in this dep, where every input tool can reach it.
+    private helper in a sibling TOOL module is invisible to the delivered tool (the CLIENT
+    neutralises 'from .cua_type_text import _focused_pid' to `pass`). The focus guard lives in
+    this dep so every input tool can reach it.
     """
     element = uia_focused_element()
     if element is None:
@@ -239,7 +217,7 @@ def _rect_of(element) -> dict:
 
 
 def _patterns_of(element) -> list:
-    """Pattern ids this element actually supports (verified per id, no guessing)."""
+    """Pattern ids this element actually supports (per id, no guessing)."""
     found = []
     for pid in ACTION_BY_PATTERN:
         try:
@@ -443,22 +421,12 @@ def uia_supported_actions(element) -> list:
 
 def uia_select_text(element, prefix=None, suffix=None, selection_type: str = "text"):
     """Select (or place a caret) inside an element's Text pattern. Returns (ok, error).
-
     Verified against the installed UIAutomationCore binding:
-      * TextPattern.DocumentRange.Clone() -> IUIAutomationTextRange
+      * TextPattern.DocumentRange.Clone -> IUIAutomationTextRange
       * range.FindText(text, ignore_case, max_length) -> range (falsy when not found)
       * range.MoveEndpointByRange(endpoint, other_range, other_endpoint) - THREE args
       * range.Select() then GetSelection().GetElement(0) - the array is not subscriptable
       * a collapsed range selects to an EMPTY string, which is exactly a caret
-
-    Anchors, in order: *prefix* sets the range start to the prefix's start, then
-    *suffix* (searched inside what remains) sets the range end to the suffix's end.
-    selection_type then decides the shape:
-      text          -> the anchored range is selected
-      cursor_before -> collapsed to the range start (caret before)
-      cursor_after  -> collapsed to the range end (caret after)
-    Without anchors the whole document range is used. Nothing is typed - this is a UIA
-    selection, so no keystrokes are ever sent.
     """
     bundle = uia_instance()
     if bundle is None:

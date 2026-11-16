@@ -1,4 +1,4 @@
-"""Regression tests for the lint pass added to run_tests() (2026-11-15).
+"""Regression tests for the lint pass added to run_tests()
 
 Pins the contract that makes the lint report trustworthy:
   * a defect IS reported (ruff rc=1 -> status 'fail', finding lines present);

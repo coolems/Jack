@@ -7,15 +7,12 @@ CRITICAL: ONLY supports 'coolems_client' provider (WebSocket connection to SERVE
 
 All LLM requests MUST go through the SERVER relay. Direct LLM access is BLOCKED.
 
-
 HTTPS Support:
   Uses self-signed certificates from CLIENT/certs/ when available.
   Falls back to HTTP if certs are missing (standalone distribution mode).
 
-
 Auto Port Kill:
   Automatically kills any process blocking the target port before starting uvicorn.
-
 
 Usage:
   python code_client.py                    # Start UI server connecting to SERVER via WebSocket
@@ -28,6 +25,17 @@ import sys
 import os
 import asyncio
 import atexit
+
+# Interpreter floor: this codebase needs Python 3.12+. Checked before any project
+# import so an older interpreter reports this instead of failing with a SyntaxError
+# deep inside the provider import chain.
+if sys.version_info < (3, 12):
+    sys.exit(
+        f"COOLEMS needs Python 3.12 or newer - this launcher is running "
+        f"{sys.version.split()[0]} ({sys.executable}).\n"
+        f"  Recreate the venv:  py -3.12 -m venv \"{os.path.dirname(os.path.abspath(__file__))}\\venv\"\n"
+        f"  then:  venv\\Scripts\\activate  and  pip install -r requirements.txt"
+    )
 
 # Ensure CLIENT directory is in path for imports AND set as working directory
 CLIENT_DIR = os.path.dirname(os.path.abspath(__file__))

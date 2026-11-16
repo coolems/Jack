@@ -17,14 +17,12 @@ logger = logging.getLogger("COOLEMS.Tools.WebInteract")
 async def disconnect() -> str:
     """Close the connection to Chrome.
 
-    2026-11-06 fix (the 'two Chrome windows opened' incident): this stopped the Playwright
-    driver but left wi.playwright pointing at the STOPPED object. connect() reuses the driver
-    (the 2026-11-06 latency fix), so the next connect() handed a dead driver to
-    connect_over_cdp, which raised "Target page, context or browser has been closed". The
-    launch heuristic matched the word 'connect' in that message, read it as "nothing on the
-    port", and launched a SECOND debug Chrome window - then polled a port the FIRST launch had
-    already bound, for 15s, and failed. Clearing the reference makes the next connect() start a
-    fresh driver (~1.2s) and never spawn a second browser.
+    Stops the Playwright driver AND clears wi.playwright: connect reuses the driver, so a
+    stale reference to a stopped object would be handed to connect_over_cdp and raise
+    "Target page, context or browser has been closed". The launch heuristic reads the word
+    'connect' in that message as "nothing on the port", launches a SECOND debug Chrome
+    window and then polls a port the first launch already bound. Clearing the reference
+    makes the next connect start a fresh driver (~1.2s) and never spawn a second browser.
     """
     from .shared_instance import get_web_interact
 

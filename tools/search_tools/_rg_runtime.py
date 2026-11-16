@@ -1,15 +1,15 @@
-"""ripgrep runtime resolution for the search tools - NOT a tool itself.
+"""Ripgrep runtime resolution for the search tools - NOT a tool itself.
 
 Finds a hash-verified rg binary in this tool's runtime folder, unpacking the pinned npm
-tarball on demand. Same convention as generate_image: SERVER ships only a manifest
-(version, URL, sha256), the heavy file lands on the user machine in
-<CLIENT_DIR>/tools/runtimes/search_tool/ - never in the user's working folder, never in
-git. The init phase (utils/init_setup/ripgrep.py) normally places it there already; this
-module is the fallback for machines where init skipped it or the file got corrupted.
+tarball on demand. Same convention as generate_image: the SERVER ships only a manifest
+(version, URL, sha256), the heavy file lands on the user machine under
+<CLIENT_DIR>/tools/runtimes/search_tool/ - never in the working folder, never in git.
+utils/init_setup/ripgrep.py normally places it during init; this is the fallback when
+init skipped it or the file was corrupted.
 
-Import policy: stdlib only, nothing from ast_guard.DANGEROUS_MODULES - urllib/tarfile/
-hashlib are all outside that blocklist, so this module needs NO policy.py rows. The
-binary is verified BEFORE it is ever executed: tarball hash, extracted size, binary hash.
+Import policy: stdlib only, nothing from ast_guard.DANGEROUS_MODULES, so no policy.py
+rows are needed. The binary is verified BEFORE it is ever executed: tarball hash,
+extracted size, binary hash.
 """
 
 import hashlib

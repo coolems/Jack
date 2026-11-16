@@ -1,5 +1,4 @@
-"""
-Logic module for COOLEMS - separates normal and agentic chat logic
+"""Logic module for COOLEMS - separates normal and agentic chat logic
 
 This module provides:
 - normal_mode(): Standard AI chat without tools

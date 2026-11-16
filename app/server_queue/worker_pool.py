@@ -1,32 +1,12 @@
-"""WorkerPool — one worker PER INFERENCE SLOT, pulling from that model group's queue.
+"""WorkerPool - one worker PER INFERENCE SLOT, pulling from that model group's queue.
 
-2026-09-08 multi-chat (Phase 2); 2026-10 fleet: a backend is no longer one worker, and
-the queue is no longer global. Each llama-server exposes N slots (--parallel N,
-discovered via /props.total_slots), so the pool runs N workers bound to that backend.
-Each worker only takes requests from ITS MODEL GROUP, so a Qwen slot never runs a Gemma
-request and vice versa.
+A backend is not one worker and the queue is not global: each llama-server exposes N
+slots (--parallel N, discovered via /props.total_slots), so the pool runs N workers bound
+to that backend. Each worker takes requests only from ITS MODEL GROUP, so a Qwen slot
+never runs a Gemma request and vice versa.
 
-This is "send it to the first available llama of that model" by construction: every free
-slot has a worker waiting on its group's FIFO. With one configured llama (concurrency 1)
-this degrades exactly to the old single-server behaviour.
-
-Live reconciliation (called from the watchdog every 5 s):
-  * a node that reports MORE slots gets additional workers;
-  * a node that reports FEWER slots has its extra workers retired (a busy one finishes
-    its current request first - we never abort running work);
-  * a node whose model changed is fully respawned on the new model group (workers waiting
-    on the old queue key would otherwise never see the new model's requests).
-
-Health gating: a worker waits until ITS backend is healthy BEFORE taking work, so an
-unreachable node never consumes a queued request just to answer "backend unavailable".
-
-Watchdog: also expires queued requests whose model has NO healthy node for longer than
-QUEUE_MODEL_WAIT_SEC and sends a clear, retryable error (the "bad luck" path). Requests
-for a model that is merely busy are never expired - they wait FIFO.
-
-Cancellation model: a ChatRequest carries its owner-scoped stop event. A request
-cancelled while QUEUED is skipped by the worker that pops it; one cancelled while
-RUNNING aborts llama generation via the same event passed to chat_stream.
+That is "send it to the first available llama of that model" by construction: every free
+slot has a worker waiting on its group's FIFO.
 """
 
 import asyncio
@@ -292,7 +272,7 @@ class WorkerPool:
                 logger.error("[WATCHDOG] error: %s", e, exc_info=True)
 
     def _backend_noun(self) -> str:
-        """Client-facing kind wording for the serving fleet ("llama node" / "Strata endpoint")."""
+        """Client-facing kind wording for the serving ("llama node" / " endpoint")."""
         noun = getattr(self._registry, "backend_noun", None)
         return noun() if callable(noun) else "llama node"
 

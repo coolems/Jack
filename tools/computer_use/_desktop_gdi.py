@@ -52,7 +52,7 @@ class _BitmapInfo(ctypes.Structure):
 def _read_bitmap_rows(memdc, bmp, width: int, height: int):
     """Copy a selected bitmap out and return it as RGB bytes. Returns (bytes_or_None, rows).
 
-    Two things the raw buffer needs, both found live on 2026-11-07:
+    Two things the raw buffer needs, both found live on
       * the stride is PADDED to a 4-byte boundary (1229 px * 3 = 3687 -> stride 3688), so
         reading width*3*height shifts every row by one byte and permutes every colour
       * a 24-bit DIB stores BLUE first, so the channels must be swapped to RGB
@@ -82,7 +82,7 @@ def rgb_from_dib(raw: bytes, width: int, height: int) -> bytes:
 
     The swap must stay INTERLEAVED (R,G,B per pixel). Collecting the three channel planes and
     concatenating them produces a scrambled image - that is exactly what happened live on
-    2026-11-07: the page's green button band came back with no green at all, which then made
+    the page's green button band came back with no green at all, which then made
     the capture look 'greyscale' and sent the wrong conclusion down the fallback path.
     """
     stride = (width * 3 + 3) & ~3
@@ -101,16 +101,16 @@ def rgb_from_dib(raw: bytes, width: int, height: int) -> bytes:
 def has_colour(raw: bytes, width: int, height: int, step: int = 5, grey_tolerance: int = 3) -> bool:
     """True when the capture contains real colour, i.e. it is not a flat grey image.
 
-    PUBLIC: cua_screenshot reports the capture method, and this decides whether a
-    PrintWindow draw is usable. Chrome composites its web content on the GPU, and
-    PrintWindow(RENDERFULLCONTENT) returned SUCCESS while drawing only greyscale pixels
-    (verified live 2026-11-07: the page's green button came out as grey, and the page's
-    signature colours were absent). A successful call that yields no colour is not a
-    screenshot of the content, so the caller falls back to a screen-region capture.
+        PUBLIC: cua_screenshot reports the capture method, and this decides whether a
+        PrintWindow draw is usable. Chrome composites its web content on the GPU, and
+        PrintWindow(RENDERFULLCONTENT) returned SUCCESS while drawing only greyscale pixels
+        (verified live : the page's green button came out as grey, and the page's
+        signature colours were absent). A successful call that yields no colour is not a
+        screenshot of the content, so the caller falls back to a screen-region capture.
 
-    Sampling every *step* pixels keeps this cheap on a 4K window. A genuinely greyscale app
-    (a plain text editor) can read as grey; the fallback then still captures the same
-    rectangle from the screen, and the method is reported, never hidden.
+        Sampling every *step* pixels keeps this cheap on a 4K window. A genuinely greyscale app
+        (a plain text editor) can read as grey; the fallback then still captures the same
+        rectangle from the screen, and the method is reported, never hidden.
     """
     if not raw or width <= 0 or height <= 0:
         return False
@@ -183,20 +183,14 @@ def gdi_available() -> bool:
 
 def cua_capture_window(hwnd: int, width: int, height: int, screen_rect: dict = None):
     """Capture one window to RGB bytes. Returns (bytes, method) or (None, reason).
-
     PrintWindow(RENDERFULLCONTENT) draws the window itself, so it works even when another
     window overlaps it. Two honest fallbacks, both REPORTED as 'screen_region_fallback':
-      * PrintWindow refuses entirely, or draws an EMPTY bitmap (GetDIBits returns 0 rows or a
+      * PrintWindow refuses entirely, or draws an EMPTY bitmap (GetDIBits returns 0 rows or
+        a
         flat image - happens on console/GPU-composited windows; an empty capture is not a
         screenshot)
       * PrintWindow draws something with NO COLOUR while a screen-region capture of the same
         rectangle has colour - a GPU-composited window can hand back a greyscale draw.
-
-    A greyscale app (a plain text editor) is NOT treated as a failed capture: if the fallback
-    has no colour either, the PrintWindow draw is delivered as-is. The fallback copies the
-    screen region under the window rectangle, so occlusion and other windows are included -
-    the method is never hidden from the caller. When nothing usable can be captured, the
-    reason says so and points at cua_get_state instead of pixels.
     """
     if not gdi_available():
         return None, "GDI is not available in this process (non-Windows host)"

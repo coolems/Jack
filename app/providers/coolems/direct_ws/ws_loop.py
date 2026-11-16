@@ -1,9 +1,8 @@
 """Authenticated message loop for one direct WS client (per-frame router).
 
-Moved verbatim from ws_client_handler.py on 2026-09-07 (lines 178-312): routes
-every frame by type -- request/stop with owner-scoped stop events + rate
-limiting, health_check/models_request/current_model/model_switch, and the
-tools/tool-code/OCR handlers. Disconnect cleanup stays in ws_entry's finally.
+Routes every frame by type: request/stop with owner-scoped stop events + rate limiting,
+health_check/models_request/current_model/model_switch, and the tools/tool-code/OCR
+handlers. Disconnect cleanup stays in ws_entry's finally block.
 """
 
 import json
@@ -21,14 +20,14 @@ from .tool_code_handler import _handle_tool_code_request
 from .tools_request_handler import _handle_tools_request
 
 async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authenticated_api_key, client_convs):
-    """Authenticated message loop for one direct WS client (extracted 2026-08-20).
+    """Authenticated message loop for one direct WS client (extracted).
 
     Routes every frame by type: request/stop with owner-scoped stop events + rate limiting,
     health_check/models_request/current_model/model_switch with req_id echo (persistent
     control channel), tools_request/tool_code_request. All exceptions are handled here;
     the caller's finally-block performs disconnect cleanup using *client_convs* (mutated in place).
 
-    FIXED (2026-08-21): body dedented to module-function level -- a splice left it 4 spaces too deep,
+    FIXED: body dedented to module-function level -- a splice left it 4 spaces too deep,
     which is an IndentationError at import time.
     """
     import websockets

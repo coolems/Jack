@@ -1,16 +1,13 @@
-"""
-WebSocket file/media handling.
+"""Upload/attachment handling for WebSocket messages.
 
-Processes uploaded media files (images, text files) attached to messages.
-Returns enhanced message text and image data for vision processing.
+Processes media files attached to a message and returns the enhanced message text plus
+image data for vision processing.
 
-UPDATED (2026-08-24):
-  - Per-file error isolation: one unreadable/oversized attachment no longer
-    drops the other attachments from the same message.
-  - The saved filename of EVERY attached image is listed explicitly in the
-    enhanced prompt, so the model can point to it by name later (chat history
-    keeps that text) even though the pixels travel separately as base64.
-  - MIME type per file is reported instead of assuming jpeg for everything.
+  - Per-file error isolation: one unreadable or oversized attachment does not drop the
+    others from the same message.
+  - The saved filename of EVERY attached image is listed in the enhanced prompt, so the
+    model can name it later (chat history keeps that text) while pixels travel as base64.
+  - MIME type is detected per file instead of assuming jpeg.
 """
 
 import os
@@ -49,16 +46,11 @@ def _mime_for(filename: str) -> str:
 def _resolve_upload_path(upload_dir: str, file_url: str) -> str | None:
     """Map an attachment URL (``/files/<rel>``) to a real path INSIDE *upload_dir*.
 
-    Returns None for anything that is not a plain working-root-relative path:
-    absolute paths, drive letters, leading separators, UNC targets or ``..``
-    traversal.  Rejected instead of raised, so one bad attachment cannot break
-    the rest of the message (the per-file isolation contract above).
-
-    FIX (2026-11-13): the old code did ``file_url.replace("/files/", "")`` and a
-    bare ``os.path.join``.  That stripped the prefix but kept the traversal tail
-    (``/files/../x`` -> ``../x``), and ``os.path.join`` DISCARDS *upload_dir*
-    when the remainder is absolute - so any file on the machine could be read
-    into the prompt.  Containment is now enforced by the shared guard.
+    Rejects absolute paths, drive letters, leading separators, UNC targets and ``..``
+    traversal. Rejected rather than raised, so one bad attachment cannot break the rest of
+    the message (the per-file isolation contract above). os.path.join would DISCARD
+    *upload_dir* when the remainder is absolute, so containment is enforced by the shared
+    guard before the join.
     """
     rel = str(file_url).replace("\\", "/")
     if rel.startswith("/files/"):
@@ -79,23 +71,13 @@ def process_media_files(
     media_files: List[str],
     conv_id: str | None = None,
 ) -> Tuple[str, List[str], List[str], List[Dict]]:
-    """
-    Process media files attached to a user message.
+    """Process media files attached to a user message.
 
     Args:
-        user_msg: The original user message text.
-        media_files: List of file URL/paths from the client.
-        conv_id: Conversation id - when given, uploads are resolved against THIS
-            workspace's own working root (per-workspace DB row) instead of whatever
-            folder happens to be active in the UI right now (2026-10-09).
-
-    Returns:
-        Tuple of (enhanced_message, image_data, image_paths, file_contents)
-        - enhanced_message: User message with saved filenames + context appended
-        - image_data: List of base64-encoded image strings for vision API
-          (one entry per attached image, in the same order as media_files)
-        - image_paths: List of image file paths (/files/<savedname>) for reference
-        - file_contents: List of dicts with filename/content for text files
+        user_msg: the original message text.
+        media_files: file URL/paths from the client.
+        conv_id: conversation id - when given, uploads resolve against THIS workspace's own
+            working root (its DB row) instead of the folder currently open in the UI.
     """
     # Per-workspace resolution (2026-10-09): the message's own workspace folder when a
     # conversation id is known - concurrent chats then never mix up upload locations.

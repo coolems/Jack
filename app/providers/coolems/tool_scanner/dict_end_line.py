@@ -1,17 +1,12 @@
 """String-aware brace matching for top-level dict extraction."""
 
 def _find_dict_end_line(file_lines, s_line):
-    """L7 fix: string-aware brace matching to find the line where a top-level dict ends.
+    """Find the line where a top-level dict ends, using string-aware brace matching.
 
-    The old fallback counted every '{' / '}' character, so braces inside string
-    literals (e.g. a description containing "use {name} here") broke the count and
-    truncated or mis-framed the extracted snippet. This walker tracks whether it is
-    inside a single- or double-quoted string (with backslash escapes) and only counts
-    braces outside strings. Triple-quoted strings are handled by treating them as an
-    ordinary quoted run until their matching triple quote closes.
-
-    Returns the 1-past-end line index (e_line such that file_lines[s_line:e_line] is
-    the dict), or None if the braces never balance.
+    Braces inside string literals must not be counted, so the walker tracks whether it is
+    inside a single- or double-quoted string (with backslash escapes) and counts braces only
+    outside strings. A triple-quoted string is treated as one quoted run until its closing
+    triple quote.
     """
     brace_count = 0
     seen_open = False

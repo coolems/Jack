@@ -13,9 +13,8 @@ truth, editable in the Settings UI). Each entry looks like:
 To add a provider: add its entry to search_engines.json AND register an adapter in
 _search_providers.PROVIDERS. Unknown ids are logged and skipped - never fatal.
 
-Design (2026-11-06 rewrite): every enabled provider for this query runs CONCURRENTLY
+Design (rewrite): every enabled provider for this query runs CONCURRENTLY
 under ONE overall deadline, results are merged round-robin and deduped, and a
-provider only counts as usable when it parsed real results. The previous version ran
 engines sequentially, sent the query twice, and accepted a blocked HTTP 202 page as a
 result - that is what made searches slow and silently empty.
 """
@@ -259,8 +258,8 @@ def _parse_date(value: str):
 def _apply_freshness(items, freshness: str) -> list:
     """Keep items published inside the window; items with no date are dropped.
 
-    Bing's own freshness parameter is unreliable (measured 2026-11-06: freshness=Day
-    returned 2024 pages), so the window is enforced here on the returned dates.
+    Bing's own freshness parameter is unreliable (measured: freshness=Day
+    returned pages), so the window is enforced here on the returned dates.
     """
     days = _FRESHNESS_DAYS.get(freshness)
     if not days:
