@@ -105,7 +105,7 @@ function updateFilePreview() {
 
         }
 
-        return '<div class="file-tag ' + tagClass + '">' + icon + escapeHtml(f.name) + '<span class="file-tag-remove" onclick="removeFile(\'' + f.url + '\')">×</span></div>';
+        return '<div class="file-tag ' + tagClass + '">' + icon + escapeHtml(f.name) + '<span class="file-tag-remove" onclick="removeFile(\'' + escapeJsAttr(f.url) + '\')">×</span></div>';
 
     }).join('');
 

@@ -521,8 +521,8 @@ async function loadConversations() {
                     const atKind = (typeof ChatSocketPool !== 'undefined') ? (ChatSocketPool.attention[conv.id] || '') : '';
                     return `
                     <div class="chat-history-item ${conv.id === COOLEMS.currentConversation ? 'active' : ''}"
-                         data-conv-id="${conv.id}"
-                         onclick="loadConversation('${conv.id}')">
+                         data-conv-id="${escapeAttr(conv.id)}"
+                         onclick="loadConversation('${escapeJsAttr(conv.id)}')">
                         <svg class="chat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                         </svg>
@@ -531,7 +531,7 @@ async function loadConversations() {
                             : ''}
                         ${atKind ? `<span class="chat-attention-badge attention-${atKind}" title="${atKind === 'dialog' ? 'Waiting for your decision' : 'Task finished in the background'}"></span>` : ''}
                         <span style="flex:1;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(conv.title)}</span>
-                        <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${conv.id}')">
+                        <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${escapeJsAttr(conv.id)}')">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="3 6 5 6 21 6"></polyline>
                                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>

@@ -227,7 +227,7 @@
                     ? '<div class="sp-bar"><i style="width:' + pct.toFixed(1) + '%"></i></div>' : '';
                 html += '<div class="sp-model-line">' +
                         '<span class="sp-model-label">Current</span>' +
-                        '<span class="sp-file-name" title="' + escapeHtml(curName) + '">' +
+                        '<span class="sp-file-name" title="' + escapeAttr(curName) + '">' +
                             escapeHtml(String(curName).split('/').pop()) + '</span>' +
                         '<span class="sp-file-meta">' + meta + '</span></div>' + bar;
             }

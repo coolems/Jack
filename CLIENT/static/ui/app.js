@@ -20,6 +20,41 @@ function escapeHtml(text) {
     return d.innerHTML;
 }
 
+// escapeHtml() above is TEXT-context only: textContent -> innerHTML escapes
+// & < > but never the quote that delimits an HTML attribute. Interpolating it
+// into a double-quoted attribute (src/title/data-*/value) lets a value holding
+// `"` close the attribute and turn the rest into injected markup or handlers.
+// Use escapeAttr() for any value placed INSIDE an attribute value.
+function escapeAttr(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/`/g, '&#96;');
+}
+
+// For a value inside the single-quoted argument of an inline handler, e.g.
+// onclick="fn('${escapeJsAttr(p)}')". Attribute-safe AND JS-string-safe:
+// backslashes are doubled first so a literal \ cannot swallow the escapes added
+// below; `'` becomes the literal `\'` (entity forms would be decoded before the
+// handler is compiled and break the JS string); `"`/`` ` `` stay entities so the
+// attribute cannot close; newlines/tabs cannot split the one-line handler.
+function escapeJsAttr(value) {
+    return String(value == null ? '' : value)
+        .replace(/\\/g, '\\\\')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/`/g, '&#96;')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
+}
+
 // ===== SHARED STATE =====
 window.COOLEMS = {
     currentConversation: null,
@@ -453,6 +488,8 @@ window.addEventListener('beforeunload', _cleanupOnUiClose);
 window.addEventListener('pagehide', _cleanupOnUiClose);
 // ===== GLOBAL FUNCTIONS EXPOSED FOR OTHER MODULES =====
 window.escapeHtml = escapeHtml;
+window.escapeAttr = escapeAttr;
+window.escapeJsAttr = escapeJsAttr;
 window.getWebSocketUrl = getWebSocketUrl;
 window.enterDiffMode = enterDiffMode;
 window.exitDiffMode = exitDiffMode;

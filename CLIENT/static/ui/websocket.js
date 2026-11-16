@@ -743,7 +743,7 @@ function handleWebSocketMessage(data, ownerConvId) {
 
     if (data.type === 'search_web') {
         const d = document.createElement('div'); d.className = 'search-web-link';
-        d.innerHTML = `<a href="#" onclick="triggerWebSearch('${escapeHtml(data.query)}'); return false;">\u{1F50D} Search same question on internet</a>`;
+        d.innerHTML = `<a href="#" onclick="triggerWebSearch('${escapeJsAttr(data.query)}'); return false;">\u{1F50D} Search same question on internet</a>`;
         chatContainer.appendChild(d);
         if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
         return;

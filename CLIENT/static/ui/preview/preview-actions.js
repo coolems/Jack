@@ -5,7 +5,7 @@
  * Entry point of the group: preview-manager.js (loaded as <script type="module"> in index.html).
  */
 import { PreviewManager } from './preview-class.js';
-import { buildAuthedUrl } from './preview-utils.js?v=20261005a';
+import { buildAuthedUrl } from './preview-utils.js?v=20261116a';
 
 Object.assign(PreviewManager.prototype, {
     /**

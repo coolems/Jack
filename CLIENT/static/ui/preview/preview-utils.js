@@ -63,6 +63,29 @@ Object.assign(PreviewManager.prototype, {
     },
 
     /**
+     * Escape a value placed INSIDE an HTML attribute value (src/title/alt/data-*).
+     * escapeHtml() alone is text-context only and never escapes the `"` that
+     * delimits the attribute, so a value containing `"` could inject markup.
+     * Delegates to the shared global in static/ui/app.js.
+     * @param {*} value
+     * @returns {string}
+     */
+    escapeAttr(value) {
+        return window.escapeAttr(value);
+    },
+
+    /**
+     * Escape a value interpolated into the single-quoted argument of an inline
+     * handler, e.g. onclick="fn('${this.escapeJsAttr(p)}')" - attribute-safe and
+     * JS-string-safe. Delegates to the shared global in static/ui/app.js.
+     * @param {*} value
+     * @returns {string}
+     */
+    escapeJsAttr(value) {
+        return window.escapeJsAttr(value);
+    },
+
+    /**
      * Format file size
      * @param {number} bytes - File size in bytes
      * @returns {string} Formatted size

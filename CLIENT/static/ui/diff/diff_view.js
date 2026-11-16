@@ -636,7 +636,7 @@ class DiffView {
 
         if (headerLeft) {
             headerLeft.innerHTML = `
-                <span class="diff-header-path" title="${this.escapeHtml(this.currentFileA ? this.currentFileA.path : '')}">
+                <span class="diff-header-path" title="${this.escapeAttr(this.currentFileA ? this.currentFileA.path : '')}">
                     &#128196; ${this.escapeHtml(this.getFileName(this.currentFileA ? this.currentFileA.path : ''))}
                     ${this.modifiedLeft ? '<span class="diff-modified-badge" title="Unsaved changes">&#9679; modified</span>' : ''}
                 </span>
@@ -644,7 +644,7 @@ class DiffView {
         }
         if (headerRight) {
             headerRight.innerHTML = `
-                <span class="diff-header-path" title="${this.escapeHtml(this.currentFileB ? this.currentFileB.path : '')}">
+                <span class="diff-header-path" title="${this.escapeAttr(this.currentFileB ? this.currentFileB.path : '')}">
                     &#128196; ${this.escapeHtml(this.getFileName(this.currentFileB ? this.currentFileB.path : ''))}
                     ${this.modifiedRight ? '<span class="diff-modified-badge" title="Unsaved changes">&#9679; modified</span>' : ''}
                 </span>
@@ -758,6 +758,15 @@ class DiffView {
         const div = document.createElement('div');
         div.textContent = String(text);
         return div.innerHTML;
+    }
+
+    /**
+     * Escape a value used INSIDE an HTML attribute value (delegates to app.js).
+     * @param {*} text
+     * @returns {string}
+     */
+    escapeAttr(text) {
+        return window.escapeAttr(text);
     }
 }
 

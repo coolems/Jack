@@ -5,7 +5,7 @@
  * Entry point of the group: preview-manager.js (loaded as <script type="module"> in index.html).
  */
 import { PreviewManager } from './preview-class.js';
-import { buildAuthedUrl } from './preview-utils.js?v=20261005a';
+import { buildAuthedUrl } from './preview-utils.js?v=20261116a';
 
 Object.assign(PreviewManager.prototype, {
     // SECURITY fix 2026-10-05: ASYNC on purpose - the image/PDF branches must await
@@ -30,9 +30,9 @@ Object.assign(PreviewManager.prototype, {
             const pdfUrl = await buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}&inline=true`);
             html = `
                 <div style="width:100%; height:100%; min-height: 600px;">
-                    <iframe src="${pdfUrl}" 
+                    <iframe src="${this.escapeAttr(pdfUrl)}" 
                             style="width:100%; height:700px; border:none; border-radius:8px;" 
-                            title="${this.escapeHtml(filename)}"></iframe>
+                            title="${this.escapeAttr(filename)}"></iframe>
                 </div>
             `;
         } else if (isImage) {
@@ -43,7 +43,7 @@ Object.assign(PreviewManager.prototype, {
             const imgUrl = await buildAuthedUrl(`/api/download?path=${encodeURIComponent(this.currentFile.path)}&inline=true`);
             html = `
                 <div style="width:100%; text-align:center; padding: 20px;">
-                    <img src="${imgUrl}" alt="${this.escapeHtml(filename)}" 
+                    <img src="${this.escapeAttr(imgUrl)}" alt="${this.escapeAttr(filename)}" 
                          style="max-width:100%; max-height:80vh; border-radius:8px; border:1px solid var(--border);"
                          onclick="window.open(this.src, '_blank')" 
                          title="Click to open full size">

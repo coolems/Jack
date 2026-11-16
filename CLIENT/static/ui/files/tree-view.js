@@ -110,7 +110,7 @@ async function loadTree(path) {
 
         html += ` <span class="breadcrumb-sep">›</span> `;
 
-        html += `<span class="breadcrumb-item ${isLast ? 'active' : ''}" onclick="loadTree('${buildPath.replace(/'/g, "\\'")}', this)">${escapeHtml(parts[i])}</span>`;
+        html += `<span class="breadcrumb-item ${isLast ? 'active' : ''}" onclick="loadTree('${escapeJsAttr(buildPath)}', this)">${escapeHtml(parts[i])}</span>`;
 
     }
 

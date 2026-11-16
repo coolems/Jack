@@ -11,13 +11,13 @@ import { PreviewManager } from './preview-class.js';
 import './preview-fontsize.js';
 import './preview-schema.js';
 import './preview-load.js?v=20261005b';
-import './preview-render.js?v=20261005a';
-import './preview-image-meta.js?v=20261005a';  // ADDED (2026-09-18): EXIF/GPS/size card under images
+import './preview-render.js?v=20261116a';
+import './preview-image-meta.js?v=20261116a';  // ADDED (2026-09-18): EXIF/GPS/size card under images
 import './preview-edit-mode.js?v=20261005b';
 import './preview-compare.js';
 import './preview-diff-buttons.js?v=20261005b';
-import './preview-actions.js?v=20261005a';
-import './preview-utils.js?v=20261005a';
+import './preview-actions.js?v=20261116a';
+import './preview-utils.js?v=20261116a';
 
 // Create singleton instance (kept as window global - consumers: app.js, index.html init IIFE,
 // diff/diff_ui.js, files/preview-core.js all check `window.PreviewManager`)

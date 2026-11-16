@@ -33,20 +33,20 @@ function renderTreeItems(items, currentPath) {
 
             const arrow = isExpanded ? '▼' : '▶';
 
-            html += `<div class="tree-item tree-folder" data-path="${escapeHtml(itemPath)}">`;
+            html += `<div class="tree-item tree-folder" data-path="${escapeAttr(itemPath)}">`;
 
-            html += `<div class="tree-item-main" onclick="toggleFolder('${escapeHtml(itemPath).replace(/'/g, "\\'")}')">`;
+            html += `<div class="tree-item-main" onclick="toggleFolder('${escapeJsAttr(itemPath)}')">`;
 
             // 2026-10-11: actions come FIRST on the line; the expand triangle sits
             // right next to the name (after the actions). Invisible until hover.
             // stopPropagation keeps button/checkbox clicks from toggling the folder.
             html += `<div class="tree-item-actions" onclick="event.stopPropagation()">`;
 
-            html += `<button class="tree-action-btn" onclick="downloadSingle('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>`;
+            html += `<button class="tree-action-btn" onclick="downloadSingle('${escapeJsAttr(itemPath)}')" title="Download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>`;
 
-            html += `<button class="tree-action-btn delete" onclick="deleteItem('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>`;
+            html += `<button class="tree-action-btn delete" onclick="deleteItem('${escapeJsAttr(itemPath)}')" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>`;
 
-            html += `<input type="checkbox" class="tree-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect('${escapeHtml(itemPath).replace(/'/g, "\\'")}', this.checked)">`;
+            html += `<input type="checkbox" class="tree-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect('${escapeJsAttr(itemPath)}', this.checked)">`;
 
             html += `</div>`;
 
@@ -66,7 +66,7 @@ function renderTreeItems(items, currentPath) {
 
             if (isExpanded && item.items && item.items.length > 0) {
 
-                html += `<div class="tree-children" data-parent="${escapeHtml(itemPath)}">`;
+                html += `<div class="tree-children" data-parent="${escapeAttr(itemPath)}">`;
 
                 html += renderChildrenItems(item.items, itemPath);
 
@@ -74,7 +74,7 @@ function renderTreeItems(items, currentPath) {
 
             } else if (isExpanded && (!item.items || item.items.length === 0)) {
 
-                html += `<div class="tree-children" data-parent="${escapeHtml(itemPath)}">`;
+                html += `<div class="tree-children" data-parent="${escapeAttr(itemPath)}">`;
 
                 html += `<div class="tree-empty-children">Empty folder</div>`;
 
@@ -88,13 +88,13 @@ function renderTreeItems(items, currentPath) {
 
             const isHtml = item.name.toLowerCase().endsWith('.html') || item.name.toLowerCase().endsWith('.htm');
 
-            html += `<div class="tree-item tree-file" data-path="${escapeHtml(itemPath)}">`;
+            html += `<div class="tree-item tree-file" data-path="${escapeAttr(itemPath)}">`;
 
             html += `<div class="tree-item-main tree-file-draggable" draggable="true" `;
 
-            html += `onclick="previewFile('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" `;
+            html += `onclick="previewFile('${escapeJsAttr(itemPath)}')" `;
 
-            html += `ondragstart="handleFileDragStart(event, '${escapeHtml(itemPath).replace(/'/g, "\\'")}', '${escapeHtml(item.name).replace(/'/g, "\\'")}')" `;
+            html += `ondragstart="handleFileDragStart(event, '${escapeJsAttr(itemPath)}', '${escapeJsAttr(item.name)}')" `;
 
             html += `title="Drag to prompt or click to preview">`;
 
@@ -107,21 +107,21 @@ function renderTreeItems(items, currentPath) {
 
             if (isHtml) {
 
-                html += `<button class="tree-action-btn open" onclick="openFileTree('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Open"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></button>`;
+                html += `<button class="tree-action-btn open" onclick="openFileTree('${escapeJsAttr(itemPath)}')" title="Open"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></button>`;
 
             }
 
             if (isPy) {
 
-                html += `<button class="tree-action-btn run" onclick="runPythonFile('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Run Python"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>`;
+                html += `<button class="tree-action-btn run" onclick="runPythonFile('${escapeJsAttr(itemPath)}')" title="Run Python"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></button>`;
 
             }
 
-            html += `<button class="tree-action-btn" onclick="downloadSingle('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>`;
+            html += `<button class="tree-action-btn" onclick="downloadSingle('${escapeJsAttr(itemPath)}')" title="Download"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg></button>`;
 
-            html += `<button class="tree-action-btn delete" onclick="deleteItem('${escapeHtml(itemPath).replace(/'/g, "\\'")}')" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>`;
+            html += `<button class="tree-action-btn delete" onclick="deleteItem('${escapeJsAttr(itemPath)}')" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>`;
 
-            html += `<input type="checkbox" class="tree-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect('${escapeHtml(itemPath).replace(/'/g, "\\'")}', this.checked)">`;
+            html += `<input type="checkbox" class="tree-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelect('${escapeJsAttr(itemPath)}', this.checked)">`;
 
             html += `</div>`;
 

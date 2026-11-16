@@ -483,7 +483,7 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
             const name = String(url).split('/').pop();
             if (url.match(/\.(jpg|jpeg|png|webp|gif)$/i)) {
                 imageEntries.push({ rel: url, name });
-                return '<img data-path="' + escapeHtml(url) + '" data-name="' + escapeHtml(name) + '" class="message-image message-image-pending" onclick="openMessageImage(this)" onerror="messageImageError(this)" title="Click to open full size">';
+                return '<img data-path="' + escapeAttr(url) + '" data-name="' + escapeAttr(name) + '" class="message-image message-image-pending" onclick="openMessageImage(this)" onerror="messageImageError(this)" title="Click to open full size">';
             }
             return '<div class="file-tag">' + escapeHtml(name) + '</div>';
         }).join('') + '</div>';

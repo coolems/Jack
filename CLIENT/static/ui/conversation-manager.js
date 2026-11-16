@@ -182,11 +182,11 @@ class ConversationManager {
 
             return `
                 <div class="chat-history-item ${isActive ? 'active' : ''}"
-                     data-conv-id="${conv.id}"
-                     data-conv-color="${conv.color || ''}"
-                     onclick="loadConversation('${conv.id}')"
-                     ondblclick="ConversationMgr.startRename('${conv.id}', this)"
-                     oncontextmenu="ConversationMgr.showColorPicker(event, '${conv.id}', this); return false;">
+                     data-conv-id="${this._escapeAttr(conv.id)}"
+                     data-conv-color="${this._escapeAttr(conv.color || '')}"
+                     onclick="loadConversation('${this._escapeJsAttr(conv.id)}')"
+                     ondblclick="ConversationMgr.startRename('${this._escapeJsAttr(conv.id)}', this)"
+                     oncontextmenu="ConversationMgr.showColorPicker(event, '${this._escapeJsAttr(conv.id)}', this); return false;">
                     ${colorDot}
                     ${typeof ChatSocketPool !== 'undefined'
                         ? `<span class="chat-status-dot status-${ChatSocketPool.statuses[conv.id] || 'idle'}"></span>`
@@ -196,7 +196,7 @@ class ConversationManager {
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                     </svg>
                     <span class="chat-title" style="flex:1;overflow:hidden;text-overflow:ellipsis;">${this._escapeHtml(conv.title)}</span>
-                    <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${conv.id}')">
+                    <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${this._escapeJsAttr(conv.id)}')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -384,6 +384,37 @@ class ConversationManager {
         const d = document.createElement('div');
         d.textContent = text;
         return d.innerHTML;
+    }
+
+    /**
+     * Escape a value used INSIDE an HTML attribute value (delegates to app.js).
+     * @param {*} text
+     * @returns {string}
+     */
+    _escapeAttr(text) {
+        if (typeof window.escapeAttr === 'function') return window.escapeAttr(text);
+        return this._escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    /**
+     * Escape a value interpolated into a single-quoted inline-handler argument
+     * (delegates to app.js).
+     * @param {*} text
+     * @returns {string}
+     */
+    _escapeJsAttr(text) {
+        if (typeof window.escapeJsAttr === 'function') return window.escapeJsAttr(text);
+        return String(text == null ? '' : text)
+            .replace(/\\/g, '\\\\')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/`/g, '&#96;')
+            .replace(/'/g, "\\'")
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r')
+            .replace(/\t/g, '\\t');
     }
 }
 

@@ -189,7 +189,7 @@ async function legacyPreviewFile(path) {
 
             <div style="width:100%; text-align:center;">
 
-                <img src="${imgUrl}" alt="${escapeHtml(filename)}" onclick="window.open(this.src, '_blank')" title="Click to open full size"
+                <img src="${escapeAttr(imgUrl)}" alt="${escapeAttr(filename)}" onclick="window.open(this.src, '_blank')" title="Click to open full size"
 
                      onload="showImageResolution(this)"
 
@@ -301,7 +301,7 @@ async function legacyPreviewFile(path) {
 
             <div style="width:100%; height:100%; min-height: 400px;">
 
-                <iframe src="${pdfUrl}#toolbar=0&navpanes=0&scrollbar=1" 
+                <iframe src="${escapeAttr(pdfUrl)}#toolbar=0&navpanes=0&scrollbar=1" 
 
                         style="width:100%; height:600px; border:none; border-radius:8px;" />
 
@@ -323,7 +323,7 @@ async function legacyPreviewFile(path) {
 
             <p>Preview not available for this file type</p>
 
-            <button class="file-action-btn" onclick="downloadSingle('${path.replace(/'/g, "\\'")}')">Download to view</button>
+            <button class="file-action-btn" onclick="downloadSingle('${escapeJsAttr(path)}')">Download to view</button>
 
         </div>
 
