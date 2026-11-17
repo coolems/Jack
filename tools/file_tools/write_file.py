@@ -34,7 +34,6 @@ __tool_description__ = {
 
 import logging
 import os
-import shutil
 
 from ..utils import (
     MAX_WRITE_SIZE,
@@ -130,11 +129,7 @@ def write_file(filename: str, content: str, path: str = "", mode: str = "w") -> 
         if dirname:
             os.makedirs(dirname, exist_ok=True)
 
-        # Backup existing file if overwriting
-        if mode == "w" and os.path.exists(filepath):
-            shutil.copy2(filepath, filepath + ".backup")
-
-        # Write file
+        # Write file (in place - git is the backup, no side-car copy)
         # BINARY write (2026-09-22 byte-exact fix): text-mode open() on Windows
         # translates \n to CRLF and corrupts content that already carries CR/LF bytes.
         # Content was normalized to the repository line-ending policy above.

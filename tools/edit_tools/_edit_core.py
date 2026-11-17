@@ -18,32 +18,13 @@ for .bat/.cmd) before writing. Matching stays whitespace-simple and the written 
 MATCHING CONTRACT
 =================
 Literal text only (never a regex), a match must be unique unless the caller asks for
-replace_all, and an empty replacement deletes text.
-
-BACKUP CONTRACT
-===============
-copy_backup is the one byte-level helper here: it snapshots a file to '<file>.backup' before a
-mutation. It uses plain open binary I/O rather than shutil.copy2 because shutil is
-dangerous-by-default in the remote-tool AST guard (CLIENT/tools/remote_tools/loader/ast_guard.py)
-and is allowlisted per tool name only - a tool that patches tool sources must not depend on it.
-Byte-exact copies keep the original newline convention intact in the backup.
+replace_all, and an empty replacement deletes text. The tools write in place (git is the
+backup), so nothing here ever produces a side-car copy.
 """
 
 # Cap for the LCS table in changed_region(): the changed middle is normally a handful of
 # lines, but a pathological edit could make rows*cols huge, so it degrades to a plain listing.
 _LCS_CELL_BUDGET = 200_000
-
-
-def copy_backup(filepath: str) -> None:
-    """Copy *filepath* to '<filepath>.backup' before mutating it.
-
-    Byte-exact binary copy, so the backup keeps the file's original newline convention.
-    Plain open() I/O instead of shutil.copy2 - see the BACKUP CONTRACT above.
-    """
-    with open(filepath, "rb") as src:
-        payload = src.read()
-    with open(filepath + ".backup", "wb") as dst:
-        dst.write(payload)
 
 
 def find_matches(content: str, search: str) -> list:

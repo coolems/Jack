@@ -55,7 +55,7 @@ from ..utils import (
     validate_filename,
     locate_scratch_file,
 )
-from ._edit_core import changed_region, copy_backup, find_matches, line_number_at, splice
+from ._edit_core import changed_region, find_matches, line_number_at, splice
 
 logger = logging.getLogger("COOLEMS.Tools.Edit")
 
@@ -140,9 +140,6 @@ def edit_file(filename: str, old_string: str, new_string: str,
             return f"Error: replacement produced no change in '{filename}'."
 
         updated = normalize_line_endings(updated_view, filename)
-
-        # Backup before mutating, exactly like write_file's overwrite path.
-        copy_backup(filepath)
 
         # BINARY write: text-mode open() on Windows would re-translate the newlines.
         with open(filepath, "wb") as f:

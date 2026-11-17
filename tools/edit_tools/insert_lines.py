@@ -54,7 +54,7 @@ from ..utils import (
     validate_filename,
     locate_scratch_file,
 )
-from ._edit_core import changed_region, copy_backup, count_lines, insert_text
+from ._edit_core import changed_region, count_lines, insert_text
 
 logger = logging.getLogger("COOLEMS.Tools.Edit")
 
@@ -128,9 +128,6 @@ def insert_lines(filename: str, after_line: int, text: str, path: str = "") -> s
             return f"Error: insertion produced no change in '{filename}'."
 
         updated = normalize_line_endings(updated_view, filename)
-
-        # Backup before mutating, exactly like write_file's overwrite path.
-        copy_backup(filepath)
 
         # BINARY write: text-mode open() on Windows would re-translate the newlines.
         with open(filepath, "wb") as f:

@@ -9,7 +9,6 @@ row here is an intentional trust decision, not an accident.
 # Tool-specific allowlist for imports that are safe in context.
 # Maps tool name -> set of top-level module names the tool may import.
 ALLOWED_TOOL_IMPORTS: dict[str, set[str]] = {
-    "write_file": {"shutil"},
     "move_file": {"shutil"},
     "browser_screenshot": {"ctypes"},
     "fetch_url": {"socket"},
