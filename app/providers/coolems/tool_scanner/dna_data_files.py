@@ -1,23 +1,28 @@
-"""DNA JSON data files (agent STATE, not code) shipped with tools_response."""
+"""DNA JSON data files (agent identity) shipped with tools_response."""
 
 import os
+
 from .shared_sources import _read_text
 
-def get_dna_data_files(tools_dir):
-    """Read DNA JSON data files (agent STATE, not code).
+DNA_JSON_FILES = ("identity.json",)
 
-    The SERVER is the source of truth for agent identity/intelligence/lessons.
-    These files are sent to each client with tools_response; the CLIENT syncs them
-    into its own app/dna directory (its proper location -- NEVER working_root) so the
-    delivered DNA modules can read/write them there without any on-disk copies in the
-    SERVER distribution.
+
+def get_dna_data_files(server_root):
+    """Read the DNA JSON files the CLIENT needs in memory (agent identity).
+
+    The SERVER is the source of truth: app/dna/identity.json. The payload rides on
+    tools_response so the delivered app.dna.* modules can build the identity without
+    any DNA file on the CLIENT disk (the loader installs it via app.dna.set_dna_data).
+
+    Args:
+        server_root: The SERVER root folder (the one containing app/ and tools/).
 
     Returns:
-        Dict mapping file name -> JSON string (empty if not found).
+        Dict mapping file name -> JSON string (empty when nothing is found).
     """
     data = {}
-    dna_dir = os.path.join(tools_dir, "dna")
-    for fname in ('identity.json', 'intelligence.json', 'lessons.json'):
+    dna_dir = os.path.join(server_root, "app", "dna")
+    for fname in DNA_JSON_FILES:
         path = os.path.join(dna_dir, fname)
         if os.path.exists(path):
             data[fname] = _read_text(path)

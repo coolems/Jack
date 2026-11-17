@@ -1,9 +1,7 @@
-"""Abstract base provider interface.
-All provider implementations must conform to this interface.
+"""Abstract base provider interface - every provider implementation conforms to it.
 
-TOKEN STATISTICS:
-    chat_stream() returns a tuple of (response_str, TokenStats) instead of just a
-    string, so every provider call carries real token counts for the UI to display.
+chat_stream() returns (response_str, TokenStats) so each call carries its own real token
+counts; nothing per-user is stored in globals.
 """
 
 from abc import ABC, abstractmethod
@@ -35,16 +33,19 @@ class BaseProvider(ABC):
         messages: List[Dict],
         websocket: Any,
         temperature: float = 0.7,
-        enable_thinking: bool = False,
+        enable_thinking=None,
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
         context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
-        """Stream chat completions from the provider.
-        IMPORTANT: Returns a tuple of (response_string, TokenStats) where TokenStats
-        contains REAL token counts from the provider response. This is bulletproof for
-        concurrent users because each call gets its own TokenStats — no shared globals.
+        """Stream chat completions; returns (response_string, TokenStats) with real counts from
+        the provider response, one TokenStats per call so concurrent users stay isolated.
+
+        enable_thinking: bool (show reasoning or not) or a canonical level
+        "none"/"low"/"medium"/"high". A level is translated into the serving model's own
+        vocabulary by its ThinkingPolicy (app/providers/llama/thinking.py); a bool only decides
+        whether reasoning is displayed.
         """
         ...
 
@@ -55,17 +56,7 @@ class BaseProvider(ABC):
         messages: List[Dict],
         temperature: float = 0.7,
     ) -> str:
-        """Non-streaming chat completion.
-
-        Returns the response string only (no token stats needed for non-streaming).
-
-        Args:
-            model: Model name to use.
-            messages: List of message dicts with 'role' and 'content'.
-            temperature: Sampling temperature (default 0.7).
-
-        Returns:
-            The full response string.
+        """Non-streaming chat completion; returns the response string (no token stats).
         """
         ...
 
@@ -77,21 +68,14 @@ class BaseProvider(ABC):
         *,
         stream: bool = True,
         temperature: float = 0.7,
-        enable_thinking: bool = False,
+        enable_thinking=None,
         tools: list = None,
     ) -> Dict:
         """Build the request payload for this provider.
 
-        Args:
-            model: Model name to use.
-            messages: List of message dicts.
-            stream: Whether to enable streaming.
-            temperature: Sampling temperature.
-            enable_thinking: Whether to enable thinking mode.
-            tools: Optional list of tool definitions.
-
-        Returns:
-            Dictionary payload ready for HTTP request.
+        enable_thinking: bool (show reasoning) or a canonical level "none"/"low"/"medium"/"high".
+        Implementations translate a level with the serving model's ThinkingPolicy; a model whose
+        controls are unknown gets no thinking keys at all.
         """
         ...
 
@@ -137,15 +121,7 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def status_message(self, error: Exception, model_name: str, timeout: int = None) -> str:
-        """Generate user-friendly error message from an exception.
-
-        Args:
-            error: The exception that occurred.
-            model_name: Name of the model that was being used.
-            timeout: Optional timeout value to include in message.
-
-        Returns:
-            User-friendly error message string.
+        """User-friendly error message for an exception, naming the model and optional timeout.
         """
         ...
 

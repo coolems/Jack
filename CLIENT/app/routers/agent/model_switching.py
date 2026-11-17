@@ -1,10 +1,10 @@
-"""Model endpoints: /api/models, POST /api/llama/load-model (a ROUTING request, not a
-reload), provider health/status endpoints, agent DNA/learning and the role display route.
+"""Model endpoints: /api/models, POST /api/llama/load-model (routing, not a reload),
+provider health/status, the agent DNA summary and the role display route.
 
-Nodes keep the model they were started with. Selecting a model asks the SERVER whether the
-swarm serves it: if yes, chat requests route to a matching node; if not, the SERVER returns
-a clear "no node is serving X" message. There is no reload/restart path, so the
-MODEL_SWITCH_* wait budget resolves immediately.
+Nodes keep the model they were started with: selecting a model asks the SERVER whether a
+node serves it, and chat requests then route to that node, otherwise the SERVER answers
+"no node is serving X". There is no reload path, so the MODEL_SWITCH_* wait budget
+resolves immediately.
 """
 
 from typing import Dict
@@ -31,11 +31,14 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
     """Attach the model/status/settings endpoints to *router*."""
     @router.get("/api/models")
     async def get_models():
-        """Models available to this caller.
+        """Models available to this caller - filtered by the SERVER for this role.
 
-        Each entry: name (model filename), size in bytes, on_disk, loaded (currently in server).
-        FILTERING IS DONE ON THE SERVER: the provider's WS connection authenticates with the
-        user's key and the SERVER returns only models allowed for that role - no local filtering.
+        Each entry: name (filename), size, on_disk, loaded, and thinking - what this model can be
+        told about reasoning, discovered from the serving node's chat template (ThinkingPolicy):
+        supported, can_disable, can_display, levels (none/low/medium/high), model_values,
+        model_default, preserve, budget, enforced, source, hint. supported: false means no
+        thinking keys are sent to that model and the UI chip reads "Think: n/a" with hint as the
+        reason (ui-controls.js updateThinkingUI).
 
         While a model switch is running the SERVER is reloading, so an empty list is EXPECTED and
         is logged as INFO, not ERROR.
@@ -250,22 +253,10 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
 
     @router.get("/api/agent/dna")
     async def get_agent_dna():
-        """Get agent current DNA summary."""
+        """Agent identity summary (SERVER-delivered DNA, read-only)."""
         return {
             "dna_content": agent.get_identity(),
             "name": agent.get_name(),
             "personality": agent.get_personality(),
             "goals": agent.get_goals(),
         }
-
-    @router.post("/api/agent/learn")
-    async def agent_learn(data: Dict):
-        """Teach the agent something new."""
-        fact = data.get("fact", "").strip()
-        if not fact:
-            return JSONResponse(
-                status_code=400,
-                content={"status": "error", "message": "Fact is required"}
-            )
-        agent.learn(fact)
-        return {"status": "ok", "message": f"Learned: {fact}"}

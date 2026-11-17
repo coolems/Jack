@@ -79,15 +79,15 @@ def get_all_shared_sources(tools_dir):
     if os.path.exists(pm_path):
         sources['app.provider_manager'] = _read_text(pm_path)
 
-    # --- DNA (agent identity/learning) -- SERVER is the source of truth for code.
-    # Delivered to each client so it can use its agent locally; NO .py copies may
-    # exist in the CLIENT distribution. Keys are registered on the client as
-    # 'app.dna.*' (the client's import path). Order matters: dependencies first
-    # (name, learning before core; get_agent last). __init__ is NOT delivered --
-    # the client keeps a thin lazy package shell for that name.
-    dna_dir = os.path.join(tools_dir, "dna")
+    # --- DNA (agent identity) -- SERVER is the source of truth for code.
+    # Lives in app/dna (agent state, not a tool). Delivered to each client so it can
+    # use its agent locally; NO .py copies may exist in the CLIENT distribution. Keys
+    # are registered on the client as 'app.dna.*' (the client's import path). Order
+    # matters: name before core; get_agent last. __init__ is NOT delivered -- the
+    # client keeps a thin lazy package shell for that name.
+    dna_dir = os.path.join(os.path.dirname(tools_dir), "app", "dna")
     if os.path.isdir(dna_dir):
-        for mod_name in ('name', 'learning', 'core', 'get_agent'):
+        for mod_name in ('name', 'core', 'get_agent'):
             path = os.path.join(dna_dir, f"{mod_name}.py")
             if os.path.exists(path):
                 sources[f'app.dna.{mod_name}'] = _read_text(path)

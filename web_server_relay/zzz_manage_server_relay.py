@@ -104,7 +104,7 @@ def load_relay_config(cli_override: str | None):
     else:
         host, port = address, WEB_RELAY_DEFAULT_PORT
 
-    # --- TLS trust (fail-closed, same rules as ws_brain_relay.py) ---------------
+    # --- TLS trust (fail-closed, same rules as ws_brain_relay/) ---------------
     use_ssl = (port == 443) or bool(WEB_RELAY_VERIFY_SSL_CERTS) or bool(
         WEB_RELAY_CERT_PIN_FINGERPRINT and ":" not in host
     )

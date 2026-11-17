@@ -16,7 +16,7 @@ def get_framework_sources(tools_dir):
         The SERVER keeps its own local copies (it needs them at import time); the CLIENT
         resolves `from app.providers import BaseProvider` through a lazy package shell that
         binds to these delivered modules. SERVER is the single source of truth for both
-        sides' provider contract, like it is for tools/dna/prompts.
+        sides' provider contract, like it is for app/dna and app/prompts.
 
         app.provider_manager is NOT here: the CLIENT needs a local copy at import time before
         any WS exists (chicken-and-egg); that one stays byte-identical and is covered by a

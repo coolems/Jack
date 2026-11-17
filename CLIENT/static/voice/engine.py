@@ -141,7 +141,6 @@ class TTSManager:
                 TTS_VOICE2_ENABLED,
                 TTS_ACTIVE_VOICE,
                 TTS_MAX_POOL_SIZE,
-                TTS_PRE_RENDER_SLOTS,
                 TTS_AUDIO_DIR,
                 TTS_MODEL,
                 TTS_TOTAL_STEPS,

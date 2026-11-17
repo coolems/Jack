@@ -247,6 +247,5 @@ class AuthGateway:
 from .profile_loader import (
     _resolve_config_dir,
     load_api_keys_db,
-    load_blocked_libs_file,
     load_profiles_db,
 )

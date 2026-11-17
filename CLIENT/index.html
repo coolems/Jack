@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261115q">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261117a">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -94,9 +94,11 @@
                      steering placeholder in the textarea itself is enough. -->
                 <div class="input-footer">
                     <div class="file-preview" id="filePreview"></div>
-                    <button class="think-toggle" id="thinkToggle" onclick="toggleThink()" title="Toggle thinking mode">
+                    <!-- Thinking chip: cycles only the levels the selected model offers
+                         (discovered from its chat template by ThinkingPolicy). Default: none. -->
+                    <button class="think-toggle" id="thinkToggle" onclick="cycleThinking()" title="Thinking level - click to change">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
-                        <span>Think</span>
+                        <span id="thinkLabel">Think</span>
                     </button>
                     <button class="send-btn" id="sendBtn" onclick="handleSendClick()" title="Send message">
                         <svg id="sendIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
@@ -696,7 +698,7 @@
     <!-- Load scripts in dependency order -->
     <script src="/static/ui/api-key.js?v=20261124a">
     </script>
-    <script src="/static/ui/app.js?v=20261116a">
+    <script src="/static/ui/app.js?v=20261117a">
     </script>
     <script src="/static/ui/license-badge.js?v=20261015e">
     </script>
@@ -709,13 +711,13 @@
     <script src="/static/ui/cycle-block.js?v=20261115q"></script>
     <script src="/static/ui/conversation-manager.js?v=20261116a">
     </script>
-    <script src="/static/ui/conversation.js?v=20261116a">
+    <script src="/static/ui/conversation.js?v=20261117a">
     </script>
     <script src="/static/ui/workspace-view.js?v=20261108a"></script>
     <script src="/static/ui/chat-socket-pool.js?v=20261115q"></script>
-    <script src="/static/ui/websocket.js?v=20261116a">
+    <script src="/static/ui/websocket.js?v=20261117a">
     </script>
-    <script src="/static/ui/message.js?v=20261116a">
+    <script src="/static/ui/message.js?v=20261117a">
     
     </script>
     <script src="/static/ui/setup-progress.js?v=20261116a"></script>
@@ -781,7 +783,7 @@
     <script src="/static/ui/runtime-settings.js?v=20261115q"></script>
     <script src="/static/ui/mcp-settings.js?v=20261116a"></script>
     <script src="/static/ui/approval-dialog.js?v=20261115q"></script>
-    <script src="/static/ui/ui-controls.js?v=20260827e">
+    <script src="/static/ui/ui-controls.js?v=20261117a">
     
     </script>
     

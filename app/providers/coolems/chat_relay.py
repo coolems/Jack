@@ -1,18 +1,15 @@
-"""Chat relay - forwards chat requests to the local LLM and streams the response back over WebSocket.
+"""Chat relay - send a chat request to the local LLM and stream the response back over
+WebSocket.
 
-The transport-independent generation core is run_chat_core(), shared by both entry
-points below and by the queue worker pool (app/server_queue/worker_pool.py).
-relay_chat_websocket / relay_chat_websocket_direct are thin shims over it.
-
-Frame routing contract:
-  * llama streaming chunks arrive via sink.send_text(json) - the sink is either a raw
-    _WSAdapter (shim path) or a FrameSink (worker path).
-  * final response / token_stats / done / error frames go through the same object.
+run_chat_core() is the transport-independent core, shared by the two entry points below
+and by the queue worker pool (app/server_queue/worker_pool.py); relay_chat_websocket /
+relay_chat_websocket_direct are shims over it. Streaming chunks and the final
+response/token_stats/done/error frames all go through the same sink (send_text).
 """
 
 import json
 import logging
-from typing import Tuple, Type, Optional
+from typing import Tuple, Type, Optional, Any
 
 # Server is the single source of truth for the default generation temperature:
 # when a client request omits 'temperature', fall back to config LLAMA_SERVER_TEMP
@@ -29,14 +26,10 @@ logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 
 
 def _is_expected_disconnect(exc: BaseException) -> bool:
-    """Decide whether a send failure is an *expected* client disconnect.
+    """Whether a send failure is an expected client disconnect.
 
-      - ConnectionClosedOK -> normal closure (code 1000), always expected
-      - ConnectionClosedError -> abnormal; expected only when it carries a normal-policy
-        close code, i.e. the peer closed cleanly rather than the transport failing
-      - OSError / generic Exception -> NOT expected (a real send error)
-
-    Unknown exception types default to False.
+    ConnectionClosedOK -> expected; ConnectionClosedError -> expected only with a
+    normal-policy close code; OSError and anything else -> not expected (defaults False).
     """
     exc_type_name = type(exc).__name__
     if exc_type_name == "ConnectionClosedOK":
@@ -51,12 +44,8 @@ def _is_expected_disconnect(exc: BaseException) -> bool:
 
 
 class _WSAdapter:
-    """Lightweight wrapper that presents a uniform send_text() interface over any WebSocket.
-
-    Used by both direct-client and relay-mode so chat_stream() can call
-    websocket.send_text without caring about the underlying transport.
-
-    Gracefully handles closed connections — logs at DEBUG level for expected disconnects.
+    """Uniform send_text() wrapper over any WebSocket, so chat_stream() does not care about
+    the transport. Logs expected disconnects at DEBUG instead of raising.
     """
 
     def __init__(
@@ -103,22 +92,11 @@ def _make_relay_ws_adapter(ws) -> _WSAdapter:
         error_tag="SERVER->RELAY",
     )
 
-
-async def _safe_ws_send(ws, msg_dict: dict):
-    """Send a JSON message to WebSocket, silently ignoring closed connections."""
-    try:
-        await ws.send(json.dumps(msg_dict))
-    except Exception:
-        # Connection already closed — this is normal when client disconnects
-        pass
-
-
 async def _sink_send_frame(sink, msg_dict: dict):
-    """Send one JSON frame through a sink object (send_text interface).
+    """Send one JSON frame through a sink (send_text interface).
 
-    Used by run_chat_core for the final response/token_stats/done/error frames.
-    Works with both the legacy _WSAdapter and the FrameSink adapters from
-    app/server_queue/sink.py; never raises on a closed transport.
+    Used by run_chat_core for the final response/token_stats/done/error frames; never raises
+    on a closed transport.
     """
     try:
         await sink.send_text(json.dumps(msg_dict))
@@ -164,12 +142,10 @@ def _filter_tools_by_profile(server_provider, user_info, tools):
 
 
 def _estimate_prompt_chars(messages, tools):
-    """Estimate prompt size INCLUDING the tool schema (client-side estimates exclude it -
-        that drift is what let prompts reach 130k+ tokens against a 131k window).
+    """Prompt-size estimate INCLUDING the tool schema and tool-call JSON.
 
-        Tool-call JSON is included: a content-only sum counts assistant tool-call messages
-        as 0 tokens, hiding the fastest-growing part of agentic history.
-
+    A content-only sum counts assistant tool-call messages as 0 tokens, hiding the fastest
+    growing part of agentic history and letting prompts overrun the context window.
     """
     est_chars = sum(
         len(str(m.get("content", ""))) + (len(json.dumps(m["tool_calls"])) if m.get("tool_calls") else 0)
@@ -184,17 +160,14 @@ def _estimate_prompt_chars(messages, tools):
 # ---------------------------------------------------------------------------
 
 async def run_chat_core(server_provider, provider, sink, *, model: str, messages: list,
-                        temperature: float = LLAMA_SERVER_TEMP, enable_thinking: bool = False,
+                        temperature: float = LLAMA_SERVER_TEMP, enable_thinking: Any = False,
                         conv_id: str = "", tools=None, stop_event=None,
                         context_window: Optional[int] = None):
-    """Run one chat turn against *provider* and stream every frame through *sink*.
+    """Run one chat turn against *provider*, streaming every frame through *sink*.
 
-    *sink* needs ``send_text(str)`` + ``is_closed`` — satisfied by both _WSAdapter (legacy
-    shim path) and the FrameSink adapters in app/server_queue/sink.py. Returns True when a
-    final response was delivered, False when the client vanished mid-stream (nothing sent).
-
-    This function NEVER raises for transport problems: a disconnected client is a normal,
-    logged condition; generation errors are turned into an "error" frame.
+    *sink* needs send_text(str) + is_closed. Returns True when a final response was
+    delivered, False when the client vanished mid-stream. Never raises for transport
+    problems: a disconnect is logged, generation errors become an "error" frame.
     """
     est_chars, tools_chars = _estimate_prompt_chars(messages, tools)
     logger.info(
@@ -264,21 +237,17 @@ async def run_chat_core(server_provider, provider, sink, *, model: str, messages
 # ---------------------------------------------------------------------------
 
 async def relay_chat_websocket_direct(server_provider, msg: dict, ws):
-    """Forward chat request to local LLM and relay response back over Direct WebSocket.
+    """Forward a chat request to the local LLM and relay the answer over Direct WebSocket.
 
-    Filters tools by user profile permissions before relaying.
-    Gracefully handles client disconnection without logging errors.
-
-    SERVER-SIDE STOP PROPAGATION:
-        Extracts _server_stop_event from msg (injected by direct_ws.ws_loop) and passes it
-        to local.chat_stream(). This ensures llama.cpp generation is aborted immediately
-        when the client disconnects, instead of running to completion with no one listening.
-
-    Thin shim over run_chat_core(); behaviour is identical to the relay path.
+    Filters tools by the user's profile permissions. _server_stop_event from msg (injected by
+    direct_ws.ws_loop) is passed to chat_stream so generation aborts when the client
+    disconnects. Thin shim over run_chat_core().
     """
     model = msg.get("model", "")
     messages = msg.get("messages", [])
     temperature = msg.get("temperature", LLAMA_SERVER_TEMP)
+    # Verbatim on purpose: a bool or a canonical level
+    # ("none"/"low"/"medium"/"high"). bool() here would erase the user's level.
     enable_thinking = msg.get("enable_thinking", False)
     conv_id = msg.get("conv_id", "")
     tools = _filter_tools_by_profile(server_provider, getattr(ws, "_user_info", None),
@@ -298,18 +267,12 @@ async def relay_chat_websocket_direct(server_provider, msg: dict, ws):
 
 
 async def relay_chat_websocket(server_provider, msg: dict, ws, user_info=None):
-    """Forward chat request to local LLM and relay response back over WebSocket (relay mode).
-        *user_info* is the RELAYED CLIENT's resolved profile.
-        It drives tool-schema filtering and - together with _RelayTargetAdapter -
-        routes every outgoing frame back to exactly that client over the shared
-        brain<->relay socket. None (legacy call) = no extra filtering.
+    """Forward a chat request to the local LLM and relay the answer over the web relay.
 
-        SERVER-SIDE STOP PROPAGATION : mirrors the direct path -- extracts
-        _server_stop_event from msg (injected by ws_brain_relay, keyed per relayed client)
-        and passes it to local.chat_stream so llama.cpp generation aborts when a client
-        behind the relay sends 'stop' or disconnects.
-
-        multi-chat: thin shim over run_chat_core — behaviour identical.
+    *user_info* is the relayed client's profile: it drives tool-schema filtering and routes
+    every outgoing frame back to that client over the shared brain<->relay socket. None means
+    no extra filtering. _server_stop_event (keyed per relayed client) aborts generation on
+    'stop' or disconnect. Thin shim over run_chat_core().
     """
     # Extract server-side stop event (injected by ws_brain_relay per relayed client)
     server_stop_event = msg.pop("_server_stop_event", None)
@@ -317,6 +280,7 @@ async def relay_chat_websocket(server_provider, msg: dict, ws, user_info=None):
     model = msg.get("model", "")
     messages = msg.get("messages", [])
     temperature = msg.get("temperature", LLAMA_SERVER_TEMP)
+    # Verbatim: bool or canonical level, never coerced.
     enable_thinking = msg.get("enable_thinking", False)
     conv_id = msg.get("conv_id", "")
     tools = _filter_tools_by_profile(server_provider, user_info,

@@ -33,7 +33,6 @@ Usage:
 import sqlite3
 
 import logging
-from contextlib import contextmanager
 from typing import Optional
 
 logger = logging.getLogger("COOLEMS.DBManager")
@@ -127,50 +126,3 @@ def close_db_connection(conn) -> None:
             conn.close()
         except Exception:
             pass  # Connection already closed or invalid
-
-
-@contextmanager
-def db_connection():
-    """Context manager for safe database access.
-
-    Usage:
-        with db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT ...")
-
-    The connection is always closed properly, even on exceptions.
-    """
-    conn = get_db_connection()
-    try:
-        yield conn
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {e}")
-        raise
-    finally:
-        close_db_connection(conn)
-
-def shutdown_db_manager() -> None:
-    """Safely shut down the database manager.
-
-    Call this on application exit to ensure WAL checkpointing completes.
-    This is a no-op since we don't maintain persistent connections,
-    but provides a clean shutdown hook for future enhancements.
-    """
-    global _initialized
-
-    # Final checkpoint to merge WAL into main DB
-    if _db_path:
-        try:
-            conn = sqlite3.connect(_db_path)
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            logger.info("Final WAL checkpoint completed on shutdown")
-            conn.close()
-        except sqlite3.Error as e:
-            logger.warning(f"WAL checkpoint failed during shutdown: {e}")
-
-    _initialized = False
-    logger.info("Database manager shut down")
-
-def get_db_path() -> Optional[str]:
-    """Return the configured database path, or None if not initialized."""
-    return _db_path

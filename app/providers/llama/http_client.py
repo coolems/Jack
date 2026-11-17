@@ -1,14 +1,11 @@
 """Shared HTTP client pool for the llama.cpp provider.
 
-All HTTP to llama-server goes through one pooled async client (httpx) and one sync
-session (requests), so TCP/TLS handshakes are reused instead of created and destroyed
-per request.
+All HTTP to llama-server goes through one pooled async client (httpx), so TCP/TLS
+handshakes are reused instead of created and destroyed per request.
 """
 import logging
-from typing import Optional
 
 import httpx
-import requests
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.HTTPPool")
 
@@ -86,37 +83,3 @@ async def close_async_client() -> None:
     if client is not None and not client.is_closed:  # property access - see get_async_client note
         await client.aclose()
         logger.info("Closed shared async HTTP client")
-
-
-# ---------------------------------------------------------------------------
-# Sync session (requests) — legacy, kept for compatibility.
-# (2026-09 threadless refactor): HealthChecker is async now and uses the pooled httpx client;
-# nothing in the provider path calls get_sync_session() anymore.
-# ---------------------------------------------------------------------------
-
-_sync_session: Optional[requests.Session] = None
-
-
-def get_sync_session() -> requests.Session:
-    """Return the shared sync HTTP session (creates lazily on first call)."""
-    global _sync_session
-    if _sync_session is None:
-        _sync_session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=20,
-            max_retries=0,  # we handle retries ourselves
-        )
-        _sync_session.mount("http://", adapter)
-        _sync_session.mount("https://", adapter)
-        logger.info("Created shared sync HTTP session (requests) with connection pool")
-    return _sync_session
-
-
-def close_sync_session() -> None:
-    """Close the shared sync session. Idempotent."""
-    global _sync_session
-    if _sync_session is not None:
-        _sync_session.close()
-        logger.info("Closed shared sync HTTP session")
-    _sync_session = None

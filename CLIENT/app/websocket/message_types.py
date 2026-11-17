@@ -76,21 +76,6 @@ async def send_search_web_suggestion(websocket: Any, query: str, link_text: str)
         "link_text": link_text
     }))
 
-async def send_image_generated(websocket: Any, image_base64: str,
-                               file_path: Optional[str] = None,
-                               filename: Optional[str] = None,
-                               width: Optional[int] = None,
-                               height: Optional[int] = None):
-    """Send a generated image notification."""
-    await websocket.send_text(json.dumps({
-        "type": "image_generated",
-        "image_base64": image_base64,
-        "file_path": file_path,
-        "filename": filename,
-        "width": width,
-        "height": height
-    }))
-
 async def send_recovery_warning(websocket: Any, message: str, status: str = "warning"):
     """Send a recovery warning block to the UI.
 

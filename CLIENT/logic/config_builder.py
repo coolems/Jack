@@ -1,10 +1,7 @@
 """Configuration builders for normal and agentic chat modes.
 
-Single source of truth for constructing NormalModeConfig and AgenticModeConfig objects.
-All default values are pulled from config.py - no hardcoded magic numbers here.
-
-Usage:
-    from logic.config_builder import build_normal_config, build_agentic_config
+build_normal_config() / build_agentic_config() construct the mode config objects with
+defaults from config.py - no hardcoded values here.
 """
 
 from typing import List, Dict, Optional, Any
@@ -18,10 +15,10 @@ def build_normal_config(
     *,
     model: str = MODEL_NAME,
     temperature: float = PROVIDER_DEFAULT_TEMPERATURE,
-    enable_thinking: bool = False,
+    # enable_thinking: bool or canonical level ("none"/"low"/"medium"/"high").
+    enable_thinking: Any = False,
     provider: Optional[BaseProvider] = None,
-    agent_name: str = "Jack",
-    dna_content: str = "",
+    system_prompt: str = "",
     image_data: List[str] | None = None,
     image_paths: List[str] | None = None,
     file_contents: List[Dict] | None = None,
@@ -39,8 +36,7 @@ def build_normal_config(
         temperature=temperature,
         enable_thinking=enable_thinking,
         provider=provider,
-        agent_name=agent_name,
-        dna_content=dna_content,
+        system_prompt=system_prompt,
         image_data=image_data or [],
         image_paths=image_paths or [],
         file_contents=file_contents or [],
@@ -56,11 +52,10 @@ def build_agentic_config(
     *,
     model: str = MODEL_NAME,
     temperature: float = PROVIDER_DEFAULT_TEMPERATURE,
-    enable_thinking: bool = False,
+    # enable_thinking: bool or canonical level ("none"/"low"/"medium"/"high").
+    enable_thinking: Any = False,
     provider: Optional[BaseProvider] = None,
-    agent_name: str = "Jack",
-    dna_content: str = "",
-    generic_tool_prompt: str = "",
+    system_prompt: str = "",
     image_data: List[str] | None = None,
     image_paths: List[str] | None = None,
     file_contents: List[Dict] | None = None,
@@ -84,9 +79,7 @@ def build_agentic_config(
         temperature=temperature,
         enable_thinking=enable_thinking,
         provider=provider,
-        agent_name=agent_name,
-        dna_content=dna_content,
-        generic_tool_prompt=generic_tool_prompt,
+        system_prompt=system_prompt,
         image_data=image_data or [],
         image_paths=image_paths or [],
         file_contents=file_contents or [],

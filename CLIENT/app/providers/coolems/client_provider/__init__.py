@@ -16,9 +16,8 @@ Web relay mode (Settings UI Connection Mode = "web_relay"):
   - client_provider/provider_class.py   -> the CoolemsClientProvider class (thin delegations)
   - ssl_helper.py / direct_mode.py / relay_mode.py / tool_requests.py / control_channel.py (siblings)
 
-The flat CLIENT/app/providers/coolems/client_provider.py file is a re-export facade so
-existing imports ('from .client_provider import CoolemsClientProvider, is_model_switching,',
-'relay_ws_connect') keep working unchanged.
+This package __init__ IS the import surface: 'from .client_provider import
+CoolemsClientProvider, is_model_switching, relay_ws_connect' resolves here.
 """
 
 from .connection_modes import (  # noqa: F401

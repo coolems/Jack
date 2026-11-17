@@ -1,24 +1,11 @@
-"""CoolemsClientProvider -- Secure WebSocket pipe to remote coolems_server.
+"""CoolemsClientProvider -- encrypted WebSocket transport to a remote coolems_server.
 
-Opens encrypted WebSocket connection, forwards params unchanged, relays chunks back, closes.
-No intelligence. No modification. Just secure transport.
-
-Direct mode (Settings UI Connection Mode = "direct", the default):
-  Connects directly to the SERVER via wss:// with TLS encryption on LAN.
-
-Web relay mode (Settings UI Connection Mode = "web_relay"):
-  Connects ONLY to the web relay address saved in settings.json - that is all the
-  CLIENT needs. The home SERVER reaches the same relay itself; no SERVER address is
-  used or required by this CLIENT in relay mode.
-
-  - client_provider/connection_modes.py -> model-switch flag + live connection-mode/address helpers
-  - client_provider/ws_connect.py       -> _AccumulatingWS + the fail-closed relay_ws_connect helper
-  - client_provider/provider_class.py   -> the CoolemsClientProvider class (thin delegations)
-  - ssl_helper.py / direct_mode.py / relay_mode.py / tool_requests.py / control_channel.py (siblings)
-
-The flat CLIENT/app/providers/coolems/client_provider.py file is a re-export facade so
-existing imports ('from .client_provider import CoolemsClientProvider, is_model_switching,',
-'relay_ws_connect') keep working unchanged.
+Sends request params, relays streamed chunks back, closes. No generation logic here.
+Connection mode picks the peer: "direct" -> wss://<server>:<port> on the LAN;
+"web_relay" -> the relay address from settings.json only (the SERVER reaches that same
+relay itself). Siblings: connection_modes.py, ws_connect.py, ssl_helper.py, direct_mode.py,
+relay_mode.py, tool_requests.py, control_channel.py. The package __init__ re-exports
+this class and the connection-mode helpers.
 """
 
 import asyncio
@@ -65,16 +52,12 @@ logger = logging.getLogger("COOLEMS.Provider.CoolemsClient")
 
 class CoolemsClientProvider(BaseProvider):
 
-    """WebSocket client provider - the ONLY transport to a remote COOLEMS SERVER.
+    """WebSocket client provider - the only transport to a remote COOLEMS SERVER.
 
-    Connection mode is read LIVE from settings.json (Settings UI "Connection Mode"):
-    "direct"     -> wss://<server>:8080 on the LAN
-    "web_relay"  -> wss to the RELAY address only; the home SERVER is never addressed
-
-    Every method delegates to direct_mode.py / relay_mode.py / control_channel.py, so the
-    class holds no protocol logic. The outbound auth key comes from
-    app.keys.load_coolems_api_key(): runtime key, then config/.api_client_keys.json, then
-    the COOLEMS_CLIENT_API_KEY env var.
+    Connection mode is read live from settings.json: "direct" -> wss://<server>:8080,
+    "web_relay" -> the relay address only. Methods delegate to direct_mode.py / relay_mode.py
+    / control_channel.py, so the class holds no protocol logic. The outbound auth key comes
+    from app.keys.load_coolems_api_key().
     """
 
 
@@ -184,18 +167,12 @@ class CoolemsClientProvider(BaseProvider):
         return _relay_mode()
 
     def _build_ssl_context(self):
-        """SSL context for RELAY mode - FAIL-CLOSED.
+        """SSL context for RELAY mode - fail-closed.
 
-                The relay runs on a PUBLIC host, so the client->relay link is internet-facing:
-                an untrusted transport would expose the API key in the first auth frame. Either
-                full CA verification (WEB_RELAY_VERIFY_SSL_CERTS=True - Let's Encrypt etc.) or a
-                usable cert pin (WEB_RELAY_CERT_PIN_FINGERPRINT) is required; there is NO silent
-                CERT_NONE fallback anymore.
-
-                Returns the ssl context, or None when TLS cannot be trusted - every caller must
-                then refuse to connect with an actionable message (see _relay_connect()).
-
-
+        The relay is internet-facing, so the client->relay link must be trusted: either full CA
+        verification (WEB_RELAY_VERIFY_SSL_CERTS) or a usable cert pin
+        (WEB_RELAY_CERT_PIN_FINGERPRINT). There is no CERT_NONE fallback. Returns the context, or
+        None when TLS cannot be trusted - callers must then refuse to connect (see _relay_connect()).
         """
         if not self._use_ssl:
 
@@ -263,10 +240,10 @@ class CoolemsClientProvider(BaseProvider):
 
     def _get_ws_candidates(self) -> list:
         """Ordered (ws_url, ssl_context) candidates for the next connection attempt.
-        Direct mode: one candidate per address from config.get_server_address_list()
-        (settings.json 'server_addresses', local first - see that function's docstring).
-        Relay mode: a single candidate (the relay itself). The list is read FRESH on
-        every call so settings.json edits apply to the very next connection.
+
+        Direct mode: one per address from config.get_server_address_list() (local first).
+        Relay mode: the relay alone. Read fresh on every call so settings.json edits apply to the
+        very next connection.
         """
         if _relay_mode():
 
@@ -331,7 +308,9 @@ class CoolemsClientProvider(BaseProvider):
 
         self, model: str, messages: List[Dict], websocket: Any,
 
-        temperature: float = 0.7, enable_thinking: bool = False,
+        # enable_thinking: bool or canonical level ("none"/"low"/"medium"/"high"),
+        # forwarded verbatim; the SERVER translates it per model.
+        temperature: float = 0.7, enable_thinking: Any = False,
 
         conv_id: str = None, tools: list = None,
 
@@ -425,7 +404,7 @@ class CoolemsClientProvider(BaseProvider):
             try:
                 return await asyncio.wait_for(self._async_get_models(), timeout=30)
             except TimeoutError:
-                # Bounded wait expired - the caller (agent.py /api/models) decides how to log it.
+                # Bounded wait expired - the caller (agent router /api/models) decides how to log it.
                 # During a model switch this is an EXPECTED state, not an error.
                 return []
     
@@ -564,13 +543,9 @@ class CoolemsClientProvider(BaseProvider):
     async def switch_model(self, model_filename: str) -> Tuple[bool, str]:
             """Switch the SERVER's loaded model (async).
 
-            The global _model_switch_in_progress flag is managed by the agent router.
-
-            Bounded wait (MODEL_SWITCH_CLIENT_BUDGET_SEC): the SERVER's own wait (~120s worst case)
-            plus margin fits inside the budget, so a healthy switch always returns its real result.
-            A budget expiry is reported as a clean failure - there is no fallback path.
-
-            Awaits the relay/direct implementation directly on the caller's event loop.
+            The _model_switch_in_progress flag is owned by the agent router. Awaits the relay/direct
+            implementation on the caller's event loop, bounded by MODEL_SWITCH_CLIENT_BUDGET_SEC; a
+            budget expiry is reported as a clean failure.
             """
             try:
                 return await asyncio.wait_for(
@@ -604,11 +579,15 @@ class CoolemsClientProvider(BaseProvider):
 
     def build_payload(self, model: str, messages: List[Dict], *, stream: bool = True,
 
-                      temperature: float = 0.7, enable_thinking: bool = False,
+                      temperature: float = 0.7, enable_thinking: Any = False,
 
                       tools: list = None) -> Dict:
 
-        """Build the request payload (kept minimal - SERVER owns final shaping)."""
+        """Build the request payload (minimal - the SERVER shapes the final request).
+
+        enable_thinking is a bool or a canonical level; the SERVER translates a level into the
+        model's own template kwargs.
+        """
 
         return {"model": model, "messages": messages, "stream": stream,
 

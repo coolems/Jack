@@ -22,6 +22,7 @@ from typing import Set
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.helpers import get_ws_client_ip
+from app.prompts import get_chat_prompt, get_system_prompt
 from app.schemas import WebSocketChatMessage
 from config import load_search_engines
 
@@ -210,7 +211,9 @@ def create_websocket_handler(
         # Step 3: Extract validated fields (all type-safe now)
         user_msg = payload.message
         model = payload.model or model_name
-        system_prompt = payload.system_prompt or f"You are {agent.get_name()}."
+        # The SERVER delivers the finished prompt (identity + tool contract); a
+        # per-request override from the client wins if one is actually sent.
+        system_prompt = payload.system_prompt or get_system_prompt()
         agent_mode = payload.agent_mode
         media_files = payload.media_files
         # Engine config lives in <CLIENT>/config/search_engines.json (single source of
@@ -223,11 +226,6 @@ def create_websocket_handler(
 
         stop_event.clear()
         ctx["response_in_progress"] = True
-
-        agent.learn_lesson(
-            f"User asked: {user_msg[:100]}",
-            "Handled user request appropriately",
-        )
 
         # --- Handle /search command ---
         if user_msg and user_msg.strip().lower().startswith("/search "):
@@ -282,9 +280,6 @@ def create_websocket_handler(
             max_tokens=max_history_tokens(),
         )
 
-        # --- Build config inputs ---
-        dna_content = agent.get_identity()
-
         # ============================================================
         # ROLE-BASED TOOL FILTERING
         # Get tools filtered by the user's role
@@ -303,10 +298,16 @@ def create_websocket_handler(
             else:
                 logger.info(f"[ROLE] Role '{role}' has NO tools available (agent mode may not work)")
 
+        # --- Prompt for this turn (SERVER-delivered text, nothing composed here) ---
+        # Tools available -> the full delivered prompt (identity + tool contract).
+        # No tools -> the delivered plain-chat prompt (identity only), so a normal
+        # chat never pays for the tool contract. A per-request override wins.
+        turn_prompt = system_prompt or (get_system_prompt() if ollama_tools else get_chat_prompt())
+
         return {
             "user_msg": user_msg,
             "model": model,
-            "system_prompt": system_prompt,  # kept for parity with the pre-split handler
+            "system_prompt": turn_prompt,
             "agent_mode": agent_mode,
             "enable_thinking": enable_thinking,
             "enhanced_message": enhanced_message,
@@ -316,7 +317,6 @@ def create_websocket_handler(
             "media_files": media_files,
             "requires_tools": requires_tools,
             "ollama_tools": ollama_tools,
-            "dna_content": dna_content,
         }
 
 

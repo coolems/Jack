@@ -1,18 +1,12 @@
 """StrataProvider - the SERVER talking to a Strata inference endpoint.
 
-config.SERVER_BACKEND chooses the local inference engine behind the COOLEMS SERVER relay
-brain: "strata" (the shipped default) or "llama" (llama-server). Everything the brain does
-around generation - WebSocket relay, chat queue, per-slot worker pool, auth profiles,
-streaming frames, token stats, stop button - is unchanged; only the HTTP peer and its
-lifecycle differ.
-
-Strata speaks the same OpenAI/llama.cpp-compatible surface already used:
-  GET  /health                 {"status":"ok", "max_context":..., "images":bool, "api_key":bool}
-  GET  /props                  {"total_slots":..., "model_alias":..., ...}
-  GET  /v1/models              {"data":[{"id":..., "meta":{"n_ctx":...}}, ...]}
-  POST /v1/chat/completions    SSE stream with delta.content, delta.reasoning_content, usage
-so payload building, SSE parsing + guards and token stats are reused; the differences are
-Bearer auth and attach-only lifecycle (Strata owns its model, we never spawn or kill it).
+config.SERVER_BACKEND picks the local engine behind the relay brain: "strata" or
+"llama". Everything around generation (WebSocket relay, chat queue, worker pool, auth
+profiles, streaming frames, token stats, stop button) is shared; only the HTTP peer and
+its lifecycle differ. Strata answers the same OpenAI/llama.cpp-compatible surface:
+/health, /props, /v1/models and /v1/chat/completions (SSE with delta.content,
+delta.reasoning_content, usage), so payload building, SSE parsing and token stats are
+reused. Differences: Bearer auth and attach-only lifecycle (Strata owns its model).
 """
 
 import asyncio
@@ -50,11 +44,10 @@ class StrataProvider(LlamaProvider):
     def __init__(self, api_url: str, timeout: int = PROVIDER_DEFAULT_TIMEOUT,
                  headers: Optional[dict] = None):
         """Args:
-            api_url:  Strata base URL (config.STRATA_URL or a strata_servers.json entry).
-            timeout:  Generation budget in seconds (same budget the llama path uses).
-            headers:  Auth headers for this endpoint. None falls back to
-                      config.STRATA_API_KEY, then env STRATA_API_KEY (no key = unauthenticated:
-                      /health still works, but /props and chat fail with 401).
+            api_url: Strata base URL (config.STRATA_URL or a strata_servers.json entry).
+            timeout: Generation budget in seconds (same budget as the llama path).
+            headers: Auth headers for this endpoint; None falls back to config.STRATA_API_KEY,
+                     then env STRATA_API_KEY (no key = /health works, /props and chat answer 401).
         """
         super().__init__(api_url, timeout)
         if headers is None:
@@ -77,14 +70,11 @@ class StrataProvider(LlamaProvider):
         return self._headers
 
     def _strata_error(self, exc: Exception) -> Exception:
-        """Re-word a llama.cpp-flavoured failure so it talks about Strata.
+        """Re-word a llama.cpp-flavoured failure to talk about Strata.
 
-        streaming.py / non_streaming.py raise messages written for llama-server ("llama.cpp
-        service is not running. Please start llama-server."), and chat_relay forwards the text
-        straight to the CLIENT. The wire failure has the same shape on Strata, but the advice
-        must point at the Strata service, so only the engine names are swapped and the HTTP
-        detail the backend returned is kept verbatim. Messages that already mention Strata
-        (the 401 branch) pass through untouched.
+        streaming.py / non_streaming.py raise llama-server-worded messages that chat_relay
+        forwards to the CLIENT; only the engine names are swapped and the HTTP detail is kept
+        verbatim. Messages already mentioning Strata pass through untouched.
         """
         text = str(exc)
         if "Strata" in text or "strata" in text:
@@ -105,18 +95,21 @@ class StrataProvider(LlamaProvider):
         messages: List[Dict],
         websocket: Any,
         temperature: float = 0.7,
-        enable_thinking: bool = False,
+        enable_thinking=None,
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
         context_window: Optional[int] = None,
     ) -> Tuple[str, Any]:
-        """Stream chat completions from Strata (SSE), reusing the llama.cpp stream machinery.
+        """Stream chat completions from Strata (SSE) through the llama.cpp stream machinery.
 
-        Adds the Bearer headers, a vision capability check, provider_name="strata" in the
-        returned TokenStats, and Strata-worded failures (_strata_error); everything else —
-        context guard, model guard, stall watchdog, stop_event, reasoning_content frames,
-        real token counts — is the identical code path llama.cpp uses."""
+        Adds Bearer headers, a vision capability check, provider_name="strata" in TokenStats and
+        Strata-worded failures (_strata_error); context guard, model guard, stall watchdog,
+        stop_event, reasoning frames and token counts are the shared path.
+
+        enable_thinking: bool or canonical level "none"/"low"/"medium"/"high"; a level is
+        translated by the serving endpoint's ThinkingPolicy (its /props chat_template).
+        """
         if self._has_image_content(messages) and not await self._strata_images_enabled():
             raise self._vision_error(model)
         try:
@@ -145,8 +138,11 @@ class StrataProvider(LlamaProvider):
         model: str,
         messages: List[Dict],
         temperature: float = 0.7,
+        enable_thinking=None,
     ) -> str:
-        """Non-streaming chat completion against (same payload, Bearer headers)."""
+        """Non-streaming completion against Strata (same payload, Bearer headers).
+        enable_thinking accepts a canonical thinking level string.
+        """
         if self._has_image_content(messages) and not await self._strata_images_enabled():
             raise self._vision_error(model)
         try:
@@ -157,6 +153,7 @@ class StrataProvider(LlamaProvider):
                 messages=messages,
                 temperature=temperature,
                 headers=self._headers,
+                thinking_mode=enable_thinking if isinstance(enable_thinking, str) else None,
             )
         except Exception as exc:  # noqa: BLE001 - re-worded below, never swallowed
             raise self._strata_error(exc) from exc
@@ -164,11 +161,10 @@ class StrataProvider(LlamaProvider):
     # ---- model listing ----------------------------------------------------
 
     async def get_models_list(self) -> List[Dict]:
-        """Models served by this endpoint, read from /v1/models - no disk scan.
+        """Models served by this endpoint from /v1/models - no disk scan.
 
-        An endpoint may expose alias ids alongside the canonical one; aliases route to a model
-        group the worker pool has no workers for, so only canonical ids are advertised. The
-        catalog merges these with the registry's per-backend groups (slots/health).
+        Alias ids alongside the canonical one route to model groups with no workers, so only
+        canonical ids are advertised; the catalog merges these with the registry's groups.
         """
         models: List[Dict] = []
         seen_keys: set = set()
@@ -294,9 +290,8 @@ class StrataProvider(LlamaProvider):
                 await reg.stop_all()   # attach-only backends: nothing is terminated
             except Exception as e:
                 logger.warning("[STRATA] Registry shutdown issue (ignored): %s", e)
-        from ..llama.http_client import close_async_client, close_sync_session
+        from ..llama.http_client import close_async_client
         await close_async_client()
-        close_sync_session()
         logger.info("[STRATA] StrataProvider closed - HTTP pool released (Strata process untouched)")
 
     # ---- status / error wording -------------------------------------------
@@ -351,12 +346,12 @@ class StrataProvider(LlamaProvider):
     # ---- lifecycle --------------------------------------------------------
 
     async def start_server(self) -> bool:
-        """Attach to every configured Strata endpoint — never spawn anything.
+        """Attach to every configured Strata endpoint - never spawn.
 
-        Mirrors LlamaProvider.start_server() but with kind="strata": the registry reads
-        config/strata_servers.json, probes /health + /props (Bearer), reports the fleet
-        table and keeps a health poller running. The brain does not launch, relaunch or
-        terminate Strata — its process belongs to Strata."""
+        LlamaProvider.start_server() with kind="strata": the registry reads
+        config/strata_servers.json, probes /health + /props (Bearer), reports the fleet table and
+        keeps a health poller running. Strata's process is never launched or terminated here.
+        """
         from ..llama.backend_registry import LlmBackendRegistry, set_registry
 
         reg = LlmBackendRegistry.from_config(kind="strata")
@@ -378,11 +373,10 @@ class StrataProvider(LlamaProvider):
 
 
 def _endpoint_host_port(url: str) -> Optional[Tuple[str, Optional[int]]]:
-    """(host, port) of an endpoint URL, with loopback spellings unified.
+    """(host, port) of an endpoint URL with loopback spellings unified.
 
-        config.STRATA_URL is spelled 'localhost' while a strata_servers.json entry says
-        '127.0.0.1' - the same endpoint, so key lookup must not read them as two hosts.
-
+    config.STRATA_URL says 'localhost' while a strata_servers.json entry says '127.0.0.1' -
+    the same endpoint, so key lookup must not treat them as two hosts.
     """
     raw = (url or "").strip().rstrip("/")
     if not raw:
@@ -405,10 +399,8 @@ def _endpoint_host_port(url: str) -> Optional[Tuple[str, Optional[int]]]:
 def strata_headers_for(api_url: str) -> Optional[dict]:
     """Auth headers for one Strata endpoint.
 
-        Key precedence, mirroring config.get_strata_server_instances: the 'api_key' of the
-        config/strata_servers.json entry whose host:port matches *api_url*, then
-        config.STRATA_API_KEY, then env STRATA_API_KEY. Returns None when no key is set —
-        /health still works, /props and chat answer 401.
+    Key precedence: the 'api_key' of the strata_servers.json entry whose host:port matches
+    *api_url*, then config.STRATA_API_KEY, then env STRATA_API_KEY. None when no key is set.
     """
     wanted = _endpoint_host_port(api_url)
     try:

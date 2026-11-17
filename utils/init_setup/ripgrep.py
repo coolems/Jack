@@ -13,7 +13,6 @@ executable is never run.
 Stdlib-only (init runs before any venv exists) and no config imports - see paths.py.
 """
 
-import json
 import os
 import shutil
 import subprocess

@@ -55,7 +55,7 @@ TEXT_EXTENSIONS = {
 }
 
 EXCLUDED_FOLDERS = {
-    "__pycache__", "agent_prompt", "_old", "dna",
+    "__pycache__", "_old",
 }
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}

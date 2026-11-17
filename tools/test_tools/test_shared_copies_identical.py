@@ -1,6 +1,6 @@
 """Tests: the SERVER/CLIENT shared copies must stay byte-identical.
 
-Four modules exist twice on purpose - SERVER and CLIENT each need their own importable
+Two modules exist twice on purpose - SERVER and CLIENT each need their own importable
 copy, so they cannot be merged into one file:
   app/provider_manager.py  <->  CLIENT/app/provider_manager.py
       the CLIENT imports it at boot, before any WebSocket exists, so it cannot be
@@ -8,17 +8,16 @@ copy, so they cannot be merged into one file:
   app/providers/coolems/ssl_pinning.py  <->  CLIENT/app/providers/coolems/ssl_pinning.py
       TLS trust is an exact SHA-256 fingerprint; both ends must apply the identical policy
       or one side accepts what the other rejects.
-  tools/agent_prompt/get_agent_system_prompt.py  <->  CLIENT/app/prompts/get_agent_system_prompt.py
-  tools/agent_prompt/get_time_awareness_instruction.py
-      <->  CLIENT/app/prompts/get_time_awareness_instruction.py
-      the prompt contract both sides build the conversation from.
+
+Everything else on the wire (DNA code, prompts) is SERVER-only: delivered as source and
+installed in memory, so a CLIENT copy would be a second source of truth. See
+test_dna_and_prompt.py for that side.
 
 Editing one copy without the other gives SERVER and CLIENT different behaviour on the
-same wire. Same convention as test_dna_json_copies_identical.py.
-PROTOCOL_VERSION parity is checked here as a tripwire only - the real enforcement is
-runtime: ws_auth.py closes the socket on a mismatch and the CLIENT raises ConnectionError.
-The version is read from module source with AST (no import), so this test has no config
-side effects.
+same wire. PROTOCOL_VERSION parity is checked here as a tripwire only - the real
+enforcement is runtime: ws_auth.py closes the socket on a mismatch and the CLIENT raises
+ConnectionError. The version is read from module source with AST (no import), so this
+test has no config side effects.
 """
 
 import ast
@@ -32,8 +31,6 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 SHARED_COPY_PAIRS = [
     ("app/provider_manager.py", "CLIENT/app/provider_manager.py"),
     ("app/providers/coolems/ssl_pinning.py", "CLIENT/app/providers/coolems/ssl_pinning.py"),
-    ("tools/agent_prompt/get_agent_system_prompt.py", "CLIENT/app/prompts/get_agent_system_prompt.py"),
-    ("tools/agent_prompt/get_time_awareness_instruction.py", "CLIENT/app/prompts/get_time_awareness_instruction.py"),
 ]
 
 CONFIG_FILES = ["config/config.py", "CLIENT/config/config.py"]

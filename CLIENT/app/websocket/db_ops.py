@@ -203,34 +203,3 @@ def save_search_result(
         conn.commit()
     finally:
         close_db_connection(conn)
-
-
-def save_partial_response(
-    conn_path: str,
-    conv_id: str,
-    partial_response: str,
-):
-    """Save a partial response when the user disconnects mid-generation.
-    Appends '[Generation stopped by user]' marker.
-    """
-    content = partial_response + "\n\n_[Generation stopped by user]_"
-    msg_id = str(uuid.uuid4())
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        # FIX (2026-08-30): guarantee the conversation row exists so the
-        # working_root sync below can never be a silent no-op UPDATE.
-        _ensure_conversation_exists(cursor, conv_id)
-        cursor.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, media_urls, file_contents) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (msg_id, conv_id, "assistant", content, None, None),
-        )
-        cursor.execute(
-            "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (conv_id,),
-        )
-        _sync_conversation_working_root(cursor, conv_id)
-        conn.commit()
-    finally:
-        close_db_connection(conn)

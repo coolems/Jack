@@ -44,7 +44,7 @@ def extract_config_constants():
         'IMAGE_GEN_TIER_OVERRIDE',
         # Self-unpacking tool runtime setup budget (generate_image bootstrap: venv + pip install)
         'TOOLS_BOOTSTRAP_TIMEOUT_SEC',
-        # DNA learning module (delivered app.dna.learning does 'from config import MODEL_NAME')
+        # Delivered code that does 'from config import MODEL_NAME' (tools/clients).
         'MODEL_NAME',
         # Browser automation (web_interact __init__ + connect fallback start)
         'CHROME_CDP_PORT',

@@ -58,12 +58,6 @@ _states: dict[Tuple[str, int], Tuple[Optional[str], float]] = {}
 # legacy/unkeyed entry — keeps old call sites (and tests) working verbatim.
 _global: Tuple[Optional[str], float] = (None, 0.0)
 
-
-def _entry_fresh(entry: Tuple[Optional[str], float], ttl_sec: int) -> bool:
-    raw, ts = entry
-    return bool(raw) and (time.time() - ts) < ttl_sec
-
-
 # ---------------------------------------------------------------------------
 # Public API — keyed
 # ---------------------------------------------------------------------------
@@ -118,9 +112,3 @@ def get_cached_model(ttl_sec: int, key: Optional[Tuple[str, int]] = None) -> Tup
             raw, ts = _global
         fresh = bool(raw) and (time.time() - ts) < ttl_sec
         return raw, fresh
-
-
-def all_keys() -> list[Tuple[str, int]]:
-    """List of instance keys that currently have a state entry (diagnostics/tests)."""
-    with _lock:
-        return list(_states.keys())

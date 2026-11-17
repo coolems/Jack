@@ -1,15 +1,10 @@
-"""Per-relayed-client chat-request pipeline for the brain relay link.
+"""Chat-request pipeline for clients relayed through the brain link.
 
-_handle_relay_request() runs every 'request' frame through, in order:
-  1. resolve the RELAYED CLIENT's profile (fail-closed when unresolvable),
-  2. per-client rate limiting (bucket keyed 'relay:<client_id>'),
-  3. per-client model authorization (exact folder-name match via auth_gateway),
-  4. owner-scoped stop-event registration (SERVER-side stop propagation),
-  5. enqueue into the shared server queue with a RelayTargetSink
-
-Separate from connection.py so the reconnect/auth loop stays readable; called from the
-main message loop in connect_to_web_relay() when msg_type == 'request'. Every denial
-sends its error frame and returns, so the loop continues to the next frame.
+_handle_relay_request() runs each 'request' frame through, in order: resolve the relayed
+client's profile (fail-closed), per-client rate limiting ('relay:<client_id>'), per-client
+model authorization (exact folder-name match via auth_gateway), owner-scoped stop-event
+registration, then enqueue with a RelayTargetSink. Called from connect_to_web_relay()'s
+message loop; every denial sends its error frame and returns.
 """
 
 import logging
@@ -95,6 +90,7 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
         }, msg.get("_relay_from") or "")
         return
     from ..chat_relay import _filter_tools_by_profile
+    from app.providers.llama.thinking import level_or_bool
     _req = ChatRequest(
         owner_key=f"relay:{_relay_client_id}|{_conv_id}",
         user_key=_client_user_info.get("email") or f"relay:{_relay_client_id}",
@@ -103,7 +99,8 @@ async def _handle_relay_request(ws, server_provider, msg, client_relay_convs):
         model=msg.get("model", ""),
         messages=msg.get("messages", []),
         temperature=msg.get("temperature", LLAMA_SERVER_TEMP),
-        enable_thinking=bool(msg.get("enable_thinking", False)),
+        # Bool or canonical level; never coerced, a level must survive.
+        enable_thinking=level_or_bool(msg.get("enable_thinking")),
         conv_id=_conv_id,
         tools=_filter_tools_by_profile(server_provider, _client_user_info,
                                        msg.get("tools") if msg.get("tools") else None),

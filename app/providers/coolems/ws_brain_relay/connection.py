@@ -9,9 +9,8 @@ to the local LLM backend. The implementation is split across this package:
     relay_handlers.py  _RelayTargetAdapter, _relay_send and the model_switch / tools /
                        tool_code message handlers (keyed on the RELAYED client's profile)
 
-The flat app/providers/coolems/ws_brain_relay.py file is a thin re-export facade so
-existing imports ('from .ws_brain_relay import connect_to_web_relay', '_RelayTargetAdapter')
-keep working unchanged.
+The package __init__ re-exports these names so 'from .ws_brain_relay import ...'
+keeps working unchanged.
 """
 
 import asyncio

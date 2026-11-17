@@ -15,7 +15,7 @@ Responsibilities (and ONLY these):
 
 STOP CONTRACT: the UI's red stop button and the window-close path both rely on this bus. A
 chat that is generating or queued ALWAYS has a live channel with a running task, and
-/api/stop routes through it (see routers/agent.py), so the button cannot report "No active
+/api/stop routes through it (see routers/agent/), so the button cannot report "No active
 generation found" for a chat that visibly shows as working.
 """
 
@@ -39,13 +39,12 @@ class ChatBus:
     """conv_id -> ChatChannel registry with background generation tasks."""
 
     def __init__(self, *, db_path: str, provider, model_name: str, api_timeout: int,
-                 agent, tool_orchestrator, stop_events: dict,
+                 tool_orchestrator, stop_events: dict,
                  stop_grace_sec: float | None = None):
         self._db_path = db_path
         self._provider = provider
         self._model_name = model_name
         self._api_timeout = api_timeout
-        self._agent = agent
         self._tool_orchestrator = tool_orchestrator
         # legacy stop_events dict stays the source of truth for /api/stop (kept in sync)
         self._stop_events = stop_events
@@ -303,7 +302,6 @@ class ChatBus:
                 ch, channel_ws,
                 db_path=self._db_path,
                 provider=self._provider,
-                agent=self._agent,
                 tool_orchestrator=self._tool_orchestrator,
                 ws_key=self._ws_key,
                 stop_events=self._stop_events,

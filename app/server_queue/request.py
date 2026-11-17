@@ -1,17 +1,13 @@
-"""ChatRequest — one queued chat request travelling from a client to an LLM backend.
+"""ChatRequest - one queued chat request travelling from a client to an LLM backend.
 
-a request now carries its MODEL GROUP
-and its USER identity, because the queue is per model and per-user slot caps are
-enforced while picking the next request.
+Carries its model group and user identity: the queue is per model, and per-user slot caps
+are enforced when the next request is picked. Every "request" frame over a direct WS or
+the web relay becomes exactly one ChatRequest, lands in its model group's queue and is
+executed by a worker on one of that group's slots.
 
-A ChatRequest is the unit of work for the server-side queue/worker pool: every
-"request" frame arriving over a direct WS or through the web relay becomes exactly one
-ChatRequest, lands in the queue of its model group, and is later executed by a worker
-on one of that group's slots.
-
-The request owns its stop event (created owner-scoped by the WS layer) so cancellation
-works identically while the request is still QUEUED or already RUNNING — both paths just
-set the same asyncio.Event that the streaming layer polls.
+The request owns its stop event (created owner-scoped by the WS layer), so cancellation
+works the same whether it is still queued or already running: both paths set the
+asyncio.Event the streaming layer polls.
 """
 
 import time
@@ -31,7 +27,10 @@ class ChatRequest:
     model: str = ""
     messages: list = field(default_factory=list)
     temperature: float = 0.7
-    enable_thinking: bool = False
+    # Thinking: bool (show reasoning) or canonical level string
+    # "none"/"low"/"medium"/"high" chosen from the serving model's capabilities. Kept
+    # verbatim to the provider, which translates it via ThinkingPolicy.
+    enable_thinking: Any = False
     conv_id: str = ""
     tools: Optional[list] = None
     stop_event: Any = None  # asyncio.Event (None tolerated for legacy direct calls)

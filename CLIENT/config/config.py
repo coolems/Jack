@@ -17,10 +17,6 @@ CHARS_PER_TOKEN: float = 4.0
 SYSTEM_PROMPT_TOKENS_ESTIMATE: int = 2000
 IMAGE_TOKENS_PER_512PX: int = 4000
 
-# --- Cross-Task Memory ---
-CROSS_TASK_MEMORY_CONVERSATIONS: int = 5
-CROSS_TASK_MEMORY_CONTEXT_FRACTION: float = 0.15
-
 # --- Provider / Model (Client Side) ---
 PROVIDER: str = "coolems_client"
 # --- Default Role for API keys (used by tool_executor) ---
@@ -75,7 +71,7 @@ def _save_settings(settings: dict) -> None:
 # ============================================================
 # Search Engines Persistence - search_engines.json is the SINGLE SOURCE OF TRUTH
 # for which web search engines are enabled and their per-engine settings.
-# The Settings UI reads/writes it through /api/search-engines (app/routers/agent.py);
+# The Settings UI reads/writes it through /api/search-engines (app/routers/agent/);
 # tools/web_tools/web_search.py reads the same file live on every search, so saves
 # apply immediately - no restart needed. There are NO fallback engine lists anywhere:
 # a missing or corrupt file means "no engines" and the user is told which file to fix.
@@ -566,7 +562,7 @@ USE_WEB_SERVER: Optional[str] = (get_web_relay_address() if get_connection_mode(
 # (2026-09-23) v4: relays now forward each client's API key + email in 'client_connected' so the
 # BRAIN authenticates every relayed client against its OWN config/.api_keys.json (same logic as
 # direct mode - the client never sends a role). auth_ok frames echo protocol_version on all paths.
-PROTOCOL_VERSION: int = 4
+PROTOCOL_VERSION: int = 5
 
 COOLEMS_DIRECT_WS_PORT: int = 8080
 WEB_RELAY_MAX_MESSAGE_SIZE: int = 1048576 * 10

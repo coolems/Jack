@@ -5,6 +5,7 @@ with tools_response.
 """
 
 import json
+import os
 
 from .log import logger
 
@@ -82,12 +83,19 @@ async def _handle_tools_request(ws, user_info, server_provider):
     if user_info:
         config_constants["CURRENT_USER_ROLE"] = user_info.get("role", "user")
 
-    # DNA data files (agent state) -- SERVER is source of truth, delivered to client
-    dna_data = get_dna_data_files(tools_dir)
+    # DNA identity JSON (agent state) -- SERVER is source of truth, delivered to client
+    # in memory; the CLIENT keeps no DNA file on disk.
+    dna_data = get_dna_data_files(os.path.dirname(tools_dir))
 
-    # SYSTEM PROMPT: SERVER is source of truth — delivered to CLIENT memory only
-    from tools.agent_prompt import get_agent_system_prompt
-    system_prompt = get_agent_system_prompt()
+    # SYSTEM PROMPT: the SERVER composes the prompt strings here (DNA slot + tool
+    # contract) and ships the finished text; the CLIENT stores it and never
+    # assembles a prompt of its own. Two variants: tool turns get the tool
+    # contract, plain chat gets identity only (no tool schema, no planning rules).
+    from app.prompts import build_chat_prompt, build_system_prompt
+    from app.dna import get_agent
+    dna_text = get_agent().get_identity()
+    system_prompt = build_system_prompt(dna_text)
+    chat_prompt = build_chat_prompt(dna_text)
 
     # (2026-08-20 dedup) FRAMEWORK modules: base.py + token_stats.py are now delivered
     # from SERVER and installed in-memory on the CLIENT -- no more duplicated copies.
@@ -96,7 +104,7 @@ async def _handle_tools_request(ws, user_info, server_provider):
     # verify each one before exec'ing it (fail-closed when hashes are present).
     shared_hashes = get_shared_hashes(tools_dir)
 
-    logger.info(f"[SERVER->CLIENT] Sending {len(definitions)} tool definitions + {len(shared_sources)} shared modules + {len(config_constants)} config constants + {len(dna_data)} DNA data files + system_prompt (role={config_constants.get('CURRENT_USER_ROLE', 'N/A')}) to authenticated role={user_info.get('role') if user_info else 'unknown'}")
+    logger.info(f"[SERVER->CLIENT] Sending {len(definitions)} tool definitions + {len(shared_sources)} shared modules + {len(config_constants)} config constants + {len(dna_data)} DNA data files + system_prompt ({len(system_prompt)} chars) + chat_prompt ({len(chat_prompt)} chars) (role={config_constants.get('CURRENT_USER_ROLE', 'N/A')}) to authenticated role={user_info.get('role') if user_info else 'unknown'}")
     await ws.send(json.dumps({
         "type": "tools_response",
         "definitions": definitions,
@@ -107,6 +115,7 @@ async def _handle_tools_request(ws, user_info, server_provider):
         "python_exec_blocked_libs": _load_profile_blocked_libs(user_info),  # per-profile import blocklist ([]=allow all, None=built-in defaults)
         "framework_sources": framework_sources,         # 2026-08-20: app.providers.base/token_stats -- dedup via delivery
         "shared_hashes": shared_hashes,                 # 2026-08-20: integrity hashes for all shipped modules
-        "dna_data": dna_data,                           # DNA JSON state files (identity/intelligence/lessons)
-        "system_prompt": system_prompt                  # System prompt — delivered to CLIENT memory only, never saved to disk
+        "dna_data": dna_data,                           # DNA identity JSON - CLIENT memory only, never written to disk
+        "system_prompt": system_prompt,                 # Finished tool-turn prompt (DNA + tool contract) - CLIENT memory only
+        "chat_prompt": chat_prompt                      # Plain-chat prompt (DNA only) - CLIENT memory only
     }))

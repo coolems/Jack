@@ -20,7 +20,7 @@ import json
 import logging
 import re
 import time
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Optional
 
 from config import (
     AGENTIC_MAX_TOOL_ITERATIONS,
@@ -37,22 +37,15 @@ from config import (
 from utils.history_manager import (
     max_history_tokens,
     invalidate_message_tokens,
-    estimate_message_tokens,
 )
 from utils.history_trimmer import safe_trim_history, get_token_count
 
 # ============================================================
-# LEARNED LESSONS - DISABLED ON PURPOSE (dead code kept on purpose).
-# Will be fixed later: we are coming back to this. For now the whole lessons
-# pipeline is skipped so it neither inflates the system prompt nor complicates
-# history trimming. The old logic stays in place as dead code below - re-enable
-# by setting _LESSONS_INJECTION_ENABLED = True.
-# TODO(code-review C7, plan_20261102_2135_code_review.md): re-enable with the
-# lessons text counted into message_budget (it rides in the system message, so
-# it must be measured like the tool schema) before flipping the flag.
+# LESSONS/LEARNING PIPELINE - REMOVED (2026-11-17)
+# DNA is read-only identity text now: no lessons file, no lesson injection,
+# nothing that mutates the system prompt mid-turn. The ReAct loop sends exactly
+# the SERVER-delivered prompt (+ per-turn MCP/image context).
 # ============================================================
-_LESSONS_INJECTION_ENABLED = False
-
 
 from .base_mode import push_token_stats, check_stop_event, build_session_stats, strip_turn_stats_lines
 from .provider_call import call_provider_with_retry
@@ -81,8 +74,6 @@ logger = logging.getLogger("COOLEMS.Logic.ReactLoop")
 # also asked for a stop.
 # ============================================================
 from .user_intent import (
-    STEER_INTERJECTION_HEADER,
-    STEER_STOP_HEADER,
     SteerOutcome,
     classify_steers,
     interjection_resume_notice,
@@ -329,10 +320,6 @@ async def run_react_loop(
     final_response = ""
     ai_response = ""
     tool_iteration = 0
-
-    # LEARNED LESSONS - skipped on purpose (see _LESSONS_INJECTION_ENABLED at
-    # module top). Kept as dead code: will be fixed later, we'll come back.
-    agent_lessons = "" if not _LESSONS_INJECTION_ENABLED else None
 
 
     # TEMP THINKING ARRAY - accumulates AI reasoning responses between tool calls
@@ -772,19 +759,8 @@ async def run_react_loop(
             # (the tool results + replies added since) instead of always comparing to zero.
             prev_tokens = current_tokens
 
-            # LEARNED LESSONS - injection skipped on purpose (dead code kept for a
-            # later fix; see _LESSONS_INJECTION_ENABLED at module top). The block
-            # below stays exactly as it was so we can re-enable by flipping the flag.
+            # The provider call sends THIS loop's messages (no mid-turn prompt mutation).
             updated_messages = messages
-            if agent_lessons and _LESSONS_INJECTION_ENABLED:
-                logger.debug("[AGENTIC.DEBUG] react_loop - Injecting agent lessons into system prompt")
-                for msg in updated_messages:
-                    if msg["role"] == "system":
-                        msg["content"] = f"""{msg["content"]}
-
-
-{agent_lessons}"""
-                        break
 
             # Provider call with automatic restart on connection error.
             # Bounded recovery: if the SERVER reports its own tool-call JSON was truncated
@@ -963,7 +939,7 @@ async def run_react_loop(
                 messages.append(assistant_msg)
 
 
-                # Execute each tool call and accumulate lessons.
+                # Execute each tool call of this batch.
                 # CANCEL FIX (2026-09-07): re-check the stop event between individual tools of a
                 # multi-tool batch so a cancel mid-batch stops the remaining ones too.
                 for tc_idx, tc in enumerate(tool_calls):
@@ -988,9 +964,9 @@ async def run_react_loop(
                         )
                         break
 
-                    agent_lessons = await _execute_single_tool_call(
+                    await _execute_single_tool_call(
                         tc, tool_executor, config, messages,
-                        conversation_history, agent_lessons
+                        conversation_history
                     )
 
 
@@ -1573,9 +1549,8 @@ async def _execute_single_tool_call(
     config: Any,
     messages: List[Dict],
     conversation_history: List[Dict],
-    agent_lessons: str
-) -> str:
-    """Execute a single tool call and update messages with result.
+) -> None:
+    """Execute one tool call and append its result message to *messages*.
 
     Tool call structure from llama.cpp streaming (OpenAI format):
         {
@@ -1590,10 +1565,6 @@ async def _execute_single_tool_call(
         config: AgenticModeConfig.
         messages: Current message list (modified in place).
         conversation_history: Full conversation history for context.
-        agent_lessons: Existing lessons string to append to.
-
-    Returns:
-        Updated agent_lessons string.
     """
     # CRITICAL FIX: Tool call structure has name/arguments nested inside "function" key!
     func = tc.get("function", {}) if isinstance(tc, dict) else {}
@@ -1633,12 +1604,12 @@ async def _execute_single_tool_call(
             "tool_call_id": tool_id
         }
         messages.append(tool_result_msg)
-        return agent_lessons
+        return
 
 
     try:
         # FIX: Call tool_executor.execute() (the correct method name), NOT execute_tool().
-        # ToolExecutor.execute() returns Tuple[str, str] = (tool_result, agent_lessons)
+        # ToolExecutor.execute() returns the tool result text.
         # CRITICAL FIX (2026-08-27): pass live_messages=messages. Tool-viewed image
         # pixels (view_image / screenshots) are sanitized OUT of the tool-result text
         # before it is appended to history; ToolExecutor re-attaches them to the
@@ -1653,7 +1624,7 @@ async def _execute_single_tool_call(
         _owner = getattr(config, 'conversation_id', None) or '_unknown'
         if tool_name in SCREEN_BROWSER_TOOLS:
             async with tool_lock(_owner):
-                result_text, new_lessons = await tool_executor.execute(
+                result_text = await tool_executor.execute(
                     tool_name=tool_name,
                     tool_args=parsed_args,
                     conversation_history=conversation_history,
@@ -1662,7 +1633,7 @@ async def _execute_single_tool_call(
                     conversation_id=getattr(config, 'conversation_id', None)  # python_exec approval gate (2026-09-24)
                 )
         else:
-            result_text, new_lessons = await tool_executor.execute(
+            result_text = await tool_executor.execute(
                 tool_name=tool_name,
                 tool_args=parsed_args,
                 conversation_history=conversation_history,
@@ -1670,11 +1641,6 @@ async def _execute_single_tool_call(
                 live_messages=messages,
                 conversation_id=getattr(config, 'conversation_id', None)  # python_exec approval gate (2026-09-24)
             )
-
-        # Merge any new lessons from the tool execution
-        if new_lessons:
-            agent_lessons = (agent_lessons + "\n\n" + new_lessons).strip() if agent_lessons else new_lessons
-
 
         # Add tool result message
         tool_result_msg = {
@@ -1696,6 +1662,3 @@ async def _execute_single_tool_call(
             "tool_call_id": tool_id
         }
         messages.append(tool_result_msg)
-
-
-    return agent_lessons

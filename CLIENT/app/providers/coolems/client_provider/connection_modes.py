@@ -16,9 +16,8 @@ Web relay mode (Settings UI Connection Mode = "web_relay"):
   - client_provider/provider_class.py   -> the CoolemsClientProvider class (thin delegations)
   - ssl_helper.py / direct_mode.py / relay_mode.py / tool_requests.py / control_channel.py (siblings)
 
-The flat CLIENT/app/providers/coolems/client_provider.py file is a re-export facade so
-existing imports ('from .client_provider import CoolemsClientProvider, is_model_switching,',
-'relay_ws_connect') keep working unchanged.
+The package __init__ re-exports these names so 'from .client_provider import
+CoolemsClientProvider, is_model_switching, relay_ws_connect' keeps working unchanged.
 """
 
 import logging
@@ -46,7 +45,7 @@ def _set_model_switching(value: bool) -> None:
 
     """Set the global model-switch-in-progress flag.
 
-        Called from the agent.py router to suppress spurious connection errors while the
+        Called from the agent router to suppress spurious connection errors while the
         SERVER reloads for a model switch.
 
     """

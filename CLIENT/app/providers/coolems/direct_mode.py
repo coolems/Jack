@@ -35,7 +35,9 @@ class UserCancelled(Exception):
 
 async def chat_stream_direct_websocket(
     provider, model: str, messages: List[Dict], websocket: Any,
-    temperature: float = 0.7, enable_thinking: bool = False,
+    # enable_thinking: bool or canonical level, forwarded verbatim; the SERVER
+    # translates the level into this model's own vocabulary.
+    temperature: float = 0.7, enable_thinking: Any = False,
     conv_id: str = None, tools: list = None,
     stop_event: Optional[asyncio.Event] = None
 ) -> Tuple[str, Any]:
@@ -180,7 +182,6 @@ async def chat_stream_direct_websocket(
 
 async def health_check_direct_websocket(provider, force: bool = False):
     """Health check via direct WebSocket."""
-    import websockets
 
     candidates = provider._get_ws_candidates()
     try:
@@ -223,7 +224,6 @@ async def health_check_direct_websocket(provider, force: bool = False):
 
 async def get_models_direct_websocket(provider):
     """Get models list via direct WebSocket."""
-    import websockets
 
     candidates = provider._get_ws_candidates()
     try:
@@ -266,7 +266,6 @@ async def get_current_model_direct_websocket(provider, force: bool = False):
     and verify via /v1/models (used by the post-switch poller for immediate,
     authoritative confirmation).
     """
-    import websockets
 
     candidates = provider._get_ws_candidates()
     try:
@@ -296,15 +295,11 @@ async def get_current_model_direct_websocket(provider, force: bool = False):
 
 
 async def switch_model_direct_websocket(provider, model_filename: str):
-    """Switch model on remote server via direct WebSocket.
+    """Switch model on the remote server over direct WebSocket.
 
-    Two-phase approach (all budgets from CLIENT config - single source of truth):
-                MODEL_SWITCH_MAX_WAIT_SEC. (Periodic "waiting" progress lines are logged by
-                agent.py's broadcaster so there is exactly ONE progress line per interval.)
-
-    All UI broadcasts happen in agent.py on the main event loop.
-          This function only handles server communication and logs one clean line per state
-          change.
+    Wait budgets come from CLIENT config (MODEL_SWITCH_MAX_WAIT_SEC). UI broadcasts happen in
+    the agent router on the main event loop; this only talks to the server and logs one line per state
+    change.
     """
     import websockets
     import time as _time

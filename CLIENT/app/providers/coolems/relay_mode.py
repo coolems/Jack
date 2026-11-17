@@ -1,6 +1,6 @@
 """WebSocket relay mode methods for CoolemsClientProvider.
 
-All methods that connect through the web relay server instead of directly to the brain.
+Methods that connect through the web relay server rather than to the brain directly.
 """
 
 import asyncio
@@ -34,7 +34,8 @@ class UserCancelled(Exception):
 
 async def chat_stream_websocket(
     provider, model: str, messages: List[Dict], websocket: Any,
-    temperature: float = 0.7, enable_thinking: bool = False,
+    # enable_thinking: bool or canonical level, forwarded verbatim to the SERVER.
+    temperature: float = 0.7, enable_thinking: Any = False,
     conv_id: str = None, tools: list = None,
     stop_event: Optional[asyncio.Event] = None
 ) -> Tuple[str, Any]:
@@ -174,7 +175,6 @@ async def chat_stream_websocket(
 
 async def health_check_websocket(provider, force: bool = False):
     """Health check via web relay."""
-    import websockets
 
     ws_url, ssl_context = provider._get_ws_url_and_ssl()
     api_key = provider._load_api_key()
@@ -210,7 +210,6 @@ async def health_check_websocket(provider, force: bool = False):
 
 async def get_models_websocket(provider):
     """Get models list via web relay."""
-    import websockets
 
     ws_url, ssl_context = provider._get_ws_url_and_ssl()
     api_key = provider._load_api_key()
@@ -246,7 +245,6 @@ async def get_current_model_websocket(provider, force: bool = False):
     and verify via /v1/models (used by the post-switch poller for immediate,
     authoritative confirmation).
     """
-    import websockets
 
     ws_url, ssl_context = provider._get_ws_url_and_ssl()
     api_key = provider._load_api_key()
@@ -280,15 +278,11 @@ async def get_current_model_websocket(provider, force: bool = False):
 
 
 async def switch_model_websocket(provider, model_filename: str):
-    """Switch model on remote server via web relay.
+    """Switch model on the remote server over the web relay.
 
-    Two-phase approach (all budgets from CLIENT config - single source of truth):
-                MODEL_SWITCH_MAX_WAIT_SEC. (Periodic "waiting" progress lines are logged by
-                agent.py's broadcaster so there is exactly ONE progress line per interval.)
-
-    All UI broadcasts happen in agent.py on the main event loop.
-          This function only handles server communication and logs one clean line per state
-          change.
+    Wait budgets come from CLIENT config (MODEL_SWITCH_MAX_WAIT_SEC). UI broadcasts happen in
+    the agent router on the main event loop; this only talks to the relay and logs one line per state
+    change.
     """
     import websockets
     import time as _time

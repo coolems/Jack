@@ -37,10 +37,6 @@ httpx==0.27.0
   License: BSD-3-Clause
   Copyright holder: Encode OSS Ltd.
 
-nest-asyncio==1.6.0
-  License: BSD-2-Clause
-  Copyright holder: Pawel Chomik and contributors
-
 playwright==1.63.0
   License: Apache-2.0
   Copyright holder: Microsoft Corporation and contributors

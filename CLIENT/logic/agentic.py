@@ -48,7 +48,6 @@ def _get_tool_compilation_error():
 @dataclass
 class AgenticModeConfig(BaseModeConfig):
     """Configuration for agentic chat mode — inherits shared fields from BaseModeConfig"""
-    generic_tool_prompt: str = ""
 
     # Tool execution (agentic-only)
     tool_orchestrator: Any = None
@@ -68,12 +67,10 @@ async def agentic_mode(
     
     logger.info("="*60)
 
-    # Build agent system prompt
-    agent_system = f"""
-{config.dna_content}
-
-{config.generic_tool_prompt}
-"""
+    # The system prompt for this turn is the SERVER-delivered text (identity +
+    # tool contract). Only per-turn client state is appended below: MCP notes and
+    # the attached-image context.
+    agent_system = config.system_prompt
 
     # MCP server instructions join the prompt as DATA, never as policy: an MCP server is an
     # external process or endpoint, so its text may describe its tools but must not override
@@ -143,7 +140,6 @@ RULES:
     
     tool_executor = ToolExecutor(
             config.tool_orchestrator,
-            None,
             provider=config.provider,
             current_model=config.model,
             api_key=config.api_key,

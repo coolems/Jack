@@ -264,7 +264,6 @@ def _apply_freshness(items, freshness: str) -> list:
     days = _FRESHNESS_DAYS.get(freshness)
     if not days:
         return items
-    from datetime import timedelta, timezone
     cutoff = time.time() - days * 86400
     kept = []
     for item in items:

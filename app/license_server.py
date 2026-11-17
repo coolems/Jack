@@ -118,27 +118,6 @@ def save_state(state: dict) -> None:
         logger.error("license_state.json write FAILED (%s: %s) — the offline cache is "
                      "not updated; %s", type(e).__name__, e, STATE_FILE)
 
-
-def record_company_registration(company: str, email: str = "", users_requested: int = 0,
-                                request_text: str = "") -> dict:
-    """Record a COMPANY install in the state file.
-
-    Keeps last_check on re-registration; never raises.
-    """
-    state = load_state()
-    state.update({
-        "choice": "company",
-        "company": (company or "").strip(),
-        "email": (email or "").strip().lower(),
-        "users_requested": max(0, int(users_requested or 0)),
-        "request_text": (request_text or "").strip()[:4000],  # bound the free text
-    })
-    if not state.get("created_at"):
-        state["created_at"] = _now_iso()
-    save_state(state)
-    return state
-
-
 # ===== Expiry check =============================================================
 
 def _parse_valid_until(value: str):

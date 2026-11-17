@@ -1,12 +1,7 @@
 """Payload builder for llama.cpp /v1/chat/completions requests.
 
-OPTIMIZED FOR QWEN3.6 — Based on official Qwen3.6 recommendations from Unsloth/Qwen docs:
-- top_p (nucleus sampling): 0.8 — Official default for general tasks
-- top_k: 20 — Official default (limits token selection to top-k candidates)
-- min_p: 0.0 — Official default (disabled minimum probability ratio filter)
-- presence_penalty: 0.0 — Disabled to prevent workflow abandonment during multi-step tasks
-
-ALL DEFAULT PARAMETERS ARE CENTRALIZED IN config.py — modify there, not here.
+Sampling defaults (top_p, top_k, min_p, presence_penalty) come from config.py - change
+them there, not here.
 """
 from typing import List, Dict
 
@@ -28,9 +23,13 @@ def build_llama_payload(
     top_k: int = 20,
     min_p: float = 0.0,
     presence_penalty: float = 0.0,
+    thinking_kwargs: Dict = None,
 ) -> Dict:
-    """Build an OpenAI-compatible /v1/chat/completions payload with official
-    Qwen3.6 recommended sampling parameters.
+    """Build an OpenAI-compatible /v1/chat/completions payload.
+
+    thinking_kwargs: chat_template_kwargs for reasoning control, already translated to this
+    model's vocabulary by ThinkingPolicy. payload.py never invents a kwarg - a strict
+    template raises on an undeclared variable - so empty/None sends no thinking keys.
     """
     # Use config defaults if not explicitly overridden
     if temperature is None:
@@ -63,6 +62,13 @@ def build_llama_payload(
 
     if tools:
         payload["tools"] = tools
+
+    # ---- Reasoning control ----
+    # Only what ThinkingPolicy produced, verbatim. An empty dict is deliberately not added:
+    # llama.cpp/Strata ignore unknown keys, but a strict GGUF template raises on an
+    # undeclared template variable, so a model without thinking knobs must get no keys.
+    if thinking_kwargs:
+        payload["chat_template_kwargs"] = dict(thinking_kwargs)
 
     # ---- Token Usage in SSE Chunks ----
     # Always request usage data from llama.cpp for streaming responses.

@@ -1,6 +1,6 @@
 """Authenticated message loop for one direct WS client (per-frame router).
 
-Routes every frame by type: request/stop with owner-scoped stop events + rate limiting,
+Routes frames by type: request/stop with owner-scoped stop events and rate limiting,
 health_check/models_request/current_model/model_switch, and the tools/tool-code/OCR
 handlers. Disconnect cleanup stays in ws_entry's finally block.
 """
@@ -20,15 +20,12 @@ from .tool_code_handler import _handle_tool_code_request
 from .tools_request_handler import _handle_tools_request
 
 async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authenticated_api_key, client_convs):
-    """Authenticated message loop for one direct WS client (extracted).
+    """Message loop for one authenticated direct WS client.
 
-    Routes every frame by type: request/stop with owner-scoped stop events + rate limiting,
-    health_check/models_request/current_model/model_switch with req_id echo (persistent
-    control channel), tools_request/tool_code_request. All exceptions are handled here;
-    the caller's finally-block performs disconnect cleanup using *client_convs* (mutated in place).
-
-    FIXED: body dedented to module-function level -- a splice left it 4 spaces too deep,
-    which is an IndentationError at import time.
+    Routes every frame by type (request/stop, health_check, models_request, current_model,
+    model_switch with req_id echo, tools_request, tool_code_request) and handles all
+    exceptions here; the caller's finally block does disconnect cleanup using *client_convs*
+    (mutated in place).
     """
     import websockets
 
@@ -104,6 +101,7 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                     continue
 
                 from ..chat_relay import _filter_tools_by_profile
+                from app.providers.llama.thinking import level_or_bool
                 req = ChatRequest(
                     owner_key=f"{conn_id}|{conv_id}",
                     user_key=user_info.get("email") or str(conn_id),
@@ -112,7 +110,9 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                     model=msg.get("model", ""),
                     messages=msg.get("messages", []),
                     temperature=msg.get("temperature", LLAMA_SERVER_TEMP),
-                    enable_thinking=bool(msg.get("enable_thinking", False)),
+                    # Bool or canonical level, normalized but never coerced to
+                    # bool - a level must survive to the provider.
+                    enable_thinking=level_or_bool(msg.get("enable_thinking")),
                     conv_id=conv_id,
                     tools=_filter_tools_by_profile(server_provider, user_info,
                                                    msg.get("tools") if msg.get("tools") else None),

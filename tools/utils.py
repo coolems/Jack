@@ -386,14 +386,10 @@ _current_user_role: Optional[str] = None
 def set_current_user_role(role: str) -> None:
     """Store a user role in this store (see header).
 
-        Writes BOTH the per-task ContextVar (the value async callers actually read,
-        isolated per WS connection) AND the legacy module global (kept so non-async
-        callers/tests keep working). In concurrent asyncio contexts only the ContextVar
-        matters, which is what prevents role bleed between simultaneous clients.
-
-        In the live architecture no production code path calls this: CLIENT-side tools
-        read their role from the injected CURRENT_USER_ROLE global. Kept for tests and
-        direct callers that need a per-task isolated role value.
+        Writes BOTH the per-task ContextVar AND the legacy module global. In the live
+        architecture no production code path calls this: CLIENT-side tools read their
+        role from the injected CURRENT_USER_ROLE global. Kept for tests and direct
+        callers that need a per-task isolated role value.
 
     Args:
         role: The user's role string (e.g., 'admin', 'power_user', 'user')
@@ -402,27 +398,6 @@ def set_current_user_role(role: str) -> None:
     _current_user_role_ctx.set(role)
     _current_user_role = role  # legacy fallback for non-async callers/tests
     logger.debug(f"Current user role set to: {role}")
-
-
-def get_current_user_role() -> str:
-    """Return the current authenticated user's role.
-
-    Resolution order:
-      1. The ContextVar of the CURRENT task/context - per-connection value set at auth time,
-         so concurrent WS clients never see each other's roles.
-      2. Legacy module global (non-async callers / direct test sets).
-      3. 'user' - safe default when nothing has been set (e.g. CLIENT sandbox, no server ctx).
-
-    Returns:
-        Role string: 'admin', 'power_user', or 'user'
-    """
-    ctx_role = _current_user_role_ctx.get()
-    if ctx_role is not None:
-        return ctx_role
-    if _current_user_role is not None:
-        return _current_user_role
-    # Safe default - unauthenticated tools run with user restrictions
-    return "user"
 
 
 # ---------------------------------------------------------------------------

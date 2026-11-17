@@ -5,10 +5,9 @@ validated is the exact IP the socket connects to, by construction (per-session
 PinnedConnector for aiohttp; no global state, no threads, asyncio-only). See that module
 for the full contract.
 
-Keep BOTH keys in the SERVER shared-source lists
-(app/providers/coolems/tool_scanner/shared_sources.py::get_all_shared_sources and
-tools_server/local_tool_scanner.py::_load_shared_modules), ordered 'ssrf_guard' BEFORE
-'ssrf_defense' - this module imports from it at exec time.
+Keep the 'ssrf_guard' key BEFORE 'ssrf_defense' in the SERVER shared-source list
+(app/providers/coolems/tool_scanner/shared_sources.py::get_all_shared_sources) - this
+module imports from it at exec time.
 """
 
 import logging as _logging

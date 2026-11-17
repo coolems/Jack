@@ -1,27 +1,12 @@
-"""CoolemsServerProvider - Smart Gateway WebSocket server.
+"""CoolemsServerProvider - the gateway WebSocket server.
 
-Accepts encrypted WebSocket connections from coolems_client, authenticates via API key +
-profile, filters models/tools by user role, then relays to the local LLM backend
-(LlamaProvider or StrataProvider, chosen by config.SERVER_BACKEND). Enforces permissions.
+Accepts encrypted WebSocket connections, authenticates by API key + profile, filters
+models/tools by user role, and relays to the local LLM backend chosen by
+config.SERVER_BACKEND (llama or strata). With USE_WEB_SERVER set it connects to the web
+relay as a "brain" instead of listening locally. Pure asyncio: every server task is an
+asyncio.Task on the main event loop.
 
-When USE_WEB_SERVER is configured in config.py:
-- Connects TO the web relay as a "brain" server instead of listening locally
-
-The logic here:
-1. Start/attach the local LLM backend (delegated to the selected backend provider; Strata is
-   attach-only - we never spawn it)
-2. Listen on Direct WebSocket port for client connections OR connect to web relay as brain
-3. Authenticate clients via API key + profile lookup (AuthGateway)
-4. Filter models/tools by user role before relaying to LLM
-5. Relay authenticated/filtered requests to the backend provider and responses back
-
-Pure asyncio - no threads. All server tasks run on the main event loop as asyncio.Tasks.
-
-  - ssl_context.py        -> Self-signed cert generation
-  - tool_scanner/         -> package: AST tool scanning + source code serving
-  - direct_ws/            -> Direct WS client message routing (ws_client_handler.py is a shim)
-  - ws_brain_relay.py     -> Web relay brain connection logic
-  - chat_relay.py         -> Chat forwarding to LLM
+Siblings: ssl_context.py, tool_scanner/, direct_ws/, ws_brain_relay/, chat_relay.py.
 """
 
 import asyncio
@@ -87,10 +72,8 @@ class CoolemsServerProvider(BaseProvider):
     def _get_local_provider(self):
         """The local inference backend this relay talks to, chosen by config.SERVER_BACKEND.
 
-        "strata" selects StrataProvider (same OpenAI/llama.cpp wire format, plus a
-        Bearer key and attach-only lifecycle); "llama" selects LlamaProvider. Every relay
-        path below stays identical - queue, worker pool, auth filtering, streaming frames,
-        token stats, OCR refusal.
+        "strata" -> StrataProvider (same wire format, Bearer key, attach-only), "llama" ->
+        LlamaProvider. Every relay path below is identical either way.
         """
         if self._local_provider is None:
             import config
@@ -181,11 +164,10 @@ class CoolemsServerProvider(BaseProvider):
     # --- Server Lifecycle Management (asyncio Tasks — no threads) ---
 
     async def _ensure_llm_healthy(self):
-        """Async: start the local LLM backend and wait for it to report healthy.
+        """Start the local LLM backend and wait until it reports healthy. Returns True/False.
 
-        Called by the boot sequence (code.py wraps init in asyncio.run); returns True/False.
-        Does NOT start WebSocket tasks - code.py calls provider.start_all_servers() later.
-        Launch and health polling await on the same event loop.
+        Called from the boot sequence (code.py wraps init in asyncio.run). WebSocket tasks are
+        started later by provider.start_all_servers().
         """
         local = self._get_local_provider()
         ok = await local.start_server()
@@ -214,9 +196,8 @@ class CoolemsServerProvider(BaseProvider):
     async def _ensure_chat_queue(self) -> None:
         """Create the request queue and one worker per llama backend (idempotent).
 
-        Must run on the SERVING event loop: the queue's Condition, the HTTP pool, the
-        health poller and the workers all bind to it. The registry was built during
-        boot (a temporary asyncio.run() loop), so health/capacity are re-probed here.
+        Runs on the SERVING event loop: queue Condition, HTTP pool, health poller and workers all
+        bind to it, so health/capacity are re-probed here after boot.
         """
         if self._chat_queue is not None:
             return
@@ -404,11 +385,10 @@ class CoolemsServerProvider(BaseProvider):
         logger.info("[SERVER] All servers stopped.")
 
     def stop_server(self) -> None:
-        """Legacy synchronous wrapper — no-op. Shutdown is handled entirely by the
-        async path (stop_all_servers()) called from code.py's _run_coolems_server_async.
+        """Synchronous no-op required by the BaseProvider interface.
 
-        Kept for BaseProvider interface compatibility. Does nothing because there are
-        no tasks to cancel in sync context (they run on a different event loop).
+        Shutdown is the async path: stop_all_servers(), called from
+        code.py's _run_coolems_server_async.
         """
         logger.info("[SERVER] stop_server() called — no-op, shutdown handled by async path")
 
@@ -416,12 +396,15 @@ class CoolemsServerProvider(BaseProvider):
 
     async def chat_stream(
         self, model: str, messages: List[Dict], websocket: Any,
-        temperature: float = 0.7, enable_thinking: bool = False,
+        temperature: float = 0.7, enable_thinking=None,
         conv_id: str = None, tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
         context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
-        """Local UI calls this directly (same PC) -> delegates to LlamaProvider."""
+        """chat_stream for the local UI (same PC) - delegates to the local backend provider.
+
+        enable_thinking accepts a bool or a canonical thinking level.
+        """
         return await self._get_local_provider().chat_stream(
             model=model, messages=messages, websocket=websocket,
             temperature=temperature, enable_thinking=enable_thinking,
@@ -430,27 +413,30 @@ class CoolemsServerProvider(BaseProvider):
         )
 
     async def chat_non_streaming(self, model: str, messages: List[Dict],
-                                  temperature: float = 0.7) -> str:
+                                  temperature: float = 0.7,
+                                  enable_thinking=None) -> str:
         return await self._get_local_provider().chat_non_streaming(
-            model=model, messages=messages, temperature=temperature
+            model=model, messages=messages, temperature=temperature,
+            enable_thinking=enable_thinking,
         )
 
     def build_payload(self, model: str, messages: List[Dict], *, stream: bool = True,
-                      temperature: float = 0.7, enable_thinking: bool = False,
+                      temperature: float = 0.7, enable_thinking=None,
                       tools: list = None) -> Dict:
+        """Build a backend payload. enable_thinking is a bool or a canonical thinking level;
+        the serving endpoint's ThinkingPolicy translates a level into chat_template_kwargs.
+        """
         return self._get_local_provider().build_payload(
             model=model, messages=messages, stream=stream,
-            temperature=temperature, enable_thinking=enable_thinking, tools=tools
+            temperature=temperature, tools=tools, enable_thinking=enable_thinking,
         )
 
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
         return await self._get_local_provider().health_check(force=force)
 
     async def get_current_model(self, force: bool = False):
-        """Get the currently loaded model from the local backend provider.
-
-        Uses the lazy _get_local_provider() like every other method, so a call before the
-        first chat still returns the model instead of None.
+        """Currently loaded model from the local backend, via _get_local_provider() so a call
+        before the first chat still answers.
         """
         return await self._get_local_provider().get_current_model(force=force)
 

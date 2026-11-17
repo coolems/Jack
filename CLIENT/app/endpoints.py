@@ -5,7 +5,7 @@ WebSocket chat is handled separately in the app/websocket package.
 Route modules:
     conversations.py  /api/conversations/* (CRUD, messages, truncate, reset)
     files/            /api/upload, /api/tree, /api/download, /api/file-content, /api/open
-    agent.py          /api/models, /api/status, /api/agent/*, /api/stop/*, /api/my-permissions
+    agent/            /api/models, /api/status, /api/agent/*, /api/stop/*, /api/my-permissions
     downloads.py      /api/setup/status?tool=... (live venv/pip/model setup progress)
     this module       GET /api/setup/boot (live boot status, public read-only)
 """
@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import asyncio
 import logging
-import time
 logger = logging.getLogger("COOLEMS")
 
 
@@ -101,7 +100,6 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         provider=provider,
         model_name=model_name,
         api_timeout=api_timeout,
-        agent=agent,
         tool_orchestrator=tool_orchestrator,
         stop_events=stop_events,  # legacy dict stays the source of truth for /api/stop
     )
@@ -146,7 +144,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
     # was removed from the public list - file content now requires authentication.)
 
     # FIX (2026-08-26): APIMiddleware was imported above but NEVER registered, so
-    # every HTTP request reached the routers WITHOUT auth state -> agent.py fell
+    # every HTTP request reached the routers WITHOUT auth state -> the agent router fell
     # back to role 'unknown' ("Role 'unknown': N model(s) available") and /api/models
     # returned an unfiltered list. Registered AFTER CORS on purpose: Starlette runs
     # middleware in REVERSE registration order, so APIMiddleware becomes the OUTERMOST

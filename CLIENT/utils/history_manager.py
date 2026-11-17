@@ -4,7 +4,6 @@ Provides:
 - Token-aware sliding window trimming
 - Image base64 replacement with file-path references
 - Combined load-and-prepare function for the WebSocket handler
-- Cross-task memory: load the last N conversations for context
 
 Notes:
 - estimate_message_tokens() handles base64 in tool results and caches its result on the
@@ -18,18 +17,12 @@ import json
 import logging
 from typing import List, Dict, Optional
 
-# (2026-08-20 review #7): CONTEXT_WINDOW_TOKENS is read LIVE from the config module at
-# call time -- the SERVER rewrites it after every auth, and an import-time capture here
-# would silently keep using the boot-time default for cross-task memory sizing.
-import config.config as _cfg_live
 from config import (
     max_history_tokens,
     estimate_tokens,
     DB_PATH,
     SYSTEM_PROMPT_TOKENS_ESTIMATE,
     IMAGE_TOKENS_PER_512PX,
-    CROSS_TASK_MEMORY_CONVERSATIONS,
-    CROSS_TASK_MEMORY_CONTEXT_FRACTION,
 )
 from app.db_manager import get_db_connection
 
@@ -355,105 +348,3 @@ def load_conversation_history(
         messages = sanitize_images_in_history(messages)
 
     return messages
-
-
-def load_last_n_conversations(
-    n: int = None,
-    exclude_conv_id: Optional[str] = None,
-    db_path: str = None,
-    max_context_tokens: Optional[int] = None,
-) -> List[Dict]:
-    """
-        Load the last N completed conversations from the DB and return them
-        as a list of messages with conversation boundary markers.
-
-        Each conversation is prefixed with a user-role message like:
-            "--- Context from recent conversation: <title> ---"
-
-        Args:
-            n: Number of recent conversations to load (default from config)
-            exclude_conv_id: Conversation ID to skip (e.g. the current one).
-            db_path: Path to SQLite DB. Defaults to config DB_PATH.
-            max_context_tokens: Max tokens for the combined cross-task context.
-                               If None, defaults to CROSS_TASK_MEMORY_CONTEXT_FRACTION
-                               of context window.
-
-        Returns:
-            List of message dicts ready to prepend to conversation history.
-    """
-    if db_path is None:
-        db_path = DB_PATH
-
-    if n is None:
-        n = CROSS_TASK_MEMORY_CONVERSATIONS
-
-    if max_context_tokens is None:
-        max_context_tokens = int(_cfg_live.CONTEXT_WINDOW_TOKENS * CROSS_TASK_MEMORY_CONTEXT_FRACTION)  # live (2026-08-20)
-
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-
-        # Get last N conversation IDs (ordered by updated_at DESC)
-        if exclude_conv_id:
-            cursor.execute(
-                "SELECT id, title FROM conversations "
-                "WHERE id != ? "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (exclude_conv_id, n),
-            )
-        else:
-            cursor.execute(
-                "SELECT id, title FROM conversations "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (n,),
-            )
-        conv_rows = cursor.fetchall()
-
-        if not conv_rows:
-            return []
-
-        all_messages: List[Dict] = []
-        total_tokens = 0
-
-        for conv_id, title in reversed(conv_rows):
-            # Load messages for this conversation
-            cursor.execute(
-                "SELECT role, content FROM messages "
-                "WHERE conversation_id = ? ORDER BY timestamp",
-                (conv_id,),
-            )
-            rows = cursor.fetchall()
-
-            if not rows:
-                continue
-
-            # Add conversation boundary marker
-            marker = f"--- Context from recent conversation: {title or 'Untitled'} ---"
-            all_messages.append({"role": "user", "content": marker})
-            total_tokens += estimate_tokens(marker) + 3
-
-            # Add messages from this conversation
-            for role, content in rows:
-                if content:
-                    msg = {"role": role, "content": content}
-                    all_messages.append(msg)
-                    total_tokens += estimate_message_tokens(msg)
-
-            # Check token budget - stop if we exceed
-            if total_tokens > max_context_tokens:
-                logger.info(
-                    f"Cross-task context reached token limit "
-                    f"({total_tokens} tokens) after loading {len(all_messages)} messages"
-                )
-                break
-
-    finally:
-        conn.close()
-
-    logger.info(
-        f"Loaded cross-task context: {len(all_messages)} messages, "
-        f"~{total_tokens} tokens from {len(conv_rows)} conversations"
-    )
-
-    return all_messages

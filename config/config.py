@@ -1,13 +1,10 @@
-"""COOLEMS SERVER configuration — SINGLE SOURCE OF TRUTH for all server-side values.
+"""COOLEMS SERVER configuration - single source of truth for server-side values.
 
-Conventions:
-  - All values are set directly here (no env-var overrides in this file).
-  - WEB_RELAY_* connection constants are ALSO mirrored in
-    web_server_relay/index.php (single-file pure-PHP relay) because it is a standalone
-    deploy that cannot import from this package at runtime. Keep them identical.
-  - Values consumed by CLIENT-side tools (shipped over WebSocket) MUST be listed
-    in app/providers/coolems/tool_scanner.extract_config_constants().NEEDED_CONSTANTS
-    so the SERVER value is delivered and becomes authoritative on the client.
+Values are set here directly (no env-var overrides in this file). WEB_RELAY_* constants
+are mirrored in web_server_relay/index.php, a standalone PHP deploy that cannot import
+this package - keep them identical. Values consumed by CLIENT-side tools must be listed
+in app/providers/coolems/tool_scanner.extract_config_constants().NEEDED_CONSTANTS so the
+SERVER value reaches the client.
 """
 
 import json as _json
@@ -57,7 +54,7 @@ COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_serve
 # (2026-09-23) v4: relays forward each client's API key + email in 'client_connected' so the BRAIN
 # authenticates every relayed client against its OWN config/.api_keys.json (same logic as direct
 # mode - a client never sends a role). auth_ok frames echo protocol_version on all paths.
-PROTOCOL_VERSION: int = 4
+PROTOCOL_VERSION: int = 5
 
 USE_WEB_SERVER: Optional[str] = None        # Web relay address "host:port" (None = direct WS mode on LAN)
 WEB_RELAY_MAX_MESSAGE_SIZE: int = 1048576 * 10          # 10 MB max WebSocket message size
@@ -244,6 +241,11 @@ LLAMA_MIN_SAFE_MAX_TOKENS: int = 2048        # CONTEXT-GUARD floor: never clamp 
 LLAMA_SERVER_REASONING: bool = False         # Enable reasoning/thinking mode
 LLAMA_SERVER_REASONING_BUDGET: int = 256     # Token budget for reasoning
 LLAMA_SERVER_PRESERVE_THINKING: bool = False # Preserve thinking in output
+# Per-level reasoning token budget (2026-11-27): the level now also caps thinking tokens.
+# Sent as chat_template_kwargs.thinking_budget only when the model's template declares it
+# (ThinkingPolicy.budget); 0 disables that level's cap. Overridable per server with a
+# "thinking": {"budgets": {...}} block in config/llama_servers.json.
+LLAMA_THINKING_BUDGET: dict = {"low": 512, "medium": 1536, "high": 4096}
 
 # --- Timeouts ---
 OCR_TIMEOUT: int = 120                                  # Timeout (s) for OCR API
@@ -329,10 +331,9 @@ def get_provider_name() -> str:
 def set_server_backend(name: str) -> None:
     """Runtime override of the local LLM engine ("llama" | "").
 
-    Used by code.py when the CLI names the engine explicitly (provider=llama / provider=),
-    which is the more specific request than config.SERVER_BACKEND. Both copies are updated:
-    get_api_url() reads this module's global, while app code reads config.SERVER_BACKEND from
-    the package re-export - keeping them apart would make the URL and the provider disagree.
+    code.py calls this when the CLI names the engine explicitly, which is more specific than
+    config.SERVER_BACKEND. Both copies are updated: get_api_url() reads this module's global
+    while app code reads config.SERVER_BACKEND from the package re-export.
     """
     global SERVER_BACKEND
     SERVER_BACKEND = name
@@ -352,11 +353,22 @@ _logger = _logging.getLogger("COOLEMS.Config")
 
 @_dataclass(frozen=True)
 class LlamaServerInstance:
-    """One llama-server instance to create/attach at boot."""
+    """One llama-server instance to create/attach at boot.
+
+    Fields: name, host, port - endpoint identity. concurrency - None means DISCOVER from
+    /props.total_slots, an int is an upper bound. thinking - optional per-entry override of
+    what this model's thinking controls are; discovery from the endpoint's chat template is
+    the default, this pins the truth for an ambiguous or vendor-patched template, e.g.
+      "thinking": {"efforts": ["low","medium","xhigh"], "default": "medium",
+                   "toggle": true, "preserve": true, "hint": "unsloth patch"}
+    or the shorthand "thinking": ["low","medium","xhigh"]. Unstated fields stay as
+    discovered (app/providers/llama/thinking.py).
+    """
     name: str
     host: str
     port: int
     concurrency: Optional[int] = None
+    thinking: Optional[dict] = None
 
     @property
     def api_url(self) -> str:
@@ -371,11 +383,9 @@ class LlamaServerInstance:
 def _parse_instance_concurrency(entry: dict, loopback: bool, index: int) -> Optional[int]:
     """Validate one llama_servers.json 'concurrency' (alias 'parallel') value.
 
-    LOCAL and REMOTE alike: returns None on missing/bad input - None means "DISCOVER
-    from /props.total_slots" (the discovery model; the node owns its slot count).
-    A local instance with concurrency=None is SPAWNED with --parallel LLAMA_SERVER_PARALLEL
-    as a launch fallback, after which discovery takes over and the worker pool reconciles.
-    An explicit int is an UPPER BOUND (and the exact spawn value for local instances).
+    None on missing/bad input means "discover from /props.total_slots". A local instance with
+    None is spawned with --parallel LLAMA_SERVER_PARALLEL, after which discovery takes over.
+    An explicit int is an upper bound and the exact spawn value for a local instance.
     """
     raw = entry.get("concurrency", entry.get("parallel"))
     if raw is None:
@@ -430,11 +440,65 @@ def _parse_instance_ctx_per_slot(entry: dict, source: str, index: int) -> Option
     return raw
 
 
-def _default_local_instance() -> "LlamaServerInstance":
-    """The always-present local instance (legacy single-server behaviour).
+def _parse_thinking(entry: dict, source: str, index: int) -> Optional[dict]:
+    """Validate an optional 'thinking' override on a server entry.
 
-    concurrency=None: slots are DISCOVERED from /props after the spawn (the spawn itself
-    uses --parallel LLAMA_SERVER_PARALLEL as a launch fallback - see ensure_started())."""
+    Accepts the shorthand list ["low","medium","xhigh"] or an object
+    {efforts, default, toggle, preserve, budget, enforced, emit_only, hint}. Bad input is
+    logged and ignored, leaving thinking to chat-template discovery - a hand-edited file must
+    never stop a boot.
+    """
+    raw = entry.get("thinking")
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        efforts = [str(e).strip().lower() for e in raw if str(e).strip()]
+        return {"efforts": efforts} if efforts else None
+    if not isinstance(raw, dict):
+        _logger.warning("[CONFIG] %s entry #%d has an invalid 'thinking' (%r) - ignored "
+                        "(expected a list of levels or an object)", source, index, raw)
+        return None
+    out: dict = {}
+    efforts = raw.get("efforts", raw.get("values"))
+    if isinstance(efforts, (list, tuple)):
+        cleaned = [str(e).strip().lower() for e in efforts if str(e).strip()]
+        if cleaned:
+            out["efforts"] = cleaned
+    elif efforts is not None:
+        _logger.warning("[CONFIG] %s entry #%d 'thinking.efforts' is not a list (%r) - ignored",
+                        source, index, efforts)
+    for key in ("default", "hint"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            out[key] = val.strip().lower() if key == "default" else val.strip()
+    for key in ("toggle", "preserve", "budget", "enforced", "emit_only"):
+        val = raw.get(key)
+        if isinstance(val, bool):
+            out[key] = val
+    budgets = raw.get("budgets")
+    if isinstance(budgets, dict):
+        clean: dict = {}
+        for k, v in budgets.items():
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                _logger.warning("[CONFIG] %s entry #%d 'thinking.budgets.%s' is not a "
+                                "non-negative int (%r) - that level stays uncapped",
+                                source, index, k, v)
+                continue
+            clean[str(k).strip().lower()] = v
+        if clean:
+            out["budgets"] = clean
+    elif budgets is not None:
+        _logger.warning("[CONFIG] %s entry #%d 'thinking.budgets' is not an object (%r) "
+                        "- ignored (global LLAMA_THINKING_BUDGET applies)", source, index, budgets)
+    return out or None
+
+
+def _default_local_instance() -> "LlamaServerInstance":
+    """The always-present local instance (single-server behaviour).
+
+    concurrency=None: slots are discovered from /props after the spawn, which uses
+    --parallel LLAMA_SERVER_PARALLEL as a launch fallback (see ensure_started()).
+    """
     return LlamaServerInstance("local", "127.0.0.1", LLAMA_SERVER_PORT, None)
 
 
@@ -455,9 +519,9 @@ def _write_default_local_file(path: str) -> None:
 
 def get_llama_server_instances() -> list["LlamaServerInstance"]:
     """Fresh read + validation of config/llama_servers.json.
-    Same contract as CLIENT's get_server_address_list: the file is the single source of
-    truth for WHICH llama servers we create, and it is re-read on every call (boot reads it
-    once; tests may point LLAMA_SERVERS_FILE elsewhere).
+
+    The file is the single source of truth for WHICH llama servers we create and is re-read
+    on every call (boot reads it once; tests may point LLAMA_SERVERS_FILE elsewhere).
     """
     path = LLAMA_SERVERS_FILE
     try:
@@ -513,7 +577,8 @@ def get_llama_server_instances() -> list["LlamaServerInstance"]:
         loopback = host.lower() in ("127.0.0.1", "localhost", "::1")
         concurrency = _parse_instance_concurrency(entry, loopback=loopback, index=i)
         instances.append(
-            LlamaServerInstance(name or f"{host}:{port_raw}", host, port_raw, concurrency)
+            LlamaServerInstance(name or f"{host}:{port_raw}", host, port_raw, concurrency,
+                                thinking=_parse_thinking(entry, "llama_servers.json", i))
         )
 
     if not instances:
@@ -564,7 +629,8 @@ def strata_auth_headers(api_key: Optional[str]) -> Optional[dict]:
 
 def _default_strata_instance() -> "StrataServerInstance":
     """The always-present local endpoint (127.0.0.1:STRATA_SERVER_PORT)."""
-    return StrataServerInstance("strata", "127.0.0.1", STRATA_SERVER_PORT, None, None)
+    return StrataServerInstance("strata", "127.0.0.1", STRATA_SERVER_PORT,
+                                concurrency=None, api_key=None)
 
 
 def _write_default_strata_file(path: str) -> None:
@@ -583,14 +649,11 @@ def _write_default_strata_file(path: str) -> None:
 def get_strata_server_instances() -> list["StrataServerInstance"]:
     """Fresh read + validation of config/strata_servers.json (mirror of the llama loader).
 
-    Rules (hand-edited file - forgiving but loud):
-      * entry not an object / missing host / bad port -> skipped with a warning.
-      * duplicate host:port -> deduped, first occurrence wins, warning logged.
-      * 'api_key' missing -> falls back to config.STRATA_API_KEY, then env STRATA_API_KEY.
-      * empty/invalid list -> FALL BACK to the default local endpoint; a MISSING file is
-        re-seeded on disk with that entry so it exists for hand-editing afterwards.
-
-    Returns a non-empty list of StrataServerInstance.
+    Hand-edited file, so forgiving but loud: a non-object entry, missing host or bad port is
+    skipped with a warning; duplicate host:port is deduped (first wins); a missing 'api_key'
+    falls back to config.STRATA_API_KEY, then env STRATA_API_KEY; an empty or invalid list
+    falls back to the default local endpoint, and a missing file is re-seeded with that
+    entry. Returns a non-empty list of StrataServerInstance.
     """
     path = STRATA_SERVERS_FILE
     env_key = (os.environ.get("STRATA_API_KEY") or "").strip()
@@ -651,7 +714,9 @@ def get_strata_server_instances() -> list["StrataServerInstance"]:
         ctx_per_slot = _parse_instance_ctx_per_slot(entry, "strata_servers.json", i)
         instances.append(
             StrataServerInstance(name or f"{host}:{port_raw}", host, port_raw,
-                                 concurrency, api_key, ctx_per_slot)
+                                 concurrency,
+                                 thinking=_parse_thinking(entry, "strata_servers.json", i),
+                                 api_key=api_key, ctx_per_slot=ctx_per_slot)
         )
 
     if not instances:

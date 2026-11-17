@@ -12,7 +12,7 @@ import inspect
 import re
 import time
 import uuid
-from typing import Dict, Any, Tuple
+from typing import Dict, Any
 
 from config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS
 from app.providers import BaseProvider
@@ -27,16 +27,9 @@ logger = logging.getLogger("COOLEMS.Logic.ToolExecutor")
 
 
 # ============================================================
-# LEARNED LESSONS - DISABLED ON PURPOSE (dead code kept on purpose).
-# Will be fixed later: we are coming back to this. For now the per-tool lessons
-# lookup below is skipped so it neither feeds the agentic loop nor complicates
-# history trimming. The original logic stays in place as dead code - re-enable
-# by setting _LESSONS_INJECTION_ENABLED = True.
-# TODO(code-review C7, plan_20261102_2135_code_review.md): re-enable this with a
-# lessons payload that is token-budgeted (it must fit inside react_loop's
-# message_budget) and trimmed-safe, then delete the disabled branches.
+# LESSONS/LEARNING PIPELINE - REMOVED (2026-11-17). DNA is read-only identity
+# text: no lessons store, no per-tool lesson lookup, nothing to re-enable.
 # ============================================================
-_LESSONS_INJECTION_ENABLED = False
 
 
 def _sanitize_image_result(result_text: str) -> str:
@@ -278,7 +271,7 @@ class ToolExecutor:
     Sync orchestrators return str from execute_tool(); async ones (RemoteToolOrchestrator)
     are awaited and may fetch from the SERVER."""
 
-    def __init__(self, orchestrator: Any, lesson_manager: Any = None,
+    def __init__(self, orchestrator: Any,
                  provider: BaseProvider = None,
                  current_model: str = MODEL_NAME,
                  api_key: str = None,
@@ -286,7 +279,6 @@ class ToolExecutor:
                  cycle=None,  # app.cycle_recorder.CycleRecorder for THIS turn
                  channel=None):  # this chat's ChatChannel - CLIENT-LOCAL tools need it
         self.orchestrator = orchestrator
-        self.lesson_manager = lesson_manager
         self.provider = provider
         self.current_model = current_model
         self.api_key = api_key
@@ -357,7 +349,7 @@ class ToolExecutor:
         silent: bool = False,
         live_messages: list = None,
         conversation_id: str = None
-    ) -> Tuple[str, str]:
+    ) -> str:
         """Execute a tool with permission checking.
 
         live_messages: the ReAct loop's live list - image pixels from a result are attached to
@@ -366,7 +358,7 @@ class ToolExecutor:
         gated on the user's approval.
 
         Returns:
-            Tuple of (tool_result, agent_lessons)"""
+            The tool result text (already sanitized for history)."""
         exec_start = time.time()
         # (2026-11-08 loop history) One id per execution. `tool_start`, `tool_end` and the
         # recorded cycle row all carry it, so the UI's LIVE per-tool timer (started on
@@ -404,7 +396,7 @@ class ToolExecutor:
                 await self._record_consent_decision(
                     getattr(_consent, "request_id", ""), "explain", "python",
                     (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else "")
-                return _consent.explain_instruction, ""
+                return _consent.explain_instruction
             else:
                 logger.warning("[EXEC-APPROVAL] python_exec NOT executed - user declined (or approval unavailable)")
                 deny_msg = ("USER DECISION: You decided to not execute this python code. The code was NOT executed and must "
@@ -419,7 +411,7 @@ class ToolExecutor:
                     (tool_args or {}).get("code", "") if isinstance(tool_args, dict) else "")
                 await self._record_tool(tool_name, tool_args, False, "NOT executed - user declined",
                                         (time.time() - exec_start) * 1000.0, call_id=call_id)
-                return deny_msg, ""
+                return deny_msg
 
         # ============================================================
         # USER APPROVAL GATE for URL-bearing browser tools (2026-07-15, extended 2026-10-23).
@@ -446,7 +438,7 @@ class ToolExecutor:
                     logger.info("[URL-CONSENT] EXPLAIN requested - nothing opened, AI will explain + re-ask")
                     await self._record_consent_decision(
                         getattr(_url_consent, "request_id", ""), "explain", "url", url_arg)
-                    return _url_consent.explain_instruction, ""
+                    return _url_consent.explain_instruction
                 else:
                     logger.warning("[URL-CONSENT] %s NOT executed - blocked target declined or unconsentable", tool_name)
                     deny_msg = ("USER DECISION: This URL was refused by the local user's browser-security gate. "
@@ -458,7 +450,7 @@ class ToolExecutor:
                         getattr(_url_consent, "request_id", ""), _url_consent.decision, "url", url_arg)
                     await self._record_tool(tool_name, tool_args, False, "NOT executed - URL refused",
                                             (time.time() - exec_start) * 1000.0, call_id=call_id)
-                    return deny_msg, ""
+                    return deny_msg
 
         # ============================================================
         # USER APPROVAL GATE for Computer Use tools (2026-11-07).
@@ -476,7 +468,7 @@ class ToolExecutor:
                 logger.info("[DESKTOP-CONSENT] %s EXPLAIN requested - nothing touched, AI will explain + re-ask", tool_name)
                 await self._record_consent_decision(_desktop.request_id, "explain", "desktop",
                                                     _desktop_payload(tool_name, tool_args)[0])
-                return _desktop.explain_instruction, ""
+                return _desktop.explain_instruction
             else:
                 logger.warning("[DESKTOP-CONSENT] %s NOT executed - app access refused (%s)",
                                tool_name, _desktop.decision)
@@ -490,7 +482,7 @@ class ToolExecutor:
                 await self._record_consent_decision(_desktop.request_id, _desktop.decision, "desktop", identity)
                 await self._record_tool(tool_name, tool_args, False, "NOT executed - desktop access refused",
                                         (time.time() - exec_start) * 1000.0, call_id=call_id)
-                return deny_msg, ""
+                return deny_msg
 
         # Send tool start notification (skip if silent mode)
         if not silent:
@@ -633,7 +625,7 @@ class ToolExecutor:
             # The call happened and failed: record it so the turn block shows the refusal.
             await self._record_tool(tool_name, tool_args, False, result_str,
                                     (time.time() - exec_start) * 1000.0, call_id=call_id)
-            return result_str, ""
+            return result_str
 
         # Send tool end notification (skip if silent mode)
         if not silent:
@@ -684,15 +676,6 @@ class ToolExecutor:
                 except Exception as _img_err:
                     logger.warning(f"[AGENTIC.DEBUG] Image-to-UI push failed (non-fatal): {_img_err}")
 
-        # Check for lessons for this tool
-        # LEARNED LESSONS - skipped on purpose (see _LESSONS_INJECTION_ENABLED at
-        # module top). Dead code kept for a later fix: we'll come back to it.
-        agent_lessons = ""
-        if not _LESSONS_INJECTION_ENABLED:
-            pass  # lessons intentionally disabled right now
-        elif self.lesson_manager and hasattr(self.lesson_manager, 'lessons_for_tool'):
-            agent_lessons = self.lesson_manager.lessons_for_tool(tool_name)
-
         # Re-attach extracted pixels to the protected current-user message so the next
         # provider call in the ReAct loop actually carries them (dedupe + size cap inside).
         if _pending_images:
@@ -716,7 +699,7 @@ class ToolExecutor:
         # carries the final sanitized output the model saw.
         await self._record_tool(tool_name, tool_args, not result_is_error(result_str),
                                 result_str, total_elapsed * 1000.0, call_id=call_id)
-        return result_str, agent_lessons
+        return result_str
     # ------------------------------------------------------------------
     # python_exec user approval (2026-09-24) - see app/chat_bus/exec_approval.py
     # ------------------------------------------------------------------

@@ -1,22 +1,25 @@
 """COOLEMS distributed provider protocol (SERVER side).
-    TRANSPORT REALITY: the wire protocol is WebSocket TEXT frames carrying JSON objects
-    there is NO binary length-prefix framing anywhere in this codebase.
-    Message types (JSON, one object per WS text frame):
-        Handshake:
-            auth          -> {type:"auth", api_key, role_type, protocol_version}
-            auth_ok       <- {type:"auth_ok", protocol_version, role, email, allowed_models,
-                              allowed_tools, context_window}
-            error         <- {type:"error", message}
-        Chat (long-lived connection; one in-flight request per connection):
-            request       -> {type:"request", model, messages, temperature, enable_thinking,
-                              conv_id, tools}
-            content       <- {type:"content", content}
-            thinking      <- {type:"thinking", content}
-            tool_calls    <- {type:"tool_calls", ...}
-            token_stats   <- {type:"token_stats", prompt_tokens, generated_tokens, ...}
-            response      <- {type:"response", content}
-            done          <- {type:"done"}
-            stop          -> {type:"stop", conv_id}
+
+Wire transport: WebSocket TEXT frames, one JSON object per frame - no binary framing.
+
+  auth        -> {type:"auth", api_key, role_type, protocol_version}
+  auth_ok     <- {type:"auth_ok", protocol_version, role, email, allowed_models,
+                  allowed_tools, context_window}
+  error       <- {type:"error", message}
+  request     -> {type:"request", model, messages, temperature, enable_thinking, conv_id, tools}
+  content     <- {type:"content", content}
+  thinking    <- {type:"thinking", content}
+  tool_calls  <- {type:"tool_calls", ...}
+  token_stats <- {type:"token_stats", prompt_tokens, generated_tokens, ...}
+  response    <- {type:"response", content}
+  done        <- {type:"done"}
+  stop        -> {type:"stop", conv_id}
+
+request.enable_thinking is a bool (show reasoning or not) or a canonical level
+"none"/"low"/"medium"/"high". The SERVER translates a level into the serving model's own
+template vocabulary (app/providers/llama/thinking.py) and never echoes a model-specific
+name. Both shapes are valid on one protocol version: a bool selects display only, and a
+level reaching a backend without thinking support reads as truthy - never a failed request.
 """
 
 import json
@@ -58,16 +61,10 @@ def _parse_web_relay_address(addr, default_port):
 
 
 def _build_websocket_url(host, port, use_ssl, path=""):
-        """Build WebSocket URL with proper scheme (ws:// or wss://) and IPv6 formatting.
+        """WebSocket URL with the right scheme (ws/wss) and IPv6 bracket formatting.
 
-        *path* is an optional route suffix (e.g. "/ws/brain" for the VPS relay router);
-        it must start with "/" when given.
-
-        Examples:
-            ("150.30.23.1", 8765, False) -> "ws://150.30.23.1:8765"
-            ("::1", 8443, True)          -> "wss://[::1]:8443"
-            ("relay.example.com", 8443, True, "/ws/brain") -> "wss://relay.example.com:8443/ws/brain"
-
+        *path* is an optional route suffix starting with "/" (e.g. "/ws/brain").
+        ("::1", 8443, True) -> "wss://[::1]:8443".
         """
         scheme = "wss" if use_ssl else "ws"
         suffix = ""
@@ -112,30 +109,3 @@ def _load_coolems_api_key() -> str:
         logger.error(f"[COOLEMS] Failed to load API keys from {api_keys_path}: {e}")
 
     return ""
-
-
-def _get_all_valid_api_keys() -> set:
-    """Get a set of ALL active API keys from .api_keys.json.
-
-    Returns empty set if no key file exists or no active keys are found.
-    Shared by server_provider for auth validation (avoids double I/O).
-
-    """
-    api_keys_path = os.path.join(_resolve_config_dir(), ".api_keys.json")
-
-    if not os.path.exists(api_keys_path):
-        return set()
-
-    try:
-        with open(api_keys_path, "r", encoding="utf-8") as f:
-            keys_data = json.load(f)
-        valid = set()
-        for key_entry in keys_data:
-            if isinstance(key_entry, dict) and key_entry.get("is_active", True):
-                valid.add(key_entry["key"])
-        return valid
-    except (json.JSONDecodeError, KeyError, OSError, TypeError) as e:
-        logger.error(f"[COOLEMS] Failed to load API keys from {api_keys_path}: {e}")
-
-    return set()
-    

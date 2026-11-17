@@ -568,12 +568,6 @@ def _run_security_checks(code):
 # UTILITY HELPERS
 # ============================================================================
 
-def _safe_strip(value):
-    """Safely strip a string value."""
-    return value.strip() if value else ""
-
-
-
 def _to_lf(text, lone_cr=False):
     """Normalize a tool-facing string to LF.
 

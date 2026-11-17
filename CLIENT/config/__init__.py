@@ -12,10 +12,6 @@ from .config import (
     SYSTEM_PROMPT_TOKENS_ESTIMATE,
     IMAGE_TOKENS_PER_512PX,
 
-    # --- Cross-Task Memory ---
-    CROSS_TASK_MEMORY_CONVERSATIONS,
-    CROSS_TASK_MEMORY_CONTEXT_FRACTION,
-
     # --- Provider / Model (Client Side) ---
     PROVIDER,
 

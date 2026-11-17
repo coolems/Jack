@@ -1,13 +1,8 @@
-"""Main LlamaProvider class - thin orchestrator that delegates to submodules.
+"""LlamaProvider - thin orchestrator delegating to the llama submodules.
 
-TOKEN STATISTICS:
-    chat_stream() returns (response_str, TokenStats); TokenStats holds the real token
-    counts from llama.cpp's final SSE response chunk, which keeps per-request accounting
-    correct for concurrent users.
-
-HTTP CLIENT POOL:
-    Shared httpx.AsyncClient and requests.Session are managed in http_client.py.
-    LlamaProvider calls close() on shutdown to release pooled connections.
+chat_stream() returns (response_str, TokenStats) with the real counts from llama.cpp's
+final SSE chunk. The shared httpx.AsyncClient / requests.Session live in http_client.py;
+close() releases them on shutdown.
 """
 import asyncio
 import logging
@@ -16,13 +11,14 @@ from typing import List, Dict, Any, Tuple, Optional
 from config import HEALTH_CHECK_INTERVAL_SEC, PROVIDER_DEFAULT_TIMEOUT
 
 from .payload import build_llama_payload
-from .streaming import chat_stream as _chat_stream
+from .streaming import chat_stream as _chat_stream, _thinking_policy_for
+from .thinking import normalize_mode
 from .non_streaming import chat_non_streaming as _chat_non_streaming
 from .health import HealthChecker
 from .server import get_current_model as _get_current_model
 from .ocr import ocr_transcribe as _ocr_transcribe
 from .status import status_message as _status_message
-from .http_client import close_async_client, close_sync_session
+from .http_client import close_async_client
 
 from ..base import BaseProvider
 from ..token_stats import TokenStats
@@ -64,7 +60,6 @@ class LlamaProvider(BaseProvider):
             except Exception as e:
                 logger.warning(f"Registry shutdown issue (ignored): {e}")
         await close_async_client()
-        close_sync_session()
         logger.info("LlamaProvider closed — HTTP pool released")
 
     # ---- chat_stream ----
@@ -74,15 +69,18 @@ class LlamaProvider(BaseProvider):
         messages: List[Dict],
         websocket: Any,
         temperature: float = 0.7,
-        enable_thinking: bool = False,
+        enable_thinking=None,
         conv_id: str = None,
         tools: list = None,
         stop_event: Optional[asyncio.Event] = None,
         context_window: Optional[int] = None,
     ) -> Tuple[str, TokenStats]:
-        """Stream chat completions from llama.cpp.
-        Returns a tuple of (response_string, TokenStats) where TokenStats contains real
-        token counts from llama.cpp's final SSE response chunk.
+        """Stream chat completions from llama.cpp; returns (response_string, TokenStats) with the
+        real counts from the final SSE chunk.
+
+        enable_thinking: bool (show reasoning) or a canonical level "none"/"low"/"medium"/"high";
+        a level is translated into this model's vocabulary by its ThinkingPolicy and sent as
+        chat_template_kwargs (see streaming._resolve_thinking).
         """
         return await _chat_stream(
             api_url=self._api_url,
@@ -104,14 +102,18 @@ class LlamaProvider(BaseProvider):
         model: str,
         messages: List[Dict],
         temperature: float = 0.7,
+        enable_thinking=None,
     ) -> str:
-        """Non-streaming chat completion. Returns the response string."""
+        """Non-streaming chat completion; returns the response string. enable_thinking accepts a
+        canonical thinking level string (see chat_stream).
+        """
         return await _chat_non_streaming(
             api_url=self._api_url,
             timeout=self._timeout,
             model=model,
             messages=messages,
             temperature=temperature,
+            thinking_mode=enable_thinking if isinstance(enable_thinking, str) else None,
         )
 
     # ---- build_payload ----
@@ -122,39 +124,38 @@ class LlamaProvider(BaseProvider):
         *,
         stream: bool = True,
         temperature: float = 0.7,
+        enable_thinking=None,
         tools: list = None,
+        thinking_kwargs: Dict = None,
     ) -> Dict:
-        """Build the request payload for llama.cpp (OpenAI-compatible).
+        """Build the llama.cpp (OpenAI-compatible) request payload.
 
-        Note: Messages should already be converted for vision format before
-        calling this. Use converter.convert_messages_for_vision() if needed.
-        if you have Ollama-style messages with 'images' keys.
+        Messages must already be in vision format (converter.convert_messages_for_vision for
+        Ollama-style 'images' keys). enable_thinking is a bool or a canonical level; a level is
+        translated by this endpoint's ThinkingPolicy into chat_template_kwargs. An explicit
+        thinking_kwargs overrides that translation; anything else sends no thinking keys.
         """
+        if thinking_kwargs is None and isinstance(enable_thinking, str):
+            mode = normalize_mode(enable_thinking)
+            if mode:
+                thinking_kwargs = _thinking_policy_for(self._api_url, model).kwargs(mode) or None
         return build_llama_payload(
             model, messages, stream=stream, temperature=temperature, tools=tools,
+            thinking_kwargs=thinking_kwargs,
         )
 
     # ---- health_check ----
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
-        """Check llama.cpp health. Returns (is_healthy, error_message, model_names).
-
-        Async: awaits the HealthChecker's pooled httpx probe
-        on the caller's loop instead of blocking it with a sync requests call.
+        """llama.cpp health check -> (is_healthy, error_message, model_names), via the pooled
+        httpx probe on the caller's loop.
         """
         return await self._health.health_check(force=force)
 
     # ---- get_models_list ----
     async def get_models_list(self) -> List[Dict]:
-        """Return list of ALL available models from disk (llama_server/models/*.gguf).
+        """All models on disk (llama_server/models/*.gguf): name, size, on_disk, loaded.
 
-        Each dict has:
-          - name: the model filename
-          - size: file size in bytes
-          - on_disk: True
-          - loaded: True if currently loaded in server
-
-        Async: disk scan runs off-loop, /v1/models probe uses
-        the shared httpx pool.
+        Disk scan runs off-loop; the /v1/models probe uses the shared httpx pool.
         """
         return await self._health.get_models_list()
 
@@ -164,13 +165,8 @@ class LlamaProvider(BaseProvider):
 
     # ---- get_current_model ----
     async def get_current_model(self, force: bool = False) -> Optional[str]:
-        """Get the currently loaded model name.
-
-        force=True bypasses the fresh in-memory cache and verifies via /v1/models
-        (used right after a switch so the new model is reported immediately).
-
-        Async: the /v1/models verification uses the shared httpx
-        pool; the fresh-cache fast path stays a zero-HTTP in-memory read.
+        """Currently loaded model name. force=True skips the in-memory cache and verifies via
+        /v1/models (used right after a switch).
         """
         return await _get_current_model(self._api_url, force=force)
 

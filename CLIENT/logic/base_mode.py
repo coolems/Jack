@@ -1,12 +1,8 @@
 """Shared base code for normal and agentic chat modes.
 
-Contains:
-- BaseModeConfig: Common configuration dataclass (12 shared fields)
-- build_messages(): Shared message list builder (system + history + user + images)
-- strip_images_from_messages(): Remove 'images' keys so a non-vision model can still answer
-- attach_images_to_current_user_message(): Re-inject tool-viewed base64 pixels into the loop
-- is_vision_unavailable_error(): Detect "no mmproj" provider errors
-- push_token_stats(): Async helper to send token stats via WebSocket
+BaseModeConfig (shared fields), build_messages(), strip_images_from_messages(),
+attach_images_to_current_user_message(), is_vision_unavailable_error(), push_token_stats()
+and the session-stats helpers.
 """
 
 import logging
@@ -24,12 +20,11 @@ logger = logging.getLogger("COOLEMS.Logic.Base")
 
 
 class SessionTimer:
-    """Active-time timer for one chat turn (session stats).
-    Measures how long a generation turn has actually been WORKING. Time spent waiting on
-    user-decision menus (python_exec approval cards, URL consent dialogs) is PAUSED and does
-    not count toward the reported session duration - that is what makes "current session
-    time" honest: a 20-minute approval wait adds zero seconds to the number shown in the UI
-    status bar.
+    """Active-time timer for one chat turn.
+
+    Counts only time actually spent working: waiting on a user-decision menu (python_exec
+    approval, URL consent) is paused, so an approval wait adds nothing to the session time
+    shown in the UI status bar.
     """
 
     def __init__(self):
@@ -80,10 +75,15 @@ class BaseModeConfig:
     """Base configuration shared by both normal and agentic chat modes"""
     model: str = MODEL_NAME
     temperature: float = PROVIDER_DEFAULT_TEMPERATURE
-    enable_thinking: bool = False
+    # Thinking: bool (show reasoning or not) or canonical level
+    # "none"/"low"/"medium"/"high". A level is forwarded to the SERVER, which translates
+    # it into the serving model's own vocabulary (app/providers/llama/thinking.py). Keep
+    # the value as-is on every hop - coercing it with bool() would erase the level.
+    enable_thinking: Any = False
     provider: Optional[BaseProvider] = None
-    agent_name: str = "Jack"
-    dna_content: str = ""
+    # The finished system prompt for this turn, delivered by the SERVER
+    # (identity + tool contract, or identity only for plain chat).
+    system_prompt: str = ""
 
     # File handling
     image_data: List[str] = field(default_factory=list)
@@ -130,8 +130,8 @@ _TURN_STATS_LINE_RE = re.compile(r"(?m)^[ \t]*Loop stats:\s*\d+\s*/\s*\d+[^\n]*$
 def strip_turn_stats_lines(text: str) -> str:
     """Remove spliced "Loop stats:" lines from a text (exact shape only).
 
-    Collapses the 3+ newlines left behind into a paragraph break. Returns the input
-    unchanged when no such line is present.
+    Collapses the blank lines left behind into one paragraph break; returns the input as-is
+    when no such line exists.
     """
     if not isinstance(text, str) or "Loop stats:" not in text:
         return text
@@ -143,11 +143,10 @@ def strip_turn_stats_lines(text: str) -> str:
 
 
 def strip_turn_stats_from_messages(messages: List[Dict]) -> int:
-    """Strip spliced "Loop stats:" lines from assistant history messages (in place).
+    """Strip spliced "Loop stats:" lines from assistant history messages, in place.
 
-    Called by build_messages() so the model never sees a past turn's stats line and can't
-    copy it into its answer. The UI is unaffected - it renders the persisted text, where
-    each old answer keeps exactly one line. Returns the number of lines removed.
+    build_messages() calls this so the model never sees a past turn's stats line. The UI is
+    unaffected - it renders the persisted text. Returns the number of lines removed.
     """
     removed = 0
     for msg in messages or []:
@@ -174,22 +173,10 @@ def build_messages(
     user_message_content: str,
     image_data: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """
-        Build the messages list for provider calls.
+    """Build the provider message list: [system] + history[:-1] + current user message.
 
-        Standard pattern used by both normal and agentic modes:
-            [system_prompt] + history[:-1] + current_user_message(with images?)
-
-        Args:
-            system_prompt: The full system prompt text.
-            conversation_history: Full conversation history (includes last user message at end).
-            user_message_content: The enhanced user message text for the current turn.
-            image_data: Optional list of base64-encoded images to attach.
-
-        Returns:
-            List of message dicts ready for provider call. The final (current user)
-            prompt carries `_protect: True` so the agentic atomic trimmer can never
-            remove it - see utils/history_trimmer.safe_trim_history.
+    image_data attaches base64 pixels to the final user message. That message carries
+    _protect: True so utils/history_trimmer.safe_trim_history can never remove it.
     """
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(conversation_history[:-1])  # Exclude last user message from history
@@ -214,19 +201,10 @@ def build_messages(
 def strip_images_from_messages(messages: List[Dict]) -> int:
     """Remove the 'images' key (base64 blobs) from every message, in place.
 
-    Self-healing fallback for a loaded model with no multimodal projector: llama.cpp rejects
-    image input with HTTP 500, which would kill the whole turn even though the text question
-    is fine. The prompt already lists the saved filenames of attached images, so the model can
-    still say WHICH files exist and transcribe them via OCR without pixels.
-
-    Args:
-        messages: list as built by build_messages() (mutated in place).
-
-    Returns:
-        Number of base64 image blobs removed.
-
-    Each stripped message's cached `_est_tokens` is dropped: estimate_message_tokens() caches
-    on the dict, so the budget would keep charging pixels that are no longer in the payload.
+    Fallback for a model with no multimodal projector: llama.cpp rejects image input with
+    HTTP 500, but the prompt already lists the saved filenames, so the model can still name
+    the files and read them via OCR. Drops each stripped message's cached _est_tokens so the
+    budget stops charging for pixels that are gone. Returns the number of blobs removed.
     """
     removed = 0
     for msg in messages or []:
@@ -246,12 +224,11 @@ MAX_ATTACHED_IMAGES_PER_TURN = 8            # total images (user-uploaded + tool
 
 
 def attach_images_to_current_user_message(messages: List[Dict], new_b64_list: List[str]) -> int:
-    """Re-attach base64 images (from tool results like view_image) to the protected
-    CURRENT user message so the NEXT provider call carries real pixels.
-    Attaching to the protected current-user prompt keeps exactly ONE copy in flight: it
-    rides on the next provider call, then gets stripped by sanitize_images_in_history when
-    that turn is persisted/loaded back.
-    Dedupes by base64 content and caps size per image (oversized blobs are skipped).
+    """Attach tool-viewed base64 images to the protected CURRENT user message.
+
+    Keeps exactly one copy in flight: it rides the next provider call, then
+    sanitize_images_in_history strips it when the turn is persisted. Dedupes by base64
+    content and skips oversized blobs.
     """
     if not messages or not new_b64_list:
         return 0
@@ -313,16 +290,10 @@ def is_vision_unavailable_error(error: BaseException) -> bool:
 
 
 async def push_token_stats(websocket: Any, stats: Any, loop_stats: Optional[Dict] = None):
-    """Push token statistics to the UI via WebSocket.
+    """Push token statistics to the UI over the per-user WebSocket.
 
-    Lazy-imports send_token_stats to avoid circular imports:
-        logic -> app.websocket.message_types -> app.websocket.__init__ -> handler -> from logic import ... (CIRCULAR!)
-
-    Args:
-        websocket: The active WebSocket connection (per-user).
-        stats: TokenStats object returned by provider.chat_stream().
-        loop_stats: Optional dict with react_loop counters for agentic mode UI display.
-                    Contains "loop_tools" and "loop_no_tools".
+    send_token_stats is imported lazily to keep the logic <-> app.websocket import graph
+    acyclic. loop_stats carries the agentic react-loop counters for the UI.
     """
     if not websocket or not stats:
         return
@@ -347,17 +318,11 @@ def check_stop_event(config: Any) -> Optional[str]:
 
 
 def build_session_stats(config: Any) -> Dict[str, float]:
-    """Collect the per-turn session stats for the UI status bar.
+    """Per-turn session stats for the UI status bar.
 
-        Returns a dict with:
-            - "session_elapsed_sec": active seconds of the CURRENT turn so far
-              (approval-menu pauses excluded; 0.0 when no timer was attached)
-            - "last_session_sec": duration of the PREVIOUS completed turn
-
-        The cumulative generated-token counter lives in react_loop.py (agentic mode,
-        where multiple provider calls happen per turn); normal mode reports its single
-        call's tokens directly from TokenStats.
-
+    Keys: "session_elapsed_sec" (active seconds of the current turn, pauses excluded) and
+    "last_session_sec" (the previous completed turn). Cumulative generated tokens are counted
+    in react_loop.py; normal mode reports its single call's TokenStats directly.
     """
     elapsed = 0.0
     timer = getattr(config, "session_timer", None)

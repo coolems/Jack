@@ -31,10 +31,3 @@ def model_key(value: str) -> str:
     if base.endswith(".gguf"):
         base = base[: -len(".gguf")]
     return base
-
-
-def keys_match(a: str, b: str) -> bool:
-    """True when two identifiers/paths refer to the same model (canonical comparison)."""
-    ka = model_key(a)
-    kb = model_key(b)
-    return bool(ka) and ka == kb

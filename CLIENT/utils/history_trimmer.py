@@ -173,13 +173,6 @@ def safe_trim_history(
 
     return messages
 
-
-def is_over_token_limit(messages: List[Dict], max_tokens: int) -> bool:
-    """Quick check if messages exceed token limit without modifying."""
-    current_tokens = sum(estimate_message_tokens(m) for m in messages)
-    return current_tokens > max_tokens
-
-
 def get_token_count(messages: List[Dict]) -> int:
     """Total estimated tokens (uses per-message cached counts when available)."""
     return sum(estimate_message_tokens(m) for m in messages)

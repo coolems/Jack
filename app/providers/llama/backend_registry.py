@@ -1,19 +1,15 @@
 """Multi-instance LLM backend registry.
 
-The hand-editable config/llama_servers.json is the single source of truth for WHICH llama
-servers we talk to. This module turns that list into live, tracked backends:
-  * LlmBackend - one llama-server instance (host:port): provider handle, health state,
-    busy counter, DISCOVERED capacity (/props.total_slots), per-slot context, loaded model
-    and llama.cpp build. LOCAL instances are reconciled at boot by the node launcher
-    (attach to a healthy matching node, else spawn one from config/llama_node.json);
-    remote instances (LAN machines) are ATTACH-ONLY.
-  * Shutdown: stop_all terminates ONLY backends WE spawned (spawned_by_us=True, tracked
-    Popen). A node started outside us is attached but never killed on SERVER exit.
-  * LlmBackendRegistry - all backends with start_all/stop_all, a periodic health+props
-    poller, a capacity-aware acquisition helper and a snapshot for logs and the table.
-
-When llama_servers.json holds only the local entry this is the single-server path: same
-process, same port, one slot.
+config/llama_servers.json decides WHICH llama servers we talk to; this module turns that
+list into live, tracked backends:
+  * LlmBackend - one instance (host:port): provider handle, health, busy counter,
+    discovered capacity (/props.total_slots), per-slot context, loaded model, llama.cpp
+    build and its ThinkingPolicy. LOCAL instances are reconciled at boot by the node
+    launcher (attach to a healthy matching node, else spawn from config/llama_node.json);
+    remote instances are attach-only.
+  * LlmBackendRegistry - start_all/stop_all, a periodic health+props poller, a
+    capacity-aware acquisition helper and a snapshot for logs and the table. stop_all
+    terminates only backends we spawned (spawned_by_us=True with a tracked Popen).
 """
 
 import asyncio
@@ -32,6 +28,7 @@ from config import (
 )
 from .model_state import key_for_api_url
 from .model_identity import model_basename, model_key as model_key_of
+from .thinking import ThinkingPolicy
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Registry")
 
@@ -39,6 +36,20 @@ logger = logging.getLogger("COOLEMS.Provider.Llama.Registry")
 def _is_local(host: str) -> bool:
     """Local instances are the ones we may spawn processes for."""
     return host.lower() in ("127.0.0.1", "localhost", "::1")
+
+
+def _startup_reasoning_enabled() -> bool:
+    """True when a llama node we spawn is started with --reasoning.
+
+    That flag is startup-only: llama.cpp separates reasoning into reasoning_content even for
+    a template with no request knob, so the UI can display thinking but no request can turn
+    it off. Read lazily so a test or CLI override of config is honored.
+    """
+    try:
+        import config as _cfg
+        return bool(getattr(_cfg, "LLAMA_SERVER_REASONING", False))
+    except Exception:  # pragma: no cover - defensive
+        return False
 
 
 class LlmBackend:
@@ -79,6 +90,12 @@ class LlmBackend:
         self.model_aliases: set[str] = set()
         self.model_label: str = ""               # display basename
         self.build: str = ""                     # llama.cpp build_info
+        # What this node's baked chat template lets a request control about reasoning.
+        # Discovered from /props (template text + caps), never hardcoded: one model offers
+        # enable_thinking + reasoning_effort in its own words, another only a toggle,
+        # another nothing at all. An entry's optional 'thinking' block pins it.
+        self.thinking: ThinkingPolicy = ThinkingPolicy.none()
+        self.thinking_override = getattr(instance, "thinking", None)
         self.props_at: float = 0.0
         self.props_error: str = ""
         # Discovery-driven spawn: how many times we relaunched a LOCAL instance to match
@@ -90,6 +107,7 @@ class LlmBackend:
         self._warned_ctx = False
         self._warned_cap = False
         self._warned_props = False
+        self._warned_thinking = False
 
         # --- error provenance (shown in the fleet table / error frames) ------------
         self.last_error: str = ""
@@ -116,15 +134,9 @@ class LlmBackend:
 
     @property
     def capacity(self) -> int:
-        """Effective concurrent-request capacity for routing (discovery-driven).
-
-        * no explicit config value (local or remote): whatever the node reports via
-          /props.total_slots - this is the default path, 1 until the first poll lands;
-        * explicit config value + not yet discovered: that value (it is also the spawn
-          --parallel for local instances);
-        * explicit config value AND reported: min(cap, reported) so we never over-admit.
-
-        Never exceeds LLAMA_MAX_CONCURRENCY.
+        """Concurrent-request capacity for routing: discovered /props.total_slots when no config
+        value is set; otherwise min(config value, reported) so we never over-admit. Never exceeds
+        LLAMA_MAX_CONCURRENCY.
         """
         configured = self.configured_capacity
         reported = self.total_slots if self.total_slots and self.total_slots > 0 else None
@@ -156,11 +168,9 @@ class LlmBackend:
     def serves_model(self, model_key: str) -> bool:
         """True when requests for this canonical model key may run on this backend.
 
-        One endpoint serves one model under SEVERAL ids: ``/props`` names
-        the GGUF file, ``/props.model_alias`` and ``/v1/models`` report the alias id the
-        CLIENT picker shows and sends. Both must route to the same slot group, otherwise
-        the worker's routing guard rejects a request for the very model this backend
-        serves - and with ``parallel`` slots that is every request, not just one.
+        One endpoint serves one model under several ids (/props file name, /props.model_alias and
+        /v1/models alias), and all of them must route to the same slot group or the worker's
+        routing guard rejects every request.
         """
         if not model_key:
             return False
@@ -172,9 +182,8 @@ class LlmBackend:
     async def refresh_props(self) -> bool:
         """Read /props: slots, per-slot context, loaded model and llama.cpp build.
 
-        This is how the brain learns what a node actually runs. Failures are recorded
-        (props_error) but never mark the backend unhealthy by themselves - /health owns
-        that decision; a node may briefly not expose /props while loading.
+        This is how the brain learns what a node runs. Failures are recorded in props_error but
+        never mark a backend unhealthy - /health owns that decision.
         """
         from .http_client import get_async_client
         try:
@@ -220,9 +229,41 @@ class LlmBackend:
                 return False
 
             self.build = str(data.get("build_info") or "")
+            # Thinking controls read from the template text itself (the only trustworthy
+            # source) and folded with chat_template_caps; an entry's 'thinking' block pins
+            # anything it states.
+            #
+            # A policy demoted at runtime (streaming._demote_thinking: the endpoint rejected
+            # our thinking keys) survives this re-discovery - otherwise the props poll would
+            # resurrect a knob proved broken and every turn would fail again. An operator
+            # 'thinking' block overrides that: pinning it states the controls really work.
+            demoted = self.thinking if self.thinking.source == "runtime" else None
+            policy = ThinkingPolicy.from_props(data, model_name=self.model_label or raw_model)
+            resolved = ThinkingPolicy.from_override(self.thinking_override, policy)
+            if demoted is not None and self.thinking_override is None:
+                self.thinking = demoted
+            else:
+                self.thinking = resolved
+                if resolved.source == "template" and not self._warned_thinking:
+                    self._warned_thinking = True
+                    logger.info(
+                        "[REGISTRY] %s thinking controls: %s%s (model values %s)",
+                        self.label, resolved.levels(),
+                        f" preserve={resolved.preserve}" if resolved.preserve else "",
+                        resolved.efforts or "none",
+                    )
         except Exception as e:  # malformed /props payload - keep whatever we already had
             self.props_error = f"unparseable /props: {e}"
             return False
+
+        # A node that exposes no template knob can still SEPARATE reasoning out when it
+        # was started with --reasoning (LLAMA_SERVER_REASONING): nothing can then turn
+        # thinking off per request, but the UI may still offer to display it.
+        if self.thinking.source == "none" and _startup_reasoning_enabled():
+            self.thinking = ThinkingPolicy(
+                emit_only=True, source="emit",
+                hint="reasoning is separated by the node's --reasoning flag; "
+                     "the request cannot change it")
 
         self.props_at = time.time()
         self.props_error = ""
@@ -258,11 +299,10 @@ class LlmBackend:
     # --- health ---------------------------------------------------------------
 
     async def probe_health(self) -> bool:
-        """One /health round-trip (+ /props on success). Marks healthy/unhealthy.
+        """One /health round-trip (+ /props on success); marks healthy/unhealthy.
 
-        /props is refreshed BEFORE the healthy flag/event is published: workers wake on
-        the event and immediately take the next request for ``model_key``, so the model
-        key and capacity must already be up to date or they would wait on a stale group.
+        /props is refreshed before the healthy flag/event is published, so workers waking on the
+        event already see the current model key and capacity.
         """
         from .http_client import get_async_client
         try:
@@ -346,15 +386,16 @@ class LlmBackend:
             "slots": self.capacity,
             "ctx_per_slot": self.ctx_per_slot,
             "build": self.build,
+            "thinking": self.thinking.describe(),
         }
 
     # --- lifecycle ------------------------------------------------------------
 
     async def ensure_started(self) -> bool:
-        """Make sure this instance is up. Local: reconcile (attach or spawn); remote: probe only.
-        (discovery model) The SPAWN slot count is the explicit config value when present,
-        else LLAMA_SERVER_PARALLEL as a launch fallback - after /props lands the DISCOVERED
-        total_slots own routing capacity and the worker pool reconciles to it.
+        """Make sure this instance is up: local = reconcile (attach or spawn), remote = probe.
+
+        The spawn --parallel count is the explicit config value, else LLAMA_SERVER_PARALLEL;
+        after /props lands the discovered total_slots owns routing capacity.
         """
         if not self.spawnable:
             return await self.probe_health()
@@ -492,9 +533,8 @@ class LlmBackend:
 class LlmBackendRegistry:
     """All configured backends, started together and health-polled.
 
-         ``from_config(kind="strata")`` builds the same registry over
-        config/strata_servers.json instead of config/llama_servers.json - every backend then
-        reports ``kind="strata"`` and is attach-only.
+    from_config(kind="strata") builds the same registry over config/strata_servers.json:
+    every backend then reports kind="strata" and is attach-only.
     """
 
     def __init__(self, instances: list[LlamaServerInstance]):
@@ -522,7 +562,8 @@ class LlmBackendRegistry:
     # --- accessors ------------------------------------------------------------
 
     def primary(self) -> LlmBackend:
-        """First configured backend (legacy single-instance code paths point at it)."""
+        """First configured backend - the entry single-instance code paths use.
+        """
         return next(iter(self.backends.values()))
 
     def get_by_key(self, key: tuple[str, int]) -> Optional[LlmBackend]:
@@ -553,11 +594,9 @@ class LlmBackendRegistry:
     def canonical_model_key(self, model: str) -> str:
         """The queue key a request for *model* must use.
 
-         Workers poll ONE queue per backend - the backend's canonical
-        ``model_key``. A client may name the model by an alias id (``//models``), whose
-        key would land in a FIFO no worker reads, so the request is re-keyed to the group
-        that serves it. Falls back to the caller's key when no backend claims the model
-        (the "no node serves this" path then reports it as asked).
+        Workers poll one queue per backend's canonical model_key, so an alias id from the client
+        is re-keyed to the group that serves it. Falls back to the caller's key when no backend
+        claims the model, which is then reported as "no node serves this".
         """
         want = model_key_of(model)
         if not want:
@@ -640,9 +679,20 @@ class LlmBackendRegistry:
                 "busy": b.busy,
                 "error": b.props_error or b.last_error,
                 "error_count": b.error_count,
+                # what a request to this node may control about reasoning
+                "thinking": b.thinking.describe(),
             }
             for b in self.backends.values()
         ]
+
+    def thinking_for_model(self, model: str) -> ThinkingPolicy:
+        """Thinking policy of every node serving *model*, merged (ThinkingPolicy.merge).
+
+        The intersection: the catalog must offer only levels every serving node accepts, or a
+        request routed to the weaker node fails at template render time. Healthy state is
+        irrelevant - a node that is merely down still defines what the template allows.
+        """
+        return ThinkingPolicy.merge([b.thinking for b in self.backends_for_model(model)])
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -728,17 +778,10 @@ class LlmBackendRegistry:
         return any_ok
 
     async def stop_all(self) -> None:
-        """Stop the instances WE spawned. Remotes and ATTACHED nodes are left running.
+        """Stop the instances WE spawned; remotes and attached nodes keep running.
 
-                A node started outside us (admin launcher via
-                utils/start_llama_node, or a manual llama-server we merely attached to) is NOT
-                terminated on SERVER exit - it survives for other users of the machine. Only
-                backends with spawned_by_us=True and a live tracked Popen are stopped.
-
-                Attach-only backends (`spawnable=False`: remotes and every Strata
-                endpoint) are skipped outright - Strata's process belongs to Strata, and killing it
-                on SERVER exit would take the local inference endpoint down for everything else.
-
+        Only backends with spawned_by_us=True and a live tracked Popen are terminated.
+        Attach-only backends (spawnable=False: remotes and every Strata endpoint) are skipped.
         """
         from .process_mgmt import _server_processes, _terminate_process
         for b in self.backends.values():

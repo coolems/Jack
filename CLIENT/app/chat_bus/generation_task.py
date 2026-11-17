@@ -17,7 +17,6 @@ from app.cycle_recorder import CycleRecorder
 from app.websocket.message_types import (
     send_recovery_warning,
     send_system,
-    send_error,
     send_provider_error,
     send_execution_fail,
     send_search_web_suggestion,
@@ -33,7 +32,6 @@ from app.db_manager import get_db_connection, close_db_connection
 from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_config
 from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
 from logic.normal import get_ollama_status_message
-import app.prompts as _app_prompts
 from utils.retry import retry_with_backoff
 
 logger = logging.getLogger("COOLEMS.ChatBus")
@@ -138,7 +136,7 @@ class _StatusSink:
 
 
 async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path: str,
-                              provider, agent, tool_orchestrator, ws_key: str | None,
+                              provider, tool_orchestrator, ws_key: str | None,
                               stop_events: dict, prepared: dict, api_timeout: int):
     """Run ONE chat turn to completion in the background.
 
@@ -158,7 +156,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     media_files = prepared["media_files"]
     requires_tools = prepared["requires_tools"]
     ollama_tools = prepared["ollama_tools"]
-    dna_content = prepared["dna_content"]
+    system_prompt = prepared["system_prompt"]
     user_msg = prepared["user_msg"]
 
     # fresh state for this turn (the channel outlives it)
@@ -270,9 +268,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                     model=model,
                     enable_thinking=enable_thinking,
                     provider=provider,
-                    agent_name=agent.get_name(),
-                    dna_content=dna_content,
-                    generic_tool_prompt=_app_prompts.GENERIC_TOOL_PROMPT,
+                    system_prompt=system_prompt,
                     image_data=image_data,
                     image_paths=image_paths,
                     file_contents=file_contents,
@@ -301,8 +297,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                 model=model,
                 enable_thinking=enable_thinking,
                 provider=provider,
-                agent_name=agent.get_name(),
-                dna_content=dna_content,
+                system_prompt=system_prompt,
                 image_data=image_data,
                 image_paths=image_paths,
                 file_contents=file_contents,
@@ -388,10 +383,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                 # where the answer sits in the history.
                 answer_msg_id = save_assistant_message(db_path, conv_id, final_response)
                 channel._answer_persisted = True  # (2026-09-09 audit) answer is now in the DB
-                agent.learn_lesson(
-                    f"Completed interaction: {user_msg[:50]}...",
-                    "Handled user request successfully",
-                )
             except Exception as e:
                 logger.error(f"[CHATBUS] Failed to persist assistant message for conv={conv_id}: {e}")
 

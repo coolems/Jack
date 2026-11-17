@@ -18,12 +18,7 @@ _current_dir = os.path.dirname(os.path.abspath(__file__))
 # by the consumers that need it (``from tools.utils import ...``) - the CLIENT
 # sandbox never sees this file at all: shared_modules.py builds a synthetic
 # 'tools' namespace package instead of executing tools/__init__.py, and the
-# shared-source list ships utils.py itself. The old blanket re-export block
-# (is_text_file / read_text_file / MAX_* / *_EXTENSIONS / ToolOrchestrator /
-# AgentDNA / get_agent / the four agent_prompt names) had ZERO readers anywhere
-# in the repo (SERVER runs headless: app/initialization.py skips
-# ToolOrchestrator/Agent), so it was dead weight that also dragged
-# tool_orchestrator + dna + agent_prompt into every ``import tools``.
+# shared-source list ships utils.py itself.
 from .utils import EXCLUDED_FOLDERS
 # NOTE: tool detection lives on the CLIENT side only (CLIENT/app/detection.py).
 # The old server-side tools/tool_detection.py was removed as dead code (2026-08-23):

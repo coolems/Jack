@@ -24,7 +24,6 @@ def _create_direct_ws_ssl_context(cert_path="", key_path=""):
 
     logger.warning("[SERVER] No SSL certificates provided - generating self-signed certificate")
 
-    import cryptography
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     from cryptography.hazmat.primitives import hashes

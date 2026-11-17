@@ -2,10 +2,39 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Any, List, Optional
 
-class WebSocketChatMessage(BaseModel):
-    """Validated schema for incoming WebSocket chat messages from the client.
+# Thinking on the wire: a bool ("show reasoning or not") or a canonical level picked in
+# the UI. Levels are the only vocabulary sent - each model's own effort names
+# (xhigh / medium / low / thinking_budget...) are decided by the serving endpoint's
+# ThinkingPolicy from its chat template, so a client never sends a model-specific value.
+THINKING_MODES = ("none", "low", "medium", "high")
+_THINKING_ALIASES = {
+    "off": "none", "false": "none", "disabled": "none",
+    "on": "medium", "auto": "medium", "true": "medium", "think": "medium",
+    "xhigh": "high", "highest": "high", "max": "high",
+    "minimal": "low", "brief": "low",
+}
 
-    Replaces raw json.loads() + .get() pattern with strict validation.
+
+def normalize_thinking(value) -> Any:
+    """Canonical thinking level (str) or bool for anything the client sent.
+
+    An empty or unknown value becomes '' (no instruction): the SERVER then sends no thinking
+    keys and the model keeps its own default instead of getting a value its template rejects.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    raw = str(value).strip().lower()
+    if raw in THINKING_MODES:
+        return raw
+    if raw in _THINKING_ALIASES:
+        return _THINKING_ALIASES[raw]
+    return ""
+
+
+class WebSocketChatMessage(BaseModel):
+    """Validated schema for incoming WebSocket chat messages.
     """
     
     message: str = Field(
@@ -42,9 +71,10 @@ class WebSocketChatMessage(BaseModel):
         None,
         description="Legacy field (old UI builds only) - engine config lives in config/search_engines.json"
     )
-    enable_thinking: bool = Field(
+    enable_thinking: Any = Field(
         False,
-        description="Whether to enable model thinking/reasoning mode"
+        description="Thinking: legacy bool (show reasoning) or a canonical level "
+                    "'none' | 'low' | 'medium' | 'high' chosen from the model's capabilities"
     )
     # (2026-10-23 live steering) While an agentic turn is running the UI sends a normal
     # message payload with steer=True instead of submitting a new turn. The text is queued
@@ -88,70 +118,14 @@ class WebSocketChatMessage(BaseModel):
                 raise ValueError("File path contains invalid characters")
         return v
 
-class WebSocketErrorMessage(BaseModel):
-    """Schema for error responses sent back to the client."""
-    type: str = "error"
-    content: str
-    code: Optional[int] = None
+    @field_validator("enable_thinking")
+    @classmethod
+    def enable_thinking_must_be_bool_or_level(cls, v: Any) -> Any:
+        """Accept a bool or a level name; anything else means "no instruction".
 
-class WebSocketSystemMessage(BaseModel):
-    """Schema for system/status messages."""
-    type: str = "system"
-    content: str
-
-class WebSocketContentMessage(BaseModel):
-    """Schema for streamed content chunks."""
-    type: str = "content"
-    content: str
-
-class WebSocketToolStartMessage(BaseModel):
-    """Schema for tool invocation start notifications."""
-    type: str = "tool_start"
-    tool: str
-    input: str
-
-class WebSocketToolEndMessage(BaseModel):
-    """Schema for tool invocation end notifications."""
-    type: str = "tool_end"
-    tool: str
-    output: str
-
-class WebSocketDoneMessage(BaseModel):
-    """Schema for generation complete signal."""
-    type: str = "done"
-
-class WebSocketThinkingMessage(BaseModel):
-    """Schema for streamed thinking/reasoning chunks."""
-    type: str = "thinking"
-    content: str
-
-class WebSocketProviderErrorMessage(BaseModel):
-    """Schema for provider (Ollama/llama.cpp) error notifications."""
-    type: str = "provider_error"
-    error_type: str
-    content: str
-
-class WebSocketExecutionFailMessage(BaseModel):
-    """Schema for execution failure notifications."""
-    type: str = "execution_fail"
-    code: int
-    error_type: str
-    content: str
-
-class WebSocketImageGeneratedMessage(BaseModel):
-    """Schema for generated image notifications."""
-    type: str = "image_generated"
-    image_base64: str
-    file_path: Optional[str] = None
-    filename: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-
-class WebSocketSearchWebMessage(BaseModel):
-    """Schema for search-web link suggestions."""
-    type: str = "search_web"
-    query: str
-    link_text: str
+        Never raises: a typo must not reject the whole message, it only leaves the model's own
+        thinking default in place.
+        """
+        return normalize_thinking(v)
 
 # Aliases for backward compatibility
-ChatMessage = WebSocketChatMessage

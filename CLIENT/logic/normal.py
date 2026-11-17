@@ -1,17 +1,8 @@
-"""Normal chat mode logic - standard AI conversation without tools.
+"""Normal chat mode - a standard conversation without tools.
 
-Handles:
-- Building system prompt with agent DNA
-- Processing images and file contents
-- Streaming responses from the active provider (CoolemsClientProvider)
-- Pushing token stats to the UI via WebSocket (bulletproof per-user)
-- Error handling and fallbacks
-
-TOKEN STATISTICS (Bulletproof Per-Request):
-    After each chat_stream() call, the returned TokenStats is pushed to
-    the UI via WebSocket using send_token_stats(). This is bulletproof
-    because each WebSocket connection is tied to exactly one user/session.
-    No shared globals are used for per-user data.
+Builds the system prompt with agent DNA, processes images and file contents, streams the
+provider response and pushes TokenStats to the UI over WebSocket. Each WebSocket belongs
+to one user/session, so stats are per request with no shared globals.
 """
 
 
@@ -51,23 +42,13 @@ async def normal_mode(
 ) -> str:
     """Run normal chat mode (no tools).
 
-    After the provider returns, pushes TokenStats to the UI via WebSocket
-    so the user sees real token counts immediately. No polling needed.
-
-    The stop_event from config is passed through to the provider so that
-    when a user clicks the red stop button, the streaming loop inside
-    the provider aborts immediately.
+    Pushes the returned TokenStats to the UI over WebSocket. config's stop_event is passed to
+    the provider so the red stop button aborts the streaming loop immediately.
     """
-    # Build enhanced system prompt with DNA
-    enhanced_system_prompt = f"""{config.dna_content}
-
-## RESPONSE RULES
-- You are {config.agent_name}. This is your identity.
-- Never introduce yourself as anything else.
-"""
-
+    # The SERVER delivers the prompt for this turn (identity + identity lock);
+    # plain chat carries no tool contract.
     messages = build_messages(
-        system_prompt=enhanced_system_prompt,
+        system_prompt=config.system_prompt,
         conversation_history=conversation_history,
         user_message_content=f"\n{enhanced_message}",
         image_data=config.image_data,
@@ -140,20 +121,18 @@ async def stream_ollama(
     websocket: Any,
     temperature: float = None,
     timeout: int = None,
-    enable_thinking: bool = False,
+    # enable_thinking: bool or canonical level, forwarded verbatim.
+    enable_thinking: Any = False,
     conv_id: str = None,
     tools: list = None,
     provider=None,
     ollama_url: str = None,  # deprecated, ignored in CLIENT
     stop_event=None,
 ) -> str:
-    """Backward-compatible streaming wrapper.
+    """Stream one normal-mode turn through the active provider.
 
-    Uses the provided provider or falls back to ProviderManager active provider.
-    Now pushes TokenStats to the UI via WebSocket after the call.
-
-    Args:
-        ollama_url: Deprecated and ignored in CLIENT mode. Kept for API compatibility.
+    Uses the given provider or the ProviderManager active provider, then pushes TokenStats to
+    the UI. ollama_url is unused in CLIENT mode.
     """
     from config import PROVIDER_DEFAULT_TEMPERATURE
     if temperature is None:
@@ -181,12 +160,10 @@ async def call_ollama_non_streaming(
     provider=None,
     ollama_url: str = None,  # deprecated, ignored in CLIENT
 ) -> str:
-    """Backward-compatible non-streaming wrapper.
+    """Non-streaming completion through the active provider.
 
-    Uses the provided provider or falls back to ProviderManager active provider.
-
-    Args:
-        ollama_url: Deprecated and ignored in CLIENT mode. Kept for API compatibility.
+    Uses the given provider or the ProviderManager active provider. ollama_url is unused in
+    CLIENT mode.
     """
     from config import PROVIDER_DEFAULT_TEMPERATURE
     if temperature is None:
@@ -223,14 +200,8 @@ def get_ollama_status_message(
 
 
 def _resolve_provider(provider):
-    """Resolve the active provider.
-
-    Priority:
-      1. Explicitly passed provider argument
-      2. ProviderManager singleton (set at startup with CoolemsClientProvider)
-
-    Raises RuntimeError if no provider is available - this should never happen
-    in normal operation since code_client.py always sets up the provider.
+    """Resolve the active provider: explicit argument first, then the ProviderManager
+    singleton. Raises RuntimeError when neither is available.
     """
     if provider is not None:
         return provider

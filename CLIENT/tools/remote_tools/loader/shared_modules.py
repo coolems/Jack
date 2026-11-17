@@ -17,8 +17,8 @@ Guarantees:
   * Fail-closed integrity -- a promised SHA-256 prefix mismatch refuses exec.
   * Import-clean sources -- single-dot relative imports become absolute, and
     'from config import X' becomes an assignment from SERVER-shipped constants pre-exec.
-  * DNA anchoring -- app.dna.core's CWD-relative dna_dir is rewritten (delivered copy
-    only) to _CLIENT_DNA_DIR, so agent data lives in <CLIENT>/app/dna.
+  * DNA identity -- tools_response 'dna_data' is installed in MEMORY through the
+    delivered app.dna package (set_dna_data); the CLIENT writes no DNA file.
 """
 
 import importlib.machinery
@@ -42,16 +42,10 @@ def _client_root() -> str:
     """Absolute path of the CLIENT root folder (four levels up from this file).
 
     This file lives at <CLIENT>/tools/remote_tools/loader/shared_modules.py, so the
-    chain is loader -> remote_tools -> tools -> CLIENT. Going only three levels up would
-    return <CLIENT>/tools and make _client_dna_dir point at the stray
-    <CLIENT>/tools/app/dna instead of <CLIENT>/app/dna.
+    chain is loader -> remote_tools -> tools -> CLIENT. Going only three levels up
+    would return <CLIENT>/tools.
     """
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-
-def _client_dna_dir() -> str:
-    """The CLIENT's own app/dna directory -- where delivered DNA data belongs."""
-    return os.path.normpath(os.path.join(_client_root(), 'app', 'dna'))
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +104,8 @@ def sort_module_keys(keys) -> list[str]:
     """Sort module keys so parents install before children.
 
         Sort by dot-depth ONLY (stable), preserving the SERVER's send order among
-        same-depth modules -- e.g. app.dna.name/learning before app.dna.core/get_agent,
-        which import their siblings at module level.
+        same-depth modules -- e.g. app.dna.name before app.dna.core/get_agent, which
+        import their siblings at module level.
     """
     return sorted(keys, key=lambda k: k.count('.'))
 
@@ -276,7 +270,7 @@ def rewrite_relative_imports(source_code: str, package_name: str) -> str:
 def rewrite_config_imports(source_code: str, config_constants: Dict[str, Any]) -> str:
     """Replace 'from config import X' lines with real assignments from SERVER constants.
 
-    Delivered modules (e.g. app.dna.learning) may do module-level 'from config import NAME'.
+    Delivered modules/tools may do module-level 'from config import NAME'.
     The CLIENT has no SERVER config module, so each such line becomes an assignment using
     the value shipped by the SERVER in tools_response 'config_constants'. Names the SERVER
     did not ship become a no-op 'pass' (keeps any surrounding try/except valid).
@@ -306,81 +300,46 @@ def rewrite_config_imports(source_code: str, config_constants: Dict[str, Any]) -
         flags=_re.MULTILINE,
     )
 
+def inject_dna_data(dna_data: Optional[Dict[str, str]]) -> None:
+    """Install SERVER-shipped DNA identity JSON in MEMORY (no disk write).
 
-def rewrite_dna_dir(source_code: str) -> str:
-    """Anchor the delivered AgentDNA data dir to the CLIENT's own app/dna folder.
+    The SERVER sends identity.json in tools_response 'dna_data'. It is handed to
+    the delivered app.dna package through set_dna_data(), which makes the identity
+    read from memory instead of from any file. The CLIENT therefore keeps no DNA
+    folder and no DNA JSON on disk - nothing is written anywhere.
 
-    SERVER's tools/dna/core.py computes `self.dna_dir = os.path.join(base_dir, "tools", "dna")`
-    with base_dir defaulting to "." (CWD-relative). On a client process that resolves against
-    wherever CWD happens to be -- which is how stray <working_root>/tools/dna folders got
-    created. This rewrites ONLY that one line in the delivered copy to use _CLIENT_DNA_DIR,
-    which install_shared_modules() injects into exec_globals for key 'app.dna.core'.
-
-    The SERVER-side file is never modified; only the in-memory delivered copy is rewritten.
-    """
-    target_line = 'self.dna_dir = os.path.join(base_dir, "tools", "dna")'
-    if target_line not in source_code:
-        logger.debug(
-            "Loader: app.dna.core dna_dir line shape changed - skipping CLIENT anchor rewrite"
-        )
-        return source_code
-
-    rewritten = _re.sub(
-        r'^(\s*)self\.dna_dir\s*=\s*os\.path\.join\(base_dir,\s*"tools",\s*"dna"\)',
-        lambda m: f"{m.group(1)}self.dna_dir = _CLIENT_DNA_DIR",
-        source_code,
-        flags=_re.MULTILINE,
-    )
-    if rewritten != source_code:
-        logger.info("Loader: delivered AgentDNA dna_dir anchored to CLIENT app/dna (never working_root)")
-    return rewritten
-
-
-def sync_dna_data(dna_data: Optional[Dict[str, str]]) -> None:
-    """Sync SERVER-shipped DNA JSON state files into the CLIENT's own app/dna directory.
-
-        The SERVER sends identity/intelligence/lessons JSON in tools_response 'dna_data'.
-        Files are written to <CLIENT>/app/dna -- NEVER working_root or any user folder -- so
-        the delivered app.dna.* modules find them at their proper CLIENT location.
-
-        Each payload is validated as JSON before writing; a corrupt entry aborts the sync
-        with a warning (the SERVER is the source of truth, but we never write garbage).
-
+    A payload that does not parse as JSON is dropped with a warning (fail closed:
+    an agent must never speak from garbage identity).
     """
     if not dna_data:
         return
 
     import json as _json
-    client_dna_dir = _client_dna_dir()
-    try:
-        os.makedirs(client_dna_dir, exist_ok=True)
-        written = []
-        skipped = []
-        for fname, content in dna_data.items():
-            # Validate JSON before writing (server is source of truth; skip corrupt payloads)
+
+    payload = {}
+    for fname, content in dna_data.items():
+        try:
             _json.loads(content)
-            fpath = os.path.join(client_dna_dir, fname)
-            # Write-only-on-change (2026-10-31): if the file already holds exactly this
-            # content, do NOT rewrite it -- rewriting identical bytes only bumps mtime and
-            # creates spurious "modified" noise in file listings / git status.
-            try:
-                with open(fpath, 'r', encoding='utf-8') as f:
-                    if f.read() == content:
-                        skipped.append(fname)
-                        continue
-            except (FileNotFoundError, UnicodeDecodeError):
-                pass  # missing or unreadable -> write below
-            with open(fpath, 'w', encoding='utf-8') as f:
-                f.write(content)
-            written.append(fname)
-        if written:
-            logger.info("Loader: DNA data files synced to CLIENT location %s (%d written: %s)",
-                        client_dna_dir, len(written), ", ".join(written))
-        if skipped:
-            logger.debug("Loader: DNA data files unchanged, not rewritten (%s): %s",
-                         client_dna_dir, ", ".join(skipped))
-    except Exception as e:
-        logger.warning("Loader: failed to sync DNA data files: %s", e)
+        except Exception as e:
+            logger.warning("Loader: DNA payload '%s' is not valid JSON - dropped (%s)", fname, e)
+            continue
+        payload[fname] = content
+    if not payload:
+        return
+
+    dna_pkg = sys.modules.get('app.dna')
+    setter = getattr(dna_pkg, 'set_dna_data', None) if dna_pkg is not None else None
+    if not callable(setter):
+        logger.warning(
+            "Loader: app.dna.set_dna_data unavailable - DNA identity stays "
+            "unloaded (delivered app.dna.core missing?) "
+            "[delivered keys: %s]", sorted(k for k in sys.modules if k.startswith('app.dna'))
+        )
+        return
+
+    setter(payload)
+    logger.info("Loader: DNA identity installed in memory (%d file(s): %s) - no client disk write",
+                len(payload), ", ".join(payload))
 
 
 # ---------------------------------------------------------------------------
@@ -472,12 +431,6 @@ def install_shared_modules(sources: Dict[str, str],
             source_code = rewrite_relative_imports(source_code, full_mod_name.rsplit('.', 1)[0])
             source_code = rewrite_config_imports(source_code, config_constants)
 
-            # DNA anchoring: app.dna.core only -- its dna_dir line is rewritten to use the
-            # _CLIENT_DNA_DIR constant injected here (see rewrite_dna_dir docstring).
-            if mod_key == 'app.dna.core':
-                exec_globals['_CLIENT_DNA_DIR'] = _client_dna_dir()
-                source_code = rewrite_dna_dir(source_code)
-
             # Execute the source to populate the module's namespace.
             exec(source_code, exec_globals)
             mod.__dict__.update(exec_globals)
@@ -489,8 +442,8 @@ def install_shared_modules(sources: Dict[str, str],
             installed_count += 1
             logger.info("Loader: shared module '%s' installed (%d chars)", full_mod_name, len(source_code))
 
-        # DNA data sync runs AFTER all modules are in (see function docstring).
-        sync_dna_data(dna_data)
+        # DNA identity goes into memory AFTER all modules are installed (needs app.dna).
+        inject_dna_data(dna_data)
 
         # NOTE: no working_root propagation here - tools resolve it per turn via the
         # tools.utils ContextVar published by agentic_mode() from the conversation's DB row.

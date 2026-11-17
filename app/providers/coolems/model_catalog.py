@@ -1,18 +1,11 @@
-"""Model catalog - one list combining local disk models and served models.
+"""Model catalog - local disk models merged with models served by remote nodes.
 
-The brain may not hold every model on disk. Remote nodes run models the
-brain has never downloaded (e.g. Gemma on a GPU box while the brain only has Qwen). The
-CLIENT's model picker must still show them, so the catalog merges:
-
-  * local .gguf files found by the llama provider (disk scan), and
-  * every model any configured backend reports via /props.model_path.
-
-Each entry is annotated with ``served_by`` (per-node slots/health), ``served`` (at least
-one healthy node), ``online_slots`` and ``model_key``. Entries are deduplicated by the
-canonical model key, preferring the disk entry (it carries size/folder).
-
-The profile filter is applied LAST, so a user only sees the filenames their profile
-allows. No folder logic here - authorization is by filename (see auth_gateway).
+The brain may not hold every model on disk, so entries come from the llama provider's
+disk scan plus every model a configured backend reports via /props.model_path. Each entry
+carries served_by (per-node slots/health), served, online_slots, model_key and thinking
+(the merged ThinkingPolicy description for that model). Deduplicated by canonical model
+key, preferring the disk entry. The profile filter is applied last - authorization is by
+filename (see auth_gateway).
 """
 
 import logging
@@ -20,6 +13,7 @@ from typing import List
 
 from app.providers.llama.backend_registry import get_registry
 from app.providers.llama.model_identity import model_key as model_key_of
+from app.providers.llama.thinking import ThinkingPolicy
 
 logger = logging.getLogger("COOLEMS.Provider.ModelCatalog")
 
@@ -48,6 +42,7 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
         by_key[key] = entry
 
     reg = get_registry()
+    policies: dict[str, list] = {}
     if reg is not None:
         for b in reg.backends.values():
             if not b.model_key:
@@ -78,6 +73,9 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
             # remote groups do not both pretend to be "the loaded model".
             if b.healthy and b.local:
                 entry["loaded"] = True
+            # What a request to this model may control about reasoning, discovered
+            # from the serving node's chat template.
+            policies.setdefault(b.model_key, []).append(b.thinking)
 
             # (2026-11 strata) An endpoint can advertise the SAME model under alias ids
             # (/v1/models). Fold those entries into the served one so the picker shows ONE
@@ -96,6 +94,10 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
         entry["online_slots"] = online_slots
         entry["served"] = online_slots > 0
         entry.setdefault("loaded", False)
+        # Offer only what every serving node accepts. A model with no serving node keeps
+        # the "nothing discovered" policy: the picker shows the control as unavailable
+        # instead of promising levels we cannot honor.
+        entry["thinking"] = ThinkingPolicy.merge(policies.get(entry.get("model_key"), [])).describe()
         catalog.append(entry)
 
     # Served models first, then alphabetical - stable picker order.

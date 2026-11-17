@@ -372,5 +372,3 @@ class McpClient:
 
 #: Duck-typed check: a stdio transport owns a process and needs start(); the http
 #: transport is ready on the first request. Both live in protocol.py.
-def is_stdio_transport(transport) -> bool:
-    return hasattr(transport, "start") and hasattr(transport, "command")

@@ -111,9 +111,3 @@ async def broadcast_model_switch_status(status: str, message: str, model_name: s
 def get_active_count() -> int:
     """Return number of active WebSocket connections."""
     return len(_active_connections)
-
-
-def get_client_conversation_count(client_ip: str) -> int:
-    """Return total active conversation count for a client IP."""
-    conv_set = _client_conversations.get(client_ip, set())
-    return len(conv_set)

@@ -1,7 +1,6 @@
 """Tool fetcher — sends/receives tool code over WebSocket from SERVER."""
 
 import asyncio
-import json
 import logging
 from typing import Dict, Optional
 

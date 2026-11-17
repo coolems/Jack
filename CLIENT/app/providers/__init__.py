@@ -5,7 +5,7 @@ every tools_response under 'framework_sources' ('app.providers.base',
 'app.providers.token_stats'), and DynamicModuleLoader installs them IN MEMORY only
 (sys.modules). This shell resolves names lazily from those delivered modules, so
 `from app.providers import BaseProvider` works. The SERVER is the single source of truth
-for the provider contract, as it already is for tools/DNA/prompts.
+for the provider contract, as it already is for DNA and prompts.
 
 Boot order guarantee: RemoteToolOrchestrator.initialize_from_server runs during
 init_provider_and_app BEFORE get_provider is called and BEFORE uvicorn starts, so anything

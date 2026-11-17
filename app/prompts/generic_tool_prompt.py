@@ -1,6 +1,6 @@
 """Generic tool prompt constant - base template for agent tool usage"""
 
-from tools.agent_prompt.planning_prompt import PLANNING_PROMPT
+from .planning_prompt import PLANNING_PROMPT
 
 GENERIC_TOOL_PROMPT = """
 

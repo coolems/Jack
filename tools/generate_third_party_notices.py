@@ -45,7 +45,6 @@ LICENSE_TABLE = {
     "ddgs":              ("MIT",                 "deedy5 (verified: ddgs-9.16.0.dist-info/licenses/LICENSE.md)"),
     "fastapi":           ("MIT",                 "Sebastián Ramírez (tiangolo) and contributors"),
     "httpx":             ("BSD-3-Clause",        "Encode OSS Ltd."),
-    "nest-asyncio":      ("BSD-2-Clause",        "Pawel Chomik and contributors"),
     "playwright":        ("Apache-2.0",          "Microsoft Corporation and contributors"),
     "psutil":            ("BSD-3-Clause",        "Giampaolo Rodola' and contributors"),
     "pyautogui":         ("MIT",                 "Nathan Hoad et al."),

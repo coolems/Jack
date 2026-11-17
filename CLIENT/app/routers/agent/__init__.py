@@ -1,4 +1,4 @@
-"""Agent/Model endpoints - models, provider status, agent DNA, learning, stop generation.
+"""Agent/Model endpoints - models, provider status, agent DNA, stop generation.
 
 SECURITY BOUNDARY: the CLIENT resolves no permissions from profiles.json and scans no
 disk. The SERVER authenticates the key over WS and sends only what that role may use.
@@ -10,8 +10,8 @@ SETUP MODE: POST /api/auth/set-key writes the first API key while none is config
 the auth middleware lets only that path through, and only from loopback.
 
 One module per endpoint group, attached in order: auth_setup, settings, mcp_servers,
-search_engines, model_switching, python_exec_approval, question. The flat app/routers/agent.py
-is a re-export facade for create_agent_router."""
+search_engines, model_switching, python_exec_approval, question. create_agent_router()
+is defined here and is the package's only import surface."""
 
 from fastapi import APIRouter
 

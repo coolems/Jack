@@ -90,36 +90,6 @@ def _start_pipe_drainers(process: subprocess.Popen) -> None:
         t.start()
     logger.info(f"[LLAMA] Pipe drainers started for PID {process.pid} (stdout+stderr -> COOLEMS logs)")
 
-
-def _poll_stderr(process: subprocess.Popen, attempt_num: int) -> None:
-    """Poll stderr from a running process during startup wait loop.
-
-    When pipe drainers are active they own the pipes - reading here would
-    race with them and could swallow lines, so this becomes a no-op in that case.
-    The drainer threads already log every line to COOLEMS logs in real time.
-    """
-    if not process.stderr:
-        return
-
-    # Check if process already died (drainers handle the rest)
-    if process.poll() is not None:
-        logger.warning(f"[LLAMA STDERR] Process {process.pid} exited during startup wait (attempt {attempt_num}) — see [LLAMA STDOUT/STDERR] lines above for its last output")
-        return
-
-    # Drainers active -> they are logging everything; nothing to do here.
-    logger.debug(f"[LLAMA] Startup wait attempt {attempt_num}: process still loading (pipe drainers forwarding live logs)")
-
-
-def _check_stderr_early(process: subprocess.Popen) -> None:
-    """Try to read stderr from a running process without killing it.
-
-    With pipe drainers active the pipes are owned by the drainer threads,
-    so this is intentionally a no-op - any stderr output is already in the logs
-    under [LLAMA STDERR].
-    """
-    logger.debug(f"[LLAMA] Early stderr check for PID {process.pid}: pipe drainers own the streams (see [LLAMA STDERR] log lines)")
-
-
 def _log_process_error(process: subprocess.Popen) -> None:
     """Log final state of a process that failed to start.
 

@@ -39,8 +39,9 @@ class RemoteToolOrchestrator:
         # Config constants from SERVER (shared across ALL tools)
         self._config_constants: Dict[str, Any] = {}
 
-        # System prompt from SERVER — stored in memory only, never saved to disk
+        # Prompts from SERVER — stored in memory only, never saved to disk
         self._system_prompt: str = ""
+        self._chat_prompt: str = ""
 
         # Initialization tracking (2026-08-29 threadless refactor): no
         # threading.Lock and no executor. Everything runs on the single event
@@ -184,7 +185,7 @@ class RemoteToolOrchestrator:
 
             # FIX (2026-07-18): give the loader the SERVER config constants BEFORE installing
             # shared modules so delivered code with module-level 'from config import X' lines
-            # (e.g. app.dna.learning -> MODEL_NAME) can be rewritten to real assignments.
+            # (e.g. a delivered tool's MODEL_NAME) can be rewritten to real assignments.
             self._loader.set_config_constants(self._config_constants)
 
             # (2026-08-20 fail-closed integrity): SERVER ships SHA-256 prefixes for every
@@ -217,18 +218,22 @@ class RemoteToolOrchestrator:
                     fw_names = [k for k, v in framework_sources.items() if v]
                     logger.info(f"[INIT] Framework modules installed: {fw_names}")
 
-            # SYSTEM PROMPT: Extract and store in memory only (never saved to disk)
+            # SYSTEM PROMPT: the SERVER ships the finished prompts (tool turn + plain
+            # chat). Stored in memory only; the CLIENT composes nothing.
             system_prompt = result.get("system_prompt", "")
-            if system_prompt:
+            chat_prompt = result.get("chat_prompt", "")
+            if system_prompt or chat_prompt:
                 self._system_prompt = system_prompt
-                logger.info(f"[INIT] System prompt from SERVER ({len(system_prompt)} chars)")
-                # Also update the module-level GENERIC_TOOL_PROMPT so existing imports work
+                self._chat_prompt = chat_prompt
                 try:
                     from app.prompts import set_system_prompt_from_server
-                    set_system_prompt_from_server(system_prompt)
-                    logger.info("[INIT] Module-level GENERIC_TOOL_PROMPT updated")
+                    set_system_prompt_from_server(system_prompt, chat_prompt)
                 except Exception as e:
-                    logger.warning(f"[INIT] Failed to update module-level prompt: {e}")
+                    logger.warning(f"[INIT] Failed to store delivered system prompt: {e}")
+                logger.info(
+                    f"[INIT] Prompts from SERVER: system={len(system_prompt)} chars, "
+                    f"chat={len(chat_prompt)} chars"
+                )
 
             # (2026-08-29 threadless refactor): boot path calls this directly, so it
             # must mark the orchestrator initialized itself — otherwise the first
@@ -621,11 +626,12 @@ class RemoteToolOrchestrator:
         }
 
     def get_system_prompt(self) -> str:
-        """Get the system prompt received from SERVER (memory only).
-
-        Returns empty string if not yet delivered.
-        """
+        """Tool-turn system prompt received from SERVER ('' when not delivered)."""
         return self._system_prompt
+
+    def get_chat_prompt(self) -> str:
+        """Plain-chat prompt received from SERVER ('' when not delivered)."""
+        return self._chat_prompt
 
     def clear_tools(self):
         """Clear all cached tools (called on disconnect).
@@ -641,6 +647,7 @@ class RemoteToolOrchestrator:
         self._cache.clear_all()
         self.tools.clear()
         self._config_constants.clear()
-        self._system_prompt = ""  # Clear system prompt from SERVER too
+        self._system_prompt = ""  # Clear prompts from SERVER too
+        self._chat_prompt = ""
 
         logger.info("RemoteToolOrchestrator: all tools cleared")

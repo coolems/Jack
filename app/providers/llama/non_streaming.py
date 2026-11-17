@@ -1,7 +1,5 @@
-"""Non-streaming chat for llama.cpp provider.
-
-Uses shared async HTTP client pool from http_client module instead of sync
-requests.post() — this unblocks the event loop and enables connection reuse.
+"""Non-streaming chat for the llama.cpp provider, over the shared async HTTP client pool
+(http_client) so the event loop is never blocked and connections are reused.
 """
 import logging
 from typing import List, Dict, Optional
@@ -25,13 +23,18 @@ async def chat_non_streaming(
     messages: List[Dict],
     temperature: float = 0.7,
     headers: Optional[dict] = None,
+    thinking_mode: Optional[str] = None,
 ) -> str:
-    """Call llama.cpp model without streaming using shared async client pool.
+    """One non-streaming llama.cpp completion via the shared async client pool.
 
-    headers: optional per-request headers (Bearer auth for a
-    endpoint). None keeps the llama.cpp request exactly as before.
+    headers: per-request headers (Bearer auth); None keeps the plain llama.cpp request.
+    thinking_mode: canonical reasoning level ("none"/"low"/"medium"/"high") translated by the
+    serving node's ThinkingPolicy; None sends no thinking keys.
     """
     messages = convert_messages_for_vision(messages)
+
+    from .streaming import _resolve_thinking
+    _mode, thinking_kwargs, _display = _resolve_thinking(api_url, model, thinking_mode, False)
 
     llama_payload = build_llama_payload(
         model=model,
@@ -39,6 +42,7 @@ async def chat_non_streaming(
         stream=False,
         temperature=temperature,
         max_tokens=CONTEXT_WINDOW_TOKENS,
+        thinking_kwargs=thinking_kwargs,
     )
 
     try:
@@ -70,6 +74,16 @@ async def chat_non_streaming(
             if _looks_like_mmproj_error(err_text):
                 logger.error(f"[VISION] llama.cpp rejected image input: no mmproj loaded for '{model}'. Body: {err_text[:300]}")
                 raise make_vision_error(model) from None
+            # Same fallback rule as the streaming path: if we sent thinking keys and this
+            # endpoint rejected the request, its advertised knob is not usable - demote so
+            # later requests send nothing and still succeed.
+            from .streaming import _demote_thinking
+            if resp.status_code in (400, 422) or any(
+                    t in err_text.lower() for t in ("reasoning_effort", "enable_thinking",
+                                                    "thinking_budget", "chat_template_kwargs")):
+                _demote_thinking(api_url, model,
+                                 f"HTTP {resp.status_code}: {err_text.strip()[:160]}",
+                                 thinking_kwargs)
             raise RuntimeError(f"llama.cpp returned HTTP {resp.status_code}: {err_text.strip()[:300]}")
 
         data = resp.json()

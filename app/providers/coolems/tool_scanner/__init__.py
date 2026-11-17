@@ -13,7 +13,7 @@ One concern per module:
     framework_files.py           get_framework_sources (app.providers.* delivery)
     sha_prefix.py                _sha_prefix (integrity hashing primitive)
     shared_hashes.py             get_shared_hashes (hashes of all delivered modules)
-    dna_data_files.py            get_dna_data_files (DNA JSON state files)
+    dna_data_files.py            get_dna_data_files (DNA identity JSON for delivery)
     same_package_imports.py      _find_same_package_imports ('from .module import X')
     tool_source.py               _locate_tool_file / get_tool_source_code(_with_deps)
     config_constants.py          extract_config_constants (config -> CLIENT constants)

@@ -231,7 +231,3 @@ def _resolve_model_path(model_filename: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Legacy alias kept for backward compat
 # ---------------------------------------------------------------------------
-
-def resolve_model_path(model_filename: str) -> Optional[str]:
-    """Public alias — same as _resolve_model_path."""
-    return _resolve_model_path(model_filename)

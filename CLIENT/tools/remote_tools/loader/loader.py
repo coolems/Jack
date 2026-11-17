@@ -60,7 +60,7 @@ class DynamicModuleLoader:
         # source does NOT match is refused (skipped) instead of exec'd with a warning.
         self._expected_shared_hashes: Dict[str, str] = {}
         # FIX (2026-07-18): config constants from SERVER -- used to rewrite 'from config import X'
-        # lines in delivered shared modules at install time (e.g. app.dna.learning's MODEL_NAME).
+        # lines in delivered shared modules at install time (e.g. a tool's MODEL_NAME).
         self._config_constants: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------ state
@@ -82,11 +82,11 @@ class DynamicModuleLoader:
         self._expected_shared_hashes = dict(hashes) if hashes else {}
 
     def set_pending_dna_data(self, dna_data: dict) -> None:
-        """Store DNA JSON data files from the SERVER for syncing on next install.
+        """Store DNA identity JSON from the SERVER for the next install.
 
         Called by RemoteToolOrchestrator with tools_response 'dna_data' before
-        install_shared_modules(). Files are synced into the CLIENT's own app/dna
-        directory (NEVER working_root) so the delivered app.dna.* modules find them there.
+        install_shared_modules(). The payload is installed in MEMORY through the
+        delivered app.dna package (set_dna_data) -- nothing is written to disk.
         """
         self._pending_dna_data = dict(dna_data) if dna_data else None
 
