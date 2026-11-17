@@ -38,6 +38,34 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 
 TRANSPORTS = ("stdio", "http")
 
+#: RFC 7230 field-name token characters. Anything looser (space, ':', CR, LF) would let a
+#: config entry forge an extra header line or break the request framing.
+_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
+#: Headers the transport owns: httpx builds Host/Content-Length/Content-Type/Accept itself
+#: (the streamable transport sets Accept per request), and Mcp-Session-Id comes back from
+#: the server. Accepting an override here would silently ignore what the entry declared.
+_HEADER_DENY = frozenset({
+    "host", "content-length", "content-type", "accept", "transfer-encoding",
+    "connection", "keep-alive", "upgrade", "expect", "te", "trailer",
+    "mcp-session-id", "mcp-protocol-version",
+})
+#: A header value may hold '${NAME}' instead of the secret itself. Only a bare variable
+#: name is expandable, so a value can never smuggle an expression. A '${' left over after
+#: the valid references are stripped ('Bearer ${LIUM', '${${X}}') is malformed: it would
+#: expand to nothing and go out as a literal, so the endpoint answers 401 for what looks
+#: like a bad key - rejected at save time instead.
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+#: A remote endpoint needs a handful of headers at most; the cap keeps one entry from
+#: inflating every request of this CLIENT.
+MAX_HEADERS_PER_SERVER = 16
+#: Combined size of all header names + values, so a config entry cannot grow every request.
+MAX_HEADERS_TOTAL_CHARS = 4096
+#: A header value must be printable ASCII on a single line. CR/LF would forge an extra
+#: request line, NUL and other control bytes are rejected by the HTTP layer anyway - and a
+#: non-ASCII byte cannot be encoded as a header at all. Checked again after '${NAME}'
+#: expansion, because the environment is where the value actually comes from.
+_HEADER_VALUE_BAD = re.compile(r"[^ -~]")
+
 # Values come from config.py (single source of truth); these are fallbacks so the module
 # still loads in a bare test context. config.py's MCP_* constants win when importable.
 try:
@@ -61,6 +89,10 @@ class McpServerConfig:
     env: Dict[str, str] = field(default_factory=dict)
     cwd: str = ""
     url: str = ""
+    #: Extra request headers for the http transport (e.g. Authorization for a bearer-token
+    #: endpoint). Values may reference an environment variable as ${NAME}; the reference is
+    #: what lives in the file, the secret stays in the environment (see resolve_headers()).
+    headers: Dict[str, str] = field(default_factory=dict)
     roles: frozenset = field(default=frozenset({"*"}))
     timeout_sec: float = TIMEOUT_DEFAULT_SEC
 
@@ -73,6 +105,129 @@ class McpServerConfig:
     def consent_kind(self) -> str:
         """Which consent card gates this server's first use."""
         return "subprocess" if self.transport == "stdio" else "url"
+
+    def resolve_headers(self) -> tuple[Dict[str, str], List[str]]:
+        """Request headers with '${NAME}' expanded from the environment.
+
+        Returns (headers, problems): `problems` are reasons to refuse the connection - an
+        unset/empty variable, or an expanded value that cannot be sent as a header. Neither
+        the value nor the environment content is ever echoed (it may be a credential).
+        """
+        out: Dict[str, str] = {}
+        problems: List[str] = []
+        total = 0
+        for name, raw in self.headers.items():
+            names = _ENV_REF_RE.findall(raw)
+            if names:
+                unset = [n for n in names if not (os.environ.get(n) or "").strip()]
+                if unset:
+                    # Reported by NAME so the user sets the right variable; the value itself
+                    # is never echoed (it may be a credential).
+                    problems.append(f"{name} -> ${{{unset[0]}}} is not set")
+                    continue
+                value = _ENV_REF_RE.sub(lambda m: os.environ.get(m.group(1), ""), raw)
+                # A variable exported from a file usually carries a trailing newline; leading
+                # and trailing whitespace is insignificant in a header value (RFC 7230).
+                value = value.strip()
+            else:
+                # Same trim as the '${NAME}' branch: leading/trailing whitespace is
+                # insignificant in a header value (RFC 7230) and the HTTP layer refuses it
+                # outright - an error there quotes the value, which may be the secret.
+                value = raw.strip()
+            # Re-checked AFTER expansion: the file was clean, but the environment is where the
+            # value really comes from and it is not validated at save time. CR/LF there would
+            # forge an extra request line, and httpx fails the request with an error that
+            # quotes the whole value - which is the secret.
+            if not value or _HEADER_VALUE_BAD.search(value):
+                problems.append(f"{name} -> its value is empty or holds a control or "
+                                "non-ASCII character and cannot be sent as a header")
+                continue
+            # The save-time cap counted the '${NAME}' reference; the expanded secret is what
+            # actually goes on every request, so the combined size is bounded here too.
+            total += len(name) + len(value)
+            if total > MAX_HEADERS_TOTAL_CHARS:
+                # Reported ONCE, naming the header that crossed the limit: blaming every
+                # remaining header would send the user to fix the wrong one.
+                problems.append(f"{name} -> the headers together exceed "
+                                f"{MAX_HEADERS_TOTAL_CHARS} characters")
+                break
+            out[name] = value
+        return out, problems
+
+
+def header_mapping(cfg: Any) -> Dict[str, str]:
+    """A config entry's headers as a plain dict, whatever the object actually holds.
+
+    Entries built by _entry() always carry a validated dict; a registry constructed from
+    hand-made configs can hold anything (None, an int, a non-mapping). status() and the
+    settings round-trip must report that as 'no headers' instead of raising - they run on
+    the UI request path.
+    """
+    raw = getattr(cfg, "headers", None)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items()}
+
+
+def _parse_headers(raw: Any, name: str, problems: List[str]) -> Dict[str, str] | None:
+    """Validate the 'headers' object of an entry. None when the shape is unusable.
+
+    Values keep '${NAME}' as written: expansion happens at connect time
+    (McpServerConfig.resolve_headers), so a config save never copies a secret from the
+    environment into the file.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        problems.append(f"{name}: headers must be an object")
+        return None
+    out: Dict[str, str] = {}
+    seen: set = set()
+    total = 0
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not _HEADER_NAME_RE.match(key):
+            problems.append(f"{name}: invalid header name {k!r} (letters, digits and "
+                            "!#$%&'*+.^_`|~- only, max 64 chars)")
+            return None
+        if key.lower() in _HEADER_DENY:
+            problems.append(f"{name}: header {key!r} is set by the transport itself and "
+                            "cannot be overridden here")
+            return None
+        if not isinstance(v, str):
+            # A JSON value that is not a string ('null', 5, true, ["a"]) would be coerced
+            # into the literal text 'None' / '5' / "['a']" and sent as the header - an
+            # authentication that silently does the wrong thing.
+            problems.append(f"{name}: header {key!r} must be a string value")
+            return None
+        value = v.strip()
+        if not value or _HEADER_VALUE_BAD.search(value):
+            problems.append(f"{name}: header {key!r} needs a non-empty value of printable "
+                            "ASCII on one line")
+            return None
+        # A leftover '${' after the valid references are stripped means the reference is
+        # malformed ('Bearer ${LIUM', '${${X}}'): it would expand to nothing and go out as a
+        # literal, so the endpoint answers 401 for what looks like a bad key.
+        if "${" in _ENV_REF_RE.sub("", value):
+            problems.append(f"{name}: header {key!r} has a malformed '${{NAME}}' reference "
+                            "(write '${' + a variable name + '}')")
+            return None
+        if key.lower() in seen:
+            # Header names are case-insensitive: 'Authorization' + 'authorization' would go
+            # out as two lines and the endpoint decides which one wins.
+            problems.append(f"{name}: header {key!r} is declared twice (names are "
+                            "case-insensitive)")
+            return None
+        seen.add(key.lower())
+        if len(out) >= MAX_HEADERS_PER_SERVER:
+            problems.append(f"{name}: at most {MAX_HEADERS_PER_SERVER} header(s) per server")
+            return None
+        total += len(key) + len(value)
+        if total > MAX_HEADERS_TOTAL_CHARS:
+            problems.append(f"{name}: headers exceed {MAX_HEADERS_TOTAL_CHARS} characters")
+            return None
+        out[key] = value
+    return out
 
 
 def _entry(raw: Dict[str, Any], problems: List[str]) -> McpServerConfig | None:
@@ -117,6 +272,15 @@ def _entry(raw: Dict[str, Any], problems: List[str]) -> McpServerConfig | None:
         return None
     args = [str(a) for a in args]
 
+    # 'headers' belongs to the http transport only: a stdio entry has no request to put
+    # them on, so accepting one there would be a silent no-op the user believes is set.
+    headers = _parse_headers(raw.get("headers"), name, problems)
+    if headers is None:
+        return None
+    if headers and transport != "http":
+        problems.append(f"{name}: headers are only meaningful for transport 'http'")
+        return None
+
     env = raw.get("env") or {}
     if not isinstance(env, dict):
         problems.append(f"{name}: env must be an object")
@@ -147,7 +311,7 @@ def _entry(raw: Dict[str, Any], problems: List[str]) -> McpServerConfig | None:
     return McpServerConfig(
         name=name, transport=transport, enabled=bool(raw.get("enabled")),
         command=command, args=args, env=env, cwd=str(raw.get("cwd") or ""),
-        url=url, roles=role_set, timeout_sec=timeout,
+        url=url, headers=headers, roles=role_set, timeout_sec=timeout,
     )
 
 

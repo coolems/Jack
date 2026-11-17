@@ -611,9 +611,15 @@ class StreamableHttpTransport(_Stream):
             # self.timeout - connect() notifies during CLIENT startup, and an endpoint that
             # keeps the connection open would otherwise hold startup_event forever.
             deadline = asyncio.get_running_loop().time() + self.timeout
+            headers = {"Content-Type": "application/json"}
+            # The session id belongs on EVERY request after initialize, notifications
+            # included (MCP streamable-HTTP). A strict endpoint that keys its session on it
+            # would otherwise see an initialized notification from an unknown session.
+            if self.session_id:
+                headers["Mcp-Session-Id"] = self.session_id
             async with self._client.stream("POST", self.url, content=_encode(
                     {"jsonrpc": "2.0", "method": method, "params": params or {}}),
-                    headers={"Content-Type": "application/json"}) as resp:
+                    headers=headers) as resp:
                 ait = resp.aiter_bytes().__aiter__()
                 while True:
                     remaining = deadline - asyncio.get_running_loop().time()
@@ -637,7 +643,15 @@ class StreamableHttpTransport(_Stream):
 
 
 #: Factory used by client.py: one transport per config entry.
-def make_transport(cfg, name: str) -> _Stream:
+def make_transport(cfg, name: str, headers: Optional[Dict[str, str]] = None) -> _Stream:
+    """One transport for a config entry.
+
+    *headers* overrides the entry's own: client.py passes the environment-resolved copy so
+    an unset ${VAR} is reported before anything is contacted. getattr keeps duck-typed test
+    configs without a headers field working.
+    """
     if cfg.transport == "stdio":
         return StdioTransport(cfg.command, cfg.args, env=cfg.env, cwd=cfg.cwd, name=name)
-    return StreamableHttpTransport(cfg.url, name=name, timeout=cfg.timeout_sec)
+    return StreamableHttpTransport(cfg.url, name=name, timeout=cfg.timeout_sec,
+                                   headers=getattr(cfg, "headers", None)
+                                   if headers is None else headers)

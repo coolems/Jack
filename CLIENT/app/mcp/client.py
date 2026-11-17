@@ -123,6 +123,9 @@ class McpClient:
         self.consent_reason = ""
         self.instructions = ""
         self.server_info = ""
+        #: Reasons the entry's headers cannot be used (unset '${NAME}', or an expanded value
+        #: that is not a valid header). Reported in status()/error, never with the value.
+        self.header_problems: List[str] = []
         #: What the server declared in `initialize`. Resources are asked only when the
         #: server says it has them (see connect()).
         self.server_caps: Dict[str, Any] = {}
@@ -141,8 +144,28 @@ class McpClient:
         self.error = ""
         self.needs_consent = False
         self.consent_reason = ""
+        self.header_problems = []
+        # Resolve the entry's headers BEFORE anything is contacted: a '${NAME}' whose
+        # variable is unset (or whose value cannot be sent) means we cannot authenticate to
+        # this endpoint, and an anonymous request would be a different - and wrong - request.
+        # Guarded: connect() must never raise, and a registry built from hand-made configs
+        # can carry a header value the validator never saw.
         try:
-            self._transport = make_transport(self.cfg, self.cfg.name)
+            headers, problems = (self.cfg.resolve_headers()
+                                 if self.cfg.transport == "http" else ({}, []))
+        except Exception as e:
+            headers, problems = {}, [f"the headers could not be read ({type(e).__name__})"]
+        if problems:
+            self.header_problems = problems
+            self.error = "header(s) unusable: " + "; ".join(problems)
+            logger.warning("[MCP:%s] connect refused: %s", self.cfg.name, self.error)
+            # This returns BEFORE make_transport(), so a transport from an earlier connect
+            # would stay open while we report 'not connected' (the failure path below always
+            # closes). Close it here so a refused reconnect never leaves a live pool behind.
+            await self.close()
+            return False
+        try:
+            self._transport = make_transport(self.cfg, self.cfg.name, headers=headers)
             if hasattr(self._transport, "start"):
                 # stdio transports need a process; http transports are ready on request.
                 await self._transport.start()
@@ -256,9 +279,15 @@ class McpClient:
                 # Reconnect for later calls, but never re-run this one: we cannot know
                 # whether the server executed it.
                 await self.close()
-                await self.connect()
-                message += (" - the call may or may not have run; reconnect succeeded, call it "
-                            "again only if repeating it is safe.")
+                # Report what the reconnect actually did: an entry whose headers stopped
+                # resolving (env var unset since the last connect) must not be described as
+                # reconnected, or the model would retry a call that cannot run.
+                if await self.connect():
+                    message += (" - the call may or may not have run; reconnect succeeded, "
+                                "call it again only if repeating it is safe.")
+                else:
+                    message += (f" - the call may or may not have run; reconnect failed "
+                                f"({self.error or 'unknown reason'}). Do not retry it.")
             return McpToolResult(message, is_error=True)
         return self._reduce(result, tool)
 

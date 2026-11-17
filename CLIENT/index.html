@@ -657,6 +657,13 @@
                         <input type="text" id="mcpUrlInput" placeholder="endpoint url (http:// or https:// only)" autocomplete="off" spellcheck="false" style="display:none; width:100%; box-sizing:border-box; margin-bottom: 8px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;"
                                oninput="if (!this.value) this.style.display = mcpTransportIsHttp() ? 'block' : 'none'">
 
+                        <!-- (2026-11-17) http transport only: extra request headers, one per line
+                             as 'Name: value'. A value may be '${VAR}' - the secret then stays in
+                             the environment and only the reference is written to the file. -->
+                        <textarea id="mcpHeadersInput" rows="2" placeholder="headers, one per line (e.g. Authorization: Bearer ${LIUM_API_KEY})" autocomplete="off" spellcheck="false"
+                                  style="display:none; width:100%; box-sizing:border-box; margin-bottom: 8px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                                         background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace; resize: vertical;"></textarea>
+
                         <div style="display: flex; gap: 8px; margin-bottom: 10px;">
                             <input type="number" id="mcpTimeoutInput" min="1" max="300" step="1" value="30" autocomplete="off" title="Per-request timeout in seconds (1 - 300)"
                                    style="width: 120px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px;
@@ -781,7 +788,7 @@
     <script src="/static/ui/search-engine-settings.js?v=20260827e">
     </script>
     <script src="/static/ui/runtime-settings.js?v=20261115q"></script>
-    <script src="/static/ui/mcp-settings.js?v=20261116a"></script>
+    <script src="/static/ui/mcp-settings.js?v=20261117c"></script>
     <script src="/static/ui/approval-dialog.js?v=20261115q"></script>
     <script src="/static/ui/ui-controls.js?v=20261117a">
     

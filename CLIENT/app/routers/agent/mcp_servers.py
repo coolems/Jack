@@ -34,6 +34,7 @@ _CLIENT_ROOT = os.path.normpath(os.path.join(
 
 def _entry_dict(s) -> Dict[str, Any]:
     """McpServerConfig -> the JSON shape mcp_servers.json stores (stable key order)."""
+    from app.mcp.config import header_mapping
     return {
         "name": s.name,
         "enabled": bool(s.enabled),
@@ -43,6 +44,11 @@ def _entry_dict(s) -> Dict[str, Any]:
         "env": dict(s.env),
         "cwd": s.cwd,
         "url": s.url,
+        # Header names + values as written ('${NAME}' references, not secrets resolved at
+        # save time) - a Settings save must round-trip them or toggling a server would
+        # silently drop its authentication. header_mapping() keeps a hand-made config with
+        # a non-mapping value from breaking the GET.
+        "headers": header_mapping(s),
         "roles": sorted(s.roles),
         "timeout_sec": s.timeout_sec,
     }

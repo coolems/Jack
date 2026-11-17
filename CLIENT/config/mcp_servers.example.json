@@ -18,6 +18,13 @@
     "  env         extra environment variables (merged over the process env).",
     "  cwd         working directory for the server process (optional).",
     "  url         endpoint for http transport (http:// or https:// only).",
+    "  headers     extra request headers for http, as an object. A value may be \"${NAME}\":",
+    "              the secret then lives in the environment and only the reference is stored",
+    "              here; an unset variable means the server does not connect and says which",
+    "              one. '${NAME}' reads the CLIENT PROCESS environment (not this entry's",
+    "              'env', which is only passed to a stdio child). Names are case-insensitive,",
+    "              values printable ASCII on one line, max 16 headers. Host/Content-Type/",
+    "              Accept/Mcp-Session-Id are set by the transport.",
     "  roles       which CLIENT roles may use this server. '*' = any. An unknown role adds nothing.",
     "  timeout_sec per-request wall clock (default 30, clamped 1..300)."
   ],
@@ -30,6 +37,7 @@
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Change\\Me\\folder"],
       "env": {},
       "cwd": "",
+      "headers": {},
       "roles": ["*"],
       "timeout_sec": 30
     },
@@ -38,6 +46,16 @@
       "enabled": false,
       "transport": "http",
       "url": "http://127.0.0.1:3000/mcp",
+      "headers": {},
+      "roles": ["admin"],
+      "timeout_sec": 30
+    },
+    {
+      "name": "example-bearer",
+      "enabled": false,
+      "transport": "http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${EXAMPLE_API_KEY}" },
       "roles": ["admin"],
       "timeout_sec": 30
     }

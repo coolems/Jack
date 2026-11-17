@@ -17,7 +17,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from .client import McpClient
-from .config import McpServerConfig, load_servers_safe
+from .config import McpServerConfig, header_mapping, load_servers_safe
 
 logger = logging.getLogger("COOLEMS.MCP.Registry")
 
@@ -180,6 +180,10 @@ class McpRegistry:
                          "tools": len(client.tools), "resources": len(client.resources),
                          "templates": len(client.templates), "error": client.error,
                          "needs_consent": client.needs_consent,
+                         # Header NAMES only: a value may be a credential, and status() is
+                         # shown in the Settings tab and returned to the model.
+                         "headers": sorted(header_mapping(client.cfg)),
+                         "header_problems": list(client.header_problems),
                          "roles": sorted(client.cfg.roles), "consent_kind": client.cfg.consent_kind()})
         return rows
 

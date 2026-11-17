@@ -21,6 +21,12 @@ let mcpSaving = false;      // one save at a time - keeps UI and file in sync
 
 const MCP_NAME_RE = /^[A-Za-z0-9_.-]{1,40}$/;
 
+/** Headers the transport builds itself - an override here would be silently ignored
+ *  (same list as _HEADER_DENY in app/mcp/config.py). */
+const MCP_HEADER_DENY = ['host', 'content-length', 'content-type', 'accept', 'transfer-encoding',
+                         'connection', 'keep-alive', 'upgrade', 'expect', 'te', 'trailer',
+                         'mcp-session-id', 'mcp-protocol-version'];
+
 function mcpStatus(msg, isError) {
     const el = document.getElementById('mcpStatus');
     if (!el) return;
@@ -30,7 +36,10 @@ function mcpStatus(msg, isError) {
 
 /** One-line launch summary for a server row. */
 function mcpSummary(s) {
-    if (s.transport === 'http') return s.url || '(no url set)';
+    if (s.transport === 'http') {
+        const names = s.headers ? Object.keys(s.headers) : [];
+        return (s.url || '(no url set)') + (names.length ? '  [' + names.join(', ') + ']' : '');
+    }
     const parts = [s.command].concat(Array.isArray(s.args) ? s.args : []);
     return parts.join(' ') || '(no command set)';
 }
@@ -184,16 +193,61 @@ function mcpTransportIsHttp() {
     return !!sel && sel.value === 'http';
 }
 
-/** Show/hide the stdio (command+args) vs http (url) fields + update the hint. */
+/** 'Name: value' lines -> {Name: value}. '' = no headers. null = a line the backend would reject. */
+function mcpParseHeaders(text) {
+    const out = {};
+    const seen = {};
+    let total = 0;
+    // Split on CR as well: a value must never carry a control character, and a lone \r
+    // would otherwise be sent as part of it (the backend rejects it - refuse here too).
+    for (const line of (text || '').split(/\r\n|\r|\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const i = trimmed.indexOf(':');
+        if (i <= 0) return null;
+        const name = trimmed.slice(0, i).trim();
+        const value = trimmed.slice(i + 1).trim();
+        if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/.test(name) || !value) return null;
+        if (/[^ -~]/.test(value)) return null;
+        // A '${' left over after the valid references are removed is a malformed reference
+        // ('Bearer ${LIUM'): it would expand to nothing and the endpoint would answer 401.
+        if (/\$\{/.test(value.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, ''))) return null;
+        // Same deny-list as the backend: these are built by the transport itself, so an
+        // override here would be silently ignored.
+        if (MCP_HEADER_DENY.includes(name.toLowerCase())) return null;
+        // Header names are case-insensitive: two lines differing only in case would be sent
+        // as two lines and the endpoint decides which one wins.
+        const key = name.toLowerCase();
+        if (seen[key]) return null;
+        seen[key] = true;
+        if (Object.keys(out).length >= 16) return null;
+        total += name.length + value.length;
+        if (total > 4096) return null;
+        out[name] = value;
+    }
+    return out;
+}
+
+/** {Name: value} -> the 'Name: value' lines the textarea shows. */
+function mcpHeadersText(headers) {
+    if (!headers) return '';
+    return Object.keys(headers).map(k => k + ': ' + headers[k]).join('\n');
+}
+
+/** Show/hide the stdio (command+args) vs http (url + headers) fields + update the hint. */
 function mcpToggleTransportFields() {
     const http = mcpTransportIsHttp();
     const stdio = document.getElementById('mcpStdioFields');
     const url = document.getElementById('mcpUrlInput');
+    const headers = document.getElementById('mcpHeadersInput');
     if (stdio) stdio.style.display = http ? 'none' : 'grid';
     if (url) url.style.display = http ? 'block' : 'none';
+    if (headers) headers.style.display = http ? 'block' : 'none';
     const hint = document.getElementById('mcpFormHint');
     if (hint) hint.innerHTML = http
-        ? 'http transport: enter the remote MCP endpoint URL.'
+        ? 'http transport: the remote MCP endpoint URL, plus any request headers it needs '
+          + '(one per line, <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">Authorization: Bearer ${LIUM_API_KEY}</code>). '
+          + 'Write <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">${VAR}</code> to keep a secret in the environment instead of in the file.'
         : 'stdio transport: the program to start on this machine + its arguments. Example - Blender bridge: command <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">uvx</code>, args one per line: <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">--from</code> / <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">blender-mcp</code> / <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:3px;font-family:monospace;">blender-mcp</code>. The first start may download the package (needs internet).';
 }
 
@@ -205,6 +259,7 @@ function mcpResetForm() {
     setVal('mcpCommandInput', '');
     setVal('mcpArgsInput', '');
     setVal('mcpUrlInput', '');
+    setVal('mcpHeadersInput', '');
     setVal('mcpTimeoutInput', '30');
     setVal('mcpRolesInput', '*');
     const sel = document.getElementById('mcpTransportSelect');
@@ -233,6 +288,7 @@ function mcpStartEdit(name) {
     setVal('mcpCommandInput', s.command || '');
     setVal('mcpArgsInput', Array.isArray(s.args) ? s.args.join('\n') : '');
     setVal('mcpUrlInput', s.url || '');
+    setVal('mcpHeadersInput', mcpHeadersText(s.headers));
     setVal('mcpTimeoutInput', String(s.timeout_sec || 30));
     setVal('mcpRolesInput', (s.roles && s.roles.length) ? s.roles.join(', ') : '*');
     const title = document.getElementById('mcpFormTitle');
@@ -292,8 +348,16 @@ async function mcpSaveServer(remove) {
             entry.command = (document.getElementById('mcpCommandInput').value || '').trim();
             entry.args = (document.getElementById('mcpArgsInput').value || '')
                 .split('\n').map(x => x.trim()).filter(Boolean);
+            entry.headers = {};
         } else {
             entry.url = (document.getElementById('mcpUrlInput').value || '').trim();
+            const parsed = mcpParseHeaders(document.getElementById('mcpHeadersInput').value);
+            if (parsed === null) {
+                mcpStatus("Invalid headers - one 'Name: value' per line, printable ASCII, "
+                          + "names unique (case-insensitive), at most 16 lines.", true);
+                return;
+            }
+            entry.headers = parsed;
         }
         entry.roles = roles;
         entry.timeout_sec = timeout;
