@@ -137,8 +137,8 @@ async def _run_relay_async(provider_obj, final_api_url):
     """Run the just relay server entirely on asyncio event loop - no threads."""
     _log_relay_banner("", final_api_url)
 
-    # (2026-10-15 licensing plan v12) SERVER owns all license logic: one immediate check on
-    # start + once-per-day re-check task. CLIENTs are fed the slim {use, company} payload over WS frames.
+    # SERVER owns all license logic: check on start + once-per-day re-check, CLIENTs are
+    # fed the slim payload over WS frames.
     from app import license_server
     _license_task = license_server.start_license_task()
 
@@ -158,7 +158,7 @@ async def _run_relay_with_client_async(provider_obj, final_api_url):
 
     _log_relay_banner(" + Local CLIENT", final_api_url)
 
-    # (2026-10-15 licensing plan v12) SERVER-side license check on start + once-per-day re-check.
+    # SERVER-side license check on start + once-per-day re-check.
     from app import license_server
     _license_task = license_server.start_license_task()
 

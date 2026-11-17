@@ -147,8 +147,8 @@ async def _authenticate_direct_client(ws, server_provider, peer):
             _reg.effective_context_window() if _reg is not None else _CFG_CONTEXT_WINDOW
         )
 
-        # (2026-10-15 licensing plan v12) slim license payload for the CLIENT badge:
-        # only {use, company} — nothing else about licensing ever leaves this machine.
+        # Slim license payload for the CLIENT badge — nothing else about licensing ever
+        # leaves this machine.
         from app import license_server
 
         await ws.send(json.dumps({

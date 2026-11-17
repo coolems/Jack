@@ -93,8 +93,8 @@ def apply_auth_info(auth_response: dict, context: str = "") -> None:
             logger.debug("[CLIENT] Could not cache auth_ok role/email: %s", e)
     
 
-    # (2026-10-15 licensing plan v12) license payload from SERVER -> in-memory cache.
-    # Independent of context_window: the SERVER sends it on every auth_ok and stats frame.
+    # License payload from the SERVER -> in-memory cache. Independent of context_window:
+    # the SERVER sends it on every auth_ok and stats frame.
     try:
         import app.license_cache as _lic
         if auth_response.get("license") is not None:

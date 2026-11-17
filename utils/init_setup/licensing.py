@@ -1,13 +1,17 @@
 """LICENSING STEP for ZZZ_initial_init.bat (console, stdlib-only).
-LICENSING PLAN: the CLIENT keeps NO license files and never talks to coolems.com. ALL
-license logic lives on the SERVER: it reads its own state file (<SERVER
-ROOT>/config/license_state.json), checks coolems.com at boot + every 30 min, writes the
-answer back into that same file (offline fallback when unreachable; an expired cache is
-treated as not licensed), and feeds a slim {use, company} payload to every CLIENT over
-WebSocket (auth_ok + each token_stats frame). The CLIENT badge only DISPLAYS what it was
-fed.
-IP history of check attempts lives on the WEB side now — index.php writes
-ip_history.json next to licenses.json. This local file stores NO ip data.
+
+Asks private or company and writes the answer to <SERVER ROOT>/config/license_state.json
+— the only license file on this machine, and the file the server reads on boot. The
+server then checks coolems.com itself and feeds each CLIENT a slim {use, company, email,
+private_licensed} payload; the CLIENT badge only displays what it was fed.
+
+- private  -> optional e-mail. With one, the server asks coolems.com to send a one-time
+  confirmation link; without one, everything stays offline.
+- company  -> prints and opens a pre-filled license-request e-mail; the server fetches
+  the confirmation from coolems.com and caches it in the same file.
+
+STDLIB-ONLY at import time (init runs before any venv exists), so the JSON is written
+directly instead of importing app/license_server.py; the schema matches its default_state().
 """
 
 import json
@@ -22,8 +26,8 @@ from .ui import ask, info, ok, warn
 
 CONTACT_EMAIL = "coolems.kg@gmail.com"
 
-# Server-side license state file — the ONLY license file that exists on this machine.
-# NOTE: state lives in config/ (a top-level license/ dir is impossible on Windows — it collides case-insensitively with the root LICENSE file)
+# Server-side license state file — the only license file on this machine.
+# NOTE: state lives in config/ — a top-level license/ dir collides with the LICENSE file on Windows
 LICENSE_DIR = os.path.join(ROOT, "config")
 STATE_FILE = os.path.join(LICENSE_DIR, "license_state.json")
 

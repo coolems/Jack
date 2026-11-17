@@ -376,11 +376,10 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info(f"[SHUTDOWN-ALL] UI closed/crashed - stopped all live sessions: {result}")
         return {"status": "ok", **result}
 
-    # ===== LICENSE (2026-10-15 licensing plan v12) ==============================
-    # The CLIENT keeps NO license files and never talks to coolems.com. The SERVER is
-    # the single owner of all license logic; it feeds us a slim {use, company} payload
-    # over WebSocket (auth_ok + every token_stats frame). This endpoint only composes
-    # the badge from the in-memory cache written by those frames.
+    # ===== LICENSE ==============================================================
+    # The CLIENT keeps no license files and never talks to coolems.com. The SERVER owns
+    # the logic and feeds us a slim payload over WebSocket (auth_ok + every token_stats
+    # frame); this endpoint only composes the badge from that in-memory cache.
 
     @app.get("/api/license/status")
     async def license_status():

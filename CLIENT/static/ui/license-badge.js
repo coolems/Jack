@@ -1,18 +1,13 @@
 /**
  * license-badge.js - Persistent READ-ONLY license badge.
- * LICENSING PLAN v16 (2026-10-15; badge states refined 2026-10-12).
  *
- * The UI NEVER asks, collects or saves anything about licensing — that happens in
- * ZZZ_initial_init.bat at setup time (utils/init_setup/licensing.py). This file only
- * DISPLAYS the license information:
-  *       private (unconfirmed / no e-mail)   -> "PRIVATE USE · license not acquired"
- *       private (e-mail confirmed on web side, free commercial use as individual)
- *                                           -> "PRIVATE LICENSE · licensed <e-mail> for commercial use"
- *       pending  -> "COMMERCIAL USE · pending license confirmation"
- *       licensed -> "LICENSED — <Company> [· valid to YYYY-MM-DD]"
- * All data comes from GET /api/license/status ONLY (the server reads/matches the
- * available license on coolems.com and passes it down). This file never talks to
- * coolems.com directly, never sees licenses.json, and has no modal, form or button.
+ * Display only: no ask, no form, no gate, and no direct call to coolems.com.
+ * Licensing is collected at setup time (utils/init_setup/licensing.py); this badge
+ * renders whatever GET /api/license/status returns:
+ *       private-licensed  -> "PRIVATE LICENSE · licensed <e-mail> for commercial use"
+ *       private-pending   -> "PRIVATE USE · license not acquired"
+ *       licensed          -> "COMMERCIAL USE — LICENSED · assigned to <Company>"
+ *       pending           -> "COMMERCIAL USE · pending license confirmation"
  */
 
 (function () {
@@ -74,7 +69,7 @@
                          st.line2 || 'licensed for commercial use');
                 el.title = st.tooltip || '';
             } else if (st && st.badge === 'private') {
-                // Legacy SERVER payload: private without confirmation state — unconfirmed.
+                // SERVER payload without a confirmation state — treated as unconfirmed.
                 el.className = 'license-badge license-badge--pending';
                 setLines(el, st.line1 || 'PRIVATE USE',
                          st.line2 || 'license not acquired');
