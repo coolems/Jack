@@ -34,6 +34,30 @@ _CLIENT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 # (Moved here so they are visible to startup_event inside create_app())
 
 
+async def _close_mcp(connect_task=None) -> None:
+    """Close every MCP connection: stdio servers are child processes of THIS process.
+
+    Must be awaited, not synchronous: closing a transport waits (bounded) for the child to
+    exit. A server left running would outlive the CLIENT process. Never raises - shutdown
+    must not fail because of an external server. *connect_task* is the background connect
+    started at startup: it is cancelled first so it cannot open a connection after the
+    close (the registry refuses to start anything once it is closed).
+    """
+    if connect_task is not None and not connect_task.done():
+        connect_task.cancel()
+        try:
+            await asyncio.wait({connect_task}, timeout=5.0)
+        except Exception as e:  # pragma: no cover - shutdown must never raise
+            logger.debug(f"[MCP] connect task cancel failed (non-fatal): {e}")
+    try:
+        from app.mcp.registry import get_registry
+        reg = get_registry()
+        if reg is not None:
+            await reg.close_all()
+    except Exception as e:  # pragma: no cover - shutdown must never raise
+        logger.debug(f"[MCP] close failed (non-fatal): {e}")
+
+
 
 def create_app(db_path: str, provider, model_name: str, api_timeout: int,
                agent, tool_orchestrator, stop_events, server_port: int, use_https=False,
@@ -162,6 +186,8 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
     # background task on THIS loop; startup_event only starts it and skips every
     # provider/agent access while those are still None. Normal boots: unchanged behavior.
     _boot_state = {"task": None}
+    #: The MCP connect runs as a background task for the same reason (see startup_event).
+    _mcp_state = {"task": None}
 
     @app.on_event("startup")
     async def startup_event():
@@ -198,6 +224,53 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         # Start periodic stop_events cleanup task
         chat_bus.start_cleanup()
         logger.info("ChatBus stale-session cleanup task started (runs every 10 minutes)")
+
+        # ===== MCP external servers =====
+        # Built from CLIENT/config/mcp_servers.json. Nothing is enabled by default, so this
+        # is a no-op unless the user enabled a server. The registry is built HERE (cheap: one
+        # JSON read) so the schema and Settings see it, but the CONNECT runs as a background
+        # task: uvicorn serves the UI only AFTER startup_event returns (measured: a 6s
+        # handshake delayed the first reachable request by 6.57s), so a slow or broken
+        # external server must not hold the page. A failure never stops the UI - the MCP
+        # tools report the registry state honestly - and an http endpoint the SSRF gate
+        # refuses stays 'needs consent' until the human approves that exact URL.
+        try:
+            from app.mcp.registry import connect_all, wire_mcp
+            _mcp_reg = wire_mcp(spill_dir=os.path.normpath(
+                os.path.join(_CLIENT_ROOT, ".temp", "mcp")))
+            if _mcp_reg is not None:
+                async def _connect_mcp():
+                    try:
+                        state = await connect_all()
+                        live = sorted(n for n, ok in state.items() if ok)
+                        dead = sorted(n for n, ok in state.items() if not ok)
+                        logger.info(f"[MCP] connected: {live or 'none'}"
+                                    + (f"; failed: {dead}" if dead else ""))
+                        if dead:
+                            logger.warning("[MCP] failed server(s) contribute no tools - "
+                                           "see Settings > MCP")
+                    except asyncio.CancelledError:
+                        logger.info("[MCP] connect cancelled (CLIENT shutting down)")
+                        raise
+                    except Exception as e:  # pragma: no cover - must never break the loop
+                        logger.warning(f"[MCP] connect failed (tools report it honestly): {e}")
+
+                _mcp_state["task"] = asyncio.create_task(_connect_mcp(), name="mcp-connect")
+                logger.info(f"[MCP] {len(_mcp_reg.clients())} enabled server(s) - "
+                            "connecting in the background")
+        except Exception as e:  # pragma: no cover - MCP must never block the UI boot
+            logger.warning(f"[MCP] startup wiring failed (MCP tools report it honestly): {e}")
+
+        # Scratch retention: MCP payloads spill to .temp so a clipped result still has a
+        # locator, but they must not accumulate forever. Bounded cleanup at startup only.
+        try:
+            from app.spill_archive import prune_spill_dir
+            from config import MCP_SPILL_KEEP_FILES
+            _mcp_spill = os.path.normpath(os.path.join(_CLIENT_ROOT, ".temp", "mcp"))
+            prune_spill_dir(_mcp_spill, keep=MCP_SPILL_KEEP_FILES, suffix=".txt")
+            prune_spill_dir(_mcp_spill, keep=MCP_SPILL_KEEP_FILES, suffix=".bin")
+        except Exception as e:  # pragma: no cover - cleanup must never block startup
+            logger.debug(f"[SPILL] startup prune skipped: {e}")
 
         # ===== DEFERRED BOOT (2026-10-07 setup-mode UI fix) =====
         # The provider/agent boot runs as a background task on THIS event loop. It keeps
@@ -264,6 +337,11 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
             await chat_bus.stop_all(reason="client-shutdown")
         except Exception as e:  # pragma: no cover - shutdown must never raise
             logger.warning(f"stop_all on shutdown failed (non-fatal): {e}")
+        # MCP stdio servers are child processes of THIS process - close them (bounded) so no
+        # server outlives the CLIENT. Awaited: closing a transport waits for the child to exit.
+        # The background connect (if still running) is cancelled first, so it cannot open a
+        # connection after this close.
+        await _close_mcp(_mcp_state.get("task") if isinstance(_mcp_state, dict) else None)
         # (2026-09-08 multi-chat) stop the bus' cleanup task first
         chat_bus.stop_cleanup()
         if provider is not None:

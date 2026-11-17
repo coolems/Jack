@@ -62,6 +62,15 @@ from .config import (
     QUESTION_DIALOG_COLOR_DEFAULT,
     is_question_dialog_color,
 
+    # --- MCP servers ---
+    # Servers themselves are declared in CLIENT/config/mcp_servers.json and stay disabled
+    # until the human enables them; these bound what a server's payload may reach.
+    MCP_TEXT_PREVIEW_CHARS,
+    MCP_INSTRUCTIONS_MAX_CHARS,
+    MCP_TIMEOUT_DEFAULT_SEC,
+    MCP_TIMEOUT_MAX_SEC,
+    MCP_SPILL_KEEP_FILES,
+
     MODEL_NAME,
 
     # --- Model Switch Timing (CLIENT side) ---

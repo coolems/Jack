@@ -5,6 +5,7 @@ Delivered tools are written as if they lived in a real 'tools' package on disk
 package exists only in sys.modules (built by shared_modules.py), so each import form is
 rewritten into plain assignments against symbols injected into the exec globals at
 compile time (see globals_builder.py). Steps run in this order; each owns only its forms:
+  0. from x import (A, B)            -> from x import A, B   (paren list -> one line)
   1. from ..utils import X           -> X = utils.X        (multi-dot relative)
   2. from . import Name as Alias     -> Alias = Name       (bare parent package)
   3. from .module import (...)       -> pass               (same-package, multi-line)
@@ -81,7 +82,7 @@ def _strip_multiline_paren_imports(source_code: str, pattern: str, replacement: 
             start_indent = _re.match(r'^(\s*)', line).group(1)
             continue
         if skip_until_close:
-            if ')' in line:
+            if ')' in _code_of(line):
                 out_lines.append(start_indent + replacement)
                 skip_until_close = False
             continue
@@ -94,55 +95,119 @@ def _strip_multiline_paren_imports(source_code: str, pattern: str, replacement: 
 # Step 1 -- multi-dot relative imports: 'from ..utils import X' -> 'X = utils.X'
 # ---------------------------------------------------------------------------
 
-def _flatten_multi_dot_paren_imports(source_code: str) -> str:
-    """Collapse a multi-line parenthesized multi-dot import to one line.
+#: Every 'from <module> import (' opener: relative ('..utils', '.mod'), absolute
+#: ('tools.utils', 'utils.ssrf_defense'), bare parent ('.') or 'config'. The name list may
+#: already start on the SAME line ('from tools.utils import (get_working_root,') or open on
+#: its own line.
+_PAREN_IMPORT_RE = _re.compile(r'^(\s*)from\s+(\S+)\s+import\s*\(\s*(.*)$')
 
-    'from ..utils import (
- A,
- B as C,
-)' becomes
-    'from ..utils import A, B as C' -- after which the line-based rewrite below can
-    handle it like any single-line form. without this, step 1's
-    regex matched only the opening line and rewrote it to '( = utils.(', a syntax
-    error that made every tool carrying this import form (write_file.py) fail to
-    compile on the CLIENT while working fine in the SERVER workspace.
+
+def _strip_comment(text: str) -> str:
+    """Drop a trailing '# ...' from one name-list fragment."""
+    return _re.sub(r'\s*#.*$', '', text).strip().rstrip(',').strip()
+
+
+def _code_of(text: str) -> str:
+    """The chunk with its trailing '# ...' removed, keeping the rest as-is.
+
+    Used to find the closing paren of an import list: a comment may itself contain ')'
+    ('from tools.utils import (A,  # note (see docs)'), and scanning the RAW line would
+    treat that comment paren as the end of the list - the flattener then stopped one line
+    too early and left the remaining names as a stray indented line (SyntaxError)."""
+    return _re.sub(r'\s*#.*$', '', text)
+
+
+#: Stand-in for a triple-quoted string while the pipeline runs (see _mask_docstrings).
+_DOC_MASK_FMT = "#__doc_mask_{n}__"
+_DOC_STRING_RE = _re.compile(r'"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'')
+
+
+def _mask_docstrings(source_code: str) -> tuple[str, dict]:
+    """Replace every triple-quoted string with a sentinel token, return (masked, tokens).
+
+    The rewrite steps are line-based, so a docstring that SHOWS an import form used to be
+    rewritten too ('    from ..utils import (' became '    ( = utils.('), and a ')' inside
+    documentation text could be mistaken for the closing paren of a real import. Masking
+    keeps the pipeline away from strings; _unmask_docstrings puts them back untouched.
     """
-    start_re = _re.compile(r'^(\s*)from\s+([.]{2,})([a-zA-Z_][\w.]*)\s+import\s*\($')
+    tokens: dict = {}
+
+    def _repl(match: _re.Match) -> str:
+        token = _DOC_MASK_FMT.format(n=len(tokens))
+        tokens[token] = match.group(0)
+        return token
+
+    return _DOC_STRING_RE.sub(_repl, source_code), tokens
+
+
+def _unmask_docstrings(source_code: str, tokens: dict) -> str:
+    """Restore the masked strings exactly (a multi-line token re-expands to its lines)."""
+    for token, original in tokens.items():
+        source_code = source_code.replace(token, original)
+    return source_code
+
+
+def _flatten_paren_imports(source_code: str) -> str:
+    """Collapse every parenthesized import statement onto one line.
+
+    'from tools.utils import (get_working_root,\n resolve_path_to_dir)' becomes
+    'from tools.utils import get_working_root, resolve_path_to_dir', and the same when the
+    list opens on its own line. The line-based rewrites below can then treat it like any
+    single-line import.
+
+    Without this, an assignment step matched only the OPENING line and emitted
+    '(get_working_root = utils.(get_working_root' - a SyntaxError that made every tool
+    delivering this import form fail to compile on the CLIENT (read_file, write_file,
+    edit_file, insert_lines, move_file, rename_file, delete_file, cua_screenshot) while
+    working fine in the SERVER workspace, where it is a real import.
+
+    Comments inside the name list are dropped (they carry no meaning for exec). Strings are
+    masked by transform_tool_source, so documentation text is never scanned here. An
+    unbalanced '(' is left untouched: that SyntaxError belongs to the tool, not the pipeline.
+    """
     lines = source_code.split('\n')
     out: list[str] = []
     i = 0
     while i < len(lines):
-        m = start_re.match(lines[i])
+        line = lines[i]
+        m = _PAREN_IMPORT_RE.match(line)
         if not m:
-            out.append(lines[i])
+            out.append(line)
             i += 1
             continue
-        indent, dots, module = m.group(1), m.group(2), m.group(3)
-        names_parts: list[str] = []
-        j = i + 1
-        tail = ''
-        while j < len(lines):
-            if ')' in lines[j]:
-                tail = _re.sub(r'\s*#.*$', '', lines[j].split(')', 1)[1]).strip()
+        indent, module, rest = m.group(1), m.group(2), m.group(3)
+        parts: list[str] = []
+        chunk, j, closed = rest, i, False
+        while True:
+            code = _code_of(chunk)      # a comment may contain ')' - scan the code only
+            if ')' in code:
+                parts.append(_strip_comment(code.split(')', 1)[0]))
+                closed = True
                 break
-            names_parts.append(_re.sub(r'\s*#.*$', '', lines[j]).strip().rstrip(',').strip())
+            parts.append(_strip_comment(code))
             j += 1
-        joined = ', '.join(p for p in names_parts if p)
-        out.append(f"{indent}from {dots}{module} import {joined}" + (f"  # {tail}" if tail else ''))
-        i = j + 1
+            if j >= len(lines):
+                break
+            chunk = lines[j]
+        joined = ', '.join(p for p in parts if p)
+        if closed and joined:
+            out.append(f"{indent}from {module} import {joined}")
+            i = j + 1
+            continue
+        out.append(line)
+        i += 1
     return '\n'.join(out)
 
 
 def _step_multi_dot_relative(source_code: str) -> str:
     """Rewrite 'from ..pkg.mod import A, B as C' into assignments against the module.
 
-    Multi-line parenthesized forms are flattened to a single line first (see
-    _flatten_multi_dot_paren_imports), then everything is processed LINE BY LINE
-    (not one global regex) so that when one import line expands into several
-    assignment lines, indentation is always taken from THIS line. A single global
-    regex cannot track position for multi-name imports inside function bodies.
+    Parenthesized forms are already flattened by transform_tool_source (see
+    _flatten_paren_imports), so everything here is processed LINE BY LINE (not one global
+    regex): when one import line expands into several assignment lines, indentation is
+    always taken from THIS line. A single global regex cannot track position for
+    multi-name imports inside function bodies.
     """
-    source_code = _flatten_multi_dot_paren_imports(source_code)
     pattern = _re.compile(r'^(\s*)from\s+([.]{2,})([a-zA-Z_][\w.]*)\s+import\s+(.+)$')
     out_lines: list[str] = []
 
@@ -187,7 +252,7 @@ def _step_bare_parent_import(source_code: str) -> str:
     return '\n'.join(out_lines)
 
 
-    # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Step 3 -- same-package multi-line imports: 'from .module import ( ... )' -> pass
 # ---------------------------------------------------------------------------
 
@@ -366,7 +431,9 @@ def transform_tool_source(source_code: str, tool_name: str = "") -> str:
     Returns:
         Transformed source ready for exec() with injected globals.
     """
-    transformed = source_code
+    masked, tokens = _mask_docstrings(source_code)
+    transformed = masked
+    transformed = _flatten_paren_imports(transformed)         # 0. 'import (\n A, B)' -> one line
     transformed = _step_multi_dot_relative(transformed)       # 1. from ..utils import X
     transformed = _step_bare_parent_import(transformed)       # 2. from . import Name as Alias
     transformed = _step_same_package_multiline(transformed)   # 3. from .mod import (...) -> pass
@@ -376,6 +443,7 @@ def transform_tool_source(source_code: str, tool_name: str = "") -> str:
     transformed = _step_utils_subpackage_import(transformed)  # 7. from utils.X import Y
     transformed = _strip_config_imports(transformed)          # 8. from config import ... -> pass
     transformed = _strip_legacy_self(transformed)             # 9. def f(self, ...) -> def f(...)
+    transformed = _unmask_docstrings(transformed, tokens)     # 10. strings back, untouched
 
     logger.debug("Loader: source for '%s' transformed (%d -> %d chars)",
                  tool_name or '<unknown>', len(source_code), len(transformed))

@@ -243,6 +243,41 @@ class RemoteToolOrchestrator:
 
     # --- Public interface (matches ToolOrchestrator) ---
 
+    async def local_definitions(self, api_key: str = None) -> List[Dict]:
+        """CLIENT-LOCAL definitions only (ask_user_question + MCP tools), role-filtered.
+
+        No network I/O: the SERVER schema is already cached, so the ReAct loop can re-merge
+        these mid-turn when an MCP server connects after the turn started. Remote names are
+        excluded - a SERVER-delivered tool would shadow the local handler."""
+        try:
+            from tools.local_ask_registry import definitions as _local_definitions
+            from tools.local_registry import definitions as _mcp_definitions
+            from app.keys import get_key_role
+            role = get_key_role(api_key) if api_key else None
+            return list(_local_definitions(role)) + list(_mcp_definitions(role))
+        except Exception as e:
+            logger.debug(f"[LOCAL-TOOLS] definitions unavailable ({e}) - remote schema only")
+            return []
+
+    def local_tool_names(self) -> set:
+        """Every name owned by a CLIENT-LOCAL seam, regardless of role or connectivity.
+
+        The ReAct loop needs this to tell a local tool apart from a SERVER-delivered one when
+        it re-merges the schema mid-turn: a local name that is no longer offered (server
+        disconnected, role changed) must be REMOVED, not kept as if it were remote."""
+        names: set = set()
+        try:
+            from tools.local_ask_registry import local_tool_names as _ask_names
+            names.update(_ask_names())
+        except Exception:
+            pass
+        try:
+            from tools.local_registry import local_tool_names as _mcp_names
+            names.update(_mcp_names())
+        except Exception:
+            pass
+        return names
+
     async def get_ollama_tools(self, api_key: str = None) -> List[Dict]:
         """Return ONLY the definition dicts for the LLM - no extra fields.
 
@@ -262,22 +297,15 @@ class RemoteToolOrchestrator:
         # Extract ONLY the definition field of each cached entry
         tool_defs = [d["definition"] if "definition" in d else d for d in defs]
 
-        try:
-            from tools.local_ask_registry import definitions as _local_definitions, is_local_tool
-            from app.keys import get_key_role
-            role = get_key_role(api_key) if api_key else None
-            local = [d for d in _local_definitions(role)]
+        local = await self.local_definitions(api_key)
+        if local:
             # A SERVER-delivered tool with the same name would shadow the local handler,
             # so local names win: the registry is the dispatcher, the schema is the promise.
             remote_names = {t.get("function", {}).get("name") for t in tool_defs}
             local = [d for d in local if d.get("function", {}).get("name") not in remote_names]
             tool_defs.extend(local)
-            if local:
-                logger.info(f"get_ollama_tools: +{len(local)} CLIENT-local tool(s) "
-                            f"({sorted(d.get('function', {}).get('name', '') for d in local)})")
-            _ = is_local_tool  # referenced so the import is not dead weight in a debug path
-        except Exception as e:
-            logger.debug(f"[LOCAL-TOOLS] definitions unavailable ({e}) - remote schema only")
+            logger.info(f"get_ollama_tools: +{len(local)} CLIENT-local tool(s) "
+                        f"({sorted(d.get('function', {}).get('name', '') for d in local)})")
 
         logger.info(f"get_ollama_tools: returning {len(tool_defs)} tool definitions")
         return tool_defs
@@ -294,6 +322,15 @@ class RemoteToolOrchestrator:
             if is_local_tool(tool_name):
                 role = get_key_role(api_key) if api_key else None
                 return allowed_for_role(tool_name, role)
+        except Exception:
+            pass
+
+        # MCP names (the 4 meta-tools + dynamic mcp__<server>__<tool>) are gated here too.
+        try:
+            from tools.local_registry import is_local_tool as _mcp_is_local, allowed_for_role as _mcp_allowed
+            from app.keys import get_key_role
+            if _mcp_is_local(tool_name):
+                return _mcp_allowed(tool_name, get_key_role(api_key) if api_key else None)
         except Exception:
             pass
 
@@ -315,6 +352,15 @@ class RemoteToolOrchestrator:
             from app.keys import get_key_role
             role = get_key_role(api_key) if api_key else None
             names.extend(sorted(n for n in local_tool_names() if allowed_for_role(n, role)))
+        except Exception:
+            pass
+        try:
+            # MCP inventory: the 4 meta-tools plus the tools of every CONNECTED server,
+            # each gated by that server's own role list (mcp_servers.json).
+            from tools.local_registry import local_tool_names as _mcp_names, allowed_for_role as _mcp_allowed
+            from app.keys import get_key_role
+            role = get_key_role(api_key) if api_key else None
+            names.extend(sorted(n for n in _mcp_names() if _mcp_allowed(n, role)))
         except Exception:
             pass
         return names

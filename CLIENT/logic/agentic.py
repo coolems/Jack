@@ -75,6 +75,21 @@ async def agentic_mode(
 {config.generic_tool_prompt}
 """
 
+    # MCP server instructions join the prompt as DATA, never as policy: an MCP server is an
+    # external process or endpoint, so its text may describe its tools but must not override
+    # Jack's rules. Built per turn so a server that connected (or died) mid-session is
+    # reflected in the next turn instead of being silently carried forever.
+    try:
+        from app.keys import get_key_role
+        from tools.local_registry import mcp_instructions
+        _mcp_role = get_key_role(config.api_key) if config.api_key else None
+        _mcp_notes = mcp_instructions(_mcp_role)
+        if _mcp_notes:
+            agent_system += _mcp_notes
+            logger.info(f"[AGENTIC.DEBUG] +MCP server notes ({len(_mcp_notes)} chars, role={_mcp_role})")
+    except Exception as e:
+        logger.debug(f"[AGENTIC.DEBUG] MCP instructions unavailable (non-fatal): {e}")
+
     # Add image context if images are present (2026-08-23 fix: VISION-FIRST policy).
     # The uploaded pixels ride on THIS message as base64 (see build_messages below),
     # so the model can SEE them directly. transcribe_image is ONLY for explicit OCR asks -

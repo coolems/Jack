@@ -513,10 +513,11 @@ class ToolExecutor:
             }))
 
         # ============================================================
-        # CLIENT-LOCAL TOOL DISPATCH (ask_user_question)
-        # ask_user_question owns a consent card and an asyncio Future on THIS machine, so
-        # it is never fetched from the SERVER nor run in a worker thread: it is awaited
-        # here, on the event-loop thread, before ensure_tool_loaded / the remote dispatch.
+        # CLIENT-LOCAL TOOL DISPATCH (ask_user_question + MCP tools)
+        # ask_user_question owns a consent card and an asyncio Future on THIS machine; MCP
+        # tools own child processes / outbound endpoints and their own consent card. Neither
+        # is fetched from the SERVER nor run in a worker thread: both are awaited here, on the
+        # event-loop thread, before ensure_tool_loaded / the remote dispatch.
         # ============================================================
         try:
             from tools.local_ask_registry import is_local_tool, call as _local_call
@@ -524,12 +525,24 @@ class ToolExecutor:
             is_local_tool = None
             _local_call = None
 
+        try:
+            from tools.local_registry import is_local_tool as _mcp_is_local, call as _mcp_call
+        except Exception:
+            _mcp_is_local = None
+            _mcp_call = None
+
         if is_local_tool is not None and is_local_tool(tool_name):
             tool_result = await _local_call(
                 tool_name, tool_args or {},
                 channel=self.channel, websocket=websocket,
                 conversation_id=conversation_id, session_timer=self.session_timer,
                 role=role,
+            )
+        elif _mcp_is_local is not None and _mcp_is_local(tool_name):
+            tool_result = await _mcp_call(
+                tool_name, tool_args or {},
+                websocket=websocket, conversation_id=conversation_id,
+                session_timer=self.session_timer, role=role,
             )
         elif self._is_async_orchestrator:
             # RemoteToolOrchestrator -- execute_tool is a coroutine (may fetch from SERVER)

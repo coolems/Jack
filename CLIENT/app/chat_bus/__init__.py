@@ -23,10 +23,10 @@ from .consent_dialog import (
 )
 
 __all__ = [
-    "ConsentDialog,"
-    "ConsentResult,"
-    "build_frame,"
-    "explain_instruction,"
+    "ConsentDialog",
+    "ConsentResult",
+    "build_frame",
+    "explain_instruction",
     "ChatBus",
     "ChatChannel",
     "ChannelStatus",

@@ -43,6 +43,10 @@ CLIENT/config/.api_client_keys.json
 # CLIENT user settings & working-root state (per-machine, auto-created at runtime)
 CLIENT/config/settings.json
 
+# CLIENT MCP server list (per-machine enablement of external servers -> never commit;
+# the shipped CLIENT/config/mcp_servers.example.json stays tracked as the template).
+CLIENT/config/mcp_servers.json
+
 # Last-loaded model state (per-machine runtime data written by the SERVER after every
 # verified launch/switch - see app/providers/llama/model_persistence.py). Source of
 # truth for which model to load on next startup; never commit.
@@ -122,6 +126,11 @@ llama_server/models/*/*
 # code lands here -- the folder itself stays tracked via .gitkeep, its contents never.
 .temp/*
 !.temp/.gitkeep
+
+# CLIENT scratch space: MCP payload spills (.temp/mcp/*.txt|*.bin) and other runtime
+# scratch written under CLIENT/ are per-machine and never committed.
+CLIENT/.temp/*
+!CLIENT/.temp/.gitkeep
 
 # LICENSE (2026-10-15 licensing plan v12): SERVER-side license state only
 (choice/company/email/ip_history/last_check). The CLIENT keeps no license files.

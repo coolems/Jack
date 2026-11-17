@@ -650,6 +650,18 @@ QUESTION_TIMEOUT_DEFAULT_SEC: int = 120
 #: Candidates the card may show. More than this cannot be read in one glance.
 QUESTION_MAX_OPTIONS: int = 6
 
+# --- MCP servers ---
+# MCP servers are declared in CLIENT/config/mcp_servers.json and are DISABLED by default:
+# an MCP server is an external process or remote endpoint, so enabling it is a human edit,
+# and its first tool call still asks a consent card ('subprocess' for stdio, 'url' for http).
+# An http endpoint additionally passes the SSRF gate (app/mcp/net_guard.py). These constants
+# bound what reaches the context window, not whether a server is allowed.
+MCP_TEXT_PREVIEW_CHARS: int = 4000      # payload preview handed to the model (rest spills)
+MCP_INSTRUCTIONS_MAX_CHARS: int = 1200  # server instructions as untrusted data in the prompt
+MCP_TIMEOUT_DEFAULT_SEC: int = 30       # per-request wall clock when an entry sets none
+MCP_TIMEOUT_MAX_SEC: int = 300          # clamp for an entry's timeout_sec
+MCP_SPILL_KEEP_FILES: int = 20          # .temp/mcp/* payloads kept for full results
+
 # --- Model (fetched from SERVER at runtime) ---
 MODEL_NAME: str = ""  # Auto-detected from SERVER loaded models at runtime do not hardcode here
 

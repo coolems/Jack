@@ -49,6 +49,7 @@
 #settingsModal.setup-mode #emailGroup { display: none; }
 #settingsModal.setup-mode #clearKeyBtn { display: none; }
 #settingsModal.setup-mode .settings-tab[data-pane="agent"] { display: none; }
+#settingsModal.setup-mode .settings-tab[data-pane="mcp"] { display: none; }
 
 /* ===== QUESTION DIALOG COLOR (Settings > Runtime) =====
    A palette of ready-made tints plus a free colour picker. The chosen colour is saved to

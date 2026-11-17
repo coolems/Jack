@@ -20,7 +20,7 @@ import json
 import logging
 import re
 import time
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from config import (
     AGENTIC_MAX_TOOL_ITERATIONS,
@@ -485,6 +485,18 @@ async def run_react_loop(
 
             # Increment total loop call counter
             loop_tools += 1
+
+            # TOOL SCHEMA REFRESH (2026-11-17 defect fix): the schema was built once per turn
+            # by the websocket handler, so an MCP server enabled + connected AFTER the turn
+            # started (Settings > MCP re-wire) never reached the model. It then wrote the call
+            # as literal <tool_call> text - which is not dispatched - and the run stalled.
+            # Done BEFORE the budget chain so est_tools_tokens below always matches the
+            # schema actually sent.
+            _refreshed = await _refresh_local_tools(config)
+            if _refreshed is not None:
+                _tools_for_est = _refreshed
+                est_tools_tokens = sum(len(json.dumps(t)) for t in _tools_for_est)
+
             # TOKEN BUDGET CHAIN (checked EVERY iteration, in this order):
             #   1. WARNING  - console/UI warning when usage reaches the safe-margin
             #      percentage of the MESSAGE-LIST budget (AGENTIC_TOKEN_WARNING_THRESHOLD
@@ -997,6 +1009,18 @@ async def run_react_loop(
                 # view; this is the safety net for anything that still slips through).
                 ai_response = strip_turn_stats_lines(ai_response)
 
+                # ---- TOOL CALL WRITTEN AS TEXT (2026-11-17 defect fix) ----
+                # The provider returned prose that carries the template's own call markup, so
+                # the intended call produced no tool_calls delta and nothing ran. Name the
+                # cause in the log instead of letting it pass as an ordinary thinking step.
+                if _looks_like_tool_markup(ai_response):
+                    logger.warning(
+                        "[AGENTIC.DEBUG] react_loop - Unexecuted tool call: the reply contains "
+                        "tool-call markup as plain text, so no tool ran. The function it names is "
+                        "not in the schema sent to the model (check the Tool schema REFRESHED / "
+                        "[ROLE] lines and the MCP registry state)."
+                    )
+
                 # ---- LIVE STEERING vs. premature completion (2026-10-23) ----
                 # The user typed a correction while this (possibly final) answer was
                 # streaming. Do NOT accept the task as done: keep what was streamed as an
@@ -1381,6 +1405,79 @@ def _format_turn_stats_line(last_stats: Any, loop_tools: int, loop_no_tools: int
     except Exception:
         logger.debug("[AGENTIC.DEBUG] turn-stats line formatting failed", exc_info=True)
         return ""
+
+
+#: Tool-call markup the chat template renders for a native call. A model that writes it
+#: as TEXT produced a call that is never dispatched (see _looks_like_tool_markup).
+_TOOL_MARKUP_RE = re.compile(r"<tool_call\s*>|<function\s*=\s*[A-Za-z0-9_.-]+>", re.IGNORECASE)
+
+
+def _looks_like_tool_markup(text: Any) -> bool:
+    """True when a reply carries a tool call as literal text instead of a native tool call.
+
+    Tool-capable chat templates render a call as
+    ``<tool_call><function=name><parameter=key>value</parameter></function>``. When the model
+    emits that markup inside delta.content there is no ``tool_calls`` delta to dispatch, so
+    the call silently does nothing. Both markers are required so a log excerpt or docstring
+    that mentions a single tag does not trip the guard.
+    """
+    if not isinstance(text, str) or "<function=" not in text:
+        return False
+    return bool(_TOOL_MARKUP_RE.search(text))
+
+
+async def _refresh_local_tools(config: Any) -> Optional[List[Dict]]:
+    """Re-merge the CLIENT-LOCAL tool definitions into ``config.ollama_tools``.
+
+    The schema is built ONCE per turn by the websocket handler, so a tool that becomes
+    available mid-turn (an MCP server enabled in Settings > MCP and connected afterwards)
+    stayed invisible for the rest of the run, and the model wrote the call as text instead
+    of a native tool call. Only the local seam is rebuilt here - the SERVER-delivered
+    definitions are already cached - so this costs no network I/O.
+
+    Returns the new definition list when the tool SET changed, None when it did not (no
+    churn, no log line). Never raises - a failed refresh keeps the previous schema.
+    """
+    orch = getattr(config, "tool_orchestrator", None)
+    old = list(getattr(config, "ollama_tools", None) or [])
+    if orch is None or not old:
+        return None
+    try:
+        local = await orch.local_definitions(getattr(config, "api_key", None))
+    except Exception as e:  # pragma: no cover - defensive; a schema refresh must not break a turn
+        logger.debug(f"[AGENTIC.DEBUG] react_loop - tool schema refresh failed (keeping previous): {e}")
+        return None
+    if not local:
+        return None
+
+    def _name_of(d: Any) -> str:
+        return d.get("function", {}).get("name", "") if isinstance(d, dict) else ""
+
+    def _names(defs: List[Dict]) -> set:
+        return {_name_of(d) for d in defs}
+
+    local_names = _names(local)
+    # Names owned by a local seam are re-decided every refresh: a local tool that is no
+    # longer offered (server disconnected, role changed) must go, not stay as if remote.
+    try:
+        seam_names = orch.local_tool_names()
+    except Exception:
+        seam_names = local_names
+    remote = [d for d in old if _name_of(d) not in seam_names]
+    remote_names = _names(remote)
+    new = remote + [d for d in local if _name_of(d) not in remote_names]
+
+    old_names, new_names = _names(old), _names(new)
+    if new_names == old_names:
+        return None
+
+    logger.info(
+        f"[AGENTIC.DEBUG] react_loop - Tool schema REFRESHED mid-turn: {len(old)} -> {len(new)} "
+        f"(added: {sorted(new_names - old_names) or 'none'}; "
+        f"removed: {sorted(old_names - new_names) or 'none'})"
+    )
+    config.ollama_tools = new
+    return new
 
 
 def _is_valid_tool_call(tc: Dict) -> bool:
