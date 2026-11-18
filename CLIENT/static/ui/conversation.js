@@ -92,7 +92,14 @@ async function _renderHistory(convId, data) {
     let blocks = 0;
     for (const it of items) {
         if (it.kind === 'turn') {
-            if (CycleBlock.rebuild(convId, it.row, null)) blocks++;
+            const blk = CycleBlock.rebuild(convId, it.row, null);
+            if (!blk) continue;                      // refused (another workspace owns the turn_id)
+            blocks++;
+            // A turn block stands for exactly one messages row - the answer it describes.
+            // A turn that produced no answer (stopped / failed) has message_id NULL and no
+            // row at all, so its block is marked and excluded from the truncate index.
+            if (it.row.message_id) blk.node.dataset.msgId = it.row.message_id;
+            else blk.node.dataset.orphan = '1';
             continue;
         }
         // SECURITY fix 2026-10-05: appendMessage is async (media tokens are minted via header auth).

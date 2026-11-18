@@ -282,6 +282,12 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
     @router.delete("/{conv_id}/messages/truncate")
     async def truncate_messages(conv_id: str, data: Dict, request: Request):
+        """Delete messages from `message_index` onwards (edit / resend).
+
+        `message_index` counts chat-level rows: every messages row except steering rows
+        (`is_steer = 1`), which the UI shows inside the turn block instead of as bubbles.
+        A steer has no bubble to index, so it is removed by the time window the cut starts at.
+        """
         current_ip = get_client_ip(request)
         message_index = data.get("message_index", 0)
 
@@ -292,32 +298,44 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             _require_conversation_owner(cursor, conv_id, current_ip)
 
             cursor.execute(
-                "SELECT id, timestamp FROM messages WHERE conversation_id = ? "
+                "SELECT id, timestamp FROM messages WHERE conversation_id = ? AND is_steer = 0 "
                 "ORDER BY timestamp, rowid",
                 (conv_id,)
             )
             rows = cursor.fetchall()
 
             deleted_count = 0
+            deleted_steers = 0
             pruned_turn_logs = 0
             if message_index < len(rows):
                 ids_to_delete = [row[0] for row in rows[message_index:]]
                 deleted_count = len(ids_to_delete)
+                from_timestamp = rows[message_index][1]
                 placeholders = ",".join("?" * deleted_count)
                 cursor.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", ids_to_delete)
+                # Steers of the removed turns: no row of their own in the UI, so they cannot be
+                # addressed by index - they follow the time window the cut starts at.
+                cursor.execute(
+                    "DELETE FROM messages WHERE conversation_id = ? AND is_steer = 1 "
+                    "AND timestamp >= ?",
+                    (conv_id, from_timestamp),
+                )
+                deleted_steers = cursor.rowcount
                 # Cycle rows belong to the CONVERSATION, not to the answer they describe:
                 # without this prune, a reload rebuilds cycle blocks for answers that are gone.
                 pruned_turn_logs = truncate_turn_logs(
-                    cursor, conv_id, ids_to_delete, rows[message_index][1]
+                    cursor, conv_id, ids_to_delete, from_timestamp
                 )
                 conn.commit()
                 logger.info(
-                    f"Client {current_ip} truncated {deleted_count} messages from "
-                    f"conversation {conv_id} (turn_logs={pruned_turn_logs})"
+                    f"Client {current_ip} truncated {deleted_count} messages "
+                    f"(+{deleted_steers} steers) from conversation {conv_id} "
+                    f"(turn_logs={pruned_turn_logs})"
                 )
         finally:
             close_db_connection(conn)
         return {"status": "truncated", "deleted_count": deleted_count,
+                "deleted_steers": deleted_steers,
                 "remaining_count": message_index, "deleted_turn_logs": pruned_turn_logs}
 
     @router.post("/{conv_id}/reset-state")

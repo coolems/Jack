@@ -458,13 +458,14 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
     const messageDiv = document.createElement('div');
     messageDiv.className = role === 'user' ? 'cycle-user' : 'message assistant';
     if (streaming) messageDiv.dataset.streaming = 'true';
-    // (2026-11-08) THE INDEX CONTRACT for edit/resend: the index sent to
-    // DELETE /messages/truncate must be the position among CHAT-LEVEL items, and the server
-    // counts the same set - every DB row EXCEPT a '[STEER]' marker (folded into the block).
-    // So the count must include a turn block (.cycle-block = one DB answer row), otherwise
-    // an edit after a turn would cut the history at the wrong row.
+    // The index sent to DELETE /messages/truncate is the position among CHAT-LEVEL items, and
+    // the server counts the same set: every messages row that is not a steering row
+    // (is_steer = 1). A steer is loop work shown inside the turn block, so it has no node here
+    // either and both sides skip it. A turn block counts only when it stands for an answer row,
+    // which is why a block rebuilt for a turn with no answer (message_id NULL) is marked
+    // data-orphan and excluded.
     messageDiv.dataset.messageIndex =
-        container.querySelectorAll('.cycle-user, .message, .cycle-block').length;
+        container.querySelectorAll('.cycle-user, .message, .cycle-block:not([data-orphan])').length;
     let mediaHtml = '';
 
     // BUG FIX (2026-10-03): declared OUTSIDE the if-block on purpose - the
