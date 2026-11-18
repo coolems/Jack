@@ -8,7 +8,8 @@ Handles:
 - Stop event checking between iterations
 - Live steering: user messages typed during a run are injected as fresh user turns at
   safe boundaries (before a provider call / before pending tool calls)
-- Safe-margin token warning + context-guardian finish/plan message before hard trim
+- Safe-margin token warning + hard trim, then a context-guardian finish/plan message
+  when trimming cannot free room
 - Temp thinking array to preserve all AI reasoning steps in final history
 
 ToolCompilationError terminates the loop immediately, without retry.
@@ -39,20 +40,19 @@ from utils.history_manager import (
     invalidate_message_tokens,
 )
 from utils.history_trimmer import safe_trim_history, get_token_count
+from utils.token_counter import refresh_exact_token_cache
 
 # ============================================================
-# LESSONS/LEARNING PIPELINE - REMOVED (2026-11-17)
-# DNA is read-only identity text now: no lessons file, no lesson injection,
-# nothing that mutates the system prompt mid-turn. The ReAct loop sends exactly
-# the SERVER-delivered prompt (+ per-turn MCP/image context).
+# The ReAct loop sends exactly the SERVER-delivered system prompt
+# (+ per-turn MCP/image context). Nothing mutates it mid-turn.
 # ============================================================
 
 from .base_mode import push_token_stats, check_stop_event, build_session_stats, strip_turn_stats_lines
 from .provider_call import call_provider_with_retry
 from .tool_lock import tool_lock, SCREEN_BROWSER_TOOLS
-# (2026-11-07) Extensive context-budget diagnostics: every limit stage logs WHO holds
-# the tokens (per-role histogram, unremovable block, injected notices, per-tool schema
-# cost, top contributors) instead of a single percentage line.
+# Context-budget diagnostics: every limit stage logs WHO holds the tokens (per-role
+# histogram, unremovable block, injected notices, per-tool schema cost, top contributors)
+# instead of a single percentage line.
 from .context_report import build_budget_report, log_budget
 
 
@@ -60,7 +60,7 @@ logger = logging.getLogger("COOLEMS.Logic.ReactLoop")
 
 
 # ============================================================
-# LIVE STEERING (2026-10-23, intent rules 2026-11)
+# LIVE STEERING
 # While an agentic turn is running the UI can hand the loop a new user instruction
 # ("steer"). It is injected as a USER message at the next safe boundary - before a provider
 # call, or right before pending tool calls - so the SAME task continues with the correction
@@ -90,11 +90,11 @@ TOOL_SKIPPED_FOR_STEER = (
 def _loop_boundary(messages: List[Dict]) -> int:
     """Index where the CURRENT loop begins: one past the protected user prompt.
 
-    An index captured at loop entry goes stale as soon as a trim rebuilds the list
-    (removals happen BEFORE the boundary, so every later index shifts down). The
-    boundary is therefore derived from the `_protect` tag that rides on the message
-    dict itself. Everything after that prompt is what this loop appended - assistant
-    replies, tool results, mid-run steering and notices - and is never trimmed.
+    Derived from the `_protect` tag on the message dict rather than a captured index, so
+    it stays correct after a trim rebuilds the list (removals happen BEFORE the boundary,
+    which shifts every later index down). Everything after that prompt is what this loop
+    appended - assistant replies, tool results, mid-run steering and notices - and is never
+    trimmed.
     """
     for i, msg in enumerate(messages):
         if isinstance(msg, dict) and msg.get("_protect") is True:
@@ -282,10 +282,10 @@ async def run_react_loop(
             - The CURRENT USER PROMPT (tagged `_protect` by build_messages) is NEVER
               removed - it must remain in the list at all times.
             - THE CURRENT LOOP IS NEVER REMOVED. `_loop_boundary(messages)` is the boundary:
-              boundary: everything appended after build_messages - this loop's
-              assistant replies, tool_calls, tool results and mid-run steering - is the
-              working context and stays available for the whole run. Trimming eats only
-              the PREVIOUS turns of the session.
+              everything appended after build_messages - this loop's assistant replies,
+              tool_calls, tool results and mid-run steering - is the working context and
+              stays available for the whole run. Trimming eats only the PREVIOUS turns of
+              the session.
             - Everything removable is grouped into atomic units (a turn = user msg + the
               AI reply that answered it + ALL its tool results) and only whole units are
               ever removed, oldest first. An assistant message with `tool_calls` can
@@ -299,8 +299,8 @@ async def run_react_loop(
     """
     func_start = time.time()
 
-    # (2026-11 cycle history) The turn's recorder, when the chat bus attached one. Every
-    # recorder call goes through _rec() so a dead recorder can never break the loop.
+    # The turn's recorder, when the chat bus attached one. Every recorder call goes
+    # through _rec() so a dead recorder can never break the loop.
     cycle = getattr(config, "cycle", None)
 
     async def _rec(coro) -> None:
@@ -312,9 +312,9 @@ async def run_react_loop(
         except Exception as e:  # pragma: no cover - defensive
             logger.debug(f"[AGENTIC.DEBUG] react_loop - cycle recorder failed: {e}")
 
-    # (2026-11 interjection rule) True while a mid-run QUESTION (not a stop request) was
-    # injected and its answer has not been settled yet. A completion marker written while
-    # this is set is DEFERRED: the job stays open until the original task is finished.
+    # True while a mid-run QUESTION (not a stop request) was injected and its answer has
+    # not been settled yet. A completion marker written while this is set is DEFERRED: the
+    # job stays open until the original task is finished.
     interjection_pending = False
 
     final_response = ""
@@ -334,9 +334,9 @@ async def run_react_loop(
     loop_tools = 0         # Total loop calls in this agentic run
     loop_no_tools = 0         # Non-tool calls since last tool call
 
-    # (2026-08-23 session stats) TOTAL tokens generated by the provider across ALL loops of
-    # this agentic run (loop 1 -> current). Pushed to the UI with every token_stats frame so
-    # the status bar can show cumulative output for the whole session, not just one call.
+    # TOTAL tokens generated by the provider across ALL loops of this agentic run
+    # (loop 1 -> current). Pushed to the UI with every token_stats frame so the status
+    # bar shows cumulative output for the whole session, not just one call.
     session_generated_tokens = 0
 
     # LAST PROVIDER STATS of this run - kept so the FINAL turn-stats line (spliced above
@@ -351,12 +351,11 @@ async def run_react_loop(
     context_recoveries = 0
     MAX_CONTEXT_RECOVERIES = 3
 
-    # TRUNCATION-RESUME BUDGET (2026-09-10): how many times this run may ask the model to
-    # resume a response that was cut off at the output token limit (finish_reason == "length").
-    # Before this fix a truncated answer looked like an ordinary thinking step, so the loop
-    # hit max-thinking-iterations, injected 'end with TASK DONE' and re-asked from scratch -
-    # forever (see plan_20260910_1835.md). After the budget is spent we accept the best
-    # partial answer instead of looping.
+    # TRUNCATION-RESUME BUDGET - how many times this run may ask the model to resume a
+    # response cut off at the output token limit (finish_reason == "length"). A truncated
+    # answer is NOT an ordinary thinking step: without this budget the loop would hit
+    # max-thinking-iterations, inject 'end with TASK DONE' and re-ask from scratch forever.
+    # After the budget is spent we accept the best partial answer instead of looping.
     truncation_resumes = 0
     MAX_TRUNCATION_RESUMES = 2
 
@@ -366,35 +365,32 @@ async def run_react_loop(
     # The AI is told to finish its current work step and dump everything into a plan
     # file so the next work loop can pick up where this one left off.
     #
-    # ARMING (2026-11-07 fix): the guardian fires on a CROSSING, not on a state. It is
-    # armed while usage sits below the threshold and disarmed the moment it injects, so a
-    # run cannot get a second "stop calling tools" notice 40s later while still sitting at
-    # the same percentage (the old code injected 1/3 then 2/3 back-to-back with no new
-    # information). A trim that brings usage back below the threshold re-arms it, so a
-    # genuinely re-grown context can still get a fresh notice.
+    # ARMING: the guardian fires on a CROSSING, not on a state. It is armed while usage
+    # sits below the threshold and disarmed the moment it injects, so a run cannot get a
+    # second "stop calling tools" notice while still sitting at the same percentage (no
+    # new information arrived). A trim that brings usage back below the threshold re-arms
+    # it, so a genuinely re-grown context can still get a fresh notice.
     token_warning_sent = False  # console warning fires once per run at the safe-margin threshold
     context_guardian_injections = 0
     guardian_armed = True
 
-    # SERVER-TRUTH TOKEN ANCHOR (2026-08-19 fix, OVERHEAD form 2026-11-07): after each
-    # provider call we remember the REAL prompt_tokens llama.cpp reported for exactly the
-    # list we sent, and store it as an OFFSET against our own estimate:
+    # SERVER-TRUTH TOKEN ANCHOR (OVERHEAD form): after each provider call we remember the
+    # REAL prompt_tokens llama.cpp reported for exactly the list we sent, and store it as
+    # an OFFSET against our own estimate:
     #     anchor_overhead = server prompt_tokens - local estimate of that same list
     #     current_tokens  = anchor_overhead + local estimate of the CURRENT list
-    # The chat-template markup the server counts but our chars/4 estimate does not is the
+    # The chat-template markup the server counts but the local estimate does not is the
     # overhead, so the server number stays authoritative while the local estimate still
-    # tracks every change - including a TRIM, which the old index-slice form could not
-    # represent (it kept the anchor high forever and re-counted messages the server had
-    # already counted, which is what made the guardian claim 96% while the UI showed
-    # 101K tokens free).
+    # tracks every change - including a TRIM, which an index-slice anchor cannot represent
+    # (it would keep the anchor high forever and re-count messages the server already
+    # counted).
     anchor_overhead = 0          # server prompt_tokens - local estimate at anchor time
     anchor_set = False           # True once a real prompt_tokens has been received
     est_drift_logged = False     # log a suspiciously large estimate gap once per run
     stats_without_prompt_logged = False  # log "server sent no prompt_tokens" once per run
 
-    # PREVIOUS ITERATION'S COST (2026-11-07 diagnostics). The guardian log used to report
-    # only a percentage, so a run stuck at the limit could not say what grew or what could
-    # not be trimmed. Every budget stage now logs the full report (see logic/context_report.py)
+    # PREVIOUS ITERATION'S COST. A percentage alone cannot say what grew or what could not
+    # be trimmed, so every budget stage logs the full report (see logic/context_report.py)
     # and this value makes the per-iteration JUMP visible.
     prev_tokens = None
 
@@ -424,10 +420,10 @@ async def run_react_loop(
             iteration_start = time.time()
             logger.info("-" * 50)
 
-            # Cycle history (2026-11): every provider call is ONE reasoning step of this
-            # turn. begin_step() flushes the PREVIOUS step's AI text first (so a step's
-            # speech never leaks into the next group) and returns the new step number; the
-            # step is settled after the provider stats arrive, so the row carries real counters.
+            # Cycle history: every provider call is ONE reasoning step of this turn.
+            # begin_step() flushes the PREVIOUS step's AI text first (so a step's speech
+            # never leaks into the next group) and returns the new step number; the step is
+            # settled after the provider stats arrive, so the row carries real counters.
             step_no = tool_iteration + 1
             if cycle is not None:
                 try:
@@ -451,7 +447,7 @@ async def run_react_loop(
 
 
 
-            # ---- LIVE STEERING (2026-10-23): drain queued user messages FIRST ----
+            # ---- LIVE STEERING: drain queued user messages FIRST ----
             # A steer that arrived while the previous provider call / tool batch was
             # running becomes the newest user turn for THIS provider call. Reset the
             # thinking counter: fresh user input is not the model "stalling".
@@ -460,7 +456,7 @@ async def run_react_loop(
                 consecutive_thinking_count = 0
                 logger.info(f"[AGENTIC.DEBUG] react_loop - injected {_steers_applied} live "
                             f"steering message(s) before provider call")
-                # INTERJECTION RULE (2026-11): a pure mid-run QUESTION does not end the job.
+                # INTERJECTION RULE: a pure mid-run QUESTION does not end the job.
                 # Tell the model plainly (in-context) that the task stayed open, so a later
                 # 'TASK DONE' cannot be justified by having answered only the question. A
                 # batch that also contains an explicit stop is NOT treated this way.
@@ -474,10 +470,11 @@ async def run_react_loop(
             # Increment total loop call counter
             loop_tools += 1
 
-            # TOOL SCHEMA REFRESH (2026-11-17 defect fix): the schema was built once per turn
+            # TOOL SCHEMA REFRESH: the schema was built once per turn
             # by the websocket handler, so an MCP server enabled + connected AFTER the turn
-            # started (Settings > MCP re-wire) never reached the model. It then wrote the call
-            # as literal <tool_call> text - which is not dispatched - and the run stalled.
+            # started (Settings > MCP re-wire) never reaches the model. It then writes the
+            # call as literal tool-call markup text - which is not dispatched - and the run
+            # stalls.
             # Done BEFORE the budget chain so est_tools_tokens below always matches the
             # schema actually sent.
             _refreshed = await _refresh_local_tools(config)
@@ -497,8 +494,8 @@ async def run_react_loop(
             #      telling the AI to finish its current work and write a plan file so we can
             #      continue in the next work loop. One notice per crossing; a trim that
             #      lowers usage re-arms it.
-            # BUDGET EXPRESSION (2026-11 review fix A7) - defined ONCE per iteration and
-            # used by every stage below, so the check and the trim can never disagree:
+            # BUDGET EXPRESSION - defined ONCE per iteration and used by every stage below,
+            # so the check and the trim can never disagree:
             #   current_tokens   = TOTAL prompt cost in SERVER units (local estimate of the
             #                      list + tool schema + the server overhead). Compared against
             #                      warn_limit / guardian_limit / token_limit by stages 1/2/3.
@@ -509,10 +506,17 @@ async def run_react_loop(
             #                      in LOCAL-estimate units (safe_trim_history counts with our
             #                      estimator). Without this subtraction a trim that "fits"
             #                      locally still overflows the real window whenever the server
-            #                      counts more than chars/4 - the old 1061% failure mode.
+            #                      counts more than the estimate.
             # Deriving all three here (instead of re-spelling the arithmetic at each stage) is
             # what keeps the schema counted exactly once: the overhead is measured WITH the
             # schema included, and the trim budget subtracts it exactly once from the limit.
+            # EXACT COUNTS: budget decisions use the server's real tokenizer
+            # (provider.tokenize -> llama.cpp /tokenize), cached per message. Only the
+            # messages appended since the last pass (lacking `_exact_tokens`) are re-counted,
+            # so a dense tool result cannot slip past the trim/guardian gate under a chars/4
+            # under-count (the HTTP 400 "prompt too long" root cause).
+            await refresh_exact_token_cache(getattr(config, "provider", None), messages)
+
             message_budget = max(1024, token_limit - est_tools_tokens)
             local_est_now = get_token_count(messages) + est_tools_tokens
             current_tokens = local_est_now + anchor_overhead
@@ -521,9 +525,9 @@ async def run_react_loop(
             # guardian margin in its report and every stage measures the same number.
             guardian_limit = int(window_tokens * AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION)
 
-            # ROUTINE TRACE (2026-11-07): one line per iteration so the growth curve is
-            # visible in the normal log (INFO - the COOLEMS logger is INFO by default, so a
-            # DEBUG line would never be written). Cheap: no message scanning, just ints.
+            # ROUTINE TRACE: one line per iteration so the growth curve is visible in the
+            # normal log (INFO - the COOLEMS logger is INFO by default, so a DEBUG line
+            # would never be written). Cheap: no message scanning, just ints.
             logger.info(
                 f"[CONTEXT-BUDGET] iter={tool_iteration} msgs={len(messages)} "
                 f"cost={current_tokens} (local {local_est_now} + overhead {anchor_overhead} + schema {est_tools_tokens}) "
@@ -555,8 +559,8 @@ async def run_react_loop(
                     f"{round(100 * AGENTIC_TOKEN_WARNING_THRESHOLD)}%), {window_tokens} total window. "
                     f"Trimming engages as soon as the budget is exceeded."
                 )
-                # Full state dump (2026-11-07): which messages hold the tokens, what is
-                # unremovable, how much the schema costs, how far from the guardian limit.
+                # Full state dump: which messages hold the tokens, what is unremovable,
+                # how much the schema costs, how far from the guardian limit.
                 log_budget(logger, "safe-margin-warning", build_budget_report(
                     "safe-margin-warning", window_tokens=window_tokens, token_limit=token_limit,
                     message_budget=message_budget, trim_budget=trim_budget, warn_limit=warn_limit,
@@ -577,17 +581,10 @@ async def run_react_loop(
                     }))
 
             # ---- STAGE 2: hard limit exceeded -> trim oldest atomic units ----
-            # ORDER FIX (2026-11-07): the trim runs BEFORE the guardian. The old order
-            # injected "context nearly full, STOP calling tools" while the trimmer still had
-            # plenty of removable history - so a run that could have continued by trimming got
-            # told to wrap up instead. The guardian now only speaks when trimming CANNOT help.
-            #
-            # ROOT CAUSE of the reported "guardian fires immediately / lots of empty window":
-            # the committed code measured the guardian against token_limit
-            # (= max_history_tokens() = 0.90 x window) and quoted that as a percentage OF the
-            # budget, so it fired at 176561/184320 = "96%" while the UI status bar showed the
-            # SERVER's real window (204800) with thousands of tokens still free. The notice
-            # contradicted the UI and stopped productive work early.
+            # The trim runs BEFORE the guardian: a run that could still continue by trimming
+            # must not be told to wrap up. The guardian only speaks when trimming CANNOT help.
+            # Percentages here are measured against token_limit (the 0.90 history budget),
+            # never quoted as a percentage of the FULL window - stage 3 owns that number.
             stuck_at_limit = False
             trim_removed = 0
             before_trim_tokens = 0   # set by stage 2; the trim log quotes before -> after
@@ -603,16 +600,15 @@ async def run_react_loop(
                         live_protected.append(_pi)
                         break
                 # Trim budget for the MESSAGE LIST ONLY: subtract the tool-schema cost so
-                # (messages + tools) actually fits under token_limit. The old code passed
-                # token_limit itself, leaving messages ~est_tools_tokens over budget - the
-                # real prompt then hit the window with almost no output room left and
-                # llama.cpp truncated its own tool-call JSON mid-string ("Failed to parse
-                # tool call arguments" 500). See plan_20260817_trace_fix.md.
+                # (messages + tools) actually fits under token_limit. Passing token_limit
+                # itself would leave messages ~est_tools_tokens over budget, so the real
+                # prompt hits the window with almost no output room and llama.cpp truncates
+                # its own tool-call JSON mid-string ("Failed to parse tool call arguments" 500).
                 # trim_budget additionally subtracts the server overhead, so the trimmed list
-                # fits in SERVER units too - a trim that only "fits" in chars/4 units is what
-                # previously kept the real prompt over the window.
+                # fits in SERVER units too - a trim that only "fits" in local-estimate units
+                # keeps the real prompt over the window.
                 before_trim_tokens = current_tokens
-                # LOOP RULE (2026-11-08): trim only what sits BEFORE the current loop.
+                # LOOP RULE: trim only what sits BEFORE the current loop.
                 # The boundary is derived live from the `_protect` tag, so it stays correct
                 # after every rebuild the previous trim performed.
                 messages = safe_trim_history(
@@ -646,11 +642,10 @@ async def run_react_loop(
                     guardian_injections=context_guardian_injections,
                     guardian_max=AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
                     guardian_armed=guardian_armed, token_warning_sent=token_warning_sent))
-                # STUCK LIMIT (2026-11-07, extended 2026-11-08 by the LOOP RULE): a trim that
-                # removed nothing means the budget is held entirely by messages the trimmer may
-                # never delete - system prompt + protected current user prompt + the CURRENT
-                # LOOP. Say it plainly: history trimming cannot help in that state, so the
-                # context guardian must ask for a continuation plan instead.
+                # STUCK LIMIT: a trim that removed nothing means the budget is held entirely
+                # by messages the trimmer may never delete - system prompt + protected current
+                # user prompt + the CURRENT LOOP. Say it plainly: history trimming cannot help
+                # in that state, so the context guardian must ask for a continuation plan.
                 if current_tokens > token_limit:
                     stuck_at_limit = True
                     logger.warning(
@@ -665,12 +660,11 @@ async def run_react_loop(
 
             # ---- STAGE 3: context guardian ----
             # Fires when trimming CANNOT help this run: stuck_at_limit means the trim removed
-            # nothing, which with the LOOP RULE (2026-11-08) is exactly the state the user
-            # described - the budget is held by UNREMOVABLE material (system prompt + protected
-            # current user prompt + the CURRENT LOOP, which is the AI's working context and is
-            # never trimmed). The only correct response is a continuation plan: finish the work
-            # step, write plan_<...>_continue.md (in .temp/plans/), stop; the NEXT loop resumes from user input +
-            # AI output + that plan.
+            # nothing, i.e. the budget is held by UNREMOVABLE material (system prompt +
+            # protected current user prompt + the CURRENT LOOP, which is the AI's working
+            # context and is never trimmed). The only correct response is a continuation plan:
+            # finish the work step, write plan_<...>_continue.md (in .temp/plans/), stop; the
+            # NEXT loop resumes from user input + AI output + that plan.
             # A trim that discards half the context is NOT a stop condition: with the LOOP RULE
             # it can only eat PREVIOUS turns, which is legitimate trimming - the trim log already
             # shows the size of the pass (removed=N tok, before -> after).
@@ -696,11 +690,11 @@ async def run_react_loop(
                         f"history_budget={token_limit}, trim_removed={trim_removed} tok, stuck={stuck_at_limit}. "
                         f"Reason: {reason}. Injecting finish-current-work + plan message."
                     )
-                    # EXTENSIVE OBSERVATION (2026-11-07): the full picture at the moment the
-                    # guardian fires - limits, cost breakdown, the jump that crossed the
-                    # threshold, the unremovable block, injected notices, per-tool schema cost
-                    # and the most expensive messages. This is what answers "where did we hit
-                    # the big limit".
+                    # EXTENSIVE OBSERVATION: the full picture at the moment the guardian
+                    # fires - limits, cost breakdown, the jump that crossed the threshold,
+                    # the unremovable block, injected notices, per-tool schema cost and the
+                    # most expensive messages. This is what answers "where did we hit the
+                    # big limit".
                     log_budget(logger, "context-guardian-fire", build_budget_report(
                         "context-guardian-fire", window_tokens=window_tokens, token_limit=token_limit,
                         message_budget=message_budget, trim_budget=trim_budget, warn_limit=warn_limit,
@@ -767,7 +761,7 @@ async def run_react_loop(
             # Bounded recovery: if the SERVER reports its own tool-call JSON was truncated
             # (marker: "truncated its own tool-call"), re-trim history aggressively and tell
             # the model to split payloads - instead of letting one context exhaustion kill
-            # a multi-hour agentic run. The trim-budget fix above makes this rare; this is
+            # a multi-hour agentic run. The trim-budget rule above makes this rare; this is
             # the safety net for when it still happens (e.g. protected messages alone are huge).
             try:
                 provider_result, stats = await call_provider_with_retry(config, updated_messages)
@@ -786,9 +780,9 @@ async def run_react_loop(
                             break
                     # Same LOCAL-estimate units as the other trims: 0.75 of the history budget
                     # minus the tool schema AND the server overhead, so the aggressive trim
-                    # really leaves room in what llama.cpp counts. LOOP RULE (2026-11-08): it
-                    # may shrink the CURRENT LOOP only after the guardian already spoke (a
-                    # continue plan exists) - otherwise it eats previous turns only.
+                    # really leaves room in what llama.cpp counts. LOOP RULE: it may shrink the
+                    # CURRENT LOOP only after the guardian already spoke (a continue plan
+                    # exists) - otherwise it eats previous turns only.
                     aggressive_limit = max(1024, int(token_limit * 0.75) - est_tools_tokens - anchor_overhead)
                     messages = safe_trim_history(
                         messages, aggressive_limit, live_protected,
@@ -809,13 +803,12 @@ async def run_react_loop(
                     continue
                 raise
             except Exception as _cancel_err:
-                # CANCEL FIX (2026-09-07): the user clicked Stop WHILE this provider call was
-                # streaming. direct_mode/relay_mode raise UserCancelled in that case (matched by
-                # class name - it is defined per module and crosses the retry boundary as a plain
-                # exception). Treat it exactly like the loop-start stop check: no error log, no
-                # re-raise, just break with the clean "stopped" result. Before this fix the
-                # exception fell into the generic handler below ("UNEXPECTED ERROR") and bubbled
-                # up as a provider failure even though it was a deliberate user cancel.
+                # The user clicked Stop WHILE this provider call was streaming.
+                # direct_mode/relay_mode raise UserCancelled in that case (matched by class
+                # name - it is defined per module and crosses the retry boundary as a plain
+                # exception). Treat it exactly like the loop-start stop check: no error log,
+                # no re-raise, just break with the clean "stopped" result - a deliberate user
+                # cancel must never surface as a provider failure.
                 if type(_cancel_err).__name__ == "UserCancelled":
                     logger.warning("[AGENTIC.DEBUG] react_loop - UserCancelled raised by provider mid-stream; stopping cleanly without executing further tools")
                     final_response = "Generation stopped by user."
@@ -841,7 +834,7 @@ async def run_react_loop(
             loop_stats = {
                 "loop_tools": loop_tools,
                 "loop_no_tools": loop_no_tools,
-                # (2026-08-23 session stats) additive UI fields:
+                # Session-stats UI fields:
                 "session_generated_tokens": session_generated_tokens,
                 "session_elapsed_sec": _sess_stats["session_elapsed_sec"],
                 "last_session_sec": _sess_stats["last_session_sec"],
@@ -864,12 +857,12 @@ async def run_react_loop(
                 # Refresh the SERVER-TRUTH anchor as an OVERHEAD: server prompt_tokens minus
                 # our estimate of exactly the list we just sent (system + history + tool
                 # schema). That difference is the chat-template markup the server counts and
-                # chars/4 does not; adding it to the estimate of the CURRENT list gives a
+                # our estimate does not; adding it to the estimate of the CURRENT list gives a
                 # faithful figure that also goes DOWN when history is trimmed.
                 #
                 # A missing/zero prompt_tokens is a real bug signal, not a no-op: silently
-                # skipping the anchor left the previous overhead in place forever, so the
-                # guardian kept counting messages the server had already counted. Log it once
+                # skipping the anchor leaves the previous overhead in place forever, so the
+                # guardian keeps counting messages the server has already counted. Log it once
                 # per run so the provider-side cause stays diagnosable.
                 prompt_tokens = int(getattr(stats, "prompt_tokens", 0) or 0)
                 if prompt_tokens > 0:
@@ -881,7 +874,7 @@ async def run_react_loop(
                         "[AGENTIC.DEBUG] react_loop - Provider stats carried NO prompt_tokens - "
                         "the server-truth anchor cannot be refreshed; budget decisions fall back "
                         "to the local chars/4 estimate. Check the provider's usage/usage-per-field "
-                        "reporting (this is what previously inflated the context-guardian count)."
+                        "reporting (this inflates the context-guardian count)."
                     )
 
 
@@ -894,11 +887,11 @@ async def run_react_loop(
 
             if tool_calls:
 
-                # CANCEL FIX (2026-09-07): the stop event can be set WHILE the provider call was
-                # in flight (user clicked Stop mid-stream). The response still arrives with tool
-                # calls, but executing them after a cancel is exactly the "processes keep running"
-                # bug. Check again right before execution: if we were cancelled, do NOT run any of
-                # these tools - break out and report stop instead.
+                # The stop event can be set WHILE the provider call is in flight (user
+                # clicked Stop mid-stream). The response still arrives with tool calls, but
+                # executing them after a cancel is the "processes keep running" bug. Check
+                # again right before execution: if we were cancelled, do NOT run any of these
+                # tools - break out and report stop instead.
                 stopped = check_stop_event(config)
                 if stopped:
                     logger.warning("[AGENTIC.DEBUG] react_loop - STOP EVENT set during provider call; discarding %d pending tool call(s), not executing", len(tool_calls))
@@ -940,15 +933,15 @@ async def run_react_loop(
                 messages.append(assistant_msg)
 
 
-                # Execute each tool call of this batch.
-                # CANCEL FIX (2026-09-07): re-check the stop event between individual tools of a
-                # multi-tool batch so a cancel mid-batch stops the remaining ones too.
+                # Execute each tool call of this batch. Re-check the stop event between
+                # individual tools of a multi-tool batch so a cancel mid-batch stops the
+                # remaining ones too.
                 for tc_idx, tc in enumerate(tool_calls):
                     if check_stop_event(config) is not None:
                         logger.warning("[AGENTIC.DEBUG] react_loop - STOP EVENT set mid-batch; skipping %d remaining tool call(s)", len(tool_calls) - tc_idx)
                         break
 
-                    # ---- LIVE STEERING pre-empts pending side effects (2026-10-23) ----
+                    # ---- LIVE STEERING pre-empts pending side effects ----
                     # The user redirected the task WHILE this tool batch was pending. Do not
                     # run actions they may no longer want; complete the batch with explicit
                     # "not executed" tool results (the message contract requires one result
@@ -956,9 +949,9 @@ async def run_react_loop(
                     if _has_pending_steers(config):
                         _skipped = _append_skipped_tool_results(messages, tool_calls, tc_idx)
                         _steers_applied = await _apply_pending_steers(config, messages)
-                        # NO "Steering applied" system notice (2026-11): the skipped calls
-                        # already carry their own "NOT EXECUTED" tool result, so a duplicate
-                        # banner in the chat is noise. The log line stays for diagnosis.
+                        # No "Steering applied" system notice: the skipped calls already
+                        # carry their own "NOT EXECUTED" tool result, so a duplicate banner
+                        # in the chat is noise. The log line stays for diagnosis.
                         logger.warning(
                             f"[AGENTIC.DEBUG] react_loop - steering pre-empted {_skipped} pending "
                             f"tool call(s) at index {tc_idx}; injected {_steers_applied} steering message(s)"
@@ -979,14 +972,14 @@ async def run_react_loop(
                 # No tool calls - check if task is truly done
                 ai_response = provider_result if isinstance(provider_result, str) else str(provider_result)
 
-                # (2026-10-11) The model can copy a past turn's spliced "Loop stats:" line
-                # out of its own history into this answer. Strip it BEFORE accumulation so
-                # the persisted bubble carries exactly ONE stats line - the one the loop
-                # splices at exit below (build_messages() keeps old lines from the model's
-                # view; this is the safety net for anything that still slips through).
+                # The model can copy a past turn's spliced "Loop stats:" line out of its own
+                # history into this answer. Strip it BEFORE accumulation so the persisted
+                # bubble carries exactly ONE stats line - the one the loop splices at exit
+                # below (build_messages() keeps old lines from the model's view; this is the
+                # safety net for anything that still slips through).
                 ai_response = strip_turn_stats_lines(ai_response)
 
-                # ---- TOOL CALL WRITTEN AS TEXT (2026-11-17 defect fix) ----
+                # ---- TOOL CALL WRITTEN AS TEXT ----
                 # The provider returned prose that carries the template's own call markup, so
                 # the intended call produced no tool_calls delta and nothing ran. Name the
                 # cause in the log instead of letting it pass as an ordinary thinking step.
@@ -998,7 +991,7 @@ async def run_react_loop(
                         "[ROLE] lines and the MCP registry state)."
                     )
 
-                # ---- LIVE STEERING vs. premature completion (2026-10-23) ----
+                # ---- LIVE STEERING vs. premature completion ----
                 # The user typed a correction while this (possibly final) answer was
                 # streaming. Do NOT accept the task as done: keep what was streamed as an
                 # assistant turn, inject the steering message AFTER it, and let the model
@@ -1027,12 +1020,12 @@ async def run_react_loop(
                         continue
 
                 if "Agentic AI: TASK DONE" in ai_response:
-                    # INTERJECTION RULE (2026-11): a mid-run QUESTION was answered but the
-                    # ORIGINAL task is not finished, so this marker is a premature completion.
-                    # Keep the answer in context (the model must see what it wrote), push the
-                    # job back with an explicit continue instruction, and do NOT persist it as
-                    # done. A batch that also asked to stop is honoured above (interjection is
-                    # only set for pure questions).
+                    # INTERJECTION RULE: a mid-run QUESTION was answered but the ORIGINAL
+                    # task is not finished, so this marker is a premature completion. Keep the
+                    # answer in context (the model must see what it wrote), push the job back
+                    # with an explicit continue instruction, and do NOT persist it as done. A
+                    # batch that also asked to stop is honoured above (interjection is only
+                    # set for pure questions).
                     if interjection_pending:
                         interjection_pending = False
                         if messages and messages[-1].get("role") == "assistant":
@@ -1086,9 +1079,9 @@ async def run_react_loop(
                     final_response = separator.join(temp_thinking)
                     break
                 else:
-                    # TRUNCATION FIX (2026-09-10): the server now reports finish_reason == "length" via
-                    # stats.truncated. A cut-off answer must NOT be treated as a normal thinking step -
-                    # that is what caused the infinite 'Max thinking iterations' re-ask loop.
+                    # TRUNCATION: the server reports finish_reason == "length" via
+                    # stats.truncated. A cut-off answer must NOT be treated as a normal
+                    # thinking step - that would hit the max-thinking-iterations re-ask loop.
                     if stats and getattr(stats, "truncated", False):
                         if truncation_resumes < MAX_TRUNCATION_RESUMES:
                             truncation_resumes += 1
@@ -1158,9 +1151,9 @@ async def run_react_loop(
                     # Increment consecutive thinking counter
                     consecutive_thinking_count += 1
 
-                    # INTERJECTION RULE (2026-11): a marker-free turn after a mid-run question
-                    # is REAL continued work, so the deferral window closes - the next
-                    # 'TASK DONE' is a genuine completion of the original task.
+                    # INTERJECTION RULE: a marker-free turn after a mid-run question is REAL
+                    # continued work, so the deferral window closes - the next 'TASK DONE' is
+                    # a genuine completion of the original task.
                     if interjection_pending:
                         interjection_pending = False
                         logger.debug("[AGENTIC.DEBUG] react_loop - interjection settled: the model "
@@ -1184,10 +1177,9 @@ async def run_react_loop(
                     # None-safe: a pure tool-call assistant message carries content=None (OpenAI format),
                     # so `+=` would raise TypeError when one sits at messages[-1] - use the same
                     # `(content or "") + ...` merge rule as the truncation-resume path above.
-                    # ORDER (2026-11-07 fix): the reply is appended BEFORE the max-thinking check below.
-                    # The old order injected the force-completion notice and `continue`d without ever
-                    # appending this reply, so the model never saw what it had already written (and the
-                    # turn's own text vanished from history).
+                    # ORDER: the reply is appended BEFORE the max-thinking check below, so the
+                    # model always sees what it has already written even when the force-completion
+                    # notice is injected on this same iteration.
                     if messages and messages[-1].get("role") == "assistant":
                         messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
                         invalidate_message_tokens(messages[-1])  # content mutated in place -> refresh cached token count
@@ -1202,9 +1194,7 @@ async def run_react_loop(
                     if consecutive_thinking_count >= AGENTIC_MAX_THINKING_ITERATIONS:
                         # The notice must name its OWN cause and state the context state, so a
                         # reader (and the model) can never mistake this for a context-guardian
-                        # stop. (2026-11-07) With the limit at 1 this fired after a single prose
-                        # turn between two tool batches and ended runs that still had ~133K
-                        # tokens free - reported by the user as "context guardian stopped me".
+                        # stop: a stall limit can fire while the window still has plenty free.
                         logger.warning(
                             f"[AGENTIC.DEBUG] react_loop - Max thinking iterations ({AGENTIC_MAX_THINKING_ITERATIONS}) "
                             f"reached! Injecting completion message to AI. "
@@ -1244,7 +1234,7 @@ async def run_react_loop(
                     continue
 
 
-        # (2026-10-10) FINAL TURN STATS: splice the last loop-stats line directly above
+        # FINAL TURN STATS: splice the last loop-stats line directly above
         # "Agentic AI: TASK DONE" in the persisted answer AND send it as a "turn_stats"
         # frame so the live bubble gets the same line. The UI handler is idempotent, so
         # replayed frames and DB-loaded bubbles can never double-print it.
@@ -1253,12 +1243,12 @@ async def run_react_loop(
             stats_line = _format_turn_stats_line(last_stats, loop_tools, loop_no_tools,
                                                  session_generated_tokens, _elapsed_final)
             if stats_line:
-                # (2026-10-10 fix) Target ONLY the marker on its own line. The model can
-                # mention "Agentic AI: TASK DONE" mid-prose ("...end with 'Agentic AI:
-                # TASK DONE'") - splicing before such a meta-mention put the stats at the
-                # TOP of the answer, which looked humanly wrong. The LAST standalone line
-                # carrying the marker is the real end marker; if none exists (marker only
-                # appears mid-line), append both lines cleanly at the very end instead.
+                # Target ONLY the marker on its own line. The model can mention
+                # "Agentic AI: TASK DONE" mid-prose ("...end with 'Agentic AI: TASK DONE'"),
+                # and splicing before such a meta-mention would put the stats at the TOP of
+                # the answer. The LAST standalone line carrying the marker is the real end
+                # marker; if none exists (marker only appears mid-line), append both lines
+                # cleanly at the very end instead.
                 _m = None
                 for _m in re.finditer(r"(?m)^[ \t]*Agentic AI: TASK DONE[ \t]*$", final_response):
                     pass  # loop ends with the LAST standalone match (or None)
@@ -1278,7 +1268,7 @@ async def run_react_loop(
                     except Exception:
                         pass  # UI socket may already be closed - the persisted answer still carries it
 
-        # Loop exit - RESTORED to match working version
+        # Loop exit fallback
         if not final_response:
             logger.warning("[AGENTIC.DEBUG] react_loop - Loop exited but no final_response, using fallback")
 
@@ -1315,11 +1305,9 @@ async def run_react_loop(
     except Exception as e:
         elapsed = time.time() - func_start
     
-        # CRITICAL FIX: Check for ToolCompilationError BEFORE catching generic RuntimeError.
-        # ToolCompilationError inherits from RuntimeError and was being caught by the 
-        # (ConnectionError, TimeoutError, RuntimeError, FileNotFoundError) tuple below,
-        # which caused it to be logged as "PROVIDER ERROR" - completely hiding the real
-        # compilation failure and triggering useless retries.
+        # ToolCompilationError inherits from RuntimeError, so it must be matched BEFORE the
+        # generic (ConnectionError, TimeoutError, FileNotFoundError) classification below -
+        # otherwise it is logged as "PROVIDER ERROR", hiding the real compilation failure.
         tool_comp_error = _get_tool_compilation_error()
         if tool_comp_error and isinstance(e, tool_comp_error):
             logger.error(
@@ -1431,9 +1419,9 @@ async def _refresh_local_tools(config: Any) -> Optional[List[Dict]]:
 
     The schema is built ONCE per turn by the websocket handler, so a tool that becomes
     available mid-turn (an MCP server enabled in Settings > MCP and connected afterwards)
-    stayed invisible for the rest of the run, and the model wrote the call as text instead
-    of a native tool call. Only the local seam is rebuilt here - the SERVER-delivered
-    definitions are already cached - so this costs no network I/O.
+    would stay invisible for the rest of the run, and the model would write the call as
+    text instead of a native tool call. Only the local seam is rebuilt here - the
+    SERVER-delivered definitions are already cached - so this costs no network I/O.
 
     Returns the new definition list when the tool SET changed, None when it did not (no
     churn, no log line). Never raises - a failed refresh keeps the previous schema.
@@ -1590,7 +1578,7 @@ async def _execute_single_tool_call(
         messages: Current message list (modified in place).
         conversation_history: Full conversation history for context.
     """
-    # CRITICAL FIX: Tool call structure has name/arguments nested inside "function" key!
+    # Tool call structure nests name/arguments inside the "function" key.
     func = tc.get("function", {}) if isinstance(tc, dict) else {}
     tool_name = func.get("name", "unknown") if isinstance(func, dict) else "unknown"
     tool_id = tc.get("id", "")
@@ -1632,19 +1620,16 @@ async def _execute_single_tool_call(
 
 
     try:
-        # FIX: Call tool_executor.execute() (the correct method name), NOT execute_tool().
         # ToolExecutor.execute() returns the tool result text.
-        # CRITICAL FIX (2026-08-27): pass live_messages=messages. Tool-viewed image
-        # pixels (view_image / screenshots) are sanitized OUT of the tool-result text
-        # before it is appended to history; ToolExecutor re-attaches them to the
-        # PROTECTED current-user prompt so the NEXT provider call carries real pixels.
-        # Without live_messages it fell back to `conversation_history` - a DIFFERENT
-        # list than the one actually sent to the provider (build_messages copies
-        # history[:-1] and creates a fresh protected user message). The re-attach
-        # silently landed on a dict that is never sent -> the model only ever saw the
-        # "[image: ... chars sanitized]" text reference and answered from imagination.
-        # (2026-09-08 multi-chat) Screen/browser tools are serialized across chats:
-        # two agentic loops must not fight over the same mouse/keyboard at once.
+        # live_messages=messages is required: tool-viewed image pixels (view_image /
+        # screenshots) are sanitized OUT of the tool-result text before it is appended to
+        # history, and ToolExecutor re-attaches them to the PROTECTED current-user prompt so
+        # the NEXT provider call carries real pixels. `conversation_history` is a DIFFERENT
+        # list from the one actually sent to the provider (build_messages copies history[:-1]
+        # and creates a fresh protected user message), so re-attaching there lands on a dict
+        # that is never sent and the model only sees the "[image: ... chars sanitized]" text.
+        # Screen/browser tools are serialized across chats: two agentic loops must not fight
+        # over the same mouse/keyboard at once.
         _owner = getattr(config, 'conversation_id', None) or '_unknown'
         if tool_name in SCREEN_BROWSER_TOOLS:
             async with tool_lock(_owner):
@@ -1654,7 +1639,7 @@ async def _execute_single_tool_call(
                     conversation_history=conversation_history,
                     websocket=config.websocket,
                     live_messages=messages,
-                    conversation_id=getattr(config, 'conversation_id', None)  # python_exec approval gate (2026-09-24)
+                    conversation_id=getattr(config, 'conversation_id', None)  # python_exec approval gate
                 )
         else:
             result_text = await tool_executor.execute(
@@ -1663,7 +1648,7 @@ async def _execute_single_tool_call(
                 conversation_history=conversation_history,
                 websocket=config.websocket,
                 live_messages=messages,
-                conversation_id=getattr(config, 'conversation_id', None)  # python_exec approval gate (2026-09-24)
+                conversation_id=getattr(config, 'conversation_id', None)  # python_exec approval gate
             )
 
         # Add tool result message

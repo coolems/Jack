@@ -107,12 +107,17 @@ def _sanitize_base64_in_string(content: str) -> str:
 
     
 def estimate_message_tokens(msg: dict) -> int:
-    """Estimate the token cost of one message dict (CACHED on the dict as `_est_tokens`).
+    """Estimate the token cost of one message dict (CACHED on the dict).
 
-    Images are replaced with a short path reference before counting, so a screenshot costs
-    ~10 tokens instead of its base64 length.
+    Prefers an EXACT server-tokenizer count (`_exact_tokens`, filled by
+    utils.token_counter) over the chars/4 estimate (`_est_tokens`). Images are replaced
+    with a short path reference before counting, so a screenshot costs ~10 tokens instead
+    of its base64 length.
     """
     if isinstance(msg, dict):
+        exact = msg.get("_exact_tokens")
+        if isinstance(exact, int) and exact >= 0:
+            return exact
         cached = msg.get("_est_tokens")
         if isinstance(cached, int) and cached >= 0:
             return cached
@@ -176,6 +181,7 @@ def invalidate_message_tokens(msg: dict) -> None:
     """
     if isinstance(msg, dict):
         msg.pop("_est_tokens", None)
+        msg.pop("_exact_tokens", None)
 
 
 def trim_history_to_token_limit(
