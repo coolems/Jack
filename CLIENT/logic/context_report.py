@@ -125,7 +125,7 @@ def protected_breakdown(messages: List[Dict]) -> str:
         t = _msg_tokens(m)
         total += t
         tag = "system" if i == 0 else "protected user prompt"
-        lines.append(f"  idx {i} [{tag}] {t} tok, {len(_preview(m.get('content'), 60))} chars: {_preview(m.get('content'), 60)}")
+        lines.append(f"  idx {i} [{tag}] {t} tok, {_msg_chars(m)} chars: {_preview(m.get('content'), 60)}")
     if loop_start is not None and len(messages) > loop_start:
         loop_tokens = sum(_msg_tokens(m) for m in messages[loop_start:])
         total += loop_tokens
