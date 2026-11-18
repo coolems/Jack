@@ -15,6 +15,9 @@ CONTRACT
       - ``config/strata_servers.json``  <- seeded from ``config/strata_servers.example.json``
         ( backend: hand-editable list of endpoints the SERVER attaches to when
         SERVER_BACKEND = ""; attach-only, per-machine, gitignored)
+      - ``config/deepseek_servers.json`` <- seeded from ``config/deepseek_servers.example.json``
+        (DeepSeek backend: hand-editable list of hosted endpoints the SERVER attaches to when
+        SERVER_BACKEND = "deepseek"; attach-only, per-machine, gitignored, carries the Bearer key)
 
   * Existing files are NEVER touched (no overwrite, no migration). A missing
 
@@ -74,6 +77,13 @@ def _seed_from_example(config_dir: str, filename: str, example_name: str) -> boo
             content = json.dumps(
                 [{"name": "strata", "host": "127.0.0.1", "port": _sport, "api_key": ""}], indent=2
             ) + "\n"
+        elif filename == "deepseek_servers.json":
+            # 2026-11 deepseek backend: attach-only hosted endpoints (no process, no model load).
+            # The api_key placeholder stays empty; paste the real key in the gitignored file.
+            from config import DEEPSEEK_BASE_URL as _durl
+            content = json.dumps(
+                [{"name": "deepseek", "base_url": _durl, "api_key": ""}], indent=2
+            ) + "\n"
         else:  # pragma: no cover - defensive, unknown file type
             return False
 
@@ -114,6 +124,8 @@ def ensure_server_config_files(config_dir: str | None = None) -> list[str]:
         ("llama_servers.json", "llama_servers.example.json"),
         # 2026-11 strata backend: attach-only Strata endpoints (SERVER_BACKEND = "strata").
         ("strata_servers.json", "strata_servers.example.json"),
+        # 2026-11 deepseek backend: attach-only hosted DeepSeek endpoints (SERVER_BACKEND = "deepseek").
+        ("deepseek_servers.json", "deepseek_servers.example.json"),
     ):
         if _seed_from_example(config_dir, filename, example_name):
             created.append(filename)

@@ -59,6 +59,15 @@ from .config import (
     get_strata_server_instances,
     strata_auth_headers,
 
+    # DeepSeek backend (SERVER_BACKEND = "deepseek", 2026-11)
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_MAX_NEW_TOKENS,
+    DEEPSEEK_SERVERS_FILE,
+    DeepSeekServerInstance,
+    get_deepseek_server_instances,
+    deepseek_auth_headers,
+
     # Chrome CDP (Browser Debugging)
     CHROME_CDP_PORT,
 

@@ -12,6 +12,7 @@ import logging as _logging
 import os
 from dataclasses import dataclass as _dataclass
 from typing import Optional
+from urllib.parse import urlparse
 
 
 # --- Context / Token Limits ---
@@ -29,12 +30,16 @@ CONTEXT_WINDOW_TOKENS: int = 185000             # Total token budget for model c
 
 # --- Provider / Model ---
 PROVIDER: str = "coolems_server"                        # Relay mode for server
-# Local LLM engine behind coolems_server (2026-11 strata backend):
-#   "llama"  -> llama.cpp / llama-server on LLAMA_SERVER_PORT (config/llama_servers.json)
-#   "strata" -> Strata's own OpenAI-compatible endpoint on STRATA_SERVER_PORT
-#               (config/strata_servers.json). The brain NEVER spawns or kills Strata - it
-#               attaches to whatever Strata already runs and authenticates with STRATA_API_KEY.
-SERVER_BACKEND: str = "strata"                           # Local LLM engine ("llama" | "strata")
+# Local LLM engine behind coolems_server (2026-11 strata backend, 2026-11 deepseek backend):
+#   "llama"     -> llama.cpp / llama-server on LLAMA_SERVER_PORT (config/llama_servers.json)
+#   "strata"    -> Strata's own OpenAI-compatible endpoint on STRATA_SERVER_PORT
+#                  (config/strata_servers.json). The brain NEVER spawns or kills Strata - it
+#                  attaches to whatever Strata already runs and authenticates with STRATA_API_KEY.
+#   "deepseek"  -> DeepSeek's hosted OpenAI-compatible API (config/deepseek_servers.json).
+#                  Attach-only like Strata: no process, no model loading; every request carries
+#                  a Bearer key. The payload is transformed to DeepSeek's shape and the response
+#                  back to ours (app/providers/deepseek/).
+SERVER_BACKEND: str = "strata"                           # Local LLM engine ("llama" | "strata" | "deepseek")
 
 # --- Coolems Distributed Provider Configuration ---
 COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_server listener (0.0.0.0 = all interfaces including localhost)
@@ -123,6 +128,24 @@ STRATA_API_KEY: str = ""
 # NOTE: model routing uses the id Strata reports in /props (its model_alias). The CLIENT
 # picker is built from that id, so clients never send Strata's /v1/models aliases; an alias
 # sent by hand would route to a model group with no workers.
+
+# --- DeepSeek Backend (2026-11): SERVER_BACKEND = "deepseek" ---
+# DeepSeek is a HOSTED OpenAI-compatible API (https://api.deepseek.com). Like Strata the
+# brain only talks HTTP: no spawn, no kill, no model loading. Every request carries a Bearer
+# key; the request body is transformed to DeepSeek's shape (thinking/reasoning_effort instead
+# of chat_template_kwargs, no top_k/min_p/presence_penalty) and the SSE response back to our
+# shape (delta.reasoning_content -> {type:"thinking"} frames, usage -> TokenStats).
+# Models come from GET /models and are the routing keys (deepseek-flash, deepseek-v4-pro),
+# so the CLIENT picker lists exactly what the account serves and switching = picking another id.
+DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"      # DeepSeek API base URL (no trailing slash)
+# Bearer key for /models and /v1/chat/completions.
+# Precedence: deepseek_servers.json entry 'api_key' > this value > env DEEPSEEK_API_KEY.
+# Leave empty here and put the real key in config/deepseek_servers.json (gitignored) or in
+# the environment - never commit a real key.
+DEEPSEEK_API_KEY: str = ""
+# Output ceiling per request. DeepSeek reports max_output_tokens 393216 per model; the
+# context guard clamps it down when the prompt leaves less room (see deepseek/streaming.py).
+DEEPSEEK_MAX_NEW_TOKENS: int = 32768
 
 # --- Chrome CDP (Browser Debugging) ---
 CHROME_CDP_PORT: int = 9222                           # Chrome DevTools Protocol debugging port
@@ -315,9 +338,14 @@ def get_api_url() -> str:
     """Return the API URL for the currently selected provider.
 
     coolems_server picks its local LLM engine from SERVER_BACKEND: "llama" -> LLAMA_URL,
-    "strata" -> STRATA_URL (the brain attaches to Strata, it never spawns it)."""
+    "strata" -> STRATA_URL (the brain attaches to Strata, it never spawns it),
+    "deepseek" -> DEEPSEEK_BASE_URL (hosted API, attach-only)."""
     if PROVIDER in ("llama", "coolems_server"):
-        return STRATA_URL if SERVER_BACKEND == "strata" else LLAMA_URL
+        if SERVER_BACKEND == "strata":
+            return STRATA_URL
+        if SERVER_BACKEND == "deepseek":
+            return DEEPSEEK_BASE_URL
+        return LLAMA_URL
     elif PROVIDER == "coolems_client":
         return ""  # Client connects via encrypted WebSocket, no local API URL needed
     raise ValueError(f"Unknown provider: {PROVIDER}")
@@ -329,7 +357,7 @@ def get_provider_name() -> str:
 
 
 def set_server_backend(name: str) -> None:
-    """Runtime override of the local LLM engine ("llama" | "").
+    """Runtime override of the local LLM engine ("llama" | "strata" | "deepseek").
 
     code.py calls this when the CLI names the engine explicitly, which is more specific than
     config.SERVER_BACKEND. Both copies are updated: get_api_url() reads this module's global
@@ -726,5 +754,160 @@ def get_strata_server_instances() -> list["StrataServerInstance"]:
             STRATA_SERVER_PORT,
         )
         return [_default_strata_instance()]
+
+    return instances
+# ---------------------------------------------------------------------------
+# DeepSeek endpoints - config/deepseek_servers.json (2026-11 deepseek backend)
+# ---------------------------------------------------------------------------
+
+# Path to the hand-editable DeepSeek endpoint list. Same contract as strata_servers.json,
+# but the host is a hosted API (https://api.deepseek.com), so an entry carries a base_url
+# instead of host/port. Every entry is ATTACH-ONLY: no process, no model loading. Gitignored
+# (per-machine, carries the Bearer key); the .example.json template is tracked and
+# bootstrap.py seeds the real file at first boot.
+DEEPSEEK_SERVERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deepseek_servers.json")
+
+
+@_dataclass(frozen=True)
+class DeepSeekServerInstance(LlamaServerInstance):
+    """One hosted DeepSeek endpoint to attach to at boot.
+
+    base_url is the endpoint identity (host/port are derived from it so the inherited
+    api_url property still works). ctx_per_slot is the per-model context window used when
+    /models reports none. concurrency is the fan-out cap for this endpoint (DeepSeek has no
+    /props.total_slots); None means the registry default of one slot per model.
+    """
+    api_key: Optional[str] = None
+    ctx_per_slot: Optional[int] = None
+    base_url: Optional[str] = None
+    # Set by the registry when one endpoint is expanded into one routable backend per
+    # served model id (see LlmBackendRegistry). Empty on the endpoint-level entry.
+    model_id: Optional[str] = None
+
+    @property
+    def kind(self) -> str:
+        return "deepseek"
+
+    @property
+    def is_spawnable(self) -> bool:
+        """False always: a hosted API, the brain only attaches."""
+        return False
+
+    @property
+    def api_url(self) -> str:
+        return (self.base_url or f"http://{self.host}:{self.port}").rstrip("/")
+
+    @property
+    def is_local(self) -> bool:
+        """A hosted API is never loopback, even when pointed at localhost in tests."""
+        return False
+
+
+def deepseek_auth_headers(api_key: Optional[str]) -> Optional[dict]:
+    """Bearer auth headers for a DeepSeek endpoint, or None when no key is configured."""
+    key = (api_key or "").strip()
+    if not key:
+        return None
+    return {"Authorization": f"Bearer {key}"}
+
+
+def _default_deepseek_instance() -> "DeepSeekServerInstance":
+    """The always-present endpoint (DEEPSEEK_BASE_URL)."""
+    parsed = urlparse(DEEPSEEK_BASE_URL)
+    return DeepSeekServerInstance(
+        "deepseek", parsed.hostname or "api.deepseek.com",
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+        concurrency=None, api_key=None, base_url=DEEPSEEK_BASE_URL,
+    )
+
+
+def _write_default_deepseek_file(path: str) -> None:
+    """Re-create a missing deepseek_servers.json with the default entry. Best-effort."""
+    try:
+        payload = _json.dumps(
+            [{"name": "deepseek", "base_url": DEEPSEEK_BASE_URL, "api_key": ""}],
+            indent=2,
+        ) + "\n"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(payload)
+    except OSError as e:
+        _logger.error("[CONFIG] Could not re-create %s: %s", path, e)
+
+
+def get_deepseek_server_instances() -> list["DeepSeekServerInstance"]:
+    """Fresh read + validation of config/deepseek_servers.json (mirror of the strata loader).
+
+    Hand-edited file, so forgiving but loud: a non-object entry or a base_url that is not an
+    http(s) URL is skipped with a warning; duplicate base_url is deduped (first wins); a
+    missing 'api_key' falls back to config.DEEPSEEK_API_KEY, then env DEEPSEEK_API_KEY; an
+    empty or invalid list falls back to the default endpoint, and a missing file is re-seeded
+    with that entry. Returns a non-empty list of DeepSeekServerInstance.
+    """
+    path = DEEPSEEK_SERVERS_FILE
+    env_key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    config_key = (DEEPSEEK_API_KEY or "").strip()
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = _json.load(f)
+    except FileNotFoundError:
+        _logger.warning(
+            "[CONFIG] %s not found - recreating it with the default endpoint %s",
+            path, DEEPSEEK_BASE_URL,
+        )
+        _write_default_deepseek_file(path)
+        return [_default_deepseek_instance()]
+    except (OSError, ValueError) as e:
+        _logger.warning(
+            "[CONFIG] %s unreadable/invalid JSON (%s) - keeping the default endpoint %s "
+            "(the corrupt file is left in place for inspection; fix it to configure more endpoints)",
+            path, e, DEEPSEEK_BASE_URL,
+        )
+        return [_default_deepseek_instance()]
+
+    if not isinstance(raw, list):
+        _logger.warning(
+            "[CONFIG] %s must be a JSON LIST of {name, base_url, api_key, concurrency} entries "
+            "- using the default endpoint %s", path, DEEPSEEK_BASE_URL,
+        )
+        return [_default_deepseek_instance()]
+
+    instances: list[DeepSeekServerInstance] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            _logger.warning("[CONFIG] deepseek_servers.json entry #%d is not an object - skipped", i)
+            continue
+        base = str(entry.get("base_url") or entry.get("url") or "").strip().rstrip("/")
+        name = str(entry.get("name") or "").strip()
+        if not base or urlparse(base).scheme not in ("http", "https") or not urlparse(base).hostname:
+            _logger.warning(
+                "[CONFIG] deepseek_servers.json entry #%d has an invalid 'base_url' (%r) - skipped "
+                "(expected e.g. %s)", i, base, DEEPSEEK_BASE_URL,
+            )
+            continue
+        if base.lower() in seen:
+            _logger.warning("[CONFIG] deepseek_servers.json duplicate base_url %s - deduped", base)
+            continue
+        seen.add(base.lower())
+        parsed = urlparse(base)
+        concurrency = _parse_instance_concurrency(entry, loopback=False, index=i)
+        api_key = str(entry.get("api_key") or "").strip() or config_key or env_key or None
+        ctx_per_slot = _parse_instance_ctx_per_slot(entry, "deepseek_servers.json", i)
+        instances.append(
+            DeepSeekServerInstance(name or parsed.hostname, parsed.hostname,
+                                  parsed.port or (443 if parsed.scheme == "https" else 80),
+                                  concurrency,
+                                  thinking=_parse_thinking(entry, "deepseek_servers.json", i),
+                                  api_key=api_key, ctx_per_slot=ctx_per_slot, base_url=base)
+        )
+
+    if not instances:
+        _logger.warning(
+            "[CONFIG] deepseek_servers.json has no valid entries - using the default endpoint %s "
+            "(the file is kept; add a {name, base_url, api_key, concurrency} entry to configure more endpoints)",
+            DEEPSEEK_BASE_URL,
+        )
+        return [_default_deepseek_instance()]
 
     return instances

@@ -96,8 +96,11 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
         entry.setdefault("loaded", False)
         # Offer only what every serving node accepts. A model with no serving node keeps
         # the "nothing discovered" policy: the picker shows the control as unavailable
-        # instead of promising levels we cannot honor.
-        entry["thinking"] = ThinkingPolicy.merge(policies.get(entry.get("model_key"), [])).describe()
+        # instead of promising levels we cannot honor. reg.thinking_for_model() keeps a
+        # DeepSeek policy's canonical->effort mapping (plain merge would lose it).
+        entry["thinking"] = (reg.thinking_for_model(entry.get("model_key") or "").describe()
+                             if reg is not None
+                             else ThinkingPolicy.merge(policies.get(entry.get("model_key"), [])).describe())
         catalog.append(entry)
 
     # Served models first, then alphabetical - stable picker order.

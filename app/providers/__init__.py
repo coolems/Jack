@@ -4,6 +4,7 @@ Exposes only providers needed for coolems_server operation:
   - CoolemsServerProvider: WebSocket brain server (headless relay to local LLM)
   - LlamaProvider         : Local llama.cpp backend (used internally by CoolemsServerProvider)
   - StrataProvider        : Local Strata endpoint (SERVER_BACKEND = "strata")
+  - DeepSeekProvider      : Hosted DeepSeek API (SERVER_BACKEND = "deepseek")
 """
 from .base import BaseProvider
 
@@ -11,6 +12,7 @@ __all__ = [
     "BaseProvider",
     "LlamaProvider",
     "StrataProvider",
+    "DeepSeekProvider",
     "CoolemsServerProvider",
     "get_provider",
 ]
@@ -23,6 +25,8 @@ def get_provider(provider_name: str, api_url: str, timeout: int) -> BaseProvider
       - 'llama':           llama.cpp server (local backend)
       - 'strata':          Strata inference endpoint (same wire format, Bearer
                            auth, attach-only - the brain never spawns )
+      - 'deepseek':        DeepSeek's hosted OpenAI-compatible API (Bearer auth,
+                           attach-only; request/response transformed to DeepSeek's shape)
       - 'coolems_server':  Headless WebSocket brain relay
 
     Client providers (coolems_client) live in CLIENT/ folder.
@@ -35,13 +39,16 @@ def get_provider(provider_name: str, api_url: str, timeout: int) -> BaseProvider
     elif provider_name == "strata":
         from .strata.provider import StrataProvider
         return StrataProvider(api_url, timeout)
+    elif provider_name == "deepseek":
+        from .deepseek.provider import DeepSeekProvider
+        return DeepSeekProvider(api_url, timeout)
     elif provider_name == "coolems_server":
         from .coolems.server_provider import CoolemsServerProvider
         return CoolemsServerProvider(api_url, timeout)
     else:
         raise ValueError(
             f"Unknown server provider: {provider_name}. "
-            f"Valid server providers: 'llama', 'strata', 'coolems_server'. "
+            f"Valid server providers: 'llama', 'strata', 'deepseek', 'coolems_server'. "
             f"For client providers (coolems_client), use CLIENT/ folder."
         )
 
@@ -54,6 +61,9 @@ def __getattr__(name):
     elif name == "StrataProvider":
         from .strata.provider import StrataProvider as _SP
         return _SP
+    elif name == "DeepSeekProvider":
+        from .deepseek.provider import DeepSeekProvider as _DSP
+        return _DSP
     elif name == "CoolemsServerProvider":
         from .coolems.server_provider import CoolemsServerProvider as _CSP
         return _CSP

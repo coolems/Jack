@@ -72,8 +72,9 @@ class CoolemsServerProvider(BaseProvider):
     def _get_local_provider(self):
         """The local inference backend this relay talks to, chosen by config.SERVER_BACKEND.
 
-        "strata" -> StrataProvider (same wire format, Bearer key, attach-only), "llama" ->
-        LlamaProvider. Every relay path below is identical either way.
+        "strata" -> StrataProvider (same wire format, Bearer key, attach-only),
+        "deepseek" -> DeepSeekProvider (hosted API, own payload/response transform,
+        attach-only), "llama" -> LlamaProvider. Every relay path below is identical either way.
         """
         if self._local_provider is None:
             import config
@@ -83,6 +84,11 @@ class CoolemsServerProvider(BaseProvider):
                 self._local_provider = StrataProvider(self._api_url, self._timeout)
                 logger.info(f"[SERVER] Local StrataProvider initialized at {self._api_url} "
                             f"(attach-only; auth={'Bearer key' if self._local_provider.headers else 'none'})")
+            elif backend == "deepseek":
+                from ..deepseek.provider import DeepSeekProvider
+                self._local_provider = DeepSeekProvider(self._api_url, self._timeout)
+                logger.info(f"[SERVER] Local DeepSeekProvider initialized at {self._api_url} "
+                            f"(hosted API, attach-only; auth={'Bearer key' if self._local_provider.headers else 'none'})")
             else:
                 from ..llama.provider import LlamaProvider
                 self._local_provider = LlamaProvider(self._api_url, self._timeout)

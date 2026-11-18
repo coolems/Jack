@@ -11,10 +11,13 @@ Provider modes:
                         SERVER stays dumb. CLIENT handles all intelligence locally.
   - strata           → Same relay + CLIENT, local backend = Strata's endpoint.
                         Shorthand for config.SERVER_BACKEND = "strata".
+  - deepseek         → Same relay + CLIENT, backend = DeepSeek's hosted API.
+                        Shorthand for config.SERVER_BACKEND = "deepseek".
 
-Local LLM backend (config.SERVER_BACKEND; the relay never spawns Strata — attach-only):
-  - llama  → llama-server, spawned/attached from config/llama_servers.json + llama_node.json
-  - strata → Strata's own inference endpoint (config.STRATA_URL; keys in config/strata_servers.json)
+Local LLM backend (config.SERVER_BACKEND; the relay never spawns Strata or DeepSeek — attach-only):
+  - llama     → llama-server, spawned/attached from config/llama_servers.json + llama_node.json
+  - strata    → Strata's own inference endpoint (config.STRATA_URL; keys in config/strata_servers.json)
+  - deepseek  → DeepSeek hosted API (config.DEEPSEEK_BASE_URL; key in config/deepseek_servers.json)
 
 Information flow:
   CLIENT (remote or local) -> SERVER (WebSocket on COOLEMS_DIRECT_WS_PORT) → local LLM backend → back through chain
@@ -27,6 +30,7 @@ Usage:
   python code.py provider=coolems_server      # Headless relay only (no UI)
   python code.py provider=llama               # Relay + launches CLIENT subprocess for local UI
   python code.py provider=strata              # Same, with Strata as the local backend (= SERVER_BACKEND="strata")
+  python code.py provider=deepseek            # Same, with DeepSeek's hosted API (= SERVER_BACKEND="deepseek")
   python code.py --port 9000                  # Override the WebSocket relay port only (CLIENT UI stays on CLIENT_UI_PORT)
 """
 
@@ -273,23 +277,24 @@ if __name__ == "__main__":
     # B3 (2026-09-02): validate the provider name up front. A typo like 'llam' used to
     # fall into the relay+CLIENT launch path and only fail later in resolve_provider_and_url()
     # after heavy startup work; reject it here with a clear message instead.
-    _VALID_SERVER_PROVIDERS = ("llama", "strata", "coolems_server")
+    _VALID_SERVER_PROVIDERS = ("llama", "strata", "deepseek", "coolems_server")
     if resolved_provider_name not in _VALID_SERVER_PROVIDERS:
         logger.error(
             f"Unknown provider '{resolved_provider_name}'. "
-            "Valid providers: 'llama', 'strata', 'coolems_server'."
+            "Valid providers: 'llama', 'strata', 'deepseek', 'coolems_server'."
         )
         sys.exit(2)
 
     # Track original request to distinguish headless-only from relay+client
     want_local_client = (resolved_provider_name != "coolems_server")
 
-    # Map llama/strata → coolems_server so we get the just relay wrapper
-    if resolved_provider_name in ("llama", "strata"):
-        # 2026-11: 'provider=strata' is shorthand for SERVER_BACKEND="strata" — the relay
-        # wrapper is identical, only the local engine (and its URL) differs. The CLI is the
-        # more specific request, so it overrides config.SERVER_BACKEND; the usual way to pick
-        # the engine is still config.SERVER_BACKEND with provider=coolems_server.
+    # Map llama/strata/deepseek → coolems_server so we get the just relay wrapper
+    if resolved_provider_name in ("llama", "strata", "deepseek"):
+        # 2026-11: 'provider=strata' / 'provider=deepseek' are shorthand for
+        # SERVER_BACKEND="strata" / "deepseek" — the relay wrapper is identical, only the
+        # engine (and its URL) differs. The CLI is the more specific request, so it
+        # overrides config.SERVER_BACKEND; the usual way to pick the engine is still
+        # config.SERVER_BACKEND with provider=coolems_server.
         import config as _cfg
         if getattr(_cfg, "SERVER_BACKEND", "llama") != resolved_provider_name:
             _cfg.set_server_backend(resolved_provider_name)

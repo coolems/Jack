@@ -37,6 +37,12 @@ config/llama_servers.json
 # config.get_strata_server_instances()). It carries the Bearer key -> never commit; the
 # shipped config/strata_servers.example.json stays tracked.
 config/strata_servers.json
+
+# DeepSeek endpoint list (2026-11 deepseek backend): hand-edited per-machine SoT for which
+# hosted DeepSeek endpoints the SERVER attaches to when SERVER_BACKEND = "deepseek" (see
+# config.get_deepseek_server_instances()). It carries the Bearer key -> never commit; the
+# shipped config/deepseek_servers.example.json stays tracked.
+config/deepseek_servers.json
 # CLIENT's copy of its SERVER credentials
 CLIENT/config/.api_client_keys.json
 
