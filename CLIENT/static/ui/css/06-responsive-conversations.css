@@ -21,7 +21,14 @@
     .scroll-indicator { bottom: 100px; right: 16px; }
     .scroll-indicator button { width: 40px; height: 40px; }
     
-    .current-time-display { display: none; }
+    /* Narrow screens: the clock line is dropped (as the header used to do); the license
+       lines stay in the bottom-left strip, whose reserved width shrinks with it. */
+    .input-info .current-time-display { display: none; }
+    .input-info { width: auto; }
+    .input-wrapper {
+        max-width: min(800px, calc(100% - 180px));
+        margin-left: max(180px, calc((100% - 800px) / 2));
+    }
     .history-status-display { display: none; }
     .diff-panel-header { font-size: 10px; padding: 6px 8px; }
     .diff-line-number { width: 35px; font-size: 10px; }

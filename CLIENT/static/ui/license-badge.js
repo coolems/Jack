@@ -32,10 +32,11 @@
         el.className = 'license-badge license-badge--loading';
         el.title = 'Loading license status…';
         // Read-only: no click handler, not a button.
-                        // Bottom-left corner of the big input frame (.input-container),
-                // which holds the centered prompt frame (.input-wrapper) untouched.
-                const host = document.querySelector('.input-container') || document.body;
-                host.appendChild(el);
+        // Bottom-left info strip of the big input frame (.input-container): it sits
+        // UNDER the centered prompt frame, BELOW the clock line.
+        const host = document.getElementById('inputInfo')
+            || document.querySelector('.input-container') || document.body;
+        host.appendChild(el);
         _badgeEl = el;
     }
 
