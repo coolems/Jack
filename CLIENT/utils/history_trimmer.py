@@ -132,6 +132,7 @@ def safe_trim_history(
         loop_start=None if allow_loop_trim else loop_start,
     )
     original_length = len(messages)
+    loop_msgs = max(0, original_length - int(loop_start)) if loop_start is not None else 0
     removed_count = 0
     removed_tokens = 0
     remove_idx: set = set()
@@ -165,7 +166,7 @@ def safe_trim_history(
             logger.warning(
                 f"[SAFE_TRIM] Still over budget after removing every removable unit "
                 f"({new_tokens} > {max_tokens}) — only protected messages remain"
-                + (f" plus the CURRENT LOOP ({len(messages) - int(loop_start)} msgs, "
+                + (f" plus the CURRENT LOOP ({loop_msgs} msgs, "
                    f"loop_start={int(loop_start)})" if loop_protected else "")
                 + ". The context-guardian must fire: write a continue plan and stop, "
                   f"so the next loop resumes from user input + AI output + plan."
