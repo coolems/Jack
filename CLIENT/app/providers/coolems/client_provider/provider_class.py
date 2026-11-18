@@ -656,6 +656,22 @@ class CoolemsClientProvider(BaseProvider):
             return text
         return text or "ERROR: SERVER-side OCR failed."
 
+    async def tokenize(self, text: str) -> Optional[int]:
+        """Exact token count of *text* via the SERVER (llama.cpp /tokenize).
+
+        The CLIENT has no tokenizer of its own, so it asks the SERVER to count the
+        string exactly. Returns the token count, or None when the tokenizer is
+        unavailable (deepseek backend / llama down); callers fall back to chars/4 only
+        on None. Used for the tool-schema cost so trim budgets reserve the real number.
+        """
+        if not text:
+            return 0
+        resp = await self.send_tool_request("tokenize_request", content=text, recv_timeout=15.0)
+        if not resp or resp.get("type") != "tokenize_response":
+            return None
+        t = resp.get("tokens")
+        return int(t) if isinstance(t, int) else None
+
     def start_server(self) -> bool:
 
         """Always succeeds - there is nothing local to start; we connect out."""

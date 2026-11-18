@@ -146,3 +146,28 @@ async def _handle_relay_tool_code_request(ws, msg: dict, server_provider):
     # Route the delegated handler's response frame(s) back to THIS client only.
     await _handle_tool_code_request(_RelayTargetAdapter(ws, client_id), msg, user_info, server_provider)
 
+
+async def _handle_relay_tokenize_request(ws, msg: dict, server_provider):
+    """Answer a relayed tokenize_request.
+
+    Tokenizing arbitrary text is harmless (no profile authorization needed), so only the
+    routing tag is required to send the response back to the requesting client.
+    """
+    client_id = msg.get("_relay_from") or "unknown"
+    content = msg.get("content", "") or ""
+
+    tokens = None
+    try:
+        local = server_provider._get_local_provider()
+        tok = getattr(local, "tokenize", None)
+        if callable(tok):
+            tokens = await tok(content)
+    except Exception as e:
+        logger.warning(f"[SERVER] relay tokenize_request failed: {e}")
+
+    await _relay_send(ws, {
+        "type": "tokenize_response",
+        "req_id": msg.get("req_id"),
+        "tokens": tokens,
+    }, client_id)
+

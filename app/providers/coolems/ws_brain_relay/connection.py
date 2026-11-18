@@ -35,6 +35,7 @@ from .request_handler import _handle_relay_request  # per-relayed-client request
 # noqa: E402 - must come after _relay_convs so request_handler's back-import resolves.
 from .relay_handlers import (  # noqa: E402
     _handle_relay_model_switch,
+    _handle_relay_tokenize_request,
     _handle_relay_tool_code_request,
     _handle_relay_tools_request,
     _relay_send,
@@ -580,6 +581,9 @@ async def connect_to_web_relay(server_provider):
                         elif msg_type == "tool_code_request":
                             logger.info(f"[SERVER<-RELAY] Tool code request via relay: name={msg.get('name', '?')} (client={msg.get('_relay_from', '?')})")
                             await _handle_relay_tool_code_request(ws, msg, server_provider)
+
+                        elif msg_type == "tokenize_request":
+                            await _handle_relay_tokenize_request(ws, msg, server_provider)
                 finally:
 
                     # (2026-08-20) relay link gone -> abort any generation still in flight

@@ -413,9 +413,10 @@ async def run_react_loop(
     # keeping the whole message list under token_limit via atomic-unit trim.
 
     # Tool schema is sent to the model EVERY request but get_token_count() does not
-    # count it. Include it in the trim math so we stop drifting past the real window.
+    # count it. Count it EXACTLY once (server tokenizer) and cache it in
+    # est_tools_tokens; it is re-counted only when the schema changes mid-turn.
     _tools_for_est = getattr(config, "ollama_tools", None) or []
-    est_tools_tokens = sum(len(json.dumps(t)) for t in _tools_for_est) // 4 if _tools_for_est else 0
+    est_tools_tokens = await _schema_token_cost(config, _tools_for_est)
 
 
     try:
@@ -482,7 +483,7 @@ async def run_react_loop(
             _refreshed = await _refresh_local_tools(config)
             if _refreshed is not None:
                 _tools_for_est = _refreshed
-                est_tools_tokens = sum(len(json.dumps(t)) for t in _tools_for_est)
+                est_tools_tokens = await _schema_token_cost(config, _tools_for_est)
 
             # TOKEN BUDGET CHAIN (checked EVERY iteration, in this order):
             #   1. WARNING  - console/UI warning when usage reaches the safe-margin
@@ -1400,6 +1401,29 @@ def _looks_like_tool_markup(text: Any) -> bool:
     if not isinstance(text, str) or "<function=" not in text:
         return False
     return bool(_TOOL_MARKUP_RE.search(text))
+
+
+async def _schema_token_cost(config: Any, tools: List[Dict]) -> int:
+    """Exact token cost of the tool schema, counted ONCE by the server tokenizer.
+
+    The schema is sent with every provider request, so its cost is real and must be
+    reserved in the message/trim budgets. The server counts it exactly (llama.cpp
+    /tokenize); a chars/4 estimate is used only when the tokenizer is unavailable
+    (deepseek backend / llama down). The caller caches the result in ``est_tools_tokens``
+    and re-counts only when ``_refresh_local_tools`` reports a schema change.
+    """
+    if not tools:
+        return 0
+    provider = getattr(config, "provider", None)
+    tok = getattr(provider, "tokenize", None)
+    if callable(tok):
+        try:
+            exact = await tok(json.dumps(tools))
+            if isinstance(exact, int) and exact >= 0:
+                return exact
+        except Exception as e:  # pragma: no cover - fallback keeps the budget chain alive
+            logger.debug(f"[AGENTIC.DEBUG] react_loop - exact schema count unavailable ({e}); using //4")
+    return sum(len(json.dumps(t)) for t in tools) // 4
 
 
 async def _refresh_local_tools(config: Any) -> Optional[List[Dict]]:

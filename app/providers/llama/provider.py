@@ -193,6 +193,31 @@ class LlamaProvider(BaseProvider):
             ocr_models=ocr_models,
         )
 
+    # ---- tokenize ----
+    async def tokenize(self, text: str) -> Optional[int]:
+        """Exact token count of *text* using the loaded model's tokenizer (/tokenize).
+
+        Returns the number of tokens llama.cpp assigns to the string, or None when the
+        tokenizer is unreachable (backend down, or a non-llama backend without /tokenize).
+        Callers fall back to a chars/4 estimate only on None.
+        """
+        if not text:
+            return 0
+        from .http_client import get_async_client
+        try:
+            client = await get_async_client()
+            resp = await client.post(
+                f"{self._api_url}/tokenize",
+                json={"content": text},
+                timeout=10.0,
+            )
+            if resp.status_code != 200:
+                return None
+            tokens = resp.json().get("tokens")
+            return len(tokens) if isinstance(tokens, list) else None
+        except Exception:
+            return None
+
     # ---- start_server ----
     async def start_server(self) -> bool:
         """Start the llama.cpp server process if not already running.

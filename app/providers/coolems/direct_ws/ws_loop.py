@@ -16,6 +16,7 @@ from .active_conversations import _active_convs
 from .log import logger
 from .model_switch_handler import _handle_model_switch_direct
 from .ocr_handler import _handle_ocr_request
+from .tokenize_handler import _handle_tokenize_request
 from .tool_code_handler import _handle_tool_code_request
 from .tools_request_handler import _handle_tools_request
 
@@ -254,6 +255,9 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                 # ships pixels + model names; transcribed text comes back in ocr_response.
                 logger.info(f"[SERVER<-CLIENT] OCR request via Direct WS from {peer}: models={msg.get('ocr_models')}")
                 await _handle_ocr_request(ws, msg, server_provider)
+
+            elif t == "tokenize_request":
+                await _handle_tokenize_request(ws, msg, server_provider)
 
     except websockets.exceptions.ConnectionClosed as e:
         logger.info(f"[SERVER] Direct WS client {peer} connection closed: {e}")
