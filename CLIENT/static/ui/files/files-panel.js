@@ -7,10 +7,32 @@
     
 // Files panel toggle + panel resize drag logic.
 
+// ===== HEADER ACTIONS RELOCATION =====
+// When the Files panel is open the shrinking .main header would squeeze these
+// controls into the stats text, so they are moved into the top of the panel
+// (#filesPanelTools) and returned to .header when the panel closes.
+
+function _getHeaderActions() { return document.getElementById('headerActions'); }
+function _getFilesPanelTools() { return document.getElementById('filesPanelTools'); }
+function _getHeader() { return document.querySelector('.header'); }
+
+function relocateHeaderActionsIntoPanel() {
+    const actions = _getHeaderActions();
+    const tools = _getFilesPanelTools();
+    if (!actions || !tools) return;
+    actions.classList.add('in-files-panel');
+    tools.appendChild(actions);
+}
+
+function relocateHeaderActionsToHeader() {
+    const actions = _getHeaderActions();
+    const header = _getHeader();
+    if (!actions || !header) return;
+    actions.classList.remove('in-files-panel');
+    header.appendChild(actions);
+}
+
 // ===== PANEL TOGGLE =====
-
-
-
 function toggleFilesPanel() {
 
     const panel = document.getElementById('filesPanel');
@@ -28,6 +50,12 @@ function toggleFilesPanel() {
     if (!COOLEMS.filesPanelOpen) {
 
         panel.style.width = '';
+
+        relocateHeaderActionsToHeader();
+
+    } else {
+
+        relocateHeaderActionsIntoPanel();
 
     }
 

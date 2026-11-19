@@ -325,6 +325,39 @@ body {
     .working-root-chip.editing .working-root-chip-label { display: none; }
     .working-root-chip.editing .working-root-chip-input { display: block; }
 
+    /* ===== HEADER ACTIONS RELOCATED INTO FILES PANEL (2026-11-26) =====
+       When #filesPanel is open, JS moves #headerActions into #filesPanelTools so the
+       shrinking .main header no longer squeezes the icons into the history-status text.
+       The same node is moved back into .header when the panel closes. */
+    .files-panel-tools { display: none; }
+    .files-panel-tools:not(:empty) {
+        display: block;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .header-actions.in-files-panel {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 10px 16px;   /* left clears the resize handle */
+        background: var(--bg-secondary);
+    }
+
+    /* The working-root field takes its own full row so the path stays readable at
+       any panel width - it no longer has to compete for horizontal space. */
+    .header-actions.in-files-panel .working-root-chip {
+        flex: 1 0 100%;
+        max-width: none;
+        min-width: 0;
+    }
+    .header-actions.in-files-panel .working-root-chip-label {
+        max-width: none;
+    }
+    .header-actions.in-files-panel .working-root-chip-input {
+        min-width: 0;
+    }
+
     /* ===== INFO STRIP (clock + license) =====
        Left column of the big input frame (.input-container), UNDER the centered
        prompt frame. The strip spans the frame's height: the clock pins to the TOP
