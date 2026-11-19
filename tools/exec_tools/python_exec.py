@@ -416,33 +416,37 @@ _CHILD_ENTRY = chr(10).join(_CHILD_ENTRY_LINES) + chr(10)
 
 
 # ============================================================================
-# CONFIG RESOLVER -- single source of truth is tools/utils.py.
-# CLIENT sandbox: dynamic_loader injects utils attributes into globals().
+# CONFIG RESOLVER -- single source of truth is config/config.py.
+# CLIENT sandbox: dynamic_loader injects config_constants into globals().
+# SERVER: config/config.py imported directly (bare 'import config', guarded).
 # ============================================================================
 
 def _cfg(name, default):
-    """Resolve a config constant from utils module or globals.
+    """Resolve a config constant for python_exec.
 
     Resolution order:
-      1. globals.get(name) -- CLIENT sandbox injection by dynamic_loader
-      2. sys.modules['tools.utils'].name -- SERVER normal import / CLIENT shared_utils
-      3. default -- ultimate fallback (should never be reached in practice)
+      1. globals().get(name) -- CLIENT: constant injected by dynamic_loader via
+                                config_constants (exec global). For the FILE_EXEC_*
+                                names below this is the ONLY provenance -- those
+                                globals come solely from inject_config_constants, so
+                                the lookup cannot hit an unrelated global.
+      2. config.<name>        -- SERVER: real config/config.py import. These constants
+                                live in config, NOT tools.utils. ('from config import ...'
+                                is neutralized to 'pass' in delivered copies, so a bare
+                                'import config' is used and guarded.)
+      3. default              -- standalone audit loads where 'config' is not importable.
     """
     v = globals().get(name)
     if v is not None:
         return v
     try:
-        _u = sys.modules.get('tools.utils')
-        if _u is not None:
-            val = getattr(_u, name, None)
-            if val is not None:
-                return val
+        import config as _config
+        return getattr(_config, name, default)
     except Exception:
-        pass
-    return default
+        return default
 
 
-# Config constants -- single source of truth is tools/utils.py
+# Config constants -- single source of truth is config/config.py
 FILE_EXEC_OUTPUT_TRUNCATE_CHARS = _cfg("FILE_EXEC_OUTPUT_TRUNCATE_CHARS", 10000)
 FILE_EXEC_ERROR_TRUNCATE_CHARS = _cfg("FILE_EXEC_ERROR_TRUNCATE_CHARS", 2000)
 FILE_EXEC_TIMEOUT = _cfg("FILE_EXEC_TIMEOUT", 300)
