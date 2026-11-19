@@ -326,21 +326,23 @@ body {
     .working-root-chip.editing .working-root-chip-input { display: block; }
 
     /* ===== INFO STRIP (clock + license) =====
-       Bottom-left corner of the big input frame (.input-container), UNDER the centered
-       prompt frame. The clock sits ABOVE the license lines (moved out of the header,
-       which no longer spends space on it). Plain text, no borders; the prompt frame is
-       untouched. The box is wider than the reserved strip (232px in css/05) so the
-       license lines keep their old readable width; the frame simply paints over the
-       part of the strip it reaches, exactly as before. */
+       Left column of the big input frame (.input-container), UNDER the centered
+       prompt frame. The strip spans the frame's height: the clock pins to the TOP
+       (top: 24px = the prompt frame's top edge, so the two lines up) and the license
+       lines stay at the BOTTOM (bottom: 8px), with space-between keeping them apart.
+       Plain text, no borders; the prompt frame is untouched. The box is wider than the
+       reserved strip (232px in css/05) so the license lines keep their old readable
+       width; the frame simply paints over the part of the strip it reaches. */
     .input-info {
-        position: absolute; left: 12px; bottom: 8px; z-index: 0;
-        display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+        position: absolute; left: 12px; top: 24px; bottom: 8px; z-index: 0;
+        display: flex; flex-direction: column; align-items: flex-start;
+        justify-content: space-between; gap: 6px;
         width: 320px;          /* license sub-line width; clock chip sizes to its own text */
         max-width: 45%;
     }
 
-    /* The clock sits above the license lines, sized to match them (12px) and clipped
-       rather than pushed over the prompt frame if the strip ever gets narrower. */
+    /* The clock is sized to match the license lines (12px) and clipped rather than
+       pushed over the prompt frame if the strip ever gets narrower. */
     .input-info .current-time-display {
         max-width: 100%; overflow: hidden;
         font-size: 12px; padding: 3px 8px; gap: 5px;

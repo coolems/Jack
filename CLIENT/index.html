@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261126a">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261126b">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -70,9 +70,9 @@
         </div>
 
         <div class="input-container">
-            <!-- Info strip in the bottom-left of the input frame, on the layer UNDER the
-                 prompt frame: the clock sits ABOVE the license lines (moved out of the
-                 header, which no longer spends space on it). -->
+            <!-- Info strip along the left of the input frame, on the layer UNDER the
+                 prompt frame: the clock pins to the top of the strip so it lines up with
+                 the upper part of the prompt frame; the license lines stay at the bottom. -->
             <div class="input-info" id="inputInfo">
                 <div class="current-time-display" id="currentTimeDisplay">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>

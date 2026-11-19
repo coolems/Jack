@@ -10,7 +10,7 @@
    Pre-split original kept at styles.css.bak-20260918 for reference/revert.
    ===================================================================== */
 
-@import url("css/01-base-layout.css?v=20261126a");
+@import url("css/01-base-layout.css?v=20261126b");
 @import url("css/02-tree-preview-editor.css");
 @import url("css/03-diff-view-core.css");
 @import url("css/04-chat-messages.css?v=20261117a");
