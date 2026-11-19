@@ -9,7 +9,7 @@ ip_address, color). All connections go through app.db_manager
 import sqlite3
 import logging
 
-from config import MODEL_NAME
+from client_config import MODEL_NAME
 from app.db_manager import get_db_connection, init_db_manager
 
 logger = logging.getLogger("COOLEMS.Database")

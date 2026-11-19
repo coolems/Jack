@@ -23,7 +23,7 @@ CoolemsClientProvider, is_model_switching, relay_ws_connect' keeps working uncha
 import logging
 
 # Module-level config imports
-from config import get_connection_mode, get_web_relay_address, WEB_RELAY_DEFAULT_PORT
+from client_config import get_connection_mode, get_web_relay_address, WEB_RELAY_DEFAULT_PORT
 from .. import _parse_web_relay_address
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsClient")

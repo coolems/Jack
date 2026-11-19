@@ -1,4 +1,4 @@
-"""MCP server config — <CLIENT>/config/mcp_servers.json (2026-12).
+"""MCP server config — <CLIENT>/client_config/mcp_servers.json (2026-12).
 
 Fail-closed by design: a missing or corrupt file means NO servers, and an entry with a
 bad shape is dropped (reported) rather than half-applied. Nothing is enabled by default —
@@ -20,14 +20,14 @@ from typing import Any, Dict, List
 logger = logging.getLogger("COOLEMS.MCP.Config")
 
 # (2026-12 audit fix) This module lives in <CLIENT>/app/mcp/ - the CONFIG directory is
-# <CLIENT>/config/, TWO levels up from HERE. The old code went only one level up and
+# <CLIENT>/client_config/, TWO levels up from HERE. The old code went only one level up and
 # pointed SERVERS_FILE at <CLIENT>/app/mcp/mcp_servers.json (never created, never read):
-# the real user file in <CLIENT>/config/ was silently ignored at boot AND the settings
+# the real user file in <CLIENT>/client_config/ was silently ignored at boot AND the settings
 # save wrote a second orphaned file next to this module. CLIENT_DIR is kept for tests.
 _CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))          # .../app/mcp
 _APP_DIR = os.path.dirname(_CONFIG_DIR)                           # .../app
 CLIENT_DIR = os.path.dirname(_APP_DIR)                            # <CLIENT>
-SERVERS_FILE = os.path.join(CLIENT_DIR, "config", "mcp_servers.json")
+SERVERS_FILE = os.path.join(CLIENT_DIR, "client_config", "mcp_servers.json")
 
 #: Namespace for a tool name: mcp__<name>__<tool>. Anything looser would break the name
 #: the model emits back to us (and the SERVER's own name rules). A single '_' is allowed;
@@ -66,10 +66,10 @@ MAX_HEADERS_TOTAL_CHARS = 4096
 #: expansion, because the environment is where the value actually comes from.
 _HEADER_VALUE_BAD = re.compile(r"[^ -~]")
 
-# Values come from config.py (single source of truth); these are fallbacks so the module
+# Values come from client_config/config.py (single source of truth); these are fallbacks so the module
 # still loads in a bare test context. config.py's MCP_* constants win when importable.
 try:
-    from config import (MCP_TIMEOUT_DEFAULT_SEC as TIMEOUT_DEFAULT_SEC,
+    from client_config import (MCP_TIMEOUT_DEFAULT_SEC as TIMEOUT_DEFAULT_SEC,
                         MCP_TIMEOUT_MAX_SEC as TIMEOUT_MAX_SEC)
 except Exception:  # pragma: no cover - defensive
     TIMEOUT_DEFAULT_SEC = 30

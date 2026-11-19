@@ -39,7 +39,7 @@ def read_file(filename: str, path: str = "") -> str:
         SECURITY RULE - CRITICAL:
             * filename = JUST THE FILE NAME only (e.g. 'config.py'). NO slashes allowed!
             * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
-            * To read 'local_ai/CLIENT/config/config.py':  filename='config.py', path='local_ai/CLIENT/config'
+            * To read 'local_ai/CLIENT/client_config/config.py':  filename='config.py', path='local_ai/CLIENT/client_config'
 
         Args:
             filename: Just the file name (no path). Example: 'myfile.txt'. NEVER include '/' or '\\'.

@@ -44,7 +44,7 @@ def _registry_or_error():
     if reg is None:
         return None, _err(
             "no MCP servers are enabled in this CLIENT. Enable one in "
-            "CLIENT/config/mcp_servers.json (the user's decision) - do not invent a server.")
+            "CLIENT/client_config/mcp_servers.json (the user's decision) - do not invent a server.")
     return reg, ""
 
 
@@ -55,7 +55,7 @@ async def list_mcp_servers() -> str:
         return err
     rows = reg.status()
     if not rows:
-        return "No MCP servers are enabled. Add one to CLIENT/config/mcp_servers.json."
+        return "No MCP servers are enabled. Add one to CLIENT/client_config/mcp_servers.json."
     return json.dumps({"servers": rows, "problems": reg.problems}, ensure_ascii=False, indent=2)
 
 

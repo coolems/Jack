@@ -67,7 +67,7 @@ class ControlChannel:
 
             try:
                 # Auth once; protocol version negotiated like every other path.
-                from config import PROTOCOL_VERSION
+                from client_config import PROTOCOL_VERSION
                 await ws.send(json.dumps({
                     "type": "auth", "api_key": api_key, "role_type": "client",
                     "protocol_version": PROTOCOL_VERSION,

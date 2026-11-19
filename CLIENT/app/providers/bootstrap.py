@@ -16,7 +16,7 @@ SERVER-delivered class and get_provider can build CoolemsClientProvider.
 Why a separate raw fetch instead of reusing tool_requests.send_tool_request?
 That helper takes a provider instance as its first argument - which is exactly the
 object we cannot construct yet. Everything else (URL/SSL/auth helpers, protocol
-check) IS reused from app.providers.coolems so there is one source of truth for
+check) IS reused from app.providers.coolems_client so there is one source of truth for
 the wire format.
 
 WAITING FOR SERVER : the CLIENT commonly starts while the COOLEMS
@@ -63,7 +63,7 @@ _status = {
 
 def _target_display() -> str:
     """Human-readable target for log messages (shows the full failover order)."""
-    from config import get_connection_mode, get_web_relay_address, get_server_address_list
+    from client_config import get_connection_mode, get_web_relay_address, get_server_address_list
     if get_connection_mode() == "web_relay":
         return f"relay {get_web_relay_address() or '<not saved>'}"
     addrs = get_server_address_list() or ["<unset>"]
@@ -76,7 +76,7 @@ def bootstrap_status() -> dict:
     Read-only copy - callers must not mutate the module state. Phases:
       "waiting_key"   - no outbound API key configured yet; every SERVER auth attempt is
                         rejected with 'Empty API key'. Set one in UI Settings -> Authentication
-                        (or CLIENT/config/.api_client_keys.json) and the NEXT attempt authenticates.
+                        (or CLIENT/client_config/.api_client_keys.json) and the NEXT attempt authenticates.
       "bootstrapping" - a key exists; waiting for the SERVER to deliver tools/DNA.
       "ready"         - framework delivered, boot can proceed to provider/agent init.
       "failed"        - wait budget exhausted without delivery (actionable message in log).
@@ -125,7 +125,7 @@ async def _bootstrap_fetch_once() -> dict | None:
     Raises:
         ConnectionError: protocol version mismatch (fatal - retrying will never it).
     """
-    from config import (
+    from client_config import (
         COOLEMS_CLIENT_SERVER_ADDRESS,
         get_connection_mode,
         get_web_relay_address,
@@ -141,14 +141,14 @@ async def _bootstrap_fetch_once() -> dict | None:
         COOLEMS_SERVER_CERT_PATH,
         PROTOCOL_VERSION,
     )
-    from app.providers.coolems import (
+    from app.providers.coolems_client import (
         _build_websocket_url,
         _parse_web_relay_address,
         _check_protocol,
         apply_auth_info,
         connect_with_failover,
     )
-    from app.providers.coolems.ssl_helper import (
+    from app.providers.coolems_client.ssl_helper import (
         _build_verifying_ssl_context,
         _build_no_verify_ssl_context,
     )
@@ -171,7 +171,7 @@ async def _bootstrap_fetch_once() -> dict | None:
         addr = get_web_relay_address()
         if not addr:
             raise ConnectionError("Web relay mode selected but no relay host saved - open Settings -> Connection Mode and enter the web_server_relay address.")
-        from app.providers.coolems.ssl_helper import _build_relay_ssl_context
+        from app.providers.coolems_client.ssl_helper import _build_relay_ssl_context
         ssl_ctx = _build_relay_ssl_context(_RELAY_VERIFY_SSL, WEB_RELAY_CERT_PIN_FINGERPRINT)
         if ssl_ctx is None:
             raise ConnectionError("Web relay connection refused - no trusted TLS configured. Set WEB_RELAY_VERIFY_SSL_CERTS=True (public CA) or WEB_RELAY_CERT_PIN_FINGERPRINT.")
@@ -186,7 +186,7 @@ async def _bootstrap_fetch_once() -> dict | None:
             logger.warning(f"[BOOTSTRAP] {e}")
             return None
     else:
-        from config import get_server_address_list
+        from client_config import get_server_address_list
         seen = set()
         for addr in get_server_address_list():
             # Same parsing logic as client_provider._parse_direct_ws_address (kept local on
@@ -240,7 +240,7 @@ async def _bootstrap_fetch_once() -> dict | None:
                 if _classify_auth_failure(auth_resp) == "auth_rejected":
                     _auth_reject_count += 1
                 if _classify_auth_failure(auth_resp) == "empty_key":
-                    logger.warning("[BOOTSTRAP] SERVER rejected the auth with an EMPTY key - no API key configured on this machine yet (SETUP MODE). Open the CLIENT UI: Settings -> Authentication -> Set API Key (writes CLIENT/config/.api_client_keys.json); the next attempt will authenticate.")
+                    logger.warning("[BOOTSTRAP] SERVER rejected the auth with an EMPTY key - no API key configured on this machine yet (SETUP MODE). Open the CLIENT UI: Settings -> Authentication -> Set API Key (writes CLIENT/client_config/.api_client_keys.json); the next attempt will authenticate.")
                 else:
                     logger.error(f"[BOOTSTRAP] Auth failed: {auth_resp!r}")
                 _status["last_error"] = "SERVER auth rejected (" + str(auth_resp.get("message", "")) + ")"
@@ -262,7 +262,7 @@ async def _bootstrap_fetch_once() -> dict | None:
     try:
         # Per-attempt ceiling (config.BOOTSTRAP_ATTEMPT_TIMEOUT): a half-open TCP
         # connection or hung handshake must not stall the wait loop for minutes.
-        from config import BOOTSTRAP_ATTEMPT_TIMEOUT
+        from client_config import BOOTSTRAP_ATTEMPT_TIMEOUT
         return await asyncio.wait_for(_do_fetch(), timeout=BOOTSTRAP_ATTEMPT_TIMEOUT)
     except ConnectionError as e:
         # Protocol version mismatch is FATAL - retrying will never fix a version skew.
@@ -305,7 +305,7 @@ def _all_addresses_loopback() -> bool:
     wait loop say so explicitly instead of retrying localhost for 30 minutes.
     """
     try:
-        from config import get_server_address_list
+        from client_config import get_server_address_list
         addrs = [a for a in get_server_address_list() if a]
     except Exception:
         return False  # cannot tell - do not print a possibly-wrong hint
@@ -340,7 +340,7 @@ async def bootstrap_framework() -> dict | None:
     or None once the budget is exhausted.
     Raises ConnectionError on a protocol mismatch: fatal, do not retry.
     """
-    from config import (
+    from client_config import (
         BOOTSTRAP_MAX_WAIT_SEC,
         BOOTSTRAP_RETRY_INITIAL_DELAY,
         BOOTSTRAP_RETRY_MAX_DELAY,
@@ -367,7 +367,7 @@ async def bootstrap_framework() -> dict | None:
         logger.warning(
             "[BOOTSTRAP] No API key available for outbound auth - SETUP MODE. Every SERVER "
             "auth attempt will be rejected until a key is configured (UI Settings -> API key, "
-            "writes CLIENT/config/.api_client_keys.json)."
+            "writes CLIENT/client_config/.api_client_keys.json)."
         )
     else:
         import hashlib as _hashlib
@@ -424,9 +424,9 @@ async def bootstrap_framework() -> dict | None:
             _key_mismatch_hint_printed = True
             logger.warning(
                 f"[BOOTSTRAP] SERVER is reachable but has rejected our API key {_auth_reject_count}x in a row - "
-                "this will NOT fix itself by waiting. The CLIENT's outbound key (CLIENT/config/.api_client_keys.json / UI) "
+                "this will NOT fix itself by waiting. The CLIENT's outbound key (CLIENT/client_config/.api_client_keys.json / UI) "
                 "does not match config/.api_keys.json on the SERVER. Fix: re-set your API key in UI Settings -> Authentication "
-                "(it writes CLIENT/config/.api_client_keys.json), then restart this CLIENT."
+                "(it writes CLIENT/client_config/.api_client_keys.json), then restart this CLIENT."
             )
 
         # (2026-10-07 LAN-HINT DX): every configured address is loopback and none answered
@@ -441,7 +441,7 @@ async def bootstrap_framework() -> dict | None:
             _lan_hint_printed = True
             logger.warning(
                 "[BOOTSTRAP] No SERVER reachable at the configured address(es) - all of them are LOCAL (localhost/127.0.0.1). "
-                "If your COOLEMS SERVER runs on another machine, add its LAN IP to server_addresses in CLIENT/config/settings.json "
+                "If your COOLEMS SERVER runs on another machine, add its LAN IP to server_addresses in CLIENT/client_config/settings.json "
                 "(e.g. localhost:8080 plus 192.168.x.x:8080) or use UI Settings -> Server Address; the next attempt picks it up automatically."
             )
 
@@ -467,6 +467,6 @@ async def bootstrap_framework() -> dict | None:
         f"[BOOTSTRAP] Gave up after {attempt} attempts / {int(budget)}s waiting for the SERVER at {target}. "
         f"Start the COOLEMS SERVER first (code.py in the server root folder), make sure its address/port match "
         f"CLIENT config settings.json, then restart the CLIENT. Increase BOOTSTRAP_MAX_WAIT_SEC in "
-        f"CLIENT/config/config.py if your model takes longer to load."
+        f"CLIENT/client_config/config.py if your model takes longer to load."
     )
     return None

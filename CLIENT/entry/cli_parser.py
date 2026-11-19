@@ -6,7 +6,7 @@ parser starts the server, it does not execute a prompt.
 
 import sys
 
-from config import CLIENT_UI_PORT  # single source of truth for the default UI port (CLIENT/config/config.py)
+from client_config import CLIENT_UI_PORT  # single source of truth for the default UI port (CLIENT/client_config/config.py)
 
 
 def parse_args():
@@ -14,7 +14,7 @@ def parse_args():
 
     Returns:
         tuple: (port, provider_arg)
-            - port (int): Server port (default from config.CLIENT_UI_PORT)
+            - port (int): Server port (default from client_config.CLIENT_UI_PORT)
             - provider_arg (str or None): Provider override from CLI
     """
     port = CLIENT_UI_PORT

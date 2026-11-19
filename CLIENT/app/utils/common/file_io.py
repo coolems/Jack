@@ -17,7 +17,7 @@ logger = logging.getLogger("COOLEMS.Tools")
 # BYTE count, and every consumer here compares it against a byte length
 # (os.path.getsize, len(content), len(await file.read())).
 #
-# NOTE the two copies of these names are NOT wired together: CLIENT/config/config.py
+# NOTE the two copies of these names are NOT wired together: CLIENT/client_config/config.py
 # declares FILE_MAX_*_BYTES as tunables (2 GB / 5 MB / 3 GB) but nothing imports them
 # into this module - the literals below are what the UI/upload code actually enforces.
 # If those config values are ever meant to apply, they must be read explicitly here;

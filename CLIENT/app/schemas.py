@@ -64,7 +64,7 @@ class WebSocketChatMessage(BaseModel):
     )
     # Legacy field, kept for backward compatibility with old UI builds (they sent a
     # {"wikipedia": true, ...} dict). The engine list itself lives in
-    # <CLIENT>/config/search_engines.json (single source of truth); the web_search tool
+    # <CLIENT>/client_config/search_engines.json (single source of truth); the web_search tool
     # reads that file live on every search. New clients send nothing here - any shape is
     # tolerated so old clients never break validation.
     search_engines: Optional[Any] = Field(

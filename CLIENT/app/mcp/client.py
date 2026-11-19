@@ -54,7 +54,7 @@ PROTOCOL_VERSION = "2025-06-18"
 CLIENT_NAME = "coolems-client"
 # Bounds come from config.py (MCP_TEXT_PREVIEW_CHARS / MCP_INSTRUCTIONS_MAX_CHARS).
 try:
-    from config import MCP_TEXT_PREVIEW_CHARS as TEXT_PREVIEW_CHARS, \
+    from client_config import MCP_TEXT_PREVIEW_CHARS as TEXT_PREVIEW_CHARS, \
         MCP_INSTRUCTIONS_MAX_CHARS as INSTRUCTIONS_MAX_CHARS
 except Exception:  # pragma: no cover - defensive
     TEXT_PREVIEW_CHARS = 4000

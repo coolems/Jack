@@ -43,10 +43,10 @@ def wire_configs(ctx: dict) -> None:
 
     # ---- 6a. run both official bootstraps so every required file exists ----
     # Each bootstrap runs as its own interpreter with the right PYTHONPATH (the SERVER
-    # 'config' package and the CLIENT's 'CLIENT/config' package must not mix in one process).
+    # 'config' package and the CLIENT's 'CLIENT/client_config' package must not mix in one process).
     for parts, env_root in (
         (("config", "bootstrap.py"), root),
-        (("CLIENT", "config", "bootstrap.py"), os.path.join(root, "CLIENT")),
+        (("CLIENT", "client_config", "bootstrap.py"), os.path.join(root, "CLIENT")),
     ):
         rel = "/".join(parts)
         script = os.path.join(root, *parts)
@@ -109,10 +109,10 @@ def wire_configs(ctx: dict) -> None:
 
     # 6b-ii. CLIENT file: the per-machine credential row {email, date_acquired, key}
     # (key in PLAINTEXT by design - no registry writes; works on Windows/macOS/Linux).
-    client_path = os.path.join(root, "CLIENT", "config", ".api_client_keys.json")
+    client_path = os.path.join(root, "CLIENT", "client_config", ".api_client_keys.json")
     if not os.path.exists(client_path):       # bootstrap should have created it; be safe
         write_json(client_path, [{"email": email, "date_acquired": None, "key": api_key}])
-        ok("CLIENT/config/.api_client_keys.json: created with API key (plaintext, single row)")
+        ok("CLIENT/client_config/.api_client_keys.json: created with API key (plaintext, single row)")
     else:
         try:
             with open(client_path, "r", encoding="utf-8") as f:
@@ -120,7 +120,7 @@ def wire_configs(ctx: dict) -> None:
             if not isinstance(c_entries, list):
                 c_entries = []
         except (json.JSONDecodeError, OSError):
-            warn("CLIENT/config/.api_client_keys.json unreadable - rewriting from scratch")
+            warn("CLIENT/client_config/.api_client_keys.json unreadable - rewriting from scratch")
             c_entries = []
         # SINGLE-KEY CONTRACT: exactly ONE row {email, date_acquired, key}. Every previous
         # row is replaced (placeholder rows from the example template included); a matching
@@ -131,7 +131,7 @@ def wire_configs(ctx: dict) -> None:
                 existing_date = e.get("date_acquired")
                 break
         write_json(client_path, [{"email": email, "date_acquired": existing_date, "key": api_key}])
-        ok("CLIENT/config/.api_client_keys.json: API key installed (plaintext, single row)")
+        ok("CLIENT/client_config/.api_client_keys.json: API key installed (plaintext, single row)")
 
     # 6b-iii. This process's env fallback gets the key too (child processes spawned from
     # init inherit it). The persistent per-machine source is the CLIENT config file above -
@@ -248,7 +248,7 @@ def wire_configs(ctx: dict) -> None:
     # The CLIENT tries server_addresses in order (localhost first, then this machine's LAN IP),
     # so the same CLIENT\ folder works on THIS PC and - when copied to any other LAN PC - there,
     # with no address editing. No local-vs-remote question needed at init time.
-    client_cfg_dir = os.path.join(root, "CLIENT", "config")
+    client_cfg_dir = os.path.join(root, "CLIENT", "client_config")
     settings_path = os.path.join(client_cfg_dir, "settings.json")
     data = {}
     try:

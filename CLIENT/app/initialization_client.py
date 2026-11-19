@@ -12,8 +12,8 @@ and a failure after that budget is fatal: there is no local fallback copy.
 
 import logging
 
-from config import PROVIDER_DEFAULT_TIMEOUT, DB_PATH
-import config  # Import module directly to allow reassigning config.MODEL_NAME
+from client_config import PROVIDER_DEFAULT_TIMEOUT, DB_PATH
+import client_config as config  # module alias: allows reassigning config.MODEL_NAME after SERVER health check
 from app.providers import get_provider
 from app.provider_manager import ProviderManager
 
@@ -24,7 +24,7 @@ async def _fetch_and_install_from_server() -> tuple:
     """Step 1+2 of boot: fetch tools_response from SERVER and install everything.
 
     Returns (tools_response, tool_orchestrator). bootstrap_framework() waits for a still-booting
-    SERVER (time budget: BOOTSTRAP_MAX_WAIT_SEC in config/config.py); it raises RuntimeError with
+    SERVER (time budget: BOOTSTRAP_MAX_WAIT_SEC in client_config/config.py); it raises RuntimeError with
     an actionable message only after the wait budget is exhausted - the CLIENT cannot start without
     tools + DNA + framework modules delivered by the SERVER.
     """
@@ -73,7 +73,7 @@ async def _fetch_and_install_from_server() -> tuple:
 
 def _target_display() -> str:
     """Human-readable SERVER target for error messages."""
-    from config import get_connection_mode, get_web_relay_address, COOLEMS_CLIENT_SERVER_ADDRESS
+    from client_config import get_connection_mode, get_web_relay_address, COOLEMS_CLIENT_SERVER_ADDRESS
     if get_connection_mode() == "web_relay":
         return f"relay {get_web_relay_address() or '<not saved>'}"
     return f"direct {COOLEMS_CLIENT_SERVER_ADDRESS}"

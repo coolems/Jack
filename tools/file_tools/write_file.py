@@ -55,7 +55,7 @@ def write_file(filename: str, content: str, path: str = "", mode: str = "w") -> 
     SECURITY RULE - CRITICAL:
         * filename = JUST THE FILE NAME only (e.g. 'config.py'). NO slashes allowed!
         * path = DIRECTORY ONLY where the file should be written (e.g. 'local_ai/config')
-        * To write 'local_ai/CLIENT/config/settings.py':  filename='settings.py', path='local_ai/CLIENT/config'
+        * To write 'local_ai/CLIENT/client_config/settings.py':  filename='settings.py', path='local_ai/CLIENT/client_config'
     All paths are locked inside working_root. Path traversal via '..' is blocked.
               Filenames with embedded separators or traversal sequences are rejected.
     """

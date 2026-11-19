@@ -134,7 +134,7 @@ async def stream_ollama(
     Uses the given provider or the ProviderManager active provider, then pushes TokenStats to
     the UI. ollama_url is unused in CLIENT mode.
     """
-    from config import PROVIDER_DEFAULT_TEMPERATURE
+    from client_config import PROVIDER_DEFAULT_TEMPERATURE
     if temperature is None:
         temperature = PROVIDER_DEFAULT_TEMPERATURE
 
@@ -165,7 +165,7 @@ async def call_ollama_non_streaming(
     Uses the given provider or the ProviderManager active provider. ollama_url is unused in
     CLIENT mode.
     """
-    from config import PROVIDER_DEFAULT_TEMPERATURE
+    from client_config import PROVIDER_DEFAULT_TEMPERATURE
     if temperature is None:
         temperature = PROVIDER_DEFAULT_TEMPERATURE
 
@@ -187,7 +187,7 @@ def get_ollama_status_message(
     """Backward-compatible status message wrapper.
 
     Uses the provided provider or falls back to ProviderManager active provider."""
-    from config import MODEL_NAME
+    from client_config import MODEL_NAME
     if model_name is None:
         model_name = MODEL_NAME
 

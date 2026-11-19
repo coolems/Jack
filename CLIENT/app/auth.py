@@ -5,7 +5,7 @@ This module provides minimal HTTP middleware for local-mode detection only:
   - SETUP MODE (no real key configured yet): EVERYTHING is locked down except the
     loopback-only POST /api/auth/set-key endpoint that writes the first key. No chat, no
     files, no code execution before a key exists
-  - KEYED MODE: a real key must be available locally (CLIENT/config/.api_client_keys.json,
+  - KEYED MODE: a real key must be available locally (CLIENT/client_config/.api_client_keys.json,
     COOLEMS_CLIENT_API_KEY env var, or the in-memory runtime key from this UI session) so we
     know which credential to present to the SERVER + email header mandatory.
 REAL auth: CLIENT sends email + API key to SERVER -> SERVER validates against its own

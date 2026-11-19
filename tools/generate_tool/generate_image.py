@@ -857,16 +857,16 @@ def _load_client_settings() -> dict:
     """The CLIENT's config/settings.json as a dict, or {} when unavailable.
 
      Shared by the Runtime-tab readers below (_client_image_gen_tier and
-    _client_image_gen_resolution). Path resolution: 1. <CWD>/config/settings.json
-    normal CLIENT run (CWD = CLIENT dir); 2. <local_ai>/CLIENT/config/settings.json
+    _client_image_gen_resolution). Path resolution: 1. <CWD>/client_config/settings.json
+    normal CLIENT run (CWD = CLIENT dir); 2. <local_ai>/CLIENT/client_config/settings.json
     SERVER-side layout. A read problem must never break generation.
     """
     try:
-        candidates = [os.path.join(os.getcwd(), "config", "settings.json")]
+        candidates = [os.path.join(os.getcwd(), "client_config", "settings.json")]
         try:
             module_dir = os.path.dirname(os.path.abspath(__file__))
             local_ai_root = os.path.dirname(os.path.dirname(module_dir))  # generate_tool -> tools -> local_ai
-            candidates.append(os.path.join(local_ai_root, "CLIENT", "config", "settings.json"))
+            candidates.append(os.path.join(local_ai_root, "CLIENT", "client_config", "settings.json"))
         except Exception:
             pass
 
@@ -886,7 +886,7 @@ def _load_client_settings() -> dict:
 def _client_image_gen_tier() -> str:
     """The per-machine tier pick from the CLIENT Settings UI, or ''.
 
-    The Runtime tab writes 'image_gen_tier' into <CLIENT>/config/settings.json via
+    The Runtime tab writes 'image_gen_tier' into <CLIENT>/client_config/settings.json via
     POST /api/settings. This reads that file LIVE on every call - same live-read
     pattern web_search.py uses for search_engines.json - so a pick in the UI applies
     to the very next generation without any restart or SERVER round-trip.
@@ -906,7 +906,7 @@ def _client_image_gen_resolution():
     """(width, height) the user set as DEFAULT in Settings > Runtime, or None.
 
      The Runtime tab stores 'image_gen_width' / 'image_gen_height' (px,
-    32..4096, validated by POST /api/settings) in <CLIENT>/config/settings.json. Read
+    32..4096, validated by POST /api/settings) in <CLIENT>/client_config/settings.json. Read
     LIVE on every call - a save applies to the very next generation without restart.
     Returns None for any missing/invalid value so callers keep their own defaults
     (600x400). A read problem must never break generation.
@@ -926,7 +926,7 @@ def _tier_override() -> str:
     """The user's pinned model line, or 'auto'.
 
     Priority: the per-machine pick from the CLIENT Settings UI Runtime tab
-    ('image_gen_tier' in <CLIENT>/config/settings.json - read live on every call) wins;
+    ('image_gen_tier' in <CLIENT>/client_config/settings.json - read live on every call) wins;
     when that key is absent/invalid it falls back to IMAGE_GEN_TIER_OVERRIDE, delivered
     by the SERVER via config_constants (injected exec global on the CLIENT, imported
     directly in local dev). Anything that is not a known tier name is treated as 'auto'

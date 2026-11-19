@@ -199,7 +199,7 @@ class McpRegistry:
         client = self._clients.get(server)
         if client is None:
             return (f"ERROR: MCP server '{server}' is not configured/enabled in "
-                    "CLIENT/config/mcp_servers.json. Do not retry it; report that the "
+                    "CLIENT/client_config/mcp_servers.json. Do not retry it; report that the "
                     "server needs to be enabled by the user.")
         # Same fail-closed rule as definitions()/tools.local_registry: a '*' entry means
         # "any CONFIRMED role", never "any caller". Without this check the registry alone
@@ -397,7 +397,7 @@ def set_registry(reg: Optional[McpRegistry]) -> None:
 
 
 def wire_mcp(*, config_path: str | None = None, spill_dir: str = "") -> Optional[McpRegistry]:
-    """Build the registry from config. Returns None when nothing is enabled.
+    """Build the registry from client_config. Returns None when nothing is enabled.
 
     Takes no chat bus on purpose: MCP tools are dispatched through tools/local_registry on
     the calling turn's context, so there is no notice lane to wire here. Never raises — an

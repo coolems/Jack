@@ -24,7 +24,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.helpers import get_ws_client_ip
 from app.prompts import get_chat_prompt, get_system_prompt
 from app.schemas import WebSocketChatMessage
-from config import load_search_engines
+from client_config import load_search_engines
 
 # Only send_error remains: every other frame type (system, content, done, provider/execution
 # errors, ...) is emitted by the ChatBus channel while the turn runs in its background task.
@@ -216,7 +216,7 @@ def create_websocket_handler(
         system_prompt = payload.system_prompt or get_system_prompt()
         agent_mode = payload.agent_mode
         media_files = payload.media_files
-        # Engine config lives in <CLIENT>/config/search_engines.json (single source of
+        # Engine config lives in <CLIENT>/client_config/search_engines.json (single source of
         # truth). Read it fresh on every message so Settings UI saves apply immediately -
         # no restart needed. (payload.search_engines is a legacy field, ignored here.)
         search_engines = {"engines": load_search_engines()}

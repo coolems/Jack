@@ -130,7 +130,7 @@ class TTSManager:
     def _load_config(self) -> TTSConfig:
         """Load configuration from config.py if available."""
         try:
-            from config import (  # type: ignore
+            from client_config import (  # type: ignore
                 TTS_ENABLED,
                 TTS_AUTO_ENABLE,
                 TTS_VOICE1_NAME,

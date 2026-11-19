@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from config import QUESTION_MAX_OPTIONS, QUESTION_TIMEOUT_DEFAULT_SEC
+from client_config import QUESTION_MAX_OPTIONS, QUESTION_TIMEOUT_DEFAULT_SEC
 
 logger = logging.getLogger("COOLEMS.LocalTools.Question")
 

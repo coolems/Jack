@@ -15,7 +15,7 @@ SERVER never sees mcp__* names, so a role that must not reach an external server
 refused on the CLIENT. Anything not listed is refused fail-closed.
 
 MCP tool names are dynamic (mcp__<server>__<tool>) and gated per server by
-CLIENT/config/mcp_servers.json, so an unknown server or an unknown role contributes nothing to
+CLIENT/client_config/mcp_servers.json, so an unknown server or an unknown role contributes nothing to
 the schema and returns an honest error when called.
 """
 
@@ -187,7 +187,7 @@ async def call(name: str, arguments: Dict[str, Any], *, websocket,
         if not allowed_for_role(name, role):
             return (f"ERROR: MCP tool '{name}' is not available for your role "
                     f"({role or 'unknown'}) or its server is not enabled in "
-                    "CLIENT/config/mcp_servers.json. Do not retry it.")
+                    "CLIENT/client_config/mcp_servers.json. Do not retry it.")
         reg = _mcp_registry()
         try:
             return await reg.call(name, arguments or {}, ctx)

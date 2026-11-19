@@ -1,6 +1,6 @@
 """MCP server management endpoints (2026-12): GET/POST /api/mcp/servers.
 
-The Settings > MCP tab reads and writes CLIENT/config/mcp_servers.json through these two
+The Settings > MCP tab reads and writes CLIENT/client_config/mcp_servers.json through these two
 routes, so enabling/disabling/editing an external MCP server is a normal UI action instead
 of a hand-edit of the JSON file. The file stays the single source of truth (persisted for
 later use), and every save re-wires the live registry immediately - no restart needed:

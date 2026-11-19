@@ -15,7 +15,7 @@ logger = logging.getLogger("COOLEMS")
 # Path to CLIENT's local .api_client_keys.json - the per-machine credential store:
 # exactly ONE row {"email", "date_acquired", "key"} (plaintext key by design).
 _CLIENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_KEYS_FILE = os.path.join(_CLIENT_DIR, "config", ".api_client_keys.json")
+_KEYS_FILE = os.path.join(_CLIENT_DIR, "client_config", ".api_client_keys.json")
 
 # Optional environment-variable fallback for OUTBOUND provider auth (headless / CI).
 # The config file above takes PRECEDENCE over it; the UI flow never needs either -
@@ -49,7 +49,7 @@ def is_boot_pending() -> bool:
 
 
 # Authoritative identity as reported by the SERVER in auth_ok (in-memory only).
-# apply_auth_info() (app/providers/coolems/__init__.py) updates these on EVERY
+# apply_auth_info() (app/providers/coolems_client/__init__.py) updates these on EVERY
 # successful WebSocket auth - this is the single source of truth for role display.
 _server_role: Optional[str] = None
 _server_email: Optional[str] = None
@@ -65,7 +65,7 @@ def _self_heal_keys_file() -> None:
     if os.path.exists(_KEYS_FILE):
         return
     try:
-        from config.bootstrap import _seed_from_example
+        from client_config.bootstrap import _seed_from_example
         example = os.path.join(os.path.dirname(_KEYS_FILE), ".api_client_keys.example.json")
         _seed_from_example(_KEYS_FILE, example)
     except Exception as e:  # pragma: no cover - defensive; never break the import
@@ -174,7 +174,7 @@ def _env_api_key() -> str:
 
 
 def _file_api_key() -> str:
-    """Real key for OUTBOUND provider auth from CLIENT/config/.api_client_keys.json.
+    """Real key for OUTBOUND provider auth from CLIENT/client_config/.api_client_keys.json.
 
     Reads the "key" field of the single row (plaintext by design - see module
     docstring). Returns "" when the file is missing/unreadable, holds no row with a
@@ -298,7 +298,7 @@ def _sync_outbound_credential_sources(key: str) -> None:
       1. the runtime in-memory store - outbound provider auth for THIS process;
       2. os.environ[COOLEMS_CLIENT_API_KEY] - every env-var reader in this run sees
          the fresh value immediately (covers child processes spawned from this one).
-    No registry writes: the persistent per-machine source is CLIENT/config/
+    No registry writes: the persistent per-machine source is CLIENT/client_config/
     .api_client_keys.json, which works identically on Windows, macOS and Linux.
     """
     global _runtime_key

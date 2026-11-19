@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import asyncio
 import time
 
-from config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE
+from client_config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE
 from app.providers import BaseProvider
 
 

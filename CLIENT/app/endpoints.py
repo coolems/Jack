@@ -205,7 +205,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info(f"Timeout: {api_timeout}s")
         logger.info("STREAMING MODE ENABLED - Responses will stream in real-time!")
         # (2026-10-08) this reports the number of available key SOURCES: config file
-        # (CLIENT/config/.api_client_keys.json, plaintext single row) + env var + runtime.
+        # (CLIENT/client_config/.api_client_keys.json, plaintext single row) + env var + runtime.
         logger.info(f"API Authentication: ENABLED ({len(api_keys)} key source(s) available)")
         logger.info("Connection limits: Configurable per ROLE (from profiles.json)")
         logger.info("Tool access: Configurable per ROLE (from profiles.json)")
@@ -224,7 +224,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         logger.info("ChatBus stale-session cleanup task started (runs every 10 minutes)")
 
         # ===== MCP external servers =====
-        # Built from CLIENT/config/mcp_servers.json. Nothing is enabled by default, so this
+        # Built from CLIENT/client_config/mcp_servers.json. Nothing is enabled by default, so this
         # is a no-op unless the user enabled a server. The registry is built HERE (cheap: one
         # JSON read) so the schema and Settings see it, but the CONNECT runs as a background
         # task: uvicorn serves the UI only AFTER startup_event returns (measured: a 6s
@@ -263,7 +263,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         # locator, but they must not accumulate forever. Bounded cleanup at startup only.
         try:
             from app.spill_archive import prune_spill_dir
-            from config import MCP_SPILL_KEEP_FILES
+            from client_config import MCP_SPILL_KEEP_FILES
             _mcp_spill = os.path.normpath(os.path.join(_CLIENT_ROOT, ".temp", "mcp"))
             prune_spill_dir(_mcp_spill, keep=MCP_SPILL_KEEP_FILES, suffix=".txt")
             prune_spill_dir(_mcp_spill, keep=MCP_SPILL_KEEP_FILES, suffix=".bin")

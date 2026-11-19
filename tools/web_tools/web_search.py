@@ -1,12 +1,12 @@
 """web_search - concurrent multi-provider web search (config-driven, intent-routed).
 
-Providers are declared in <CLIENT>/config/search_engines.json (single source of
+Providers are declared in <CLIENT>/client_config/search_engines.json (single source of
 truth, editable in the Settings UI). Each entry looks like:
 
     {"id": "bing_rss", "name": "Bing RSS", "enabled": true, "priority": 1,
      "settings": {"timeout": 10}}
 
-- ``search_engines=None``        -> read <CLIENT>/config/search_engines.json live
+- ``search_engines=None``        -> read <CLIENT>/client_config/search_engines.json live
 - ``search_engines={"engines":[...]}`` or a bare list of engine dicts -> use as-is
 - legacy bool dict ``{"wikipedia": true, ...}`` is still accepted (old clients)
 
@@ -123,20 +123,20 @@ def _const(name: str, default):
 # ---------------------------------------------------------------------------
 
 def _load_engine_config_from_json() -> list:
-    """Read <CLIENT>/config/search_engines.json live. Returns [] on any problem.
+    """Read <CLIENT>/client_config/search_engines.json live. Returns [] on any problem.
 
     Path resolution (the CLIENT owns this file - no fallback providers are invented):
-      1. <CWD>/config/search_engines.json       - normal CLIENT run (CWD = CLIENT dir)
-      2. <local_ai>/CLIENT/config/...           - SERVER-side layout
+      1. <CWD>/client_config/search_engines.json       - normal CLIENT run (CWD = CLIENT dir)
+      2. <local_ai>/CLIENT/client_config/...           - SERVER-side layout
     """
     try:
         import json as _json
 
-        candidates = [os.path.join(os.getcwd(), "config", "search_engines.json")]
+        candidates = [os.path.join(os.getcwd(), "client_config", "search_engines.json")]
         try:
             module_dir = os.path.dirname(os.path.abspath(__file__))
             local_ai_root = os.path.dirname(os.path.dirname(module_dir))
-            candidates.append(os.path.join(local_ai_root, "CLIENT", "config", "search_engines.json"))
+            candidates.append(os.path.join(local_ai_root, "CLIENT", "client_config", "search_engines.json"))
         except Exception:
             pass
 

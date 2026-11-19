@@ -7,7 +7,7 @@ defaults from config.py - no hardcoded values here.
 from typing import List, Dict, Optional, Any
 import asyncio
 
-from config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE
+from client_config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE
 from app.providers import BaseProvider
 
 

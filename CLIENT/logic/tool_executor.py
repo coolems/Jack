@@ -14,7 +14,7 @@ import time
 import uuid
 from typing import Dict, Any
 
-from config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS
+from client_config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS
 from app.providers import BaseProvider
 # The loop-history frames format a tool's input for the UI (app.turn_log.format_args) and
 # carry the file identity for the tool's row line (tool_target). Imported at module level:
@@ -369,7 +369,7 @@ class ToolExecutor:
 
         from app.keys import get_key_role
         
-        from config import DEFAULT_ROLE_NO_KEY
+        from client_config import DEFAULT_ROLE_NO_KEY
         
         role = get_key_role(self.api_key) if self.api_key else DEFAULT_ROLE_NO_KEY
         logger.debug(f"[AGENTIC.DEBUG] ToolExecutor.execute() - Key role resolved: '{role}'")

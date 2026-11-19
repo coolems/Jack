@@ -17,7 +17,7 @@ import json
 import logging
 from typing import List, Dict, Optional
 
-from config import (
+from client_config import (
     max_history_tokens,
     estimate_tokens,
     DB_PATH,

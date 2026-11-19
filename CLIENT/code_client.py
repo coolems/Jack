@@ -56,7 +56,7 @@ sys.path = [p for p in sys.path if not os.path.abspath(p) == SERVER_ROOT]
 os.environ.setdefault("COOLEMS_CLIENT_ROOT", CLIENT_DIR)
 
 
-from config import (
+from client_config import (
     DB_PATH as CONFIG_DB_PATH,
     MODEL_NAME as CONFIG_MODEL_NAME,
     PROVIDER as CONFIG_PROVIDER,
@@ -105,7 +105,7 @@ logger.info(f"Timeout: {PROVIDER_DEFAULT_TIMEOUT}s")
 # ===== Config Bootstrap (2026-08-23) =====
 # Create missing CLIENT config data files from their shipped example templates so a
 # fresh checkout never fails at startup: .api_client_keys.json, settings.json.
-from config.bootstrap import ensure_client_config_files, ensure_database_file
+from client_config.bootstrap import ensure_client_config_files, ensure_database_file
 _created_configs = ensure_client_config_files()
 if _created_configs:
     logger.info("Client bootstrap created missing file(s): " + ", ".join(_created_configs))
@@ -167,7 +167,7 @@ if __name__ == "__main__":
 
     # 3. Initialize provider, tool orchestrator, and agent (DNA delivered from SERVER here).
     # bootstrap_framework() WAITS for the SERVER while it boots / loads its model (see
-    # BOOTSTRAP_MAX_WAIT_SEC in config/config.py) - so "server still starting" is NOT a crash.
+    # BOOTSTRAP_MAX_WAIT_SEC in client_config/config.py) - so "server still starting" is NOT a crash.
     # A failure that survives the wait budget exits cleanly with ONE actionable message,
     # not a wall of traceback (2026-08-26).
     #
@@ -261,7 +261,7 @@ if __name__ == "__main__":
         from app.keys import get_api_keys as _gak
         if not _gak():
             logger.error("Refusing to bind 0.0.0.0 with no API key available (would expose unauthenticated access).")
-            logger.error("Set your API key in the CLIENT UI (Settings -> Authentication; writes CLIENT/config/.api_client_keys.json), "
+            logger.error("Set your API key in the CLIENT UI (Settings -> Authentication; writes CLIENT/client_config/.api_client_keys.json), "
                          "export COOLEMS_CLIENT_API_KEY for headless use, or unset COOLEMS_CLIENT_HOST.")
             sys.exit(1)
         logger.warning(f"SECURITY: CLIENT bound to {bind_host} - ALL interfaces. Anyone on the network can reach port {port}.")

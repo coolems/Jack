@@ -647,7 +647,7 @@ QUESTION_TIMEOUT_DEFAULT_SEC: int = 120
 QUESTION_MAX_OPTIONS: int = 6
 
 # --- MCP servers ---
-# MCP servers are declared in CLIENT/config/mcp_servers.json and are DISABLED by default:
+# MCP servers are declared in CLIENT/client_config/mcp_servers.json and are DISABLED by default:
 # an MCP server is an external process or remote endpoint, so enabling it is a human edit,
 # and its first tool call still asks a consent card ('subprocess' for stdio, 'url' for http).
 # An http endpoint additionally passes the SSRF gate (app/mcp/net_guard.py). These constants
@@ -704,7 +704,7 @@ AGENTIC_TOOL_OUTPUT_MAX_CHARS: int = 6000
 # --- Database ---
 # FIX (2026-08-17): anchor the DB file to the CLIENT start point (<CLIENT>/) instead of
 # CWD-relative "chat_history.db" - a process started from another folder would otherwise
-# create stray chat_history.db files outside the CLIENT tree. (This module lives at <CLIENT>/config/,
+# create stray chat_history.db files outside the CLIENT tree. (This module lives at <CLIENT>/client_config/,
 # so one level up is the CLIENT root where code_client.py sets its CWD.)
 _DB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH: str = os.path.join(_DB_DIR, "chat_history.db")

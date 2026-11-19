@@ -17,7 +17,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
     # ===== SETUP MODE ENDPOINT (2026-09-01) =====
     @router.post("/api/auth/set-key")
     async def set_api_key(request: Request, data: Dict):
-        """Record the credential row {email, date_acquired, key} in CLIENT/config/.api_client_keys.json.
+        """Record the credential row {email, date_acquired, key} in CLIENT/client_config/.api_client_keys.json.
         This is the ONLY endpoint that works while no real key exists yet (setup mode)
         - APIMiddleware routes it through for loopback callers and rejects everything else
           with an actionable 401 until this succeeds. In keyed mode it stays available so

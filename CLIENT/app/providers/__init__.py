@@ -74,7 +74,7 @@ def get_provider(provider_name: str, api_url: str, timeout: int):
             f"To start a local UI with direct LLM access, run code.py in the SERVER root folder."
         )
 
-    from .coolems.client_provider import CoolemsClientProvider
+    from .coolems_client.client_provider import CoolemsClientProvider
     return CoolemsClientProvider(api_url or "", timeout)
 
 
@@ -107,7 +107,7 @@ def __getattr__(name):
         return _PendingTokenStats
 
     if name == "CoolemsClientProvider":
-        from .coolems.client_provider import CoolemsClientProvider
+        from .coolems_client.client_provider import CoolemsClientProvider
         return CoolemsClientProvider
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

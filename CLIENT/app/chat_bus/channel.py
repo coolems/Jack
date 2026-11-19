@@ -20,7 +20,7 @@ import time
 
 import uuid
 
-from config import CHAT_BACKGROUND_FRAME_BUFFER, CHAT_STEER_QUEUE_MAX
+from client_config import CHAT_BACKGROUND_FRAME_BUFFER, CHAT_STEER_QUEUE_MAX
 
 
 class ChannelStatus(str, Enum):

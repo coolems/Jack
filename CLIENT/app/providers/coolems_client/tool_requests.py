@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Dict, Optional
 
-from config import PROTOCOL_VERSION
+from client_config import PROTOCOL_VERSION
 from . import _check_protocol, connect_with_failover, NoServerReachable
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsClient")

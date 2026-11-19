@@ -44,14 +44,14 @@ config/strata_servers.json
 # shipped config/deepseek_servers.example.json stays tracked.
 config/deepseek_servers.json
 # CLIENT's copy of its SERVER credentials
-CLIENT/config/.api_client_keys.json
+CLIENT/client_config/.api_client_keys.json
 
 # CLIENT user settings & working-root state (per-machine, auto-created at runtime)
-CLIENT/config/settings.json
+CLIENT/client_config/settings.json
 
 # CLIENT MCP server list (per-machine enablement of external servers -> never commit;
-# the shipped CLIENT/config/mcp_servers.example.json stays tracked as the template).
-CLIENT/config/mcp_servers.json
+# the shipped CLIENT/client_config/mcp_servers.example.json stays tracked as the template).
+CLIENT/client_config/mcp_servers.json
 
 # Last-loaded model state (per-machine runtime data written by the SERVER after every
 # verified launch/switch - see app/providers/llama/model_persistence.py). Source of

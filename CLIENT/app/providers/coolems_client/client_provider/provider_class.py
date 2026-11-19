@@ -12,7 +12,7 @@ import asyncio
 from typing import List, Dict, Any, Tuple, Optional
 
 # Module-level config imports
-from config import (
+from client_config import (
     PROVIDER_DEFAULT_TIMEOUT,
     COOLEMS_CLIENT_SERVER_ADDRESS,
     get_web_relay_address,
@@ -68,7 +68,7 @@ class CoolemsClientProvider(BaseProvider):
 
 
 
-        # Config shortcuts for split modules (single source of truth: CLIENT/config)
+        # Config shortcuts for split modules (single source of truth: CLIENT/client_config)
 
         self.max_msg_size = WEB_RELAY_MAX_MESSAGE_SIZE
 
@@ -241,7 +241,7 @@ class CoolemsClientProvider(BaseProvider):
     def _get_ws_candidates(self) -> list:
         """Ordered (ws_url, ssl_context) candidates for the next connection attempt.
 
-        Direct mode: one per address from config.get_server_address_list() (local first).
+        Direct mode: one per address from client_config.get_server_address_list() (local first).
         Relay mode: the relay alone. Read fresh on every call so settings.json edits apply to the
         very next connection.
         """
@@ -259,7 +259,7 @@ class CoolemsClientProvider(BaseProvider):
                 )
             return [(ws_url, ssl_ctx)]
 
-        from config import get_server_address_list, get_good_server
+        from client_config import get_server_address_list, get_good_server
         addrs = list(get_server_address_list())
         good = get_good_server()
         if good and good in addrs:
@@ -640,7 +640,7 @@ class CoolemsClientProvider(BaseProvider):
             return "ERROR: No OCR models configured."
         # OCR can run long on the SERVER (its budget is config.OCR_TIMEOUT=120 s);
         # give the response wait a matching margin so slow transcriptions don't die at 15 s.
-        import config as _cfg
+        import client_config as _cfg
         ocr_recv_timeout = float(getattr(_cfg, "OCR_TIMEOUT", 120)) + 10
 
         resp = await self.send_tool_request(

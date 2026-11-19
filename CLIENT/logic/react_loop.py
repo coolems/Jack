@@ -23,7 +23,7 @@ import re
 import time
 from typing import List, Dict, Any, Optional
 
-from config import (
+from client_config import (
     AGENTIC_MAX_TOOL_ITERATIONS,
     AGENTIC_MAX_THINKING_ITERATIONS,
     AGENTIC_TOKEN_WARNING_THRESHOLD,

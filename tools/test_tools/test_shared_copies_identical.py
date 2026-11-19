@@ -5,7 +5,7 @@ copy, so they cannot be merged into one file:
   app/provider_manager.py  <->  CLIENT/app/provider_manager.py
       the CLIENT imports it at boot, before any WebSocket exists, so it cannot be
       delivered over the wire.
-  app/providers/coolems/ssl_pinning.py  <->  CLIENT/app/providers/coolems/ssl_pinning.py
+  app/providers/coolems/ssl_pinning.py  <->  CLIENT/app/providers/coolems_client/ssl_pinning.py
       TLS trust is an exact SHA-256 fingerprint; both ends must apply the identical policy
       or one side accepts what the other rejects.
 
@@ -30,10 +30,26 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 # (SERVER path, CLIENT path) - each pair must be byte-for-byte identical.
 SHARED_COPY_PAIRS = [
     ("app/provider_manager.py", "CLIENT/app/provider_manager.py"),
-    ("app/providers/coolems/ssl_pinning.py", "CLIENT/app/providers/coolems/ssl_pinning.py"),
+    ("app/providers/coolems/ssl_pinning.py", "CLIENT/app/providers/coolems_client/ssl_pinning.py"),
 ]
 
-CONFIG_FILES = ["config/config.py", "CLIENT/config/config.py"]
+# (SERVER path, CLIENT path) - same package path on BOTH sides but intentionally DIFFERENT
+# content. This is a role split, NOT drift: the SERVER file is the real implementation
+# (source of truth) and the CLIENT file is a lazy shell / memory slot / client-only variant.
+# These MUST both exist but MUST NOT be added to SHARED_COPY_PAIRS, which asserts
+# byte-identity and would fail by design. See the module docstring for the shared pairs.
+ROLE_SPLIT_PAIRS = [
+    ("app/__init__.py", "CLIENT/app/__init__.py"),
+    ("app/dna/__init__.py", "CLIENT/app/dna/__init__.py"),
+    ("app/logging_config.py", "CLIENT/app/logging_config.py"),
+    ("app/prompts/__init__.py", "CLIENT/app/prompts/__init__.py"),
+    ("app/providers/__init__.py", "CLIENT/app/providers/__init__.py"),
+    ("tools/__init__.py", "CLIENT/tools/__init__.py"),
+    ("utils/clear_logs.py", "CLIENT/utils/clear_logs.py"),
+    ("utils/clear_pycache.py", "CLIENT/utils/clear_pycache.py"),
+]
+
+CONFIG_FILES = ["config/config.py", "CLIENT/client_config/config.py"]
 
 
 def _repo_path(rel):
@@ -53,6 +69,22 @@ def test_shared_copies_exist():
     for server_rel, client_rel in SHARED_COPY_PAIRS:
         for rel in (server_rel, client_rel):
             assert os.path.isfile(_repo_path(rel)), f"missing shared copy: {rel}"
+
+
+def test_role_split_copies_exist():
+    """Each intentional role-split pair must have BOTH halves present.
+
+    These files share a package path on SERVER and CLIENT but differ by design
+    (the CLIENT half is a lazy shell / memory slot / client-only variant). We
+    assert existence only, never byte-identity, so a future refactor that deletes
+    one half is caught while the intentional divergence stays valid.
+    """
+    missing = []
+    for server_rel, client_rel in ROLE_SPLIT_PAIRS:
+        for rel in (server_rel, client_rel):
+            if not os.path.isfile(_repo_path(rel)):
+                missing.append(rel)
+    assert not missing, f"missing role-split copy: {missing}"
 
 
 def test_shared_copies_are_byte_identical():
@@ -104,6 +136,7 @@ def test_protocol_version_parity():
 if __name__ == "__main__":
     for fn in (
         test_shared_copies_exist,
+        test_role_split_copies_exist,
         test_shared_copies_are_byte_identical,
         test_protocol_version_parity,
     ):

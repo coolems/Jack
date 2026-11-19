@@ -7,9 +7,9 @@ CONTRACT
     sees exactly what shape the file has and where to put their own values.
 
   * Files managed here:
-      - ``CLIENT/config/.api_client_keys.json`` <- seeded from ``config/.api_client_keys.example.json``
+      - ``CLIENT/client_config/.api_client_keys.json`` <- seeded from ``config/.api_client_keys.example.json``
         (the CLIENT's copy of its API credentials, sent TO the SERVER over WS)
-      - ``CLIENT/config/settings.json``         <- seeded from ``config/settings.example.json``
+      - ``CLIENT/client_config/settings.json``         <- seeded from ``config/settings.example.json``
         (single source of truth for server_address; _resolve_client_server_address()
         also self-heals it on first boot - bootstrap just makes the file visible early)
 
@@ -27,7 +27,7 @@ import os
 
 logger = logging.getLogger("COOLEMS.ClientBootstrap")
 
-# This module lives in <CLIENT>/config/ - its parent is the CLIENT root.
+# This module lives in <CLIENT>/client_config/ - its parent is the CLIENT root.
 _CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLIENT_DIR = os.path.dirname(_CONFIG_DIR)
 
@@ -95,7 +95,7 @@ def ensure_client_config_files(client_dir: str | None = None) -> list[str]:
     if client_dir is None:
         client_dir = _CLIENT_DIR
 
-    config_dir = os.path.join(client_dir, "config")
+    config_dir = os.path.join(client_dir, "client_config")
     os.makedirs(config_dir, exist_ok=True)
 
     # (target file, example template) pairs - all managed files live in config/.
@@ -127,14 +127,14 @@ def ensure_database_file(db_path: str | None = None) -> bool:
     existing database file (no overwrite, no migration).
 
     Args:
-        db_path: Path of chat_history.db. Defaults to config.DB_PATH (<CLIENT>/chat_history.db).
+        db_path: Path of chat_history.db. Defaults to client_config.DB_PATH (<CLIENT>/chat_history.db).
 
     Returns:
         True when the directory was ready (already existed or created successfully),
         False when it could not be ensured (init_db will then report its own error).
     """
     if db_path is None:
-        from config import DB_PATH
+        from client_config import DB_PATH
         db_path = DB_PATH
     try:
         parent = os.path.dirname(os.path.abspath(db_path))

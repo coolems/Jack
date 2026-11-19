@@ -17,8 +17,8 @@ import logging
 
 # (2026-08-20 review #7): live reader instead of an import-time capture -- the SERVER
 # rewrites CONTEXT_WINDOW_TOKENS after every auth via apply_auth_info().
-import config.config as _cfg_live
-from app.providers.coolems.client_provider import is_model_switching, _set_model_switching
+import client_config.config as _cfg_live
+from app.providers.coolems_client.client_provider import is_model_switching, _set_model_switching
 
 logger = logging.getLogger("COOLEMS")
 
@@ -130,7 +130,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
             or it reports why not (failure). Progress is logged every
             MODEL_SWITCH_PROGRESS_LOG_SEC while waiting.
             """
-            from config import MODEL_SWITCH_MAX_WAIT_SEC, MODEL_SWITCH_PROGRESS_LOG_SEC
+            from client_config import MODEL_SWITCH_MAX_WAIT_SEC, MODEL_SWITCH_PROGRESS_LOG_SEC
             start_time = asyncio.get_event_loop().time()
 
             try:

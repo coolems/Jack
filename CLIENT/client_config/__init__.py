@@ -2,7 +2,7 @@
 
 Client-only config - NO server secrets. For server config with secrets see root
 config/config.py. Import everything from here:
-    from config import MODEL_NAME, PROVIDER_DEFAULT_TIMEOUT, get_api_url"""
+    from client_config import MODEL_NAME, PROVIDER_DEFAULT_TIMEOUT, get_api_url"""
 
 from .config import (
     # --- Context / Token Limits ---
@@ -59,7 +59,7 @@ from .config import (
     is_question_dialog_color,
 
     # --- MCP servers ---
-    # Servers themselves are declared in CLIENT/config/mcp_servers.json and stay disabled
+    # Servers themselves are declared in CLIENT/client_config/mcp_servers.json and stay disabled
     # until the human enables them; these bound what a server's payload may reach.
     MCP_TEXT_PREVIEW_CHARS,
     MCP_INSTRUCTIONS_MAX_CHARS,
@@ -135,7 +135,7 @@ from .config import (
 )
 
 # --- Search engines (search_engines.json - single source of truth) ---
-from .config import (  # noqa: F401,E501  (re-exported for 'from config import ...')
+from .config import (  # noqa: F401,E501  (re-exported for 'from client_config import ...')
     load_search_engines,
     save_search_engines,
 )

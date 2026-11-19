@@ -40,7 +40,7 @@ def rename_file(old_filename: str, new_filename: str, path: str = "") -> str:
     """SECURITY RULE - CRITICAL:
         * old_filename / new_filename = JUST THE FILE NAME only (e.g. 'old.py' -> 'new.py'). NO slashes allowed!
         * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
-        * To rename 'local_ai/CLIENT/config/old.py':  old_filename='old.py', new_filename='new.py', path='local_ai/CLIENT/config'
+        * To rename 'local_ai/CLIENT/client_config/old.py':  old_filename='old.py', new_filename='new.py', path='local_ai/CLIENT/client_config'
     All paths are locked inside working_root. Path traversal via '..' is blocked.
               Filenames with embedded separators or traversal sequences are rejected.
     """

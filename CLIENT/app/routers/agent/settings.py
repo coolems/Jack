@@ -23,7 +23,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         values so the UI always shows the active one. Used by the Settings modal.
         """
         try:
-            from config import (_load_settings, COOLEMS_CLIENT_SERVER_ADDRESS,
+            from client_config import (_load_settings, COOLEMS_CLIENT_SERVER_ADDRESS,
                                _resolve_client_server_address, WEB_RELAY_UI_ENABLED,
                                get_runtime_settings, CONSENT_KINDS)
 
@@ -49,7 +49,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
 
             # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for every
             # consent card kind except python (which keeps its own historical pair) -
-            # fully detached from each other. Driven by config.CONSENT_KINDS so a new
+            # fully detached from each other. Driven by client_config.CONSENT_KINDS so a new
             # kind never needs a second hardcoded list here.
             for _kind in CONSENT_KINDS:
                 if _kind == "python":
@@ -90,7 +90,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
 
         Address changes apply from the NEXT connection onward."""
         try:
-            from config import (_load_settings, _save_settings, WEB_RELAY_UI_ENABLED,
+            from client_config import (_load_settings, _save_settings, WEB_RELAY_UI_ENABLED,
                                 is_question_dialog_color)
 
             # Load existing settings and merge with new values
@@ -150,8 +150,8 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                 current["python_exec_auto_approve_seconds"] = sec
             # (2026-07-18 unified consent dialog) per-kind auto-approve pairs for every
             # consent card kind - same validation as python_exec, fully detached keys.
-            # Driven by config.CONSENT_KINDS so a new kind needs no second hardcoded list.
-            from config import CONSENT_KINDS as _KINDS
+            # Driven by client_config.CONSENT_KINDS so a new kind needs no second hardcoded list.
+            from client_config import CONSENT_KINDS as _KINDS
             for _kind in _KINDS:
                 if _kind == "python":
                     continue  # python keeps its historical python_exec_* pair

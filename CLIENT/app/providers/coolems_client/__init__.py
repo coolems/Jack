@@ -1,7 +1,7 @@
 """COOLEMS distributed provider protocol (CLIENT side).
 
 Shared helpers for WebSocket relay and direct connections. The API key always comes from
-app.keys.load_coolems_api_key(), which reads <CLIENT>/config/.api_client_keys.json - a
+app.keys.load_coolems_api_key(), which reads <CLIENT>/client_config/.api_client_keys.json - a
 name distinct from the SERVER's config/.api_keys.json.
 
 TRANSPORT: the wire protocol is WebSocket TEXT frames carrying JSON objects. There is no
@@ -9,7 +9,7 @@ binary length-prefix framing. See the SERVER's app/providers/coolems/__init__.py
 message-type reference (auth, request/content/done, health_check, models_request,
 current_model, model_switch, tools_request, tool_code_request).
 
-PROTOCOL VERSIONING: every auth frame carries "protocol_version" (config.PROTOCOL_VERSION)
+PROTOCOL VERSIONING: every auth frame carries "protocol_version" (client_config.PROTOCOL_VERSION)
 and the client verifies the value echoed in auth_ok via _check_protocol(). A missing echo
 means a server that predates versioning - tolerated with a loud warning; an explicit
 mismatch raises ConnectionError.
@@ -23,7 +23,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from config import PROTOCOL_VERSION as _CLIENT_PROTOCOL_VERSION
+from client_config import PROTOCOL_VERSION as _CLIENT_PROTOCOL_VERSION
 
 logger = logging.getLogger("COOLEMS.CoolemsProtocol")
 
@@ -73,7 +73,7 @@ def apply_auth_info(auth_response: dict, context: str = "") -> None:
         return
     server_context_window = auth_response.get("context_window")
     if server_context_window is not None:
-        import config.config as _cfg
+        import client_config.config as _cfg
         _cfg.CONTEXT_WINDOW_TOKENS = int(server_context_window)
         where = f" via {context}" if context else ""
         logger.info(f"[CLIENT] Received context_window={server_context_window} from SERVER{where}")
@@ -165,7 +165,7 @@ def _set_sticky(ws_url, ctx):
     _sticky_url = ws_url
     _sticky_ctx = ctx
     try:
-        from config import _remember_good_server
+        from client_config import _remember_good_server
         # Persist the bare 'host[:port]' form exactly as settings.json stores it -
         # _build_websocket_url() produced this URL from that same string, so stripping
         # the scheme round-trips losslessly (incl. bracketed IPv6 '[::1]:8080').

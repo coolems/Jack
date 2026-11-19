@@ -1,5 +1,5 @@
 """Search engine endpoints: GET/POST /api/search-engines.
-<CLIENT>/config/search_engines.json is the single source of truth for web search;
+<CLIENT>/client_config/search_engines.json is the single source of truth for web search;
 the Settings UI renders/edits it through these endpoints and the web_search tool
 reads the same file live on every search, so saves apply immediately (no restart)."""
 
@@ -17,7 +17,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
              agent, stop_events) -> None:
     """Attach the search-engine endpoints to *router*."""
     # ===== SEARCH ENGINES ENDPOINTS =====
-    # <CLIENT>/config/search_engines.json is the single source of truth for web search.
+    # <CLIENT>/client_config/search_engines.json is the single source of truth for web search.
     # The Settings UI renders/edits it through these two endpoints; the web_search tool
     # reads the same file live on every search, so saves apply immediately (no restart).
 
@@ -29,7 +29,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         the UI then shows that state instead of inventing engines (no fallback lists).
         """
         try:
-            from config import load_search_engines
+            from client_config import load_search_engines
 
             return {"engines": load_search_engines()}
         except Exception as e:
@@ -45,7 +45,7 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         left untouched and a 400 with the reason is returned.
         """
         try:
-            from config import load_search_engines, save_search_engines
+            from client_config import load_search_engines, save_search_engines
 
             engines = data.get("engines")
             if not isinstance(engines, list):

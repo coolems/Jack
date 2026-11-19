@@ -10,7 +10,7 @@ Import everything from this package:
 
     from config import MODEL_NAME, PROVIDER_DEFAULT_TIMEOUT, get_api_url
 
-NOTE on CLIENT: the CLIENT has its own separate config package under CLIENT/config/.
+NOTE on CLIENT: the CLIENT has its own separate config package under CLIENT/client_config/.
 Values that must be identical on both sides (WEB_RELAY_* connection constants) are
 kept in sync manually; values consumed by shipped tools are delivered at runtime via
 tools_response 'config_constants' (see app/providers/coolems/tool_scanner/config_constants.py -- package).
@@ -72,7 +72,7 @@ from .config import (
     CHROME_CDP_PORT,
 
     # Local CLIENT Web UI Port (code.py launches the local CLIENT with it;
-    # mirror of CLIENT/config/config.py CLIENT_UI_PORT - change both together)
+    # mirror of CLIENT/client_config/config.py CLIENT_UI_PORT - change both together)
     CLIENT_UI_PORT,
 
     # Provider Defaults

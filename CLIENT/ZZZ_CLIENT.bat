@@ -19,7 +19,7 @@ REM --- Activate virtual environment ---
 call "%~dp0venv\Scripts\activate.bat"
 echo [VENV] Activated CLIENT/venv
 
-REM --- Outbound API key (2026-10-08): read from CLIENT/config/.api_client_keys.json ---
+REM --- Outbound API key (2026-10-08): read from CLIENT/client_config/.api_client_keys.json ---
 REM No registry reads/writes anywhere: the per-machine credential lives in the
 REM CLIENT config file (written by UI "Set API Key" and by init). A stale
 REM COOLEMS_CLIENT_API_KEY env var from a parent shell is ignored while the config

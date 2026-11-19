@@ -39,7 +39,7 @@ PROVIDER: str = "coolems_server"                        # Relay mode for server
 #                  Attach-only like Strata: no process, no model loading; every request carries
 #                  a Bearer key. The payload is transformed to DeepSeek's shape and the response
 #                  back to ours (app/providers/deepseek/).
-SERVER_BACKEND: str = "strata"                           # Local LLM engine ("llama" | "strata" | "deepseek")
+SERVER_BACKEND: str = "deepseek"                           # Local LLM engine ("llama" | "strata" | "deepseek")
 
 # --- Coolems Distributed Provider Configuration ---
 COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_server listener (0.0.0.0 = all interfaces including localhost)
@@ -153,7 +153,7 @@ CHROME_CDP_PORT: int = 9222                           # Chrome DevTools Protocol
 # --- Local CLIENT Web UI Port ---
 # HTTP port of the local CLIENT web UI. Defined in BOTH config packages on purpose:
 # SERVER root code.py launches CLIENT with it; CLIENT/entry/cli_parser.py uses it as its
-# --port default (CLIENT/config/config.py holds the client-side copy). Change ONE, change
+# --port default (CLIENT/client_config/config.py holds the client-side copy). Change ONE, change
 # the other - tests/test_port_single_source_of_truth.py fails if a stray literal appears.
 CLIENT_UI_PORT: int = 8000
 
@@ -207,7 +207,7 @@ LLAMA_SERVER_STARTUP_WAIT_SEC: int = 2                  # Sleep (s) between llam
 # GGUF on consumer hardware: warm loads finish in ~20-90 s, but cold page cache + MTP draft-context init
 # can need several minutes. The old hardcoded 120 s (60 x 2s) killed the new server mid-load during a
 # model switch and left the instance with no model at all. NOTE: CLIENT MODEL_SWITCH_MAX_WAIT_SEC
-# (CLIENT/config/config.py, 300 s) must stay ABOVE this value + port-free wait margin.
+# (CLIENT/client_config/config.py, 300 s) must stay ABOVE this value + port-free wait margin.
 LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC: int = 240          # Model-load wait budget after /health is up (s)
     
 # --- Llama Model State Cache (2026-08-18 AUTO-SWITCH optimization) ---

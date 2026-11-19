@@ -1,7 +1,7 @@
 """app.mcp — Model Context Protocol servers exposed as CLIENT-local tools (2026-12).
 
 Modules, one job each:
-    config.py    read <CLIENT>/config/mcp_servers.json (nothing enabled by default)
+    config.py    read <CLIENT>/client_config/mcp_servers.json (nothing enabled by default)
     protocol.py  newline-delimited JSON-RPC 2.0 over stdio pipes or an HTTP POST
     net_guard.py SSRF gate for http endpoints (delegates to tools/ssrf_guard)
     client.py    one connection per server: handshake, tools/list, tools/call, resources

@@ -48,7 +48,7 @@ def _build_relay_ssl_context(verify_certs, pin_fingerprint) -> ssl_mod.SSLContex
         configured; None otherwise - the caller MUST refuse to connect in that case.
     """
     if verify_certs:
-        from config import COOLEMS_SERVER_CERT_PATH  # lazy: ssl_helper must stay import-light
+        from client_config import COOLEMS_SERVER_CERT_PATH  # lazy: ssl_helper must stay import-light
         return _build_verifying_ssl_context(COOLEMS_SERVER_CERT_PATH)
     if pin_fingerprint:
         ctx = _build_pinned_ssl_context(pin_fingerprint)
