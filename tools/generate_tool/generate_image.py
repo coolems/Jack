@@ -35,12 +35,15 @@ pipeline mode are chosen to fit the GPU, so one tool works from a 6 GB laptop ca
                       the SEPARATE Qwen-Image-Edit repo (instruction-based).
     mid  (12-23.9 GB) Z-Image-Turbo in FP8 storage (~9 guidance-free steps, ~17 GB peak
                       resident; cpu offload auto-added below ~18 GB probed VRAM).
-    low  (< 12 GB)    int8-quantized SANA-Sprint 0.6B - ~5 GB download instead of ~9.7 GB
-                      bf16, dequantized to the SAME bf16 tensors at load, so VRAM and speed
-                      are unchanged. Quality sits a notch below the mid tier: the deliberate
-                      trade for the small download. While the int8 repo is unpublished
-                      (_SANA_INT8_06_MODEL_ID starts with 'TODO') the low tier transparently
-                      runs bf16 SANA-Sprint instead.
+    low  (< 12 GB)    bf16 SANA-Sprint 0.6B (~7.7 GB download) + cpu offload, peak ~4.3 GB.
+                      OPT-IN UPGRADE to the ~5 GB int8 build of that same model when one is
+                      configured: _SANA_INT8_06_MODEL_ID (a published HF repo) or
+                      _SANA_INT8_06_LOCAL_DIR (a folder built by scripts/quantize_sana_int8.py,
+                      no Hub needed). The worker dequantizes int8 to the SAME bf16 tensors at
+                      load, so VRAM and speed are unchanged; quality sits a notch below the
+                      mid tier - the deliberate trade for the small download. With no build
+                      configured the tier runs the bf16 repo, so nothing ever depends on an
+                      artifact that may not exist.
 
 USER-DEFINED TIER OVERRIDE
 config/config.py IMAGE_GEN_TIER_OVERRIDE ('auto'|'high'|'mid'|'low', default 'low') pins
@@ -221,14 +224,22 @@ def _sana_guidance(task):
 
 
 def _int8_snapshot_dir(model_id):
-    """Local snapshot dir of the int8 build (HF_HOME cache), or None when unavailable."""
+    """Directory holding the int8 build's scales sidecar, or None when unavailable.
+
+    model_id is either a LOCAL folder (an int8 build built by scripts/quantize_sana_int8.py)
+    or a Hub repo id - the host passes whichever it configured, so a local build needs no
+    download and no Hub access.
+    """
+    mid = str(model_id or "")
+    if mid and os.path.isdir(mid):
+        return mid
     try:
         from huggingface_hub import snapshot_download
-        return snapshot_download(model_id, local_files_only=True)
+        return snapshot_download(mid, local_files_only=True)
     except Exception:
         try:
             from huggingface_hub import hf_hub_download
-            p = hf_hub_download(repo_id=model_id, filename="model_index.json")
+            p = hf_hub_download(repo_id=mid, filename="model_index.json")
             return os.path.dirname(p)
         except Exception:
             return None
@@ -653,7 +664,7 @@ if __name__ == "__main__":
 
 _DEFAULT_MANIFEST = {
         "name": "generate_image",
-        "version": 24,  # mirrors tools/generate_tool/tool_manifest.json - only used when a legacy SERVER ships no TOOL_MANIFEST at all
+        "version": 25,  # mirrors tools/generate_tool/tool_manifest.json - only used when a legacy SERVER ships no TOOL_MANIFEST at all
         "runtime_name": "generate_tool",
         "requirements": ["torch==2.9.1+cu128", "diffusers>=0.40", "transformers", "accelerate>=0.17.0"],
         "extra_index_urls": ["https://download.pytorch.org/whl/cu128"],
@@ -684,38 +695,63 @@ _MODEL_ID = "Tongyi-MAI/Z-Image-Turbo"
 _SANA_MODEL_ID = "Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers"
 
 
-#: v8 int8 build of SANA-Sprint 1.6B (built with scripts/quantize_sana_int8.py from the
-#: Apache-2.0 bf16 repo above; ~6 GB). Kept in KNOWN_MODEL_IDS so a machine that already
-#: cached it is never migrated away - but v9 moved the LOW tier to the 0.6B build below:
-#: the user wanted the smallest possible low-tier download, and 0.6B int8 lands at ~5 GB.
-_SANA_INT8_16_MODEL_ID = "TODO/publish-then-set-owner/Sana_Sprint_1.6B_int8"
+#: v8 int8 build of SANA-Sprint 1.6B (built with scripts/quantize_sana_int8.py --size 1.6
+#: from the Apache-2.0 bf16 repo above; ~6 GB). Superseded by the 0.6B build below and never
+#: selected by any tier - set it ONLY on a machine that already cached that repo, so
+#: _migrate_legacy_model_cache keeps the existing cache. Empty = no such build deployed.
+_SANA_INT8_16_MODEL_ID = ""
 
-#: v9 LOW-TIER model - OUR int8 build of SANA-Sprint 0.6B (scripts/quantize_sana_int8.py
-#: --small, from the Apache-2.0 bf16 repo below). Every nn.Linear weight is stored as true
-#: int8 + a per-channel scale sidecar: ~5 GB total download (Gemma encoder int8 ~3.2 GB +
-#: 0.6B transformer int8 ~0.6 GB + VAE bf16 1.25 GB, which is the hard floor) vs 9.7 GB for
-#: the bf16 1.6B repo. Generation runs on exactly the same bf16 tensors (the worker
-#: dequantizes at load - see _dequantize_int8_linears in WORKER_SOURCE); quality sits a notch
-#: below the 1.6B mid tier, which is the deliberate trade for the small download.
-#: PUBLISH GATE: until this folder is published as an HF model repo and its id set here,
-#: the placeholder below keeps the low tier on the bf16 SANA-Sprint via _int8_model_ready()
-#: - generation never breaks; it just downloads 9.7 GB instead of ~5 GB.
-_SANA_INT8_06_MODEL_ID = "TODO/publish-then-set-owner/Sana_Sprint_0.6B_int8"
+#: Optional int8 LOW-TIER build of SANA-Sprint 0.6B (scripts/quantize_sana_int8.py --size
+#: 0.6, from the Apache-2.0 bf16 repo below). Every nn.Linear weight is stored as true int8
+#: + a per-channel scale sidecar: ~5 GB instead of ~7.7 GB bf16 (Gemma encoder int8 ~3.2 GB
+#: + 0.6B transformer int8 ~0.6 GB + VAE bf16 1.25 GB, the hard floor). Generation runs on
+#: exactly the same bf16 tensors - the worker dequantizes at load (see _dequantize_int8_linears
+#: in WORKER_SOURCE) - so VRAM and speed are unchanged; quality sits a notch below the 1.6B
+#: mid tier, the deliberate trade for the small download.
+#: EMPTY = NOT CONFIGURED: the low tier runs the bf16 0.6B below (~7.7 GB). An empty field is
+#: the ONLY representation of "no int8 build here" - the tier table always names a real repo,
+#: so there is no placeholder id to keep in sync or to accidentally download.
+#: Set to a published HF repo id ('owner/name') to move the low tier onto the int8 build.
+_SANA_INT8_06_MODEL_ID = ""
 
-#: v7 low-tier fallback model (also the worker's last-resort int8 fallback) - NVIDIA's
-#: bf16 SANA-Sprint 0.6B: ~7.7 GB download, same pipeline/speed as the mid tier.
+#: Same int8 build addressed as a LOCAL folder instead of a Hub repo - the path
+#: scripts/quantize_sana_int8.py printed (default: <CLIENT>/tools/runtimes/generate_tool/
+#: hf_cache/sana_sprint_0.6b_int8). Works offline with no publish step, on the machine that
+#: built it. Takes priority over _SANA_INT8_06_MODEL_ID when both are set and the folder is
+#: complete. EMPTY = not configured.
+_SANA_INT8_06_LOCAL_DIR = ""
+
+#: v7 low-tier model - NVIDIA's bf16 SANA-Sprint 0.6B: ~7.7 GB download, same
+#: pipeline/speed as the mid tier. The low tier's DEFAULT model (see TIER_MODELS).
 _SANA_06_MODEL_ID = "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers"
 
 
-def _int8_model_ready(model_id: str) -> bool:
-    """True when an int8 SANA-Sprint build is published and configured (/).
+def _int8_build_configured() -> str:
+    """The configured int8 low-tier build as a loadable id, or '' when there is none.
 
-    The placeholder id starts with 'TODO' - any such value means 'not published yet',
-    so the low tier falls back to bf16 instead of trying to download a repo that does
-    not exist. A real owner/name id passes this check.
+    Priority: a complete LOCAL folder (_SANA_INT8_06_LOCAL_DIR) wins over a published Hub
+    id (_SANA_INT8_06_MODEL_ID), so a build made on this machine is used without any
+    download. A local dir must look like the quantizer's output - model_index.json plus a
+    scales.safetensors sidecar in text_encoder/ or transformer/ - so a half-built or wrong
+    folder is reported as 'not configured' instead of failing at load time. An empty field
+    means 'no int8 build': the low tier keeps the bf16 repo.
     """
-    mid = str(model_id or "").strip()
-    return bool(mid) and "/" in mid and not mid.startswith("TODO")
+    local = str(_SANA_INT8_06_LOCAL_DIR or "").strip()
+    if local and os.path.isdir(local):
+        if not os.path.isfile(os.path.join(local, "model_index.json")):
+            logger.warning(f"  int8 local build {_SANA_INT8_06_LOCAL_DIR!r} has no "
+                           f"model_index.json - ignoring it")
+            return ""
+        has_scales = any(
+            os.path.isfile(os.path.join(local, sub, "scales.safetensors"))
+            for sub in ("text_encoder", "transformer"))
+        if not has_scales:
+            logger.warning(f"  int8 local build {_SANA_INT8_06_LOCAL_DIR!r} has no "
+                           f"scales.safetensors sidecar - ignoring it")
+            return ""
+        return local
+    mid = str(_SANA_INT8_06_MODEL_ID or "").strip()
+    return mid if "/" in mid else ""
 
 
 # ---------------------------------------------------------------------------
@@ -725,7 +761,9 @@ def _int8_model_ready(model_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 #: Every repo this tool may cache - _migrate_legacy_model_cache must never move away
-#: a cache that already holds ANY of these (e.g. an FP8 or SANA variant).
+#: a cache that already holds ANY of these (e.g. an FP8 or SANA variant). Optional int8
+#: builds join through _known_model_ids() only when configured, so no cache path is ever
+#: built from an empty id.
 KNOWN_MODEL_IDS = [
         _QWEN_MODEL_ID,
         _QWEN_EDIT_MODEL_ID,
@@ -733,8 +771,18 @@ KNOWN_MODEL_IDS = [
         "ykarout/Z-Image-Turbo-FP8-Full",
         _SANA_MODEL_ID,
         _SANA_06_MODEL_ID,
-        _SANA_INT8_16_MODEL_ID,  # v8 build: only meaningful once published (see constants)
-        _SANA_INT8_06_MODEL_ID,  # v9 low-tier build: same gate
+    ]
+
+
+def _known_model_ids() -> list:
+    """Cache ids to protect: the fixed list plus any CONFIGURED int8 build id.
+
+    Evaluated at call time, so an int8 id set later (or by a per-machine edit) is respected
+    without re-importing. A local-folder build is not a repo id and never appears here -
+    nothing lives in the HF cache for it.
+    """
+    return KNOWN_MODEL_IDS + [
+        m for m in (_SANA_INT8_16_MODEL_ID, _SANA_INT8_06_MODEL_ID) if str(m).strip()
     ]
 
 # Tier -> pipeline choice. VRAM thresholds follow MEASURED peak usage (2026-09-13):
@@ -769,13 +817,14 @@ TIER_MODELS = {
         "pipeline": "zimage",
     },
     "low": {
-        # < 12 GB: int8 SANA-Sprint 0.6B (v9) - ~5 GB download instead of ~9.7 GB bf16; the
-        # worker dequantizes to the SAME bf16 tensors, so peak VRAM (~4.3 GB offloaded) and
-        # speed are unchanged; quality is a notch below the 1.6B mid tier (the trade). While
-        # _SANA_INT8_06_MODEL_ID is still the TODO placeholder (repo unpublished)
-        # generate_image() swaps in the bf16 SANA-Sprint 0.6B model here (~7.7 GB).
-        "model_id": _SANA_INT8_06_MODEL_ID,
-        "dtype": "int8",
+        # < 12 GB (v25): bf16 SANA-Sprint 0.6B (~7.7 GB) + cpu offload, peak ~4.3 GB.
+        # This table ALWAYS names a repo that exists. The ~5 GB int8 build of the same
+        # model is an opt-in upgrade: when _int8_build_configured() returns a local folder
+        # or a published repo id, generate_image() swaps model_id/dtype here - the worker
+        # dequantizes to the SAME bf16 tensors, so VRAM and speed are unchanged and quality
+        # is a notch below the 1.6B mid tier (the trade for the smaller download).
+        "model_id": _SANA_06_MODEL_ID,
+        "dtype": "bf16",
         "offload": True,
         "max_pixels": 768 * 512,
         "pipeline": "sana_sprint",
@@ -1581,14 +1630,15 @@ def _migrate_legacy_model_cache(rt: dict) -> None:
     """
     runtime_dir = rt["runtime_dir"]
     hub_new = os.path.join(runtime_dir, "hf_cache", "hub")
+    known = _known_model_ids()
     if os.path.isdir(hub_new):
-        for model_id in KNOWN_MODEL_IDS:
+        for model_id in known:
             if os.path.exists(os.path.join(hub_new, f"models--{model_id.replace('/', '--')}")):
                 return  # a known repo already lives at the new home
 
     legacy_hub = os.path.normpath(os.path.join(
         os.environ.get("HF_HOME") or os.path.expanduser("~"), ".cache", "huggingface", "hub"))
-    for model_id in KNOWN_MODEL_IDS:
+    for model_id in known:
         legacy_model_dir = os.path.join(legacy_hub, f"models--{model_id.replace('/', '--')}")
         if not os.path.isdir(legacy_model_dir):
             continue  # nothing to migrate for this repo
@@ -2139,6 +2189,14 @@ def _ensure_model_cached(rt: dict, model_ids=None) -> bool:
     """
     ids = ([str(m) for m in model_ids if str(m)] if isinstance(model_ids, (list, tuple))
            else [str(model_ids)] if model_ids else None)
+    # A LOCAL int8 build is already on disk - snapshot_download would try to fetch a repo
+    # named like that path. Skip it (the worker loads the folder directly); other ids in the
+    # list (e.g. a tier's second repo) still get their normal pre-flight.
+    if ids:
+        ids = [m for m in ids if not os.path.isdir(m)]
+        if not ids:
+            logger.info("  Model pre-flight skipped: the configured model is a local folder")
+            return True
     _migrate_legacy_model_cache(rt)
     cmd = [rt["python_exe"], "-c", _model_prep_script(ids or [_MODEL_ID])]
 
@@ -2359,8 +2417,9 @@ def generate_image(
                          Qwen-Image-Edit repo (instruction-based, no strength).
       mid   (12-23.9 GB) Z-Image-Turbo in FP8 (~9 guidance-free steps, ~17 GB resident;
                          cpu offload auto-added below ~18 GB probed VRAM).
-      low   (< 12 GB)    int8 SANA-Sprint 0.6B (~5 GB download, dequantized to the same
-                         bf16 tensors at load) + cpu offload, resolution-clamped.
+      low   (< 12 GB)    bf16 SANA-Sprint 0.6B + cpu offload, resolution-clamped; the ~5 GB
+                         int8 build of that model when one is configured (dequantized to the
+                         same bf16 tensors at load).
 
     width/height omitted -> the user's Settings > Runtime values, read LIVE from the
     CLIENT settings.json (default 600x400); an explicit caller value always wins. The
@@ -2435,13 +2494,23 @@ def generate_image(
         # any value other than the schema default of 9.
         if str(cfg.get("pipeline") or "") == "qwen_image" and int(num_inference_steps) == 9:
             num_inference_steps = 50
-        # v9 publish gate: while our int8 SANA-Sprint 0.6B repo is unpublished (placeholder
-        # id), the low tier runs the bf16 0.6B instead (~7.7 GB, NOT the 9.7 GB 1.6B - audit fix).
-        if cfg.get("dtype") == "int8" and not _int8_model_ready(cfg["model_id"]):
-            logger.info(f"  int8 SANA-Sprint 0.6B repo not published yet ({cfg['model_id']!r}) - "
-                        f"low tier falls back to bf16 {_SANA_06_MODEL_ID}")
+        # v25 opt-in int8 low tier: swap the bf16 0.6B for OUR int8 build ONLY when one is
+        # configured (a complete local folder or a published repo id). Unconfigured -> the
+        # tier stays on the bf16 repo named in the table, so no generation ever depends on
+        # an artifact that may not exist.
+        int8_id = _int8_build_configured()
+        if int8_id and str(cfg.get("pipeline") or "") == "sana_sprint":
             cfg = dict(cfg)
-            cfg["model_id"] = _SANA_06_MODEL_ID
+            cfg["model_id"] = int8_id
+            cfg["dtype"] = "int8"
+            logger.info(f"  Low tier int8 build: {int8_id} (~5 GB, dequantized to bf16 at load)")
+        elif str(cfg.get("dtype")) == "int8":
+            # A manifest still asking for int8 with no build configured: keep bf16 so the
+            # call cannot fail on a repo/dir that is not there.
+            logger.warning(f"  Tier '{tier}' asks for dtype int8 but no int8 build is "
+                           f"configured (_SANA_INT8_06_MODEL_ID / _SANA_INT8_06_LOCAL_DIR) - "
+                           f"running bf16 {cfg.get('model_id')}")
+            cfg = dict(cfg)
             cfg["dtype"] = "bf16"
 
         # v21 mid tier: Z-Image-Turbo FP8 resident peaks ~17 GB - probed VRAM below ~18 GB

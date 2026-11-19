@@ -209,8 +209,10 @@ def main():
     print(f"  TOTAL OUTPUT : {human(total)}   (bf16 1.6B repo ~9.7 / 0.6B repo ~7.7 GB)")
 
     print(f"\nOK - int8 SANA-Sprint build ready at:\n  {dest}\n"
-          "Next: publish this folder as an HF model repo (Apache-2.0 base license),\n"
-          "then set _SANA_INT8_06_MODEL_ID / _SANA_INT8_16_MODEL_ID in generate_image.py accordingly.")
+          "Use it WITHOUT publishing: set _SANA_INT8_06_LOCAL_DIR in generate_image.py\n"
+          f"to this path (low tier then loads ~{'5' if args.size == '0.6' else '6'} GB from disk).\n"
+          "Or publish the folder as an HF model repo (Apache-2.0 base license) and set\n"
+          f"_SANA_INT8_{args.size.replace('.', '')}_MODEL_ID to 'owner/name' instead.")
     return 0
 
 
