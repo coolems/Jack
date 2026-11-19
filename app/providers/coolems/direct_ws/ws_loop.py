@@ -226,9 +226,11 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
             elif t == "current_model":
                 # (2026-08-23 fix) force=True bypasses the fresh model-state cache so a
                 # post-switch verification reports the NEW model immediately.
+                # (2026-11 dynamic) route through the fleet-aware method so the "current"
+                # model is reported even when the local llama node is down but another
+                # backend is serving (dynamic mode).
                 logger.info(f"[SERVER<-CLIENT] Current model request via Direct WS from {peer}")
-                local = server_provider._get_local_provider()
-                current = (await local.get_current_model(force=bool(msg.get("force")))) or ""
+                current = (await server_provider.get_current_model(force=bool(msg.get("force")))) or ""
                 await ws.send(json.dumps({
                     "type": "current_model_response",
 

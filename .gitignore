@@ -58,6 +58,11 @@ CLIENT/client_config/mcp_servers.json
 # truth for which model to load on next startup; never commit.
 config/.last_model_loaded.json
 
+# Last-known model cache (2026-11 dynamic backend): per-machine runtime data written by
+# the SERVER so a down endpoint's models still gray out in the picker after a restart
+# (see app/providers/llama/backend_model_cache.py). Never commit.
+config/.backend_models_cache.json
+
 # Python artifacts
 __pycache__/
 *.pyc

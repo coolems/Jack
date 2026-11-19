@@ -471,9 +471,11 @@ async def connect_to_web_relay(server_provider):
 
                         elif msg_type == "current_model":
                             # (2026-08-23 fix) force=True bypasses the fresh model-state cache
+                            # (2026-11 dynamic) route through the fleet-aware method so the
+                            # "current" model is reported even when the local llama node is down
+                            # but another backend is serving (dynamic mode).
                             logger.info(f"[SERVER<-RELAY] Current model request via relay (client={msg.get('_relay_from', '?')})")
-                            local = server_provider._get_local_provider()
-                            current = (await local.get_current_model(force=bool(msg.get("force")))) or ""
+                            current = (await server_provider.get_current_model(force=bool(msg.get("force")))) or ""
                             # (2026-09-01 S1 fix) only reveal the loaded model when the RELAYED
                             # CLIENT's profile may use it; unknown client -> empty string.
                             _cm_user_info = await _resolve_relay_client_user_info(ws, msg, server_provider)

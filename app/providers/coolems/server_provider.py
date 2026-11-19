@@ -74,7 +74,9 @@ class CoolemsServerProvider(BaseProvider):
 
         "strata" -> StrataProvider (same wire format, Bearer key, attach-only),
         "deepseek" -> DeepSeekProvider (hosted API, own payload/response transform,
-        attach-only), "llama" -> LlamaProvider. Every relay path below is identical either way.
+        attach-only), "llama" -> LlamaProvider. "dynamic" also maps to LlamaProvider: chat
+        routing goes through the mixed registry + worker pool, so this handle only does the
+        local GGUF disk scan and OCR.
         """
         if self._local_provider is None:
             import config
@@ -175,6 +177,10 @@ class CoolemsServerProvider(BaseProvider):
         Called from the boot sequence (code.py wraps init in asyncio.run). WebSocket tasks are
         started later by provider.start_all_servers().
         """
+        import config
+        if getattr(config, "SERVER_BACKEND", "llama") == "dynamic":
+            return await self._ensure_dynamic_backend_healthy()
+
         local = self._get_local_provider()
         ok = await local.start_server()
 
@@ -187,6 +193,28 @@ class CoolemsServerProvider(BaseProvider):
         else:
             logger.warning("[SERVER] LLM not healthy within timeout")
 
+        return ok
+
+    async def _ensure_dynamic_backend_healthy(self) -> bool:
+        """Build the mixed llama+strata+deepseek registry and wait for one healthy node.
+
+        SERVER_BACKEND="dynamic" enumerates every endpoint in the three config files at once.
+        It is ATTACH-ONLY: nothing is ever spawned, so if no endpoint is already up the fleet
+        simply reports unhealthy and the picker grays out every model. Chat routing stays
+        per-backend through the worker pool.
+        """
+        from ..llama.backend_registry import LlmBackendRegistry, set_registry
+
+        reg = LlmBackendRegistry.from_config(kind="dynamic")
+        set_registry(reg)
+        ok = await reg.start_all()
+        if ok:
+            reg.start_health_poller(interval_sec=HEALTH_CHECK_INTERVAL_SEC)
+        else:
+            logger.error(
+                "[SERVER] No dynamic endpoint is healthy - chat stays refused until one "
+                "endpoint answers (llama /props, strata /health + /props, or deepseek /models)"
+            )
         return ok
 
     async def start_server(self) -> bool:
@@ -438,13 +466,36 @@ class CoolemsServerProvider(BaseProvider):
         )
 
     async def health_check(self, force: bool = False) -> Tuple[bool, str, List[str]]:
-        return await self._get_local_provider().health_check(force=force)
+        import config
+        if getattr(config, "SERVER_BACKEND", "llama") != "dynamic":
+            return await self._get_local_provider().health_check(force=force)
+        from ..llama.backend_registry import get_registry
+        reg = get_registry()
+        if reg is None:
+            return False, "dynamic backend registry not initialized", []
+        if reg.healthy_backends():
+            names = sorted({
+                b.model_label or b.model_key for b in reg.backends.values() if b.healthy
+            })
+            return True, "", names
+        return False, "no dynamic backend is healthy", []
 
     async def get_current_model(self, force: bool = False):
         """Currently loaded model from the local backend, via _get_local_provider() so a call
-        before the first chat still answers.
+        before the first chat still answers. For the dynamic fleet, the first healthy backend's
+        model is reported (routing picks a node per request; nothing is globally "loaded").
         """
-        return await self._get_local_provider().get_current_model(force=force)
+        import config
+        if getattr(config, "SERVER_BACKEND", "llama") != "dynamic":
+            return await self._get_local_provider().get_current_model(force=force)
+        from ..llama.backend_registry import get_registry
+        reg = get_registry()
+        if reg is None:
+            return None
+        for b in reg.backends.values():
+            if b.healthy:
+                return b.model_label or b.model_key or None
+        return None
 
     async def get_models_list(self) -> List[Dict]:
         return await self._get_local_provider().get_models_list()

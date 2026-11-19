@@ -87,6 +87,17 @@ async def build_model_catalog(server_provider, user_info=None) -> List[dict]:
             if aliases:
                 entry["aliases"] = sorted(aliases)
 
+    # (2026-11 dynamic backend) A down endpoint contributes nothing live, so its models
+    # would vanish. The last-known cache restores them as offline entries (served=False) so
+    # the picker still lists them, grayed out. Only the dynamic fleet consults the cache:
+    # single-kind modes keep their existing (non-persistent) behavior.
+    if reg is not None and getattr(reg, "kind", "") == "dynamic":
+        from app.providers.llama.backend_model_cache import remembered_models
+        for offline in remembered_models():
+            key = offline.get("model_key")
+            if key and key not in by_key:
+                by_key[key] = offline
+
     catalog = []
     for entry in by_key.values():
         served = entry.get("served_by") or []

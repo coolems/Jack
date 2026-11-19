@@ -39,7 +39,10 @@ PROVIDER: str = "coolems_server"                        # Relay mode for server
 #                  Attach-only like Strata: no process, no model loading; every request carries
 #                  a Bearer key. The payload is transformed to DeepSeek's shape and the response
 #                  back to ours (app/providers/deepseek/).
-SERVER_BACKEND: str = "deepseek"                           # Local LLM engine ("llama" | "strata" | "deepseek")
+#   "dynamic"   -> ALL of the above at once: the registry merges llama + strata + deepseek
+#                  endpoints into one fleet and the picker lists every model any endpoint
+#                  serves (a model with no healthy node is shown disabled/gray in the client).
+SERVER_BACKEND: str = "dynamic"                           # Local LLM engine ("llama" | "strata" | "deepseek" | "dynamic")
 
 # --- Coolems Distributed Provider Configuration ---
 COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_server listener (0.0.0.0 = all interfaces including localhost)
@@ -339,12 +342,16 @@ def get_api_url() -> str:
 
     coolems_server picks its local LLM engine from SERVER_BACKEND: "llama" -> LLAMA_URL,
     "strata" -> STRATA_URL (the brain attaches to Strata, it never spawns it),
-    "deepseek" -> DEEPSEEK_BASE_URL (hosted API, attach-only)."""
+    "deepseek" -> DEEPSEEK_BASE_URL (hosted API, attach-only),
+    "dynamic" -> LLAMA_URL (the mixed registry owns real routing; this URL is only the
+    local disk-scan/OCR primary)."""
     if PROVIDER in ("llama", "coolems_server"):
         if SERVER_BACKEND == "strata":
             return STRATA_URL
         if SERVER_BACKEND == "deepseek":
             return DEEPSEEK_BASE_URL
+        if SERVER_BACKEND == "dynamic":
+            return LLAMA_URL
         return LLAMA_URL
     elif PROVIDER == "coolems_client":
         return ""  # Client connects via encrypted WebSocket, no local API URL needed
@@ -357,7 +364,7 @@ def get_provider_name() -> str:
 
 
 def set_server_backend(name: str) -> None:
-    """Runtime override of the local LLM engine ("llama" | "strata" | "deepseek").
+    """Runtime override of the local LLM engine ("llama" | "strata" | "deepseek" | "dynamic").
 
     code.py calls this when the CLI names the engine explicitly, which is more specific than
     config.SERVER_BACKEND. Both copies are updated: get_api_url() reads this module's global

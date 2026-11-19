@@ -108,7 +108,8 @@ async def init_provider_and_app(provider_name: str, api_url: str):
         # 2026-11: OCR needs a dedicated llama.cpp OCR instance (profiles.json 'ocr_model'
         # dirs + ocr_server_manager). Strata serves one chat model and DeepSeek runs no OCR
         # instance, so an empty list means OCR requests get a clear refusal instead of a
-        # doomed launch.
+        # doomed launch. "dynamic" deliberately falls through to the local llama OCR path
+        # below (the local llama engine is still available for OCR alongside the fleet).
         ProviderManager.set_ocr_models([])
         logger.info(f"[SERVER] OCR models skipped: the {config.SERVER_BACKEND} backend runs no "
                     f"dedicated OCR instance (config.SERVER_BACKEND = \"{config.SERVER_BACKEND}\"); "
@@ -207,6 +208,12 @@ def resolve_provider_and_url(cli_provider: str = None):
             api_url = os.environ.get("DEEPSEEK_URL", config.DEEPSEEK_BASE_URL)
             logger.info(f"Using coolems_server provider with DeepSeek at {api_url} "
                         f"(attach-only; key from config/deepseek_servers.json or config.DEEPSEEK_API_KEY)")
+        elif backend == "dynamic":
+            # 2026-11: mixed fleet - llama + strata + deepseek endpoints enumerated together.
+            # LLAMA_URL is only the disk-scan/OCR primary; routing uses the registry.
+            api_url = os.environ.get("LLAMA_URL", config.LLAMA_URL)
+            logger.info(f"Using coolems_server provider with the DYNAMIC fleet (llama + strata "
+                        f"+ deepseek); local primary at {api_url}")
         else:
             # Default to llama if SERVER_BACKEND is misconfigured
             api_url = os.environ.get("LLAMA_URL", config.LLAMA_URL)

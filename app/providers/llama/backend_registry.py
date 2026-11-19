@@ -81,7 +81,7 @@ class LlmBackend:
     owns the /models probe; the children own queue groups.
     """
 
-    def __init__(self, instance: LlamaServerInstance):
+    def __init__(self, instance: LlamaServerInstance, allow_spawn: bool = True):
         self.instance = instance
         self.model_id: Optional[str] = getattr(instance, "model_id", None)
         self.key = (instance.host.lower(), instance.port, self.model_id) if self.model_id \
@@ -98,7 +98,9 @@ class LlmBackend:
                                         if self.is_deepseek else strata_auth_headers(self.api_key))
         # LOCAL llama nodes may be spawned by us; everything else (remotes, Strata, DeepSeek)
         # is ATTACH-ONLY: a failed probe must never start or restart a process we do not own.
-        self.spawnable: bool = self.local and self.kind == "llama"
+        # allow_spawn is False for the "dynamic" fleet: it never spawns, it only attaches to
+        # whatever is already available (a down local llama node stays down and grayed out).
+        self.spawnable: bool = allow_spawn and self.local and self.kind == "llama"
         # (2026-10-25) True only when WE launched this instance's llama-server at boot
         # (tracked Popen in process_mgmt). Attached foreign nodes keep False so stop_all()
         # and the discovery relaunch never kill a node an admin started.
@@ -680,16 +682,21 @@ class LlmBackendRegistry:
     endpoint in ``endpoints`` (it owns the /models probe) and expands it into one routable
     CHILD backend per model id in ``backends`` (one queue group + workers per id), so the
     picker can switch between models and routing stays exact.
+    from_config(kind="dynamic") merges all three config files into one mixed fleet.
     """
 
-    def __init__(self, instances: list[LlamaServerInstance]):
+    def __init__(self, instances: list[LlamaServerInstance], spawn_enabled: bool = True):
+        # Source of truth the registry was built from ("llama" | "strata" | "deepseek" |
+        # "dynamic"). Set by from_config(); "mixed" for direct construction. build_model_catalog
+        # reads it to decide whether to merge the last-known offline models.
+        self.kind: str = "mixed"
         # de-dup by key (loader already dedupes; defensive for direct construction)
         seen = set()
         self.backends: dict[tuple, LlmBackend] = {}
         # DeepSeek ENDPOINT backends (model_id None): probes /models and own their children.
         self.endpoints: dict[tuple, LlmBackend] = {}
         for inst in instances:
-            b = LlmBackend(inst)
+            b = LlmBackend(inst, allow_spawn=spawn_enabled)
             if b.key not in seen:
                 seen.add(b.key)
                 if b.is_deepseek and b.model_id is None:
@@ -704,13 +711,27 @@ class LlmBackendRegistry:
         ``kind`` selects the source of truth: "llama" -> config/llama_servers.json
         (spawn-or-attach llama-server instances), "strata" -> config/strata_servers.json
         (attach-only endpoints), "deepseek" -> config/deepseek_servers.json (attach-only
-        hosted endpoints, expanded per served model id).
+        hosted endpoints, expanded per served model id), "dynamic" -> all three files merged
+        into one mixed fleet (llama + strata + deepseek; the picker lists every model any
+        endpoint serves). The dynamic fleet is ATTACH-ONLY even for local llama nodes: it
+        never spawns a service, it only uses what is already available (a down node stays
+        down and its models gray out in the picker).
         """
         if kind == "strata":
-            return cls(get_strata_server_instances())
-        if kind == "deepseek":
-            return cls(get_deepseek_server_instances())
-        return cls(get_llama_server_instances())
+            instances = get_strata_server_instances()
+        elif kind == "deepseek":
+            instances = get_deepseek_server_instances()
+        elif kind == "dynamic":
+            instances = (
+                list(get_llama_server_instances())
+                + list(get_strata_server_instances())
+                + list(get_deepseek_server_instances())
+            )
+        else:
+            instances = get_llama_server_instances()
+        reg = cls(instances, spawn_enabled=(kind != "dynamic"))
+        reg.kind = kind
+        return reg
 
     # --- DeepSeek model expansion -------------------------------------------
 
@@ -965,6 +986,7 @@ class LlmBackendRegistry:
         results = await asyncio.gather(*(self._probe_one(b) for b in targets))
         if self.endpoints:
             self.sync_deepseek_models()
+        self._remember_models()
         return list(zip(targets, results))
 
     def log_fleet_table(self, title: str = "LLAMA FLEET") -> None:
@@ -1024,6 +1046,18 @@ class LlmBackendRegistry:
             return "llama node"
         return "backend"
 
+    def _remember_models(self) -> None:
+        """Persist last-known served models (see backend_model_cache.remember).
+
+        Best-effort and lazy-imported: a cache write failure or an import problem must never
+        disturb health probing or routing.
+        """
+        try:
+            from .backend_model_cache import remember
+            remember(self)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("[REGISTRY] last-known model cache update skipped: %s", e)
+
     async def start_all(self) -> bool:
         """Start/attach every configured instance and log the startup table.
 
@@ -1046,6 +1080,10 @@ class LlmBackendRegistry:
             results.append((b, ok))
 
         self.log_fleet_table(self.registry_title())
+
+        # Persist what we discovered so a down endpoint's models still gray out after a
+        # restart (they are only learned when the endpoint answers, which a down one never does).
+        self._remember_models()
 
         any_ok = any(ok for _, ok in results)
         if not any_ok:
