@@ -31,8 +31,8 @@
 
 .input-wrapper:focus-within { border-color: var(--accent); }
 .input-wrapper.drag-over { border-color: var(--accent); background: rgba(59, 130, 246, 0.1); box-shadow: 0 0 20px rgba(59, 130, 246, 0.3); }
-.input-toolbar { display: flex; justify-content: space-between; align-items: center; }
-.input-actions { display: flex; gap: 8px; }
+.input-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.input-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
 .icon-btn {
     background: none; border: none; color: var(--text-secondary);
@@ -48,6 +48,12 @@
     background: var(--bg-tertiary); border: 1px solid var(--border);
     color: var(--text-primary); padding: 6px 12px;
     border-radius: 6px; font-size: 13px; cursor: pointer; outline: none;
+    /* (2026-11-26) A <select> sizes itself to its LONGEST option, so it never shrank with
+       the frame: dragging the Files panel left narrowed the prompt frame but the model
+       name box kept its full width and overflowed onto the panel. It now takes only the
+       space left by the icon buttons and truncates with an ellipsis when narrower. */
+    flex: 1 1 auto; min-width: 0; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 textarea {
