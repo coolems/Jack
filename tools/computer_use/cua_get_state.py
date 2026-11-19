@@ -13,13 +13,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_get_state",
-        "description": "Observe a window's UIA control tree: snapshotId + indexed elements (name, control_type, rect, actions, offscreen). Indices are valid only for THIS snapshotId - re-observing invalidates the old ones. Read-only; sends no input.",
+        "description": "Read a window's UIA tree: snapshotId + indexed elements (name, type, rect, actions). Indices valid only for this snapshot; re-observing invalidates them. Read-only.",
         "parameters": {
             "type": "object",
             "properties": {
                 "app_handle": {"type": "string", "description": "app_handle from cua_get_app."},
-                "window_id": {"type": "string", "description": "windowId from cua_get_app/cua_list_windows."},
-                "include_text": {"type": "boolean", "description": "Also read each element's text (Text pattern). Slower and larger."}
+                "window_id": {"type": "string", "description": "windowId from cua_get_app/list_windows."},
+                "include_text": {"type": "boolean", "description": "Also read element text (slower, larger)."}
             },
             "required": ["app_handle", "window_id"]
         }

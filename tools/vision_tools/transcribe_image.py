@@ -17,17 +17,17 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "transcribe_image",
-        "description": "Extract text from an image using OCR. Returns the raw extracted text from the image. Image file must be inside working_root directory, OR provide its pixels directly via image_base64.",
+        "description": "OCR an image: extract its text. Give a file path or raw base64 pixels.",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Image path relative to working_root ('shot.png' or 'subfolder/shot.png'); must exist inside working_root."
+                    "description": "Image path inside working_root ('shot.png')."
                 },
                 "image_base64": {
                     "type": "string",
-                    "description": "Optional: raw base64-encoded image bytes (no data-URL prefix). When provided, these pixels are transcribed directly and no file is read from disk. If the image has no saved filename yet it is auto-saved into .temp/images/ and its name is reported in the result."
+                    "description": "Raw base64 image bytes (no data-URL prefix); transcribed directly, unsaved pixels auto-saved to .temp/images/."
                 }
             },
             "required": []

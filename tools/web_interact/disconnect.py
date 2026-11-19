@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "disconnect",
-        "description": "Close the connection to Chrome and free Playwright resources. Use when web automation is complete.",
+        "description": "Close the Chrome connection and free Playwright resources.",
         "parameters": {"type": "object", "properties": {}, "required": []}
     }
 }

@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "ensure_connected",
-        "description": "Internal helper: verifies Chrome connection is active. Auto-connects if disconnected. Returns True/False.",
+        "description": "Verify Chrome connection is active (auto-connects). Returns True/False.",
         "parameters": {"type": "object", "properties": {}, "required": []}
     }
 }

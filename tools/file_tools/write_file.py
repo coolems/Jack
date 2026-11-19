@@ -4,26 +4,26 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "write_file",
-        "description": "Create or overwrite a file in working_root. Line endings normalized: LF, CRLF only for .bat/.cmd. Scratch policy: a plan file (plan_*.md) written at the root lands in .temp/plans/, a temp/scratch name (tmp_, temp_, scratch_, *.tmp) lands in .temp/ - an explicit path always wins.",
+        "description": "Create or overwrite a file. Scratch names (plan_*.md at root, tmp_/temp_/scratch_/*.tmp) are redirected into .temp/; an explicit path wins.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
+                    "description": "Directory; '' = working_root.",
                     "default": ""
                 },
                 "filename": {
                     "type": "string",
-                    "description": "Bare file name, no slashes ('myfile.txt'). Folder goes in path."
+                    "description": "Bare file name, no slashes."
                 },
                 "content": {
                     "type": "string",
-                    "description": "Content to write to the file"
+                    "description": "File content."
                 },
                 "mode": {
                     "type": "string",
-                    "description": "Write mode: 'w' for overwrite, 'a' for append",
+                    "description": "'w' overwrite, 'a' append.",
                     "default": "w"
                 }
             },

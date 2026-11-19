@@ -4,27 +4,27 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "move_file",
-        "description": "Move a file inside working_root. Filenames are bare; *_path = directories.",
+        "description": "Move a file (optionally renaming it).",
         "parameters": {
             "type": "object",
             "properties": {
                 "source_path": {
                     "type": "string",
-                    "description": "Source directory inside working_root. '' / '.' / 'root' = working_root.",
+                    "description": "Source directory; '' = working_root.",
                     "default": ""
                 },
                 "source_filename": {
                     "type": "string",
-                    "description": "Source bare file name, no slashes ('myfile.txt')."
+                    "description": "Source bare file name, no slashes."
                 },
                 "destination_path": {
                     "type": "string",
-                    "description": "Destination directory inside working_root. '' / '.' / 'root' = working_root.",
+                    "description": "Destination directory; '' = working_root.",
                     "default": ""
                 },
                 "new_filename": {
                     "type": "string",
-                    "description": "Optional new bare name; keeps the original if omitted."
+                    "description": "New bare name; keeps original if omitted."
                 }
             },
             "required": ["source_filename", "destination_path"]

@@ -14,12 +14,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_screenshot",
-        "description": "Capture one window to a PNG in .temp/screenshots/ of working_root (scratch policy: screenshots never land in the repo root) and return image_base64 + its rect. Coordinates read from this image are window-local pixels (0,0 = top-left) and stay valid only while that rect is unchanged. Reports the capture method; the screen-region fallback includes occlusion.",
+        "description": "Capture a window to PNG in .temp/screenshots/, return image_base64 + rect. Coordinates from it are window-local px, valid only while the rect is unchanged.",
         "parameters": {
             "type": "object",
             "properties": {
-                "window_id": {"type": "string", "description": "windowId from cua_get_app/cua_list_windows."},
-                "filename": {"type": "string", "description": "Optional PNG filename in .temp/screenshots/ (auto-named if omitted)."}
+                "window_id": {"type": "string", "description": "windowId from cua_get_app/list_windows."},
+                "filename": {"type": "string", "description": "PNG name in .temp/screenshots/; auto if omitted."}
             },
             "required": ["window_id"]
         }

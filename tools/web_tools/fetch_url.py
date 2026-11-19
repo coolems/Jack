@@ -4,13 +4,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "fetch_url",
-        "description": "Fetch readable text from ONE webpage URL (title + cleaned article, truncated to 8000 chars; scripts/styles/nav stripped). Use only when you already have a direct URL - for navigating, clicking or JS-heavy sites use the browser tools instead.",
+        "description": "Fetch readable text (title + article, ~8000 chars) from one URL. Not for JS-heavy sites - use browser tools.",
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "Direct link to a webpage, e.g. 'https://example.com/article'."
+                    "description": "Direct link to a webpage."
                 }
             },
             "required": ["url"]

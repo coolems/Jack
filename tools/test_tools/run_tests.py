@@ -31,32 +31,25 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "run_tests",
-        "description": "Lint (ruff) and run the test suite of the ACTIVE project (its tests/ "
-                      "folder, or an explicit project_root). pytest- or unittest-style both "
-                      "work. Use after any code change. Returns lint findings plus pass/fail "
-                      "status, timing and failure details.",
+        "description": "Lint (ruff) and run the project's tests/ suite (pytest or unittest). Use after any code change.",
         "parameters": {
             "type": "object",
             "properties": {
                 "test_file": {
                     "type": "string",
-                    "description": "Optional: Run only a specific test file (e.g., 'test_python_exec'). "
-                                 "If not provided, runs ALL tests."
+                    "description": "Run only this test file; all tests if omitted."
                 },
                 "project_root": {
                     "type": "string",
-                    "description": "Optional: Absolute path of the project to test. Must contain a "
-                                 "tests/ folder with test files. Defaults to the current working root."
+                    "description": "Project to test (must have tests/); defaults to working_root."
                 },
                 "verbose": {
                     "type": "boolean",
-                    "description": "Whether to include detailed output for each test. Default: true.",
                     "default": True
                 },
                 "lint": {
                     "type": "boolean",
-                    "description": "Run the ruff lint pass before the tests. Default: true; it is "
-                                 "reported separately and marked [SKIP] when ruff is not installed.",
+                    "description": "Ruff pass before tests ([SKIP] if ruff missing).",
                     "default": True
                 }
             },

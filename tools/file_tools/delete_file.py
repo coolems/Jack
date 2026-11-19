@@ -4,18 +4,18 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "delete_file",
-        "description": "Soft-delete a file (adds .deleted extension). path = directory, filename = bare name.",
+        "description": "Soft-delete a file (adds .deleted extension).",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
+                    "description": "Directory; '' = working_root.",
                     "default": ""
                 },
                 "filename": {
                     "type": "string",
-                    "description": "Bare file name, no slashes ('myfile.txt'). Folder goes in path."
+                    "description": "Bare file name, no slashes."
                 }
             },
             "required": ["filename"]

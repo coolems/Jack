@@ -4,13 +4,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "goto",
-        "description": "Navigate to a specific URL. Returns as soon as the page is ready (wait_until='commit'); pass 'networkidle' or 'domcontentloaded' when you need to wait for full rendering or deferred scripts. Auto-adds https:// if missing.",
+        "description": "Navigate to a URL. Returns on commit; use 'networkidle'/'domcontentloaded' to wait for rendering or deferred scripts.",
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "Target URL to navigate to"},
-                "wait_until": {"type": "string", "description": "commit (default), domcontentloaded, load, or networkidle", "default": "commit"},
-                "timeout": {"type": "integer", "description": "Max wait time in ms", "default": 60000}
+                "url": {"type": "string", "description": "Target URL (https:// added if missing)."},
+                "wait_until": {"type": "string", "description": "When to return.", "default": "commit"},
+                "timeout": {"type": "integer", "description": "Max wait ms.", "default": 60000}
             },
             "required": ["url"]
         }

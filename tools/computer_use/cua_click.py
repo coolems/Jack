@@ -16,13 +16,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_click",
-        "description": "Click a UIA element (snapshotId+elementIndex) or a window point (window px from the latest cua_screenshot, or relative 0..999). Returns dispatched=true, verified=false - re-observe to confirm. hold_ms clamped; release always happens.",
+        "description": "Click a UIA element (snapshot_id+element_index) or a window point (px from latest cua_screenshot, or relative). dispatched=true, verified=false - re-observe to confirm.",
         "parameters": {
             "type": "object",
             "properties": {
                 "window_id": {"type": "string", "description": "windowId for coordinate targets."},
-                "snapshot_id": {"type": "string", "description": "snapshotId for an element target."},
-                "element_index": {"type": "integer", "description": "Element index in that snapshotId."},
+                "snapshot_id": {"type": "string", "description": "snapshotId for element target."},
+                "element_index": {"type": "integer", "description": "Element index in that snapshot."},
                 "x": {"type": "integer", "description": "X (window px)."},
                 "y": {"type": "integer", "description": "Y (window px)."},
                 "relative": {"type": "array", "items": {"type": "integer"}, "description": "[rx, ry] thousandths 0..999."},

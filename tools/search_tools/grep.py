@@ -16,42 +16,41 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "grep",
-        "description": "Search file contents inside working_root with ripgrep; matches come with file paths and line numbers. Gitignored and heavy folders (venv, node_modules, .git, model weights, runtimes) are skipped unless include_ignored=true. Capped results spill to .temp/spill/ with a locator.",
+        "description": "Search file contents with ripgrep; matches with file paths and line numbers. Gitignored/heavy folders skipped. Capped results spill to .temp/spill/.",
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Regular expression (ripgrep/PCRE2). Examples: 'def get_working_root', 'TODO|FIXME', 'class\\s+\\w+Tools'."
+                    "description": "Regex (PCRE2), e.g. 'TODO|FIXME', 'class\\s+\\w+Tools'."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search (recursive); '' / '.' / 'root' = whole working_root.",
+                    "description": "Directory to search (recursive); '' = whole working_root.",
                     "default": ""
                 },
                 "include": {
                     "type": "string",
-                    "description": "One glob limiting which files are searched ('*.py', '*.md'), relative to the searched directory. Negations and comma lists are rejected.",
+                    "description": "One glob limiting files ('*.py'). Negations/comma lists rejected.",
                     "default": ""
                 },
                 "context_lines": {
                     "type": "integer",
-                    "description": "Context lines before/after each match (0-10). Default 0.",
+                    "description": "Context lines before/after each match (0-10).",
                     "default": 0
                 },
                 "ignore_case": {
                     "type": "boolean",
-                    "description": "Case-insensitive match. Default false.",
                     "default": False
                 },
                 "include_ignored": {
                     "type": "boolean",
-                    "description": "Also search gitignored/hidden files. Heavy folders stay excluded regardless. Default false.",
+                    "description": "Also search gitignored/hidden files (heavy folders stay excluded).",
                     "default": False
                 },
                 "max_matches": {
                     "type": "integer",
-                    "description": "Max matches returned (1-250); the full list is spilled when capped. Default 250.",
+                    "description": "Max matches (1-250).",
                     "default": 250
                 }
             },

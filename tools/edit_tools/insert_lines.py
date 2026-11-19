@@ -13,25 +13,25 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "insert_lines",
-        "description": "Insert literal text after a 1-based line of an existing text file in working_root. after_line=0 inserts at the start; after_line=N makes the text line N+1. Use edit_file to change existing text and write_file(mode='a') to append at the end. Line endings follow the repo policy (LF; CRLF only for .bat/.cmd).",
+        "description": "Insert literal text after a 1-based line of an existing file. after_line=0 inserts at the start. Use edit_file to change text, write_file(mode='a') to append.",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Bare file name of the existing file, no slashes ('config.py')."
+                    "description": "Bare file name, no slashes."
                 },
                 "after_line": {
                     "type": "integer",
-                    "description": "1-based line to insert after. 0 inserts at the start of the file. Must not exceed the file's line count."
+                    "description": "1-based line to insert after; 0 = start. Must not exceed line count."
                 },
                 "text": {
                     "type": "string",
-                    "description": "Literal text to insert. A trailing newline is kept; without one, the block is closed with a newline so it becomes a real line."
+                    "description": "Literal text to insert (closed with a newline if none)."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory inside working_root. '' / '.' / 'root' = working_root.",
+                    "description": "Directory; '' = working_root.",
                     "default": ""
                 }
             },

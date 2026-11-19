@@ -23,17 +23,17 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the internet for current information, news, live data, or unknown facts. Runs several engines concurrently and merges the results. Use BEFORE fetching URLs or browsing. Do NOT use for local file operations or math.",
+        "description": "Search the web for current info, news, or live data. Use before fetching URLs. Not for local files or math.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Concise search query, without filler words."
+                    "description": "Concise query, no filler words."
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Results to return (1-20). Default 10.",
+                    "description": "Results to return.",
                     "default": 10,
                     "minimum": 1,
                     "maximum": 20
@@ -41,7 +41,7 @@ __tool_description__ = {
                 "freshness": {
                     "type": "string",
                     "enum": ["Day", "Week", "Month", "Year"],
-                    "description": "Keep only results published within this window."
+                    "description": "Keep only results from this window."
                 }
             },
             "required": ["query"]

@@ -4,26 +4,26 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "download_file",
-        "description": "Download a file from a URL. Can use browser context for authenticated downloads or direct HTTP fallback.",
+        "description": "Download a file from a URL (browser context for auth, HTTP fallback).",
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "The URL to download"
+                    "description": "URL to download."
                 },
                 "filename": {
                     "type": "string",
-                    "description": "Optional filename (inferred from URL if not provided)"
+                    "description": "Saved name; inferred from URL if omitted."
                 },
                 "download_dir": {
                     "type": "string",
-                    "description": "Directory to save to (default: working_root)",
+                    "description": "Save directory; '' = working_root.",
                     "default": ""
                 },
                 "use_browser_context": {
                     "type": "boolean",
-                    "description": "If True, uses the browser's context for download (handles auth/session)",
+                    "description": "Use browser session/auth.",
                     "default": True
                 }
             },

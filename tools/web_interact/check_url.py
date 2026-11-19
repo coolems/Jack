@@ -4,12 +4,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "check_url",
-        "description": "Check whether a URL is reachable in the connected browser. Navigates to it with minimal wait (commit), reports the HTTP status, then restores your previous page. SSRF-protected: private/internal addresses are blocked. Auto-adds https:// if missing.",
+        "description": "Check if a URL is reachable (HTTP status); restores the previous page. Private/internal addresses blocked.",
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "URL to check. Auto-adds https:// if missing."},
-                "timeout": {"type": "integer", "description": "Max wait time in ms", "default": 5000}
+                "url": {"type": "string", "description": "URL to check (https:// added if missing)."},
+                "timeout": {"type": "integer", "description": "Max wait ms.", "default": 5000}
             },
             "required": ["url"]
         }

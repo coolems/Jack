@@ -11,7 +11,7 @@
    ===================================================================== */
 
 @import url("css/01-base-layout.css?v=20261126c");
-@import url("css/02-tree-preview-editor.css");
+@import url("css/02-tree-preview-editor.css?v=20261126a");
 @import url("css/03-diff-view-core.css");
 @import url("css/04-chat-messages.css?v=20261117a");
 @import url("css/05-input-modals-code.css?v=20261126a");

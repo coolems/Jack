@@ -4,21 +4,21 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "git_clone",
-        "description": "Clone a git repository from a URL. Downloads the repository to the working_root folder.",
+        "description": "Clone a git repository into working_root.",
         "parameters": {
             "type": "object",
             "properties": {
                 "url": {
                     "type": "string",
-                    "description": "The git repository URL to clone (e.g., 'https://github.com/user/repo.git')"
+                    "description": "Repo URL ('https://github.com/user/repo.git')."
                 },
                 "target_dir": {
                     "type": "string",
-                    "description": "Optional target directory name (defaults to repository name)"
+                    "description": "Target dir name; defaults to repo name."
                 },
                 "depth": {
                     "type": "integer",
-                    "description": "Clone depth for shallow clone (use 1 for latest commit only)",
+                    "description": "Shallow-clone depth.",
                     "default": 1
                 }
             },

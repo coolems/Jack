@@ -4,13 +4,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "list_files",
-        "description": "List files in a working_root directory. Use path='' for the root (also '.' / 'root').",
+        "description": "List files in a directory.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
+                    "description": "Directory; '' = working_root.",
                     "default": ""
                 }
             },

@@ -13,7 +13,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_list_apps",
-        "description": "List running apps as {app, pid, exe_path, window_count, on_screen} from visible window titles. Launches/activates/clicks nothing; minimized windows are reported, not hidden. Returns no handles - cua_get_app binds one (that call asks the user).",
+        "description": "List running apps (app, pid, exe_path, window_count, on_screen). No handles returned - cua_get_app binds one (asks consent).",
         "parameters": {
             "type": "object",
             "properties": {},

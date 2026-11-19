@@ -12,13 +12,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_hover",
-        "description": "Move the pointer onto an element (snapshotId+elementIndex) or window point without clicking. Reports hoverRoute and systemPointerMoved. dispatched=true, verified=false.",
+        "description": "Move the pointer onto an element or window point without clicking. dispatched=true, verified=false.",
         "parameters": {
             "type": "object",
             "properties": {
                 "window_id": {"type": "string", "description": "windowId for coordinate targets."},
-                "snapshot_id": {"type": "string", "description": "snapshotId for an element target."},
-                "element_index": {"type": "integer", "description": "Element index in that snapshotId."},
+                "snapshot_id": {"type": "string", "description": "snapshotId for element target."},
+                "element_index": {"type": "integer", "description": "Element index in that snapshot."},
                 "x": {"type": "integer", "description": "X (window px)."},
                 "y": {"type": "integer", "description": "Y (window px)."},
                 "relative": {"type": "array", "items": {"type": "integer"}, "description": "[rx, ry] thousandths 0..999."}

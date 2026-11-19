@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "get_page_content",
-        "description": "Extract visible text content and raw HTML from the current page. Returns URL, title, and cleaned text. Truncated for context limits.",
+        "description": "Extract URL, title and visible text/HTML of the current page (truncated).",
         "parameters": {"type": "object", "properties": {}, "required": []}
     }
 }

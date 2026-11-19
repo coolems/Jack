@@ -9,30 +9,30 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "edit_file",
-        "description": "Patch an existing text file in working_root by replacing literal text (no regex). old_string must match exactly once unless replace_all=true - add context to make it unique. Empty new_string deletes the match. Use write_file to create or fully rewrite a file. Line endings follow the repo policy (LF; CRLF only for .bat/.cmd).",
+        "description": "Replace literal text in an existing file (no regex). old_string must match exactly once unless replace_all; empty new_string deletes the match. Use write_file to create or fully rewrite a file.",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Bare file name of the existing file, no slashes ('read_file.py')."
+                    "description": "Bare file name, no slashes ('read_file.py')."
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "Literal text to replace. Must match the file exactly, including whitespace. Include enough surrounding context to make it unique."
+                    "description": "Literal text to replace; exact match incl. whitespace. Add context to make it unique."
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "Replacement text. Use an empty string to delete the matched text."
+                    "description": "Replacement text; '' deletes the match."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory inside working_root. '' / '.' / 'root' = working_root.",
+                    "description": "Directory; '' = working_root.",
                     "default": ""
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Replace every occurrence instead of requiring a unique match. Default false.",
+                    "description": "Replace every occurrence.",
                     "default": False
                 }
             },

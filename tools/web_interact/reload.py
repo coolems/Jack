@@ -4,11 +4,11 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "reload",
-        "description": "Reload/refresh the current browser page. Returns as soon as the reload is committed; pass wait_until='networkidle' when you need deferred scripts to finish.",
+        "description": "Reload the current page. Returns on commit; 'networkidle' waits for deferred scripts.",
         "parameters": {
             "type": "object",
             "properties": {
-                "wait_until": {"type": "string", "description": "commit (default), domcontentloaded, load, or networkidle", "default": "commit"}
+                "wait_until": {"type": "string", "description": "When to return.", "default": "commit"}
             },
             "required": []
         }

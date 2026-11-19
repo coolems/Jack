@@ -13,17 +13,17 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "python_exec",
-        "description": "Execute Python code. Use for calculations, data processing, git commands, or any task that requires running Python code. Text-mode open() writes do not translate newlines (no CRLF conversion); use write_file for repository files that need enforced LF endings.",
+        "description": "Execute Python code (calculations, data processing, git, subprocess). stdin is closed; output truncated ~10 KB.",
         "parameters": {
             "type": "object",
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "The Python code to execute. Can use import, subprocess, os, sys, json, math, re, etc."
+                    "description": "Python source to run."
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Optional timeout in seconds (default: uses config value). Useful for testing or quick checks.",
+                    "description": "Seconds; optional (config default).",
                     "default": None
                 }
             },

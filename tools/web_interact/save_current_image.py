@@ -4,12 +4,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "save_current_image",
-        "description": "Save the currently displayed image from the browser page to the working_root folder. Auto-detects main image via DOM, background, or direct URL.",
+        "description": "Save the main image displayed on the current page (auto-detected via DOM/background/URL).",
         "parameters": {
             "type": "object",
             "properties": {
-                "filename": {"type": "string", "description": "Optional filename for saved image"},
-                "download_dir": {"type": "string", "description": "Directory to save to (default: working_root)", "default": ""}
+                "filename": {"type": "string", "description": "Saved image name."},
+                "download_dir": {"type": "string", "description": "Save directory; '' = working_root.", "default": ""}
             },
             "required": []
         }

@@ -153,11 +153,26 @@
     flex-shrink: 0;
 }
 
+/* (2026-11-26) the title IS the close control (the separate X button was removed).
+   A <button> styled to look like the plain title, with a hover cue. */
 .preview-panel-title {
     font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
     white-space: nowrap;
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    font-family: inherit;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.preview-panel-title:hover {
+    color: var(--danger, #f44336);
+    background: rgba(244, 67, 54, 0.12);
 }
 
 .preview-panel-actions {

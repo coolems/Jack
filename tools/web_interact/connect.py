@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "connect",
-        "description": "Connect to an already-running Chrome browser via CDP. ALWAYS call this FIRST before any browser automation. Auto-starts a fresh debug-mode Chrome window if none is reachable.",
+        "description": "Connect to Chrome via CDP. Call FIRST before any browser automation; starts a debug-mode Chrome if none running.",
         "parameters": {"type": "object", "properties": {}, "required": []}
     }
 }

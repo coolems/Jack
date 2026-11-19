@@ -63,41 +63,44 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "generate_image",
-        "description": "Generate an image from a text prompt with the GPU-tier diffusion pipeline (Qwen-Image, Z-Image or SANA-Sprint). Saves a PNG in .temp/images/ of working_root (scratch policy: generated images never land in the repo root) and returns the image data. width/height default to the user's Settings > Runtime resolution (600x400), snap to tier-safe multiples and are clamped to the tier's pixel budget - an oversized request renders at the clamped size and is LANCZOS-upscaled to the exact dimensions, so 4K works on every tier.",
+        "description": "Generate an image from a text prompt (diffusion pipeline). Saves PNG in .temp/images/ and returns the image data. width/height default to user settings (600x400), snapped and clamped to the GPU tier's pixel budget; oversized requests render clamped and upscale to exact size.",
         "parameters": {
             "type": "object",
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "Text description of the image to generate"
+                    "description": "Text description of the image."
                 },
                 "height": {
                     "type": "integer",
-                    "description": "Height in pixels. Omit unless the user asked for a specific size - see the tool description for defaults, snapping and clamping."
+                    "description": "Height px; omit unless user asked for a size."
                 },
                 "width": {
                     "type": "integer",
-                    "description": "Width in pixels. Omit unless the user asked for a specific size - see the tool description for defaults, snapping and clamping."
+                    "description": "Width px; omit unless user asked for a size."
                 },
                 "num_inference_steps": {
                     "type": "integer",
-                    "description": "Number of inference steps (default: 9)"
+                    "description": "Inference steps.",
+                    "default": 9
                 },
                 "guidance_scale": {
                     "type": "number",
-                    "description": "Guidance scale for generation (default: 0.0)"
+                    "description": "Guidance scale.",
+                    "default": 0.0
                 },
                 "output_filename": {
                     "type": "string",
-                    "description": "Output filename (without extension, default: 'generated_image')"
+                    "description": "Output name without extension."
                 },
                 "reference_image": {
                     "type": "string",
-                    "description": "Optional: Path to a reference image for image-to-image generation. Must be inside working_root."
+                    "description": "Reference image path (inside working_root) for img2img."
                 },
                 "strength": {
                     "type": "number",
-                    "description": "Strength of transformation for img2img (0.0-1.0, default: 0.6)"
+                    "description": "img2img strength 0.0-1.0.",
+                    "default": 0.6
                 }
             },
             "required": ["prompt"]

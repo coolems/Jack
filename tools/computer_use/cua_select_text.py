@@ -15,16 +15,16 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_select_text",
-        "description": "Select text in a snapshot element by prefix/suffix anchors, or place a caret (selectionType cursor_before/cursor_after). No keystrokes are sent. dispatched=true, verified=false.",
+        "description": "Select text in a snapshot element via prefix/suffix anchors, or place a caret (cursor_before/cursor_after). Sends no keystrokes.",
         "parameters": {
             "type": "object",
             "properties": {
                 "snapshot_id": {"type": "string", "description": "snapshotId from cua_get_state."},
-                "element_index": {"type": "integer", "description": "Element index in that snapshotId."},
-                "prefix": {"type": "string", "description": "Anchor that starts the selection."},
-                "suffix": {"type": "string", "description": "Anchor that ends the selection."},
+                "element_index": {"type": "integer", "description": "Element index in that snapshot."},
+                "prefix": {"type": "string", "description": "Selection start anchor."},
+                "suffix": {"type": "string", "description": "Selection end anchor."},
                 "selection_type": {"type": "string", "enum": ["text", "cursor_before", "cursor_after"],
-                                   "description": "Selection shape (default text)."}
+                                   "description": "Selection shape.", "default": "text"}
             },
             "required": ["snapshot_id", "element_index"]
         }

@@ -4,12 +4,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "scroll",
-        "description": "Scroll the current browser page up, down, to top, or to bottom. Use pixels or preset directions.",
+        "description": "Scroll the page up/down/top/bottom.",
         "parameters": {
             "type": "object",
             "properties": {
-                "direction": {"type": "string", "description": "Scroll direction: up, down, top, bottom", "default": "down"},
-                "amount": {"type": "integer", "description": "Pixels to scroll (used for up/down)", "default": 500}
+                "direction": {"type": "string", "description": "up, down, top, bottom.", "default": "down"},
+                "amount": {"type": "integer", "description": "Pixels for up/down.", "default": 500}
             },
             "required": []
         }

@@ -8,7 +8,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_capabilities",
-        "description": "Read-only desktop preflight: Windows + UI Automation availability, screen lock, screen size, cursor, live handle counts and per-app grants. Sends no input, opens no dialog - call it first. A false value never implies consent.",
+        "description": "Read-only desktop preflight: UIA availability, screen lock/size, cursor, app grants. Call first; sends no input.",
         "parameters": {
             "type": "object",
             "properties": {},

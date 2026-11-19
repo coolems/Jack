@@ -13,12 +13,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_press_key",
-        "description": "Press one named key in the granted app's focused field, with optional modifiers joined by '+' (e.g. 'ctrl+c', 'cmd++', 'enter'). Refused if focus is on another app. dispatched=true, verified=false.",
+        "description": "Press a named key/chord (modifiers joined by '+', e.g. 'ctrl+c') in the granted app's focused field. Refused if focus is elsewhere.",
         "parameters": {
             "type": "object",
             "properties": {
                 "app_handle": {"type": "string", "description": "app_handle from cua_get_app."},
-                "key": {"type": "string", "description": "Key name or chord, e.g. 'enter', 'ctrl+c', 'f5', 'kp0'."}
+                "key": {"type": "string", "description": "Key or chord: 'enter', 'ctrl+c', 'f5'."}
             },
             "required": ["app_handle", "key"]
         }

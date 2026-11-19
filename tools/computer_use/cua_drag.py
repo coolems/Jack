@@ -10,7 +10,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_drag",
-        "description": "Drag from one point to another inside one window (window px, relative 0..999, or a snapshot element as the start). Button always released even on failure. dispatched=true, verified=false.",
+        "description": "Drag between two points in one window (px, relative, or snapshot element as start). Button always released. dispatched=true, verified=false.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -21,10 +21,10 @@ __tool_description__ = {
                 "to_y": {"type": "integer", "description": "End Y (window px)."},
                 "from_relative": {"type": "array", "items": {"type": "integer"}, "description": "Start thousandths."},
                 "to_relative": {"type": "array", "items": {"type": "integer"}, "description": "End thousandths."},
-                "snapshot_id": {"type": "string", "description": "Optional start element snapshotId."},
+                "snapshot_id": {"type": "string", "description": "Start element snapshotId."},
                 "element_index": {"type": "integer", "description": "Start element index."},
                 "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "Button held."},
-                "steps": {"type": "integer", "description": "Pointer steps 2-40 (default 20)."}
+                "steps": {"type": "integer", "description": "Pointer steps 2-40.", "default": 20}
             },
             "required": ["window_id"]
         }

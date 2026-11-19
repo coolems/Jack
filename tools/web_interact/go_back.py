@@ -4,16 +4,16 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "go_back",
-        "description": "Navigate back one step in browser history. Use to return to the previous page after viewing details.",
+        "description": "Go back one step in browser history.",
         "parameters": {
             "type": "object",
             "properties": {
                 "wait_until": {
                     "type": "string",
-                    "description": "commit (default, returns as soon as the navigation is committed), domcontentloaded, load, or networkidle.",
+                    "description": "When to return; commit = immediately.",
                     "enum": ["commit", "domcontentloaded", "load", "networkidle"]
                 },
-                "timeout": {"type": "integer", "description": "Max wait time in ms (default 30000)."}
+                "timeout": {"type": "integer", "description": "Max wait ms.", "default": 30000}
             },
             "required": []
         }

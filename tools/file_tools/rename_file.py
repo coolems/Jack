@@ -4,22 +4,22 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "rename_file",
-        "description": "Rename a file in working_root. Both names are bare; path = directory.",
+        "description": "Rename a file.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
+                    "description": "Directory; '' = working_root.",
                     "default": ""
                 },
                 "old_filename": {
                     "type": "string",
-                    "description": "Current bare file name, no slashes ('oldfile.txt')."
+                    "description": "Current bare file name, no slashes."
                 },
                 "new_filename": {
                     "type": "string",
-                    "description": "New bare file name, no slashes ('newfile.txt')."
+                    "description": "New bare file name, no slashes."
                 }
             },
             "required": ["old_filename", "new_filename"]

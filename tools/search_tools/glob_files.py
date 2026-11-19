@@ -15,27 +15,27 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "glob_files",
-        "description": "List files whose names match a glob pattern inside working_root, newest-first. Returns paths relative to working_root, capped; the full list spills to .temp/spill/ when capped. Gitignored and heavy folders (venv, node_modules, .git, model weights, runtimes) are skipped unless include_ignored=true.",
+        "description": "List file names matching a glob, newest-first. Gitignored/heavy folders skipped. Capped results spill to .temp/spill/.",
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern ('*.py', '**/*.json', 'tools/**/*.md'), matched relative to the searched directory."
+                    "description": "Glob ('*.py', '**/*.json', 'tools/**/*.md')."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search (recursive); '' / '.' / 'root' = whole working_root.",
+                    "description": "Directory to search (recursive); '' = whole working_root.",
                     "default": ""
                 },
                 "include_ignored": {
                     "type": "boolean",
-                    "description": "Also list gitignored/hidden files. Heavy folders stay excluded regardless. Default false.",
+                    "description": "Also list gitignored/hidden files (heavy folders stay excluded).",
                     "default": False
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Max paths returned (1-100); the full list is spilled when capped. Default 100.",
+                    "description": "Max paths returned (1-100).",
                     "default": 100
                 }
             },

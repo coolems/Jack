@@ -14,12 +14,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_get_app",
-        "description": "Bind an app handle for a RUNNING app by name, exe path or pid. Asks the user's per-app desktop consent; returns app_handle, pid, exe_path, windows. Launches and activates nothing; a denied app stays denied. Pass app_handle alone to refresh an already-granted app's windows.",
+        "description": "Bind an app_handle for a RUNNING app (name, exe path or pid). Asks user consent; launches/activates nothing. Pass app_handle alone to refresh its windows.",
         "parameters": {
             "type": "object",
             "properties": {
-                "selector": {"type": "string", "description": "App name, exe path, or pid as digits."},
-                "app_handle": {"type": "string", "description": "Existing handle to refresh its windows (keeps the grant)."}
+                "selector": {"type": "string", "description": "App name, exe path, or pid."},
+                "app_handle": {"type": "string", "description": "Existing handle to refresh windows."}
             },
             "required": []
         }

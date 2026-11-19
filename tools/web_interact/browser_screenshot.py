@@ -4,11 +4,11 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "browser_screenshot",
-        "description": "Screenshot the Chrome window only (debug-mode browser, connected via CDP). Saves a PNG in .temp/screenshots/ of working_root (scratch policy: screenshots never land in the repo root), draws a red circle on the cursor, and returns the window title, its screen position, the mouse position and the image data.",
+        "description": "Screenshot the Chrome window (CDP). Saves PNG in .temp/screenshots/, marks the cursor, returns title, window/mouse position and image data.",
         "parameters": {
             "type": "object",
             "properties": {
-                "filename": {"type": "string", "description": "Optional filename for screenshot (auto-generates if omitted)"}
+                "filename": {"type": "string", "description": "Screenshot name; auto-generated if omitted."}
             },
             "required": []
         }

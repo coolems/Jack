@@ -4,13 +4,13 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "view_image",
-        "description": "Load an image for vision model analysis. Returns image data that can be analyzed. Image file must be inside working_root directory.",
+        "description": "Load an image for vision analysis (returns image data).",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Image path relative to working_root ('shot.png' or 'subfolder/shot.png'); must exist inside working_root."
+                    "description": "Image path inside working_root ('shot.png')."
                 }
             },
             "required": ["filename"]

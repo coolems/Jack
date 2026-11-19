@@ -19,14 +19,14 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_perform_action",
-        "description": "Run one advertised UIA action on a snapshot element: invoke, toggle, expand, collapse, select, set_value, set_range, scroll, default_action. Only names in that element's snapshot 'actions' are accepted. dispatched=true, verified=false.",
+        "description": "Run one UIA action on a snapshot element (invoke, toggle, expand, collapse, select, set_value, set_range, scroll). Only names in that element's 'actions' list are accepted.",
         "parameters": {
             "type": "object",
             "properties": {
                 "snapshot_id": {"type": "string", "description": "snapshotId from cua_get_state."},
-                "element_index": {"type": "integer", "description": "Element index in that snapshotId."},
-                "action": {"type": "string", "description": "Action name from the element's 'actions' list."},
-                "value": {"type": "string", "description": "Value for set_value / set_range / scroll [x,y]."}
+                "element_index": {"type": "integer", "description": "Element index in that snapshot."},
+                "action": {"type": "string", "description": "Action name from the element's 'actions'."},
+                "value": {"type": "string", "description": "Value for set_value/set_range/scroll."}
             },
             "required": ["snapshot_id", "element_index", "action"]
         }

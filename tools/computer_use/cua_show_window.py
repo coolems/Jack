@@ -10,12 +10,12 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_show_window",
-        "description": "Unhide/unminimize a window without activating it (no focus steal), so it has pixels and a control tree again. Reports foregroundChanged. Not proof - re-observe.",
+        "description": "Unhide/unminimize a window without stealing focus, so it has pixels and a control tree again.",
         "parameters": {
             "type": "object",
             "properties": {
-                "window_id": {"type": "string", "description": "windowId from cua_get_app/cua_list_windows."},
-                "restore": {"type": "boolean", "description": "Also restore a minimized window to normal size."}
+                "window_id": {"type": "string", "description": "windowId from cua_get_app/list_windows."},
+                "restore": {"type": "boolean", "description": "Also restore minimized window to normal size."}
             },
             "required": ["window_id"]
         }

@@ -4,11 +4,11 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "get_current_time",
-        "description": "Get current local time, UTC time, timezone offset, and date info. Use for any time/date queries. Returns formatted time block with weekday, DST status, and timestamp.",
+        "description": "Current local and UTC time, offset, weekday, DST, timestamp.",
         "parameters": {
             "type": "object",
             "properties": {
-                "timezone": {"type": "string", "description": "IANA timezone (e.g., 'America/New_York', 'Europe/London'). Optional - omit for system local time. Only IANA zones are accepted; bare city names are rejected."}
+                "timezone": {"type": "string", "description": "IANA zone ('America/New_York'); omit for local. Bare city names rejected."}
             },
             "required": []
         }

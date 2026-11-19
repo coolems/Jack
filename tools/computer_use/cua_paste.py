@@ -15,7 +15,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_paste",
-        "description": "Insert text via clipboard + Ctrl+V into the granted app's focused field (the user's clipboard is restored afterwards). Refused if focus is elsewhere. dispatched=true, verified=false; never auto-retried.",
+        "description": "Paste text (clipboard + Ctrl+V) into the granted app's focused field; user clipboard restored. Refused if focus is elsewhere.",
         "parameters": {
             "type": "object",
             "properties": {

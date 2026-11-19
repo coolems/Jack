@@ -11,17 +11,17 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "youtube_search",
-        "description": "Search YouTube for videos using the Piped API. Returns video titles, URLs, channel names, and durations. Use for finding tutorials, trailers, reviews, or specific videos. Do NOT use for playing videos or extracting transcripts - returns metadata only. Use concise, specific queries.",
+        "description": "Search YouTube (Piped API): titles, URLs, channels, durations. Metadata only - no playback or transcripts.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query for YouTube videos. Example: 'qwen3.6 tutorial', 'NASA artemis mission trailer'"
+                    "description": "Concise video query ('qwen3.6 tutorial')."
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Number of results to return (1-20). Default: 10.",
+                    "description": "Results to return.",
                     "default": 10,
                     "minimum": 1,
                     "maximum": 20

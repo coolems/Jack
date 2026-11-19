@@ -16,7 +16,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_type_text",
-        "description": "Type text into the granted app's focused field (refused if focus is on another app). VK keystrokes, max 2000 chars. dispatched=true, verified=false.",
+        "description": "Type text (VK keystrokes, max 2000 chars) into the granted app's focused field. Refused if focus is elsewhere.",
         "parameters": {
             "type": "object",
             "properties": {

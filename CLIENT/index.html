@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261126d">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261126e">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -117,7 +117,9 @@
     <aside class="preview-panel collapsed" id="previewPanel">
         <div class="panel-resize-handle" id="previewResizeHandle"></div>
         <div class="preview-panel-header">
-            <span class="preview-panel-title">Preview</span>
+            <!-- (2026-11-26) the separate Close X button was removed: the title itself is
+                 the close control (click "Preview" to close the panel). -->
+            <button type="button" class="preview-panel-title" id="previewCloseTitle" onclick="closePreview()" title="Close preview">Preview</button>
             <div class="preview-panel-actions">
                 <!-- Font size controls -->
                 <div class="preview-font-controls">
@@ -152,9 +154,6 @@
                 </button>
                 <button class="preview-panel-btn" id="previewDownloadBtn" title="Download">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>
-                </button>
-                <button class="preview-panel-btn" onclick="closePreview()" title="Close">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
             </div>
         </div>

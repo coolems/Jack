@@ -10,17 +10,17 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_scroll",
-        "description": "Wheel-scroll inside one window at a point (window px, relative 0..999, or a snapshot element). amount = wheel clicks 1-20. dispatched=true, verified=false.",
+        "description": "Wheel-scroll in a window at a point (px, relative, or snapshot element).",
         "parameters": {
             "type": "object",
             "properties": {
                 "window_id": {"type": "string", "description": "windowId to scroll in."},
                 "direction": {"type": "string", "enum": ["up", "down"], "description": "Wheel direction."},
-                "amount": {"type": "integer", "description": "Wheel clicks 1-20 (default 3)."},
-                "x": {"type": "integer", "description": "X (window px); default window centre."},
-                "y": {"type": "integer", "description": "Y (window px); default window centre."},
+                "amount": {"type": "integer", "description": "Wheel clicks 1-20.", "default": 3},
+                "x": {"type": "integer", "description": "X (window px); default centre."},
+                "y": {"type": "integer", "description": "Y (window px); default centre."},
                 "relative": {"type": "array", "items": {"type": "integer"}, "description": "[rx, ry] thousandths 0..999."},
-                "snapshot_id": {"type": "string", "description": "Optional element snapshotId."},
+                "snapshot_id": {"type": "string", "description": "Element snapshotId."},
                 "element_index": {"type": "integer", "description": "Element index."}
             },
             "required": ["window_id"]

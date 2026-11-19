@@ -13,17 +13,17 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read a file's content from working_root. path = directory, filename = bare name.",
+        "description": "Read a file's text content.",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {
                     "type": "string",
-                    "description": "Bare file name, no slashes ('config.py'). Folder goes in path."
+                    "description": "Bare file name, no slashes ('config.py')."
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory inside working_root, relative to it. '' / '.' / 'root' = working_root.",
+                    "description": "Directory; '' = working_root.",
                     "default": ""
                 }
             },

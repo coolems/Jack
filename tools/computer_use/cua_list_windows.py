@@ -10,7 +10,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "cua_list_windows",
-        "description": "List one app's windows: windowId, title, rect, on_screen. Refreshes each stored rect, so a moved/resized window is reported changed instead of letting old coordinates land elsewhere. Registers newly opened windows. Activates nothing.",
+        "description": "List an app's windows (windowId, title, rect, on_screen); refreshes rects and registers new windows.",
         "parameters": {
             "type": "object",
             "properties": {
