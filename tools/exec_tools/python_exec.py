@@ -468,16 +468,6 @@ def _get_blocked_libs():
     return DEFAULT_FORBIDDEN_MODULES
 
 
-def _path_scope_enabled():
-    """Whether the path-scope guardrail is active for this execution.
-
-    Gated by the per-profile blocked-libs set alone (see python_exec()): it runs only when the
-    active profile set is NON-EMPTY; an EMPTY admin clean set skips every guardrail BY DESIGN,
-    including this one. There is no separate flag for it.
-    """
-    return True
-
-
 def _get_working_dir():
     """Resolve working directory -- MUST be a configured working_root.
 
@@ -1245,7 +1235,7 @@ def python_exec(code, timeout=None):
     #   - non-empty list -> only those modules are import-blocked (function/attr/
     #     pattern guardrails below stay active as defense-in-depth, INCLUDING THE
     #     HARD FLOOR -- see _ast_guard.py docstring), plus the path-scope pre-exec
-    #     scan (see _path_scope_enabled())
+    #     scan (run_path_scope_check)
     #   - EMPTY list     -> admin clean set: NO restrictions at all. Every guardrail
     #     below is skipped BY DESIGN -- only what a profile explicitly lists may be
     #     blocked (user requirement, 2026-08-26 fix). The 2026-08-23 path-scope check
@@ -1266,23 +1256,22 @@ def python_exec(code, timeout=None):
         # absolute-looking path (print("/api/v1/users"), a Windows path in a log
         # message, ...) blocked perfectly safe code. The runtime sandbox below is
         # still the hard boundary for dynamically built paths.
-        if _path_scope_enabled():
-            _pyexec_dbg("#5 path-scope pre-exec check running", working_dir)
-            try:
-                scope_bad, scope_violations = run_path_scope_check(code, working_dir)
-            except Exception as e:  # the guardrail itself must never fail open
-                return (f"EXECUTION BLOCKED by path-scope guardrail error ({e}). "
-                        f"The pre-execution path check could not complete; failing closed.")
-            if scope_bad:
-                violation_list = '\n'.join(f'  * {v}' for v in scope_violations)
-                return (
-                    f"EXECUTION BLOCKED by path-scope guardrail.\n\n"
-                    f"The code references paths OUTSIDE the working_root "
-                    f"({working_dir}) and was NOT executed:\n\n"
-                    f"{violation_list}\n\n"
-                    f"All filesystem access in python_exec must stay inside working_root. "
-                    f"Use relative paths (resolved against working_root) or subfolders of it."
-                )
+        _pyexec_dbg("#5 path-scope pre-exec check running", working_dir)
+        try:
+            scope_bad, scope_violations = run_path_scope_check(code, working_dir)
+        except Exception as e:  # the guardrail itself must never fail open
+            return (f"EXECUTION BLOCKED by path-scope guardrail error ({e}). "
+                    f"The pre-execution path check could not complete; failing closed.")
+        if scope_bad:
+            violation_list = '\n'.join(f'  * {v}' for v in scope_violations)
+            return (
+                f"EXECUTION BLOCKED by path-scope guardrail.\n\n"
+                f"The code references paths OUTSIDE the working_root "
+                f"({working_dir}) and was NOT executed:\n\n"
+                f"{violation_list}\n\n"
+                f"All filesystem access in python_exec must stay inside working_root. "
+                f"Use relative paths (resolved against working_root) or subfolders of it."
+            )
 
         _pyexec_dbg("#5.5 AST + pattern security checks running", working_dir)
         is_forbidden, violations = _run_security_checks(code)
