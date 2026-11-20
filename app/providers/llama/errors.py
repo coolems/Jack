@@ -28,3 +28,27 @@ class BackendUnavailableError(ConnectionError):
         self.retry_after_sec = retry_after_sec
         self.oom = oom
         self.reason = reason or message
+
+
+class ContextWindowExceededError(RuntimeError):
+    """The request prompt exceeds the engine's context window (HTTP 400 / 413).
+
+    The engine rejects the WHOLE request BEFORE generation when the prompt alone
+    (messages + tool schema) is larger than its context window ("request exceeds the
+    context window ... requests are never truncated"). This is NOT an outage: waiting
+    will not fix it. The caller must send less context (trim history / downscale images
+    / drop tools) and re-send. Fields:
+        model:          the model id the request targeted (None if unknown).
+        prompt_tokens:  the token count the engine reported for the prompt.
+        context_window: the window the engine enforced.
+        reason:         the raw body/description verbatim.
+    """
+
+    def __init__(self, message: str, *, model: str = None,
+                 prompt_tokens: int = None, context_window: int = None,
+                 reason: str = ""):
+        super().__init__(message)
+        self.model = model
+        self.prompt_tokens = prompt_tokens
+        self.context_window = context_window
+        self.reason = reason or message

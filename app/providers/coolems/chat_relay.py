@@ -21,7 +21,7 @@ import httpx
 # Typed, EXPECTED user-facing condition: image sent to a model without mmproj.
 # Caught specifically below so it logs ONE clean line instead of a full traceback.
 from ..llama.vision_support import VisionNotAvailableError
-from ..llama.errors import BackendUnavailableError
+from ..llama.errors import BackendUnavailableError, ContextWindowExceededError
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 
@@ -270,6 +270,21 @@ async def run_chat_core(server_provider, provider, sink, *, model: str, messages
             retry_after=getattr(e, "retry_after_sec", None),
             available_models=await _build_outage_models(server_provider, user_info),
         )
+
+    except ContextWindowExceededError as e:
+        # The prompt itself is larger than the engine's context window (HTTP 400 "request
+        # exceeds the context window"). NOT an outage: waiting will not help, the caller
+        # must trim history and re-send. Tag the frame distinctly so the CLIENT can re-trim
+        # and retry instead of surfacing a bare "Provider Error" with no recovery.
+        logger.warning(f"[SERVER] Context window exceeded for conv={conv_id}: {e}")
+        await _sink_send_frame(sink, {
+            "type": "error",
+            "message": str(e)[:800],
+            "error_type": "context_window_exceeded",
+            "model": model,
+            "prompt_tokens": getattr(e, "prompt_tokens", None),
+            "context_window": getattr(e, "context_window", None),
+        })
 
     except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
         # Expected user-facing condition: the llama/strata backend is down, unreachable or

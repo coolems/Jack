@@ -20,7 +20,7 @@ from .base_mode import (
     check_stop_event,
     build_session_stats,
 )
-from app.providers.coolems_client.errors import BackendUnavailableError
+from app.providers.coolems_client.errors import BackendUnavailableError, ContextWindowExceededError
 
 
 
@@ -73,6 +73,25 @@ async def _stream_normal_turn(config: NormalModeConfig, messages: List[Dict]):
             f"(recoverable): {err}. Preserving the prepared turn and resuming."
         )
         return await resume_after_backend_outage(config, messages, err)
+    except ContextWindowExceededError as err:
+        # The prompt outgrew the engine's window even after history was trimmed at load
+        # time (the server tokenizer counts more than our estimate). Trim harder once and
+        # re-send; a second rejection is a genuine "message too large" and surfaces the
+        # clean typed message instead of a bare "Provider Error".
+        from utils.history_trimmer import safe_trim_history
+        from utils.history_manager import max_history_tokens
+        protected = [0]
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                protected.append(i)
+                break
+        limit = max(1024, int(max_history_tokens() * 0.75))
+        messages = safe_trim_history(messages, limit, protected)
+        logger.warning(
+            f"Context window exceeded for model '{config.model}' in normal mode "
+            f"({err}); trimmed history to {len(messages)} message(s) and retrying."
+        )
+        return await _chat_stream_once(config, messages)
     except Exception as err:
         if not is_vision_unavailable_error(err):
             raise

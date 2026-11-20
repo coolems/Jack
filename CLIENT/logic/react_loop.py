@@ -49,6 +49,7 @@ from utils.token_counter import refresh_exact_token_cache
 
 from .base_mode import push_token_stats, check_stop_event, build_session_stats, strip_turn_stats_lines
 from .provider_call import call_provider_with_retry
+from app.providers.coolems_client.errors import ContextWindowExceededError
 from .tool_lock import tool_lock, SCREEN_BROWSER_TOOLS
 # Context-budget diagnostics: every limit stage logs WHO holds the tokens (per-role
 # histogram, unremovable block, injected notices, per-tool schema cost, top contributors)
@@ -85,6 +86,25 @@ TOOL_SKIPPED_FOR_STEER = (
     "re-planned before running. Read the newest user instruction above and decide whether this "
     "call is still needed."
 )
+
+
+def _is_context_exhaustion(err: BaseException) -> bool:
+    """True when the provider failed because the prompt outgrew the context window.
+
+    Two SERVER shapes mean the same thing and both recover by trimming history and re-sending
+    a smaller payload:
+      - an HTTP 400 rejected UP FRONT because the prompt exceeds the window
+        (``ContextWindowExceededError``, or the 'exceeds the context window' /
+        'requests are never truncated' markers it survives the WS pipe with), and
+      - an HTTP 500 where the engine truncated its own tool-call JSON mid-output
+        (the existing 'truncated its own tool-call' marker).
+    """
+    if isinstance(err, ContextWindowExceededError):
+        return True
+    text = str(err)
+    return ("truncated its own tool-call" in text
+            or "exceeds the context window" in text
+            or "requests are never truncated" in text)
 
 
 def _loop_boundary(messages: List[Dict]) -> int:
@@ -768,11 +788,13 @@ async def run_react_loop(
 
 
             except RuntimeError as _prov_err:
-                if "truncated its own tool-call" in str(_prov_err) and context_recoveries < MAX_CONTEXT_RECOVERIES:
+                if _is_context_exhaustion(_prov_err) and context_recoveries < MAX_CONTEXT_RECOVERIES:
                     context_recoveries += 1
                     logger.warning(
                         f"[AGENTIC.DEBUG] react_loop - CONTEXT RECOVERY {context_recoveries}/{MAX_CONTEXT_RECOVERIES}: "
-                        f"server truncated its own tool-call JSON. Aggressively re-trimming history..."                    )
+                        f"the prompt outgrew the context window ({_prov_err}). "
+                        f"Aggressively re-trimming history..."
+                    )
                     live_protected = [0]
                     for _pi in range(len(messages) - 1, -1, -1):
                         if messages[_pi].get("role") == "user":
@@ -795,9 +817,9 @@ async def run_react_loop(
                     if current_tokens < guardian_limit:
                         guardian_armed = True
                     recovery_notice = {"role": "user", "content": (
-                        "[SYSTEM NOTICE] Your previous tool call was truncated because the context window ran out. "
-                        "Continue the task with SMALLER payloads: split large code into multiple small calls "
-                        "(one file per call, < ~200 lines each) and avoid re-sending content you already have.")
+                        "[SYSTEM NOTICE] The context window ran out. Continue the task with SMALLER "
+                        "payloads: split large code into multiple small calls (one file per call, "
+                        "< ~200 lines each) and avoid re-sending content you already have.")
                     }
                     messages.append(recovery_notice)
                     continue

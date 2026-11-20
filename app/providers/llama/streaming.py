@@ -15,6 +15,7 @@ the controls cannot be discovered, or the endpoint rejects the keys, no thinking
 sent - see _resolve_thinking / _demote_thinking.
 """
 import json
+import re
 import time
 import asyncio
 import logging
@@ -41,7 +42,7 @@ from .thinking import ThinkingPolicy, normalize_mode
 from .model_utils import _is_mmproj_file, normalize_model_name
 from .vision_support import VisionNotAvailableError, make_vision_error, _looks_like_mmproj_error
 from .http_client import get_async_client
-from .errors import BackendUnavailableError
+from .errors import BackendUnavailableError, ContextWindowExceededError
 from . import model_state
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Streaming")
@@ -73,6 +74,37 @@ def _is_backend_unavailable(status_code: int, body: str) -> bool:
         return True
     low = (body or "").lower()
     return any(m in low for m in _BACKEND_UNAVAILABLE_MARKERS)
+
+
+#: Body markers that mean "the prompt alone exceeds the engine's context window", as opposed
+#: to a malformed request (bad field, unknown model, thinking-key rejection). The engine
+#: rejects these BEFORE generation; the fix is to send less context, never to wait.
+_CONTEXT_WINDOW_MARKERS = (
+    "exceeds the context window",
+    "requests are never truncated",
+    "prompt is too long",
+    "prompt too long",
+)
+
+#: "request exceeds the context window: prompt (305082/321877 tokens) > 262144; ..."
+_CONTEXT_WINDOW_400_RE = re.compile(
+    r"prompt\s*\(\s*(\d+)\s*/\s*(\d+)\s*tokens?\s*\)\s*>\s*(\d+)", re.IGNORECASE)
+
+
+def _is_context_window_exceeded(status_code: int, body: str) -> bool:
+    """True when the engine rejected the request because the prompt exceeds its window."""
+    if status_code not in (400, 413, 422):
+        return False
+    low = (body or "").lower()
+    return any(m in low for m in _CONTEXT_WINDOW_MARKERS)
+
+
+def _parse_context_window_400(body: str):
+    """(prompt_tokens, context_window) from a context-window rejection body, or (None, None)."""
+    m = _CONTEXT_WINDOW_400_RE.search(body or "")
+    if m:
+        return int(m.group(1)), int(m.group(3))
+    return None, None
 
 
 def _thinking_policy_for(api_url: str, model: str) -> ThinkingPolicy:
@@ -652,6 +684,20 @@ async def chat_stream(
                         # Read the actual error body from llama.cpp for debugging
                         error_body = (await response.aread()).decode("utf-8", errors="replace")
                         logger.error(f"llama.cpp HTTP 400 Bad Request - body: {error_body[:500]}")
+                        # (2026-11 context window) A prompt that exceeds the engine's window
+                        # is rejected UP FRONT as HTTP 400. It is a distinct condition from a
+                        # malformed request or a thinking-key rejection, and the ONLY correct
+                        # response is to send less context: raise the typed error so the CLIENT
+                        # can trim history and re-send instead of surfacing a bare error.
+                        if _is_context_window_exceeded(response.status_code, error_body):
+                            prompt_tokens, window = _parse_context_window_400(error_body)
+                            raise ContextWindowExceededError(
+                                f"request exceeds the context window: prompt "
+                                f"({prompt_tokens or '?'} tokens) > {window or '?'}; "
+                                f"requests are never truncated",
+                                model=model, prompt_tokens=prompt_tokens,
+                                context_window=window, reason=error_body,
+                            )
                         # If we sent thinking keys and the endpoint rejected the request, its
                         # advertised knob is not usable: demote so the next request sends
                         # nothing instead of failing the same way every turn.
@@ -683,6 +729,15 @@ async def chat_stream(
                     # ignoring them. 400/422 are the "bad request" shapes proving this node
                     # cannot take our keys; 429/413 are load/size problems and must not
                     # disable thinking.
+                    if _is_context_window_exceeded(response.status_code, body):
+                        prompt_tokens, window = _parse_context_window_400(body)
+                        raise ContextWindowExceededError(
+                            f"request exceeds the context window: prompt "
+                            f"({prompt_tokens or '?'} tokens) > {window or '?'}; "
+                            f"requests are never truncated",
+                            model=model, prompt_tokens=prompt_tokens,
+                            context_window=window, reason=body,
+                        )
                     if response.status_code in (400, 422):
                         _demote_thinking(api_url, model,
                                          f"HTTP {response.status_code}: {body[:160]}",
@@ -913,6 +968,11 @@ async def chat_stream(
         except BackendUnavailableError:
             # Expected recoverable condition (engine down/restarting) - already logged where
             # it was raised; propagate untouched so chat_relay tags the frame.
+            raise
+        except ContextWindowExceededError:
+            # Expected condition (prompt exceeds the window) - already logged where it was
+            # raised; propagate untouched so chat_relay tags the frame as a context-window
+            # rejection rather than a generic "server error".
             raise
         except Exception as e:
             logger.error(f"llama.cpp stream failed: {e}")

@@ -40,22 +40,48 @@ class ServerUnreachableError(BackendUnavailableError):
         super().__init__(message, model=model, server_down=True)
 
 
+class ContextWindowExceededError(RuntimeError):
+    """The prompt exceeded the engine's context window (HTTP 400 'request exceeds ...').
+
+    Not a backend outage: waiting will not help. The caller must trim history / reduce the
+    payload and re-send. Carries the prompt_tokens / context_window the SERVER reported so
+    the recovery can size the next attempt.
+    """
+
+    def __init__(self, message: str, *, model: str = None,
+                 prompt_tokens: int = None, context_window: int = None):
+        super().__init__(message)
+        self.model = model
+        self.prompt_tokens = prompt_tokens
+        self.context_window = context_window
+
+
 def raise_for_error_frame(msg: dict) -> None:
     """Raise the right exception for a SERVER ``{'type': 'error'}`` frame.
 
     A recoverable outage becomes a :class:`BackendUnavailableError` so the resume path
-    preserves the in-flight call and offers a model switch; anything else stays a plain
-    ``RuntimeError`` as before. Both transports (direct_mode / relay_mode) call this, so the
-    typed-error decision lives in one place instead of two copies.
+    preserves the in-flight call and offers a model switch; a context-window rejection
+    becomes a :class:`ContextWindowExceededError` so the caller can trim and re-send;
+    anything else stays a plain ``RuntimeError`` as before. Both transports (direct_mode /
+    relay_mode) call this, so the typed-error decision lives in one place instead of two
+    copies.
 
-    A frame is recoverable when ANY of these is true (three SERVER shapes all mean "wait and
-    resend", never "fail the turn"):
+    A frame is recoverable-outage when ANY of these is true (three SERVER shapes all mean
+    "wait and resend", never "fail the turn"):
       - ``error_type == "backend_unavailable"``  (run_chat_core's tagged outage frame)
       - ``recoverable`` truthy                    (same frame's explicit flag)
       - ``retryable`` truthy                      (queue worker watchdog / dropped-at-pickup:
         "no node serving / backend unavailable - please retry")
+    A frame is a context-window rejection when ``error_type == "context_window_exceeded"``.
     """
     err_msg = msg.get("message", "Server error") if isinstance(msg, dict) else "Server error"
+    if isinstance(msg, dict) and msg.get("error_type") == "context_window_exceeded":
+        raise ContextWindowExceededError(
+            err_msg,
+            model=msg.get("model"),
+            prompt_tokens=msg.get("prompt_tokens"),
+            context_window=msg.get("context_window"),
+        )
     if isinstance(msg, dict) and (
         msg.get("error_type") == "backend_unavailable"
         or msg.get("recoverable")
