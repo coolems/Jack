@@ -472,7 +472,7 @@ function handleWebSocketMessage(data, ownerConvId) {
     // back online. No card on screen -> a no-op.
     if (data.type === 'fleet_status') {
         if (typeof ApprovalDialog !== 'undefined') {
-            ApprovalDialog.updateFleet(data.models || []);
+            ApprovalDialog.updateFleet(data.models || [], !!data.server_down);
         }
         return;
     }

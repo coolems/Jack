@@ -214,6 +214,7 @@ const ApprovalDialog = {
                     monitor: !!(parsed && parsed.monitor),
                     failed_model: String((parsed && parsed.failed_model) || ''),
                     models: Array.isArray(parsed && parsed.models) ? parsed.models : [],
+                    server_down: !!(parsed && parsed.server_down),
                 };
             }
         } catch (e) { /* payload was plain text - use it as the question */ }
@@ -269,7 +270,7 @@ const ApprovalDialog = {
 
         // A live fleet panel for backend-outage questions (monitor=true): dots + slot
         // counts, refreshed in place by fleet_status frames (see updateFleet).
-        const fleetHtml = q.monitor ? this._fleetPanelHtml(q.models || []) : '';
+        const fleetHtml = q.monitor ? this._fleetPanelHtml(q.models || [], q.server_down) : '';
 
         return '<div class="exec-approval-header">' + headerHtml + '</div>' +
             askedHtml +
@@ -323,11 +324,17 @@ const ApprovalDialog = {
         return rows;
     },
 
-    _fleetPanelHtml(models) {
+    _fleetEmptyHtml(serverDown) {
+        return serverDown
+            ? '<div class="exec-fleet-empty">SERVER down - waiting for it to return</div>'
+            : '<div class="exec-fleet-empty">no model status available</div>';
+    },
+
+    _fleetPanelHtml(models, serverDown) {
         const rows = this._fleetRowsHtml(models, '');
         return '<div class="exec-approval-fleet">'
              + '<div class="exec-fleet-title">Model status (live)</div>'
-             + (rows || '<div class="exec-fleet-empty">no model status available</div>')
+             + (rows || this._fleetEmptyHtml(serverDown))
              + '</div>';
     },
 
@@ -344,25 +351,30 @@ const ApprovalDialog = {
             body.dataset.monitor = '1';
             body.dataset.failedModel = String(q.failed_model || '');
         }
-        this._applyFleet(card, q.models || [], String(q.failed_model || ''));
+        this._applyFleet(card, q.models || [], String(q.failed_model || ''), !!(q.server_down));
     },
 
     /** Re-render one card's fleet panel and enable/disable its Resume button. */
-    _applyFleet(card, models, failedModel) {
+    _applyFleet(card, models, failedModel, serverDown) {
         const body = card.querySelector('.exec-approval-card');
         const panel = body ? body.querySelector('.exec-approval-fleet') : null;
         if (panel) {
             panel.innerHTML = '<div class="exec-fleet-title">Model status (live)</div>'
-                + (this._fleetRowsHtml(models, failedModel) || '<div class="exec-fleet-empty">no model status available</div>');
+                + (this._fleetRowsHtml(models, failedModel) || this._fleetEmptyHtml(serverDown));
         }
         const failed = this._findModel(models, failedModel);
         const online = !!(failed && failed.served);
+        // Keep-waiting must stay clickable while the SERVER itself is down (there is no
+        // catalog to gate on); "Resume now" stays gated on the model actually being served.
         card.querySelectorAll('.exec-btn-option[data-resume="1"]').forEach((btn) => {
-            btn.disabled = !online;
+            btn.disabled = serverDown ? false : !online;
         });
         const statusEl = body ? body.querySelector('.exec-approval-status') : null;
         if (statusEl) {
-            if (online) {
+            if (serverDown) {
+                statusEl.className = 'exec-approval-status pending';
+                statusEl.textContent = '\u23F3 SERVER is down - waiting for it to return (keep waiting resumes automatically).';
+            } else if (online) {
                 statusEl.className = 'exec-approval-status done-allow';
                 statusEl.textContent = '\u2705 ' + String(failedModel || '') + ' is back online - resume now.';
             } else {
@@ -373,11 +385,11 @@ const ApprovalDialog = {
     },
 
     /** Update every open backend-outage card from a pushed 'fleet_status' frame. */
-    updateFleet(models) {
+    updateFleet(models, serverDown) {
         document.querySelectorAll('.exec-approval-card[data-monitor="1"]').forEach((body) => {
             const card = body.closest('.message') || body;
             const failedModel = body.dataset.failedModel || '';
-            this._applyFleet(card, models || [], failedModel);
+            this._applyFleet(card, models || [], failedModel, !!serverDown);
         });
     },
 

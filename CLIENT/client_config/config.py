@@ -591,6 +591,7 @@ BACKEND_RESUME_POLL_SEC: float = 5.0       # (s) between health polls while the 
 BACKEND_RESUME_MAX_WAIT_SEC: float = 600.0 # (s) total wait budget before giving up (covers Strata's ~92 GB expert reload)
 BACKEND_OFFER_SWITCH_AFTER_SEC: float = 45.0  # (s) down before the switch-model question card is offered
 BACKEND_STATUS_POLL_SEC: float = 5.0       # (s) self-poll cadence for the dialog's live status (fallback when no fleet_status push)
+BACKEND_PROBE_TIMEOUT_SEC: float = 5.0     # (s) ceiling for ONE reachability/catalog probe so a hung SERVER never blocks past the poll interval
 
 # --- Bootstrap wait (CLIENT startup -> SERVER delivery) ---
 # The CLIENT often starts while the COOLEMS SERVER is still booting / loading its model,

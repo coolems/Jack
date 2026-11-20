@@ -81,6 +81,7 @@ from .config import (
     BACKEND_RESUME_MAX_WAIT_SEC,
     BACKEND_OFFER_SWITCH_AFTER_SEC,
     BACKEND_STATUS_POLL_SEC,
+    BACKEND_PROBE_TIMEOUT_SEC,
 
     # --- Bootstrap wait (CLIENT startup -> SERVER delivery) ---
     BOOTSTRAP_MAX_WAIT_SEC,

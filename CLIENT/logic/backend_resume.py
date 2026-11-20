@@ -7,6 +7,18 @@ re-sent once the backend is healthy again. While waiting the user sees live "rel
 status and - after a configurable grace - a question card offering keep-waiting /
 switch-model / cancel. The card rides the same 'question' consent kind as ask_user_question,
 so it lands in the normal turn history (cycle_question row) like every other dialog.
+
+Liveness is modelled as a TRI-STATE probe (not a single "is the model served" check):
+
+  SERVER_DOWN  - no SERVER answers (health probe failed AND the catalog is unreadable).
+  SERVER_UP    - the SERVER answers but the model is not served yet (reloading / all-down).
+  MODEL_SERVED - the SERVER answers and the model reports served.
+
+The tri-state fixes two failure modes of the single-probe design: a SERVER outage was
+indistinguishable from "model still loading" (so recovery was never detected and every poll
+blocked up to 30 s), and the dialog had no way to tell the UI "the SERVER itself is down"
+(so its keep-waiting button stayed disabled forever). Each probe is bounded to
+BACKEND_PROBE_TIMEOUT_SEC so a hung SERVER never blocks past the poll interval.
 """
 
 import asyncio
@@ -14,12 +26,14 @@ import json
 import logging
 import os
 import time
+from collections import namedtuple
 
 from client_config import (
     BACKEND_RESUME_POLL_SEC,
     BACKEND_RESUME_MAX_WAIT_SEC,
     BACKEND_OFFER_SWITCH_AFTER_SEC,
     BACKEND_STATUS_POLL_SEC,
+    BACKEND_PROBE_TIMEOUT_SEC,
 )
 
 from app.providers.coolems_client.errors import BackendUnavailableError
@@ -30,6 +44,16 @@ logger = logging.getLogger("COOLEMS.Logic.BackendResume")
 class UserCancelled(Exception):
     """Raised when the user stops generation during the outage wait (clean cancel)."""
     pass
+
+
+# --- probe outcome states ---------------------------------------------------
+
+SERVER_DOWN = "server_down"    # no SERVER answers
+SERVER_UP = "server_up"        # SERVER answers, model not served yet
+MODEL_SERVED = "model_served"  # SERVER answers and the model reports served
+
+#: One probe result: state, model-served flag, online slots, live catalog, reachability.
+Probe = namedtuple("Probe", ["state", "served", "slots", "catalog", "reachable"])
 
 
 # --- frame helpers ----------------------------------------------------------
@@ -88,6 +112,11 @@ def _entry_matches(entry: dict, model: str) -> bool:
 
 
 async def _catalog(config):
+    """Model catalog from the SERVER, bounded so a hung SERVER never blocks the poll loop.
+
+    Returns [] when the SERVER is unreachable, the catalog is empty, or the provider has no
+    ``get_models_list`` (tests / mocks). A non-empty list is itself proof the SERVER answered.
+    """
     provider = getattr(config, "provider", None)
     if provider is None:
         return []
@@ -95,19 +124,60 @@ async def _catalog(config):
     if not callable(getter):
         return []
     try:
-        models = await getter()
+        models = await asyncio.wait_for(getter(), timeout=BACKEND_PROBE_TIMEOUT_SEC)
     except Exception as e:
         logger.debug(f"[BACKEND-RESUME] model list probe failed: {e}")
         return []
     return [m for m in (models or []) if isinstance(m, dict)]
 
 
-async def _served(config, model: str):
-    """(served, online_slots) for *model*; (None, 0) when the catalog is unreadable."""
-    for m in await _catalog(config):
+async def _health_ok(config) -> bool:
+    """True when the SERVER answers its health probe (reachability, not model-served).
+
+    The SERVER's ``health_ok`` means "reachable and SOME node serves traffic", so this is
+    the reachability signal the tri-state probe needs - a distinct thing from whether THIS
+    model is served. A provider without ``health_check`` (tests / mocks) reports False.
+    """
+    provider = getattr(config, "provider", None)
+    if provider is None:
+        return False
+    check = getattr(provider, "health_check", None)
+    if not callable(check):
+        return False
+    try:
+        ok, _msg, _models = await asyncio.wait_for(check(), timeout=BACKEND_PROBE_TIMEOUT_SEC)
+    except Exception as e:
+        logger.debug(f"[BACKEND-RESUME] health probe failed: {e}")
+        return False
+    return bool(ok)
+
+
+async def _probe(config, model: str) -> Probe:
+    """One bounded reachability + status probe, run concurrently.
+
+    Reachability is ``health_ok OR non-empty catalog``: a readable catalog is itself proof
+    the SERVER answered, so a fleet that is entirely down (health reports 'error' but the
+    catalog still lists the configured models) is SERVER_UP, not SERVER_DOWN - the only
+    thing missing then is a served model, which is exactly what the wait is for.
+    """
+    catalog, health_ok = await asyncio.gather(_catalog(config), _health_ok(config))
+    reachable = health_ok or bool(catalog)
+
+    served = False
+    slots = 0
+    for m in catalog:
         if _entry_matches(m, model):
-            return bool(m.get("served")), int(m.get("online_slots") or 0)
-    return None, 0
+            served = bool(m.get("served"))
+            slots = int(m.get("online_slots") or 0)
+            break
+
+    if served:
+        state = MODEL_SERVED
+    elif reachable:
+        state = SERVER_UP
+    else:
+        state = SERVER_DOWN
+    return Probe(state, served, slots, catalog, reachable)
 
 
 def _served_alternatives(catalog, model: str):
@@ -120,15 +190,22 @@ def _served_alternatives(catalog, model: str):
     return alt
 
 
-async def _push_fleet_status(config, catalog=None) -> None:
-    """Push a live 'fleet_status' frame to the browser so the outage card updates in place."""
+async def _push_fleet_status(config, catalog=None, server_down: bool = False) -> None:
+    """Push a live 'fleet_status' frame so the outage card updates in place.
+
+    ``server_down`` tells the UI the SERVER itself is unreachable (no catalog), so it shows
+    the keep-waiting state instead of a dead "no model status available" panel and keeps the
+    keep-waiting button clickable.
+    """
     ws = getattr(config, "websocket", None)
     if ws is None:
         return
     if catalog is None:
         catalog = await _catalog(config)
     try:
-        await ws.send_text(json.dumps({"type": "fleet_status", "models": catalog}))
+        await ws.send_text(json.dumps({
+            "type": "fleet_status", "models": catalog, "server_down": bool(server_down),
+        }))
     except Exception:
         pass
 
@@ -170,13 +247,16 @@ def _parse_switch_answer(answer: str, model: str, alternatives) -> str:
     return "wait"
 
 
-async def _ask_model_switch(config, model: str, alternatives, error,
-                            server_down: bool = False) -> str:
+async def _ask_model_switch(config, model: str, alternatives, reachable: bool,
+                            catalog=None) -> str:
     """Show the switch-model question card (same 'question' kind as ask_user_question).
 
-    A concurrent watcher keeps the chat's live status fresh and auto-closes the card the
-    moment the backend returns, so the wait resumes with zero clicks when it recovers.
-    Returns 'wait' | 'switch:<model>' | 'cancel' (defaults 'wait' when no UI can ask).
+    ``reachable`` is the CURRENT state (SERVER answering or not) at card-show time: when the
+    SERVER is down the card offers only keep-waiting / cancel and carries ``server_down`` so
+    the UI keeps its keep-waiting button enabled; when the SERVER is up the card offers a
+    model switch from the live catalog. A concurrent watcher keeps the live status fresh and
+    auto-closes the card the moment the backend returns. Returns 'wait' | 'switch:<model>' |
+    'cancel' (defaults 'wait' when no UI can ask).
     """
     from app.chat_bus import get_chat_bus
     from app.chat_bus.consent_dialog import get_approval_state
@@ -192,6 +272,8 @@ async def _ask_model_switch(config, model: str, alternatives, error,
     state = get_approval_state(get_chat_bus(), conv_id)
     if state is None:
         return "wait"
+
+    server_down = not reachable
 
     if server_down:
         opts = [{"label": "Keep waiting (auto-resume when it returns)", "recommended": True,
@@ -211,11 +293,13 @@ async def _ask_model_switch(config, model: str, alternatives, error,
         context = (f"Backend '{model}' stopped responding (restarting or out of memory). "
                    "Your in-progress work is preserved and will resume automatically when it returns.")
 
-    catalog = await _catalog(config)
+    if catalog is None:
+        catalog = await _catalog(config)
     payload = json.dumps({
         "question": question, "options": opts, "context": context,
         "requirement": "handle the backend outage",
         "monitor": True, "failed_model": model, "models": catalog,
+        "server_down": bool(server_down),
     }, ensure_ascii=False)
     request_id = state.new_request_id()
     if channel is not None:
@@ -268,11 +352,12 @@ async def _ask_model_switch(config, model: str, alternatives, error,
 async def _watch_while_card(config, request_id, state, model: str, alternatives,
                             server_down: bool = False) -> None:
     """Live status while the switch card is open; auto-resolve when the backend returns."""
+    last_reachable = None
     try:
         while True:
             await asyncio.sleep(BACKEND_STATUS_POLL_SEC)
-            served, _slots = await _served(config, model)
-            if served is True:
+            probe = await _probe(config, model)
+            if probe.served:
                 await _recovery(
                     config,
                     (f"\u2705 The SERVER is back online - resuming now." if server_down
@@ -284,7 +369,17 @@ async def _watch_while_card(config, request_id, state, model: str, alternatives,
                 except Exception:
                     pass
                 return
-            await _push_fleet_status(config)
+            # SERVER-down card: the first time the SERVER becomes reachable again, say so
+            # explicitly (it is distinct from "the model is served" - a reload follows).
+            if server_down and last_reachable is False and probe.reachable:
+                await _recovery(
+                    config,
+                    f"\u2705 The SERVER is back online - '{model}' is reloading; resuming when served.",
+                    "success",
+                )
+            last_reachable = probe.reachable
+            await _push_fleet_status(config, catalog=probe.catalog,
+                                     server_down=not probe.reachable)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -309,9 +404,9 @@ async def resume_after_backend_outage(config, messages, error: BackendUnavailabl
     server_down = bool(getattr(error, "server_down", False))
     started = time.monotonic()
     deadline = started + BACKEND_RESUME_MAX_WAIT_SEC
-    alternatives = _served_alternatives(await _catalog(config), model)
     offer_shown = False
     last_status = 0.0
+    last_state = None
 
     if server_down:
         await _recovery(
@@ -333,10 +428,41 @@ async def resume_after_backend_outage(config, messages, error: BackendUnavailabl
             raise UserCancelled("User cancelled during backend outage wait.")
 
         now = time.monotonic()
+        probe = await _probe(config, model)
+
+        # The SERVER just came back (was down, now reachable but the model still loads):
+        # announce the transition - it is a distinct milestone from "model served".
+        if last_state == SERVER_DOWN and probe.state == SERVER_UP:
+            await _recovery(
+                config,
+                f"\u2705 The SERVER is back online - '{model}' is reloading; resuming when served.",
+                "success",
+            )
+        last_state = probe.state
+
+        if probe.served:
+            await _recovery(
+                config,
+                (f"\u2705 The SERVER is back online ({probe.slots} slot(s) for '{model}') - resuming."
+                 if server_down
+                 else f"\u2705 Backend '{model}' is back online ({probe.slots} slot(s)) - resuming."),
+                "success",
+            )
+            try:
+                return await _retry_same_messages(config, messages, model)
+            except BackendUnavailableError as e2:
+                error = e2
+                server_down = bool(getattr(e2, "server_down", False)) or server_down
+                await _system(config, f"{'SERVER' if server_down else 'Backend'} flapped again - continuing to wait.")
+                last_state = None
+                continue
+
         if now >= deadline:
             if not offer_shown:
-                decision = await _ask_model_switch(config, model, alternatives, error,
-                                                   server_down=server_down)
+                offer_shown = True
+                alternatives = _served_alternatives(probe.catalog, model)
+                decision = await _ask_model_switch(config, model, alternatives,
+                                                   probe.reachable, probe.catalog)
                 if decision == "cancel":
                     raise RuntimeError(
                         (f"The SERVER did not recover and you cancelled the wait. " if server_down
@@ -349,31 +475,16 @@ async def resume_after_backend_outage(config, messages, error: BackendUnavailabl
                  else f"Backend '{model}' did not recover within {BACKEND_RESUME_MAX_WAIT_SEC:.0f}s. ")
                 + "Your in-progress work could not be resumed automatically - send your message again.")
 
-        served, slots = await _served(config, model)
-        if served is True:
-            if server_down:
-                await _recovery(config, f"\u2705 The SERVER is back online ({slots} slot(s) for '{model}') - resuming.",
-                                "success")
-            else:
-                await _recovery(config, f"\u2705 Backend '{model}' is back online ({slots} slot(s)) - resuming.",
-                                "success")
-            try:
-                return await _retry_same_messages(config, messages, model)
-            except BackendUnavailableError as e2:
-                error = e2
-                server_down = bool(getattr(e2, "server_down", False))
-                alternatives = _served_alternatives(await _catalog(config), model)
-                await _system(config, f"{'SERVER' if server_down else 'Backend'} flapped again - continuing to wait.")
-                continue
-
         if now - last_status >= BACKEND_RESUME_POLL_SEC:
             last_status = now
-            await _push_fleet_status(config)
+            await _push_fleet_status(config, catalog=probe.catalog,
+                                     server_down=not probe.reachable)
 
         if not offer_shown and (now - started) >= BACKEND_OFFER_SWITCH_AFTER_SEC:
             offer_shown = True
-            decision = await _ask_model_switch(config, model, alternatives, error,
-                                               server_down=server_down)
+            alternatives = _served_alternatives(probe.catalog, model)
+            decision = await _ask_model_switch(config, model, alternatives,
+                                               probe.reachable, probe.catalog)
             if decision == "cancel":
                 raise RuntimeError(
                     (f"The SERVER did not recover and you cancelled the wait. " if server_down
