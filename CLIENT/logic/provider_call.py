@@ -12,6 +12,8 @@ import logging
 import time
 from typing import List, Dict, Any, Tuple
 
+from app.providers.coolems_client.errors import BackendUnavailableError
+
 logger = logging.getLogger("COOLEMS.Logic.ProviderCall")
 
 
@@ -71,6 +73,18 @@ async def call_provider_with_retry(config: Any, messages: List[Dict]) -> Tuple[A
                 except Exception:
                     logger.debug("WebSocket send failed during vision-fallback notice")
                 continue  # retry with stripped messages
+
+            # ---- BACKEND UNAVAILABLE RESUME (2026-11-19 strata OOM/restart) ----
+            # The engine is down/restarting (503 / OOM / no-progress). Do NOT unwind the
+            # ReAct loop: preserve the in-loop `messages` and resume the SAME call once the
+            # backend is healthy again, offering a switch-model card as an escape hatch.
+            if isinstance(err, BackendUnavailableError):
+                from .backend_resume import resume_after_backend_outage
+                logger.warning(
+                    f"[AGENTIC.DEBUG] Backend unavailable for '{config.model}' "
+                    f"(recoverable): {err}. Preserving in-loop context and resuming."
+                )
+                return await resume_after_backend_outage(config, messages, err)
 
             # ---- CONNECTION ERROR RESTART (original behavior) -----------------
             if not isinstance(err, ConnectionError):

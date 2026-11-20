@@ -583,6 +583,15 @@ MODEL_SWITCH_PROGRESS_LOG_SEC: int = 20 # (s) between "Waiting..." progress logs
 MODEL_SWITCH_MAX_WAIT_SEC: int = 300    # (s) total Phase 2 wait budget before declaring failure (5 min)
 MODEL_SWITCH_CLIENT_BUDGET_SEC: int = 330  # (s) executor timeout for the whole switch call; must exceed MAX_WAIT + margin
 
+# --- Backend-outage resilience (2026-11-19 Strata OOM / engine restart) ---
+# When the SERVER tags a chat error as 'backend_unavailable' (HTTP 503, OOM reserve, no-progress
+# watchdog, expert reload), the CLIENT preserves the in-flight call and resumes it instead of
+# failing the turn. These bound that wait and the switch-model escape hatch.
+BACKEND_RESUME_POLL_SEC: float = 5.0       # (s) between health polls while the backend reloads
+BACKEND_RESUME_MAX_WAIT_SEC: float = 600.0 # (s) total wait budget before giving up (covers Strata's ~92 GB expert reload)
+BACKEND_OFFER_SWITCH_AFTER_SEC: float = 45.0  # (s) down before the switch-model question card is offered
+BACKEND_STATUS_POLL_SEC: float = 5.0       # (s) self-poll cadence for the dialog's live status (fallback when no fleet_status push)
+
 # --- Bootstrap wait (CLIENT startup -> SERVER delivery) ---
 # The CLIENT often starts while the COOLEMS SERVER is still booting / loading its model,
 # so bootstrap_framework() does NOT crash on a refused connection: it waits patiently for

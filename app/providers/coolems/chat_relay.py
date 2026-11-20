@@ -21,6 +21,7 @@ import httpx
 # Typed, EXPECTED user-facing condition: image sent to a model without mmproj.
 # Caught specifically below so it logs ONE clean line instead of a full traceback.
 from ..llama.vision_support import VisionNotAvailableError
+from ..llama.errors import BackendUnavailableError
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 
@@ -105,6 +106,50 @@ async def _sink_send_frame(sink, msg_dict: dict):
         logger.debug(f"[SERVER] Final frame not delivered (client gone): {e}")
 
 
+async def _build_outage_models(server_provider, user_info) -> list:
+    """Model catalog (name/served/slots/loaded) for a recoverable-outage frame.
+
+    Lets the CLIENT's resume dialog show live status and offer a switch to an alternative
+    that is still served. Best-effort: an unreadable catalog just means no switch options.
+    """
+    try:
+        from .model_catalog import build_model_catalog
+        catalog = await build_model_catalog(server_provider, user_info)
+        return [
+            {
+                "name": str(m.get("name") or ""),
+                "served": bool(m.get("served")),
+                "online_slots": int(m.get("online_slots") or 0),
+                "loaded": bool(m.get("loaded")),
+            }
+            for m in catalog
+            if isinstance(m, dict) and m.get("name")
+        ]
+    except Exception as _ce:
+        logger.debug(f"[SERVER] could not build model catalog for outage frame: {_ce}")
+        return []
+
+
+async def _send_backend_unavailable_frame(sink, *, message: str, model: str,
+                                          oom: bool = False, retry_after=None,
+                                          available_models: list) -> None:
+    """Send the tagged, recoverable 'backend_unavailable' error frame.
+
+    Distinct from a bare error frame: the CLIENT raises a typed BackendUnavailableError and
+    preserves the in-flight call (resume / switch dialog) instead of failing the turn.
+    """
+    await _sink_send_frame(sink, {
+        "type": "error",
+        "message": message[:800],
+        "error_type": "backend_unavailable",
+        "recoverable": True,
+        "retry_after": retry_after,
+        "model": model,
+        "oom": bool(oom),
+        "available_models": available_models,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers (tool filtering + prompt-size estimate)
 # ---------------------------------------------------------------------------
@@ -162,7 +207,7 @@ def _estimate_prompt_chars(messages, tools):
 async def run_chat_core(server_provider, provider, sink, *, model: str, messages: list,
                         temperature: float = LLAMA_SERVER_TEMP, enable_thinking: Any = False,
                         conv_id: str = "", tools=None, stop_event=None,
-                        context_window: Optional[int] = None):
+                        context_window: Optional[int] = None, user_info=None):
     """Run one chat turn against *provider*, streaming every frame through *sink*.
 
     *sink* needs send_text(str) + is_closed. Returns True when a final response was
@@ -211,13 +256,35 @@ async def run_chat_core(server_provider, provider, sink, *, model: str, messages
         logger.warning(f"[SERVER] Vision unavailable for conv={conv_id}: {e}")
         await _sink_send_frame(sink, {"type": "error", "message": str(e), "error_type": e.error_type})
 
+    except BackendUnavailableError as e:
+        # Recoverable: the backend engine is down/restarting (503, OOM, no-progress watchdog,
+        # expert reload). The CLIENT preserves the in-flight call and resumes it when the
+        # engine returns, or offers a model switch. Send a rich, TAGGED frame so it is not
+        # mistaken for a fatal, non-retryable failure.
+        logger.warning(f"[SERVER] Backend unavailable for conv={conv_id} (recoverable): {e}")
+        await _send_backend_unavailable_frame(
+            sink,
+            message=str(e),
+            model=model,
+            oom=bool(getattr(e, "oom", False)),
+            retry_after=getattr(e, "retry_after_sec", None),
+            available_models=await _build_outage_models(server_provider, user_info),
+        )
+
     except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
-        # Expected user-facing condition: the llama backend is down, unreachable or
-        # dropped mid-stream (e.g. the user stopped/restarted llama-server themselves).
-        # Log ONE clean line - no traceback. The client already receives a clear,
-        # actionable message below.
+        # Expected user-facing condition: the llama/strata backend is down, unreachable or
+        # dropped mid-stream (e.g. the user stopped/restarted llama-server themselves). This
+        # is ALSO recoverable - tag it the same as an OOM/503 so the CLIENT preserves the
+        # in-flight call, shows the live-status + switch dialog and resends when it returns,
+        # instead of surfacing a bare "Provider Error" with no recovery.
         logger.warning(f"[SERVER] LLM backend unavailable for conv={conv_id} (expected): {e}")
-        await _sink_send_frame(sink, {"type": "error", "message": f"LLM request failed on SERVER: {str(e)[:800]}"})
+        await _send_backend_unavailable_frame(
+            sink,
+            message=str(e),
+            model=model,
+            retry_after=None,
+            available_models=await _build_outage_models(server_provider, user_info),
+        )
 
     except Exception as e:
         # L6 fix: type/close-code based detection instead of substring matching on str(e)
@@ -263,6 +330,7 @@ async def relay_chat_websocket_direct(server_provider, msg: dict, ws):
         model=model, messages=messages, temperature=temperature,
         enable_thinking=enable_thinking, conv_id=conv_id, tools=tools,
         stop_event=server_stop_event,
+        user_info=getattr(ws, "_user_info", None),
     )
 
 
@@ -297,4 +365,5 @@ async def relay_chat_websocket(server_provider, msg: dict, ws, user_info=None):
         model=model, messages=messages, temperature=temperature,
         enable_thinking=enable_thinking, conv_id=conv_id, tools=tools,
         stop_event=server_stop_event,
+        user_info=user_info,
     )

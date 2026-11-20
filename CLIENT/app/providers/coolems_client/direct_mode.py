@@ -12,6 +12,7 @@ from client_config import MODEL_SWITCH_PHASE1_TIMEOUT, MODEL_SWITCH_POLL_INTERVA
     MODEL_SWITCH_MAX_WAIT_SEC, PROTOCOL_VERSION
 from . import _check_protocol, apply_auth_info, connect_with_failover, NoServerReachable
 from .client_provider import is_model_switching
+from .errors import BackendUnavailableError, ServerUnreachableError
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsClient")
 
@@ -149,17 +150,21 @@ async def chat_stream_direct_websocket(
                         final_response = json.dumps(msg)
                         logger.info(f"[CLIENT] Received tool_calls via Direct WS")
                     elif t == "error":
-                        err_msg = msg.get("message", "Server error")
-                        raise RuntimeError(err_msg)
+                        # Recoverable outage (engine down/restarting) -> typed error; anything
+                        # else stays RuntimeError. Shared helper keeps both transports identical.
+                        from .errors import raise_for_error_frame
+                        raise_for_error_frame(msg)
             except websockets.exceptions.ConnectionClosed as e:
                 # Check if this was caused by user clicking stop — NOT an error then
                 if stop_event and stop_event.is_set():
                     logger.info(f"[CLIENT] Direct WS closed due to user stop (conv={conv_id})")
                     raise UserCancelled("User cancelled generation.") from None
                 else:
-                    # Server disconnected without us requesting stop — this IS an issue
+                    # Server disconnected without us requesting stop — this IS an issue.
+                    # (2026-11 outage) the SERVER died or restarted: recoverable, so the resume
+                    # loop can wait for it and re-send the in-flight messages.
                     logger.warning(f"[CLIENT] Direct WS closed unexpectedly: {e}")
-                    raise ConnectionError(f"Server connection lost: {e}") from None
+                    raise ServerUnreachableError(f"SERVER connection lost: {e}") from None
             finally:
                 if stop_task and not stop_task.done():
                     stop_task.cancel()
@@ -173,11 +178,23 @@ async def chat_stream_direct_websocket(
         # Re-raise so caller knows it was a user-initiated cancellation
         raise
     except NoServerReachable as e:
-        raise ConnectionError(f"SERVER is not reachable - no configured address answered ({e})") from e
-    except (ConnectionRefusedError, OSError) as e:
-        raise ConnectionError("SERVER is not reachable") from e
+        raise ServerUnreachableError(
+            f"SERVER is not reachable - no configured address answered ({e})") from e
+    except BackendUnavailableError:
+        # (2026-11 strata resilience) A recoverable outage (503 / OOM / engine restart)
+        # subclasses ConnectionError -> OSError, so the clause below would flatten it into
+        # "SERVER is not reachable" and the resume/switch dialog would never trigger.
+        # Re-raise so call_provider_with_retry sees the typed, recoverable error.
+        raise
     except asyncio.TimeoutError:
-        raise ConnectionError("Timeout connecting to Direct WS")
+        # No SERVER accepted within the connect window - recoverable (SERVER down/slow).
+        raise ServerUnreachableError("Timeout connecting to Direct WS") from None
+    except ConnectionRefusedError as e:
+        raise ServerUnreachableError("SERVER is not reachable (connection refused)") from e
+    except OSError as e:
+        # auth/protocol/other transport problems - keep the legacy wording (NOT tagged as
+        # server-down, so a wrong API key is never mistaken for an outage to wait on).
+        raise ConnectionError("SERVER is not reachable") from e
 
 
 async def health_check_direct_websocket(provider, force: bool = False):

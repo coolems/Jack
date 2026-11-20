@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from client_config import MODEL_SWITCH_PHASE1_TIMEOUT, MODEL_SWITCH_POLL_INTERVAL, \
     MODEL_SWITCH_MAX_WAIT_SEC, PROTOCOL_VERSION
 from . import _check_protocol, apply_auth_info
+from .errors import ServerUnreachableError
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsClient")
 
@@ -145,16 +146,21 @@ async def chat_stream_websocket(
                     elif t == "done":
                         break
                     elif t == "error":
-                        raise RuntimeError(msg.get("message", "Server error"))
+                        # Recoverable outage (engine down/restarting) -> typed error; anything
+                        # else stays RuntimeError. Shared helper keeps both transports identical.
+                        from .errors import raise_for_error_frame
+                        raise_for_error_frame(msg)
             except websockets.exceptions.ConnectionClosed as e:
                 # Check if this was caused by user clicking stop — NOT an error then
                 if stop_event and stop_event.is_set():
                     logger.info(f"[CLIENT] Relay WS closed due to user stop (conv={conv_id})")
                     raise UserCancelled("User cancelled generation.") from None
                 else:
-                    # Server disconnected without us requesting stop — this IS an issue
+                    # Server disconnected without us requesting stop — this IS an issue.
+                    # (2026-11 outage) the SERVER died or restarted: recoverable, so the resume
+                    # loop can wait for it and re-send the in-flight messages.
                     logger.warning(f"[CLIENT] Relay WS closed unexpectedly: {e}")
-                    raise ConnectionError(f"Server connection lost: {e}") from None
+                    raise ServerUnreachableError(f"SERVER connection lost: {e}") from None
             finally:
                 if stop_task and not stop_task.done():
                     stop_task.cancel()
@@ -168,7 +174,9 @@ async def chat_stream_websocket(
         # Re-raise so caller knows it was a user-initiated cancellation
         raise
     except asyncio.TimeoutError:
-        raise ConnectionError(f"Timeout connecting to web relay at {ws_url}")
+        raise ServerUnreachableError(f"Timeout connecting to web relay at {ws_url}") from None
+    except ConnectionRefusedError as e:
+        raise ServerUnreachableError(f"SERVER is not reachable via the web relay: {e}") from e
     except json.JSONDecodeError as e:
         raise ConnectionError(f"Invalid response from relay: {e}")
 

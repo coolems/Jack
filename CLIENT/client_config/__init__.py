@@ -76,7 +76,11 @@ from .config import (
     MODEL_SWITCH_MAX_WAIT_SEC,
     MODEL_SWITCH_CLIENT_BUDGET_SEC,
 
-
+    # --- Backend-outage resilience (2026-11-19 Strata OOM / engine restart) ---
+    BACKEND_RESUME_POLL_SEC,
+    BACKEND_RESUME_MAX_WAIT_SEC,
+    BACKEND_OFFER_SWITCH_AFTER_SEC,
+    BACKEND_STATUS_POLL_SEC,
 
     # --- Bootstrap wait (CLIENT startup -> SERVER delivery) ---
     BOOTSTRAP_MAX_WAIT_SEC,

@@ -20,6 +20,7 @@ from .base_mode import (
     check_stop_event,
     build_session_stats,
 )
+from app.providers.coolems_client.errors import BackendUnavailableError
 
 
 
@@ -31,6 +32,59 @@ logger = logging.getLogger("COOLEMS.Logic.Normal")
 class NormalModeConfig(BaseModeConfig):
     """Configuration for normal chat mode. Inherits all shared fields from BaseModeConfig."""
     pass
+
+
+
+async def _chat_stream_once(config: NormalModeConfig, messages: List[Dict]):
+    """One provider.chat_stream call for normal mode (no tools)."""
+    return await config.provider.chat_stream(
+        config.model,
+        messages,
+        config.websocket,
+        temperature=config.temperature,
+        enable_thinking=config.enable_thinking,
+        conv_id=config.conversation_id,
+        tools=None,
+        stop_event=config.stop_event,
+    )
+
+
+async def _stream_normal_turn(config: NormalModeConfig, messages: List[Dict]):
+    """Stream ONE normal-mode turn: vision self-heal, then backend-outage resume.
+
+    Returns (final_response, stats).
+
+    VISION SELF-HEALING FALLBACK (2026-08-24): a model with no mmproj rejects image
+    input with HTTP 500 - strip the base64 blobs and retry text-only once.
+
+    BACKEND-OUTAGE RESUME (2026-11-19 Strata OOM/restart): a recoverable
+    ``BackendUnavailableError`` does NOT kill the turn - the prepared ``messages`` are
+    preserved and re-sent by resume_after_backend_outage once the backend is healthy
+    again (with the live model-status + switch-model dialog), exactly like the agentic
+    path. Only a budget-exhausted RuntimeError escapes to the caller.
+    """
+    from .backend_resume import resume_after_backend_outage
+
+    try:
+        return await _chat_stream_once(config, messages)
+    except BackendUnavailableError as err:
+        logger.warning(
+            f"Backend unavailable for model '{config.model}' in normal mode "
+            f"(recoverable): {err}. Preserving the prepared turn and resuming."
+        )
+        return await resume_after_backend_outage(config, messages, err)
+    except Exception as err:
+        if not is_vision_unavailable_error(err):
+            raise
+        removed = strip_images_from_messages(messages)
+        logger.warning(
+            f"Vision unavailable for model '{config.model}' ({removed} base64 image(s) stripped). "
+            f"Retrying text-only so the turn survives."
+        )
+        try:
+            return await _chat_stream_once(config, messages)
+        except BackendUnavailableError as err2:
+            return await resume_after_backend_outage(config, messages, err2)
 
 
 
@@ -58,39 +112,8 @@ async def normal_mode(
         logger.info(f"Sending {len(config.image_data)} image(s) to provider vision API")
 
     # Stream the response via provider - now returns (response, TokenStats).
-    # VISION SELF-HEALING FALLBACK (2026-08-24): if the loaded model has no mmproj,
-    # llama.cpp rejects any image input with HTTP 500. Strip the base64 images and
-    # retry once so the text question still gets answered (the prompt already lists
-    # every attached file's saved name for later reference / OCR).
-    try:
-        final_response, stats = await config.provider.chat_stream(
-            config.model,
-            messages,
-            config.websocket,
-            temperature=config.temperature,
-            enable_thinking=config.enable_thinking,
-            conv_id=config.conversation_id,
-            tools=None,
-            stop_event=config.stop_event,
-        )
-    except Exception as err:
-        if not is_vision_unavailable_error(err):
-            raise
-        removed = strip_images_from_messages(messages)
-        logger.warning(
-            f"Vision unavailable for model '{config.model}' ({removed} base64 image(s) stripped). "
-            f"Retrying text-only so the turn survives."
-        )
-        final_response, stats = await config.provider.chat_stream(
-            config.model,
-            messages,
-            config.websocket,
-            temperature=config.temperature,
-            enable_thinking=config.enable_thinking,
-            conv_id=config.conversation_id,
-            tools=None,
-            stop_event=config.stop_event,
-        )
+    # Vision self-heal + backend-outage resume live in _stream_normal_turn (see there).
+    final_response, stats = await _stream_normal_turn(config, messages)
 
     # Push token stats to the UI via WebSocket - bulletproof per-user delivery.
     # (2026-08-23 session stats) normal mode has exactly ONE provider call per turn, so

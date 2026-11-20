@@ -41,9 +41,38 @@ from .thinking import ThinkingPolicy, normalize_mode
 from .model_utils import _is_mmproj_file, normalize_model_name
 from .vision_support import VisionNotAvailableError, make_vision_error, _looks_like_mmproj_error
 from .http_client import get_async_client
+from .errors import BackendUnavailableError
 from . import model_state
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.Streaming")
+
+
+#: Body/status markers that mean "the engine is DOWN or RESTARTING and will come back",
+#: as opposed to a permanent request failure (bad model, bad prompt, auth).
+_BACKEND_UNAVAILABLE_MARKERS = (
+    "engine exited before it was ready",
+    "engine stopped",
+    "engine did not start",
+    "engine had stopped",
+    "stopped making progress",
+    "no progress",
+    "mib free",
+    "loading the experts",
+    "starting the engine",
+)
+
+
+def _is_backend_unavailable(status_code: int, body: str) -> bool:
+    """True when an HTTP failure means 'engine down/restarting', not a bad request.
+
+    Strata's engine answers 503 with a JSON body naming the cause (OOM reserve, no-progress
+    watchdog, expert reload). These are recoverable: the client should wait/resume, not fail
+    the whole turn. 502/503/504 are treated as down regardless of body.
+    """
+    if status_code in (502, 503, 504):
+        return True
+    low = (body or "").lower()
+    return any(m in low for m in _BACKEND_UNAVAILABLE_MARKERS)
 
 
 def _thinking_policy_for(api_url: str, model: str) -> ThinkingPolicy:
@@ -552,6 +581,22 @@ async def chat_stream(
                 elif response.status_code == 500:
                     error_detail = await response.aread()
                     err_text = error_detail.decode("utf-8", errors="replace")
+                    # (2026-11 strata resilience) The engine can surface an OOM/restart as a
+                    # 500 too (not just 503). Detect it FIRST so a recoverable outage is never
+                    # mistaken for a vision/tool-JSON/thinking problem.
+                    if _is_backend_unavailable(response.status_code, err_text):
+                        low_err = err_text.lower()
+                        logger.warning(
+                            f"[BACKEND-DOWN] HTTP 500 from {api_url} looks like an engine "
+                            f"restart/OOM: {err_text[:200]}"
+                        )
+                        raise BackendUnavailableError(
+                            f"Backend {api_url} is unavailable (engine restarting or out of "
+                            f"memory): {err_text.strip()[:300]}",
+                            model=model,
+                            oom=("mib free" in low_err or "out of memory" in low_err),
+                            reason=err_text,
+                        )
                     # (2026-08-23) VISION CHECK FIRST: llama-server started without a multimodal
                     # projector (mmproj) rejects ANY image input with HTTP 500 + the body
                     # "image input is not supported - hint: ... provide the mmproj". Detect it and
@@ -619,6 +664,21 @@ async def chat_stream(
                     # actual llama.cpp reason, so a bare status code would hide it. Keep
                     # the message short - the raw body can be large.
                     body = error_text.decode("utf-8", errors="replace").strip()
+                    # (2026-11 strata resilience) 502/503/504 (and OOM/restart markers) are a
+                    # DOWN engine, not a bad request: raise the typed, recoverable error so the
+                    # CLIENT preserves the call and resumes / offers a model switch.
+                    if _is_backend_unavailable(response.status_code, body):
+                        low_body = body.lower()
+                        logger.warning(
+                            f"[BACKEND-DOWN] HTTP {response.status_code} from {api_url}: "
+                            f"engine down/restarting - {body[:200]}"
+                        )
+                        raise BackendUnavailableError(
+                            f"Backend {api_url} is unavailable (HTTP {response.status_code}): {body[:300]}",
+                            model=model,
+                            oom=("mib free" in low_body or "out of memory" in low_body),
+                            reason=body,
+                        )
                     # A strict server may reject unknown body fields with a 4xx instead of
                     # ignoring them. 400/422 are the "bad request" shapes proving this node
                     # cannot take our keys; 429/413 are load/size problems and must not
@@ -849,6 +909,10 @@ async def chat_stream(
             # server fault — log one clean line, no traceback. The typed error still propagates
             # so chat_relay can tag the WS frame and show the "Vision Not Available" card.
             logger.warning(f"[VISION] Image input rejected for model '{model}': {e}")
+            raise
+        except BackendUnavailableError:
+            # Expected recoverable condition (engine down/restarting) - already logged where
+            # it was raised; propagate untouched so chat_relay tags the frame.
             raise
         except Exception as e:
             logger.error(f"llama.cpp stream failed: {e}")

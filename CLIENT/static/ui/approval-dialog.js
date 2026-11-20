@@ -163,6 +163,7 @@ const ApprovalDialog = {
             card.appendChild(body);
             container.appendChild(card);
             this._wireQuestionCard(card, data);
+            this._wireFleetMonitor(card, data);
             if (COOLEMS.autoScrollEnabled && !COOLEMS.userScrolledUp) scrollToBottom();
             return;
         }
@@ -210,6 +211,9 @@ const ApprovalDialog = {
                     options: Array.isArray(parsed.options) ? parsed.options : [],
                     context: String(parsed.context || ''),
                     requirement: String(parsed.requirement || ''),
+                    monitor: !!(parsed && parsed.monitor),
+                    failed_model: String((parsed && parsed.failed_model) || ''),
+                    models: Array.isArray(parsed && parsed.models) ? parsed.models : [],
                 };
             }
         } catch (e) { /* payload was plain text - use it as the question */ }
@@ -227,13 +231,14 @@ const ApprovalDialog = {
         const candidates = q.options
             .map(function (opt) {
                 if (typeof opt === 'string') {
-                    return { label: opt, detail: '', deliverable: '', recommended: false };
+                    return { label: opt, detail: '', deliverable: '', recommended: false, resume: false };
                 }
                 return {
                     label: String((opt && opt.label) || ''),
                     detail: String((opt && opt.detail) || ''),
                     deliverable: String((opt && opt.deliverable) || ''),
                     recommended: !!(opt && opt.recommended),
+                    resume: !!(opt && opt.resume),
                 };
             })
             .filter(function (c) { return c.label.length > 0; });
@@ -249,7 +254,8 @@ const ApprovalDialog = {
                 // step: a label containing '"' must not be able to close the attribute.
                 return '<button type="button" class="exec-btn exec-btn-option'
                      + (c.recommended ? ' exec-btn-recommended' : '') + '" '
-                     + 'data-answer="' + escapeHtml(c.label).replace(/"/g, '&quot;') + '">'
+                     + (c.resume ? ' data-resume="1"' : '')
+                     + ' data-answer="' + escapeHtml(c.label).replace(/"/g, '&quot;') + '">'
                      + '<span class="exec-option-no">' + (i + 1) + '</span>'
                      + '<span class="exec-option-body">'
                      + '<span class="exec-option-label">' + escapeHtml(c.label) + '</span>'
@@ -261,9 +267,14 @@ const ApprovalDialog = {
             }).join('') + '</div>'
             : '';
 
+        // A live fleet panel for backend-outage questions (monitor=true): dots + slot
+        // counts, refreshed in place by fleet_status frames (see updateFleet).
+        const fleetHtml = q.monitor ? this._fleetPanelHtml(q.models || []) : '';
+
         return '<div class="exec-approval-header">' + headerHtml + '</div>' +
             askedHtml +
             contextHtml +
+            fleetHtml +
             '<div class="exec-approval-question">' + escapeHtml(q.question) + '</div>' +
             optionHtml +
             '<div class="exec-approval-answer-row">' +
@@ -275,6 +286,99 @@ const ApprovalDialog = {
                     ? 'Pick one of the offers above, or type your own - answer whenever you are ready'
                     : 'Waiting for your answer (no time limit - answer whenever you are ready)') +
             '</span>';
+    },
+
+    // --- live fleet status panel (backend-outage questions, 2026-11 strata) ---------
+    // Rendered inside the question card when the payload sets monitor=true; refreshed in
+    // place by fleet_status frames. Dot: 🟢 served · 🟡 configured-but-down/loading · ⚪ off.
+
+    _fleetDot(entry) {
+        if (entry && entry.served) return '\u{1F7E2}';
+        if (entry && entry.served_by && entry.served_by.length) return '\u{1F7E1}';
+        return '\u26AA';
+    },
+
+    _findModel(models, name) {
+        return (models || []).find((m) => String(m && m.name) === String(name || '')) || null;
+    },
+
+    _fleetRowsHtml(models, failedModel) {
+        const rows = (models || []).map((m) => {
+            const name = String(m.name || '');
+            const slots = parseInt(m.online_slots || 0, 10);
+            const dot = this._fleetDot(m);
+            const isFailed = failedModel && name === failedModel;
+            const backOnline = isFailed && m.served;
+            let state;
+            if (m.served) state = slots + ' slot(s)';
+            else if (m.served_by && m.served_by.length) state = 'loading…';
+            else state = 'down';
+            return '<div class="exec-fleet-row" data-model="' + escapeHtml(name).replace(/"/g, '&quot;') + '">'
+                 + '<span class="exec-fleet-dot">' + dot + '</span>'
+                 + '<span class="exec-fleet-name">' + escapeHtml(name) + '</span>'
+                 + '<span class="exec-fleet-slots">' + state + '</span>'
+                 + (backOnline ? '<span class="exec-fleet-back">\u2705 back online</span>' : '')
+                 + '</div>';
+        }).join('');
+        return rows;
+    },
+
+    _fleetPanelHtml(models) {
+        const rows = this._fleetRowsHtml(models, '');
+        return '<div class="exec-approval-fleet">'
+             + '<div class="exec-fleet-title">Model status (live)</div>'
+             + (rows || '<div class="exec-fleet-empty">no model status available</div>')
+             + '</div>';
+    },
+
+    /** Mark the card as a monitored outage dialog and settle its resume button + panel. */
+    _wireFleetMonitor(card, data) {
+        let q = {};
+        try {
+            const parsed = JSON.parse(String(data.code || ''));
+            if (parsed && typeof parsed === 'object') q = parsed;
+        } catch (e) { return; }
+        if (!q.monitor) return;
+        const body = card.querySelector('.exec-approval-card');
+        if (body) {
+            body.dataset.monitor = '1';
+            body.dataset.failedModel = String(q.failed_model || '');
+        }
+        this._applyFleet(card, q.models || [], String(q.failed_model || ''));
+    },
+
+    /** Re-render one card's fleet panel and enable/disable its Resume button. */
+    _applyFleet(card, models, failedModel) {
+        const body = card.querySelector('.exec-approval-card');
+        const panel = body ? body.querySelector('.exec-approval-fleet') : null;
+        if (panel) {
+            panel.innerHTML = '<div class="exec-fleet-title">Model status (live)</div>'
+                + (this._fleetRowsHtml(models, failedModel) || '<div class="exec-fleet-empty">no model status available</div>');
+        }
+        const failed = this._findModel(models, failedModel);
+        const online = !!(failed && failed.served);
+        card.querySelectorAll('.exec-btn-option[data-resume="1"]').forEach((btn) => {
+            btn.disabled = !online;
+        });
+        const statusEl = body ? body.querySelector('.exec-approval-status') : null;
+        if (statusEl) {
+            if (online) {
+                statusEl.className = 'exec-approval-status done-allow';
+                statusEl.textContent = '\u2705 ' + String(failedModel || '') + ' is back online - resume now.';
+            } else {
+                statusEl.className = 'exec-approval-status pending';
+                statusEl.textContent = '\u23F3 Waiting for ' + String(failedModel || '') + ' to come back online (status updates live).';
+            }
+        }
+    },
+
+    /** Update every open backend-outage card from a pushed 'fleet_status' frame. */
+    updateFleet(models) {
+        document.querySelectorAll('.exec-approval-card[data-monitor="1"]').forEach((body) => {
+            const card = body.closest('.message') || body;
+            const failedModel = body.dataset.failedModel || '';
+            this._applyFleet(card, models || [], failedModel);
+        });
     },
 
     /** Wire one question card: option buttons + free-text answer post to /api/question. */

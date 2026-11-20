@@ -30,6 +30,7 @@ from ..llama.non_streaming import chat_non_streaming as _chat_non_streaming
 from ..llama.server import get_current_model as _get_current_model
 from ..llama.model_identity import model_key as model_key_of
 from ..llama.vision_support import VisionNotAvailableError
+from ..llama.errors import BackendUnavailableError
 
 logger = logging.getLogger("COOLEMS.Provider.Strata")
 
@@ -80,6 +81,16 @@ class StrataProvider(LlamaProvider):
         if "Strata" in text or "strata" in text:
             return exc
         reworded = text.replace("llama.cpp", "Strata").replace("llama-server", "Strata")
+        if isinstance(exc, BackendUnavailableError):
+            # Preserve the recoverable signal (model / oom / retry hint) through the reword,
+            # so the SERVER still tags the outage frame and the CLIENT still resumes it.
+            return BackendUnavailableError(
+                reworded,
+                model=getattr(exc, "model", None),
+                retry_after_sec=getattr(exc, "retry_after_sec", None),
+                oom=bool(getattr(exc, "oom", False)),
+                reason=getattr(exc, "reason", "") or reworded,
+            )
         if isinstance(exc, ConnectionError):
             reworded += (f" Start Strata - the brain attaches to it and never spawns it "
                          f"(GET {self._api_url}/health should answer ok).")

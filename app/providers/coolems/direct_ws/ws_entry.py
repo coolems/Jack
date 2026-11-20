@@ -46,7 +46,10 @@ async def handle_direct_ws_client(ws, server_provider):
         logger.warning(f"[SERVER] Direct WS client {peer} - auth returned incomplete data, disconnecting")
         return
 
-    
+    # (2026-11 strata outage) subscribe this socket to live fleet_status pushes.
+    from ..fleet_status import get_hub
+    get_hub().register_direct(ws, user_info)
+
     # --- Main message loop (authenticated) ---
     # (2026-08-20 split, review item #10): the per-message dispatch moved into
     # _run_authenticated_loop() so this function keeps exactly one job: auth + lifecycle.
@@ -57,6 +60,10 @@ async def handle_direct_ws_client(ws, server_provider):
             ws, server_provider, user_info, conn_id, authenticated_api_key, client_convs
         )
     finally:
+        # (2026-11 strata outage) stop pushing fleet_status to this disconnected socket.
+        from ..fleet_status import get_hub
+        get_hub().unregister_direct(ws)
+
         # Client disconnected — abort ALL active conversations for this client
         _active_convs.stop_all_for_client(client_convs)
 

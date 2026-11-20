@@ -264,6 +264,11 @@ class CoolemsServerProvider(BaseProvider):
         reg.log_fleet_table(reg.registry_title() + " (serving loop)")
         reg.start_health_poller(interval_sec=HEALTH_CHECK_INTERVAL_SEC)
 
+        # (2026-11 strata outage) push live fleet health to attached clients on every
+        # health transition + poller heartbeat, so an open outage dialog updates in place.
+        from .fleet_status import get_hub
+        reg.add_health_change_listener(lambda snapshot: get_hub().broadcast(self, snapshot))
+
         pool = WorkerPool(reg, queue)
         pool.start()
         set_worker_pool(pool)

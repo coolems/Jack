@@ -410,6 +410,7 @@ class LlmBackend:
             note = "" if self.spawnable else (
                 " (remote — attach-only)" if self.kind == "llama" else f" ({self.kind.title()} — attach-only)")
             logger.info("[REGISTRY] Backend %s is now %s%s", self.label, state, note)
+            self._notify_health_changed()
         return bool(self.healthy)
 
     async def _probe_deepseek(self) -> bool:
@@ -479,6 +480,13 @@ class LlmBackend:
                 " (remote — attach-only)" if self.kind == "llama"
                 else f" ({self.kind.title()} — attach-only)")
             logger.info("[REGISTRY] Backend %s is now %s%s", self.label, state, note)
+            self._notify_health_changed()
+
+    def _notify_health_changed(self) -> None:
+        """Tell the registry a health transition happened (drives the fleet_status push)."""
+        reg = get_registry()
+        if reg is not None:
+            reg.fire_health_change()
 
     async def wait_healthy(self, timeout: Optional[float] = None) -> bool:
         """Block until this backend is healthy. Workers call this BEFORE taking work so a
@@ -508,12 +516,15 @@ class LlmBackend:
             return
         if reason:
             self.bump_error(reason)
-        if self.healthy:
+        was_healthy = bool(self.healthy)
+        if was_healthy:
             logger.warning("[REGISTRY] %s marked UNHEALTHY now: %s", self.label, reason or "request failed")
         self.healthy = False
         self._healthy_event.clear()
         if self.is_deepseek:
             self._set_endpoint_health(False)
+        elif was_healthy:
+            self._notify_health_changed()
 
     def info(self) -> dict:
         """Compact node identity attached to error/done frames and logs."""
@@ -690,6 +701,10 @@ class LlmBackendRegistry:
         # "dynamic"). Set by from_config(); "mixed" for direct construction. build_model_catalog
         # reads it to decide whether to merge the last-known offline models.
         self.kind: str = "mixed"
+        # (2026-11 strata outage) Health-change listeners: async callbacks(snapshot)
+        # fired when a backend flips healthy/unhealthy and on each poller heartbeat.
+        # The WS layer subscribes here to push live 'fleet_status' frames to clients.
+        self._health_change_cbs: list = []
         # de-dup by key (loader already dedupes; defensive for direct construction)
         seen = set()
         self.backends: dict[tuple, LlmBackend] = {}
@@ -987,6 +1002,9 @@ class LlmBackendRegistry:
         if self.endpoints:
             self.sync_deepseek_models()
         self._remember_models()
+        # Heartbeat: push a fresh fleet snapshot even when nothing flipped (keeps an open
+        # outage dialog's slot counts / busy state current between transitions).
+        self.fire_health_change()
         return list(zip(targets, results))
 
     def log_fleet_table(self, title: str = "LLAMA FLEET") -> None:
@@ -1147,6 +1165,42 @@ class LlmBackendRegistry:
         task = getattr(self, "_poller_task", None)
         if task is not None and not task.done():
             task.cancel()
+
+    # --- health-change listeners (2026-11 strata outage) --------------------------
+
+    def add_health_change_listener(self, cb) -> None:
+        """Register an async callback(snapshot) fired on every health transition and on each
+        health-poller heartbeat. The callback receives the fleet snapshot (list of dicts)."""
+        if cb not in self._health_change_cbs:
+            self._health_change_cbs.append(cb)
+
+    def remove_health_change_listener(self, cb) -> None:
+        try:
+            self._health_change_cbs.remove(cb)
+        except ValueError:
+            pass
+
+    def fire_health_change(self, snapshot: Optional[list] = None) -> None:
+        """Schedule every listener with the current snapshot. Best-effort: a listener error
+        or a missing running loop must never disturb health polling."""
+        if snapshot is None:
+            snapshot = self.snapshot()
+        for cb in list(self._health_change_cbs):
+            coro = None
+            try:
+                coro = cb(snapshot)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("[REGISTRY] health-change listener error: %s", e)
+                continue
+            if coro is None or not hasattr(coro, "__await__"):
+                continue
+            try:
+                asyncio.get_running_loop().create_task(coro)
+            except RuntimeError:  # pragma: no cover - no running loop (sync caller)
+                try:
+                    asyncio.ensure_future(coro)
+                except RuntimeError:
+                    pass
 
     # (2026-10 fleet) Model switching was REMOVED: each node is started with a fixed
     # model, and requests are routed to the model group they name. Nothing reloads llama

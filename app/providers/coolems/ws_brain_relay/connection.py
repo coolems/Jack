@@ -339,6 +339,11 @@ async def connect_to_web_relay(server_provider):
                 ws._relay_client_keys = _relay_client_keys
                 ws._relay_client_roles_advisory = _relay_client_roles_advisory
 
+                # (2026-11 strata outage) subscribe this relay link to fleet_status pushes;
+                # each relayed client is resolved + sent its own profile-filtered catalog.
+                from ..fleet_status import get_hub
+                get_hub().register_relay(ws)
+
                 # Register the brain relay connection in tracker
 
                 brain_conn_id = await conn_tracker.register(api_key, ws)
@@ -599,6 +604,10 @@ async def connect_to_web_relay(server_provider):
                         client_relay_convs.clear()
 
 
+
+                    # (2026-11 strata outage) stop pushing fleet_status over this dead link.
+                    from ..fleet_status import get_hub
+                    get_hub().unregister_relay(ws)
 
                     # --- Cleanup brain relay connection tracking (Fix #2) ---
 

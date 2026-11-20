@@ -370,6 +370,27 @@
     color: var(--question-accent, #22c55e);
 }
 
+/* ===== BACKEND-OUTAGE FLEET PANEL (2026-11 strata) =====
+   Live model status inside the question card: dots + slot counts, refreshed in place by
+   fleet_status frames. 🟢 served · 🟡 configured-but-down/loading · ⚪ offline. */
+.exec-approval-fleet {
+    margin: 0 0 10px 0; padding: 8px 10px; border-radius: 8px;
+    background: var(--bg-primary); border: 1px solid var(--border);
+}
+.exec-fleet-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-secondary); margin-bottom: 6px;
+}
+.exec-fleet-row {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+    padding: 3px 0; color: var(--text-primary);
+}
+.exec-fleet-dot { flex-shrink: 0; width: 16px; text-align: center; }
+.exec-fleet-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exec-fleet-slots { flex-shrink: 0; font-size: 12px; color: var(--text-secondary); }
+.exec-fleet-back { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--success); }
+.exec-fleet-empty { font-size: 12px; color: var(--text-secondary); padding: 2px 0; }
+
 /* ===== LIVE STEERING (2026-10-23; moved into the turn block 2026-11-08) =====
    A message typed WHILE an agentic turn runs is LOOP WORK, not a chat message, so it is
    NOT painted here at all - it is a row of that turn's loop-history block

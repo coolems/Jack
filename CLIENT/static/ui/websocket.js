@@ -466,6 +466,17 @@ function handleWebSocketMessage(data, ownerConvId) {
 
     const wasNearBottom = isNearBottom(chatContainer);
 
+    // ===== LIVE FLEET STATUS (2026-11 strata outage) ==========================
+    // The CLIENT forwards the SERVER's pushed fleet snapshot; an open outage dialog
+    // updates its per-model dots/slots in place and enables "Resume" when the model is
+    // back online. No card on screen -> a no-op.
+    if (data.type === 'fleet_status') {
+        if (typeof ApprovalDialog !== 'undefined') {
+            ApprovalDialog.updateFleet(data.models || []);
+        }
+        return;
+    }
+
     // End of the buffered-tail replay: live streaming resumes from here on.
     if (data.type === 'replay_end') {
         if (st) st.inReplay = false;

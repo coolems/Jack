@@ -136,8 +136,17 @@ class ControlChannel:
 
                 req_id = msg.get("req_id")
                 if not req_id:
-                    # Unsolicited frame (shouldn't happen on this channel) -- log and drop.
-                    logger.debug(f"[CONTROL] Frame without req_id dropped: type={msg.get('type')}")
+                    # Unsolicited frame: 'fleet_status' is the one push this channel accepts
+                    # (the SERVER broadcasts live model health); forward it to the UI. Anything
+                    # else without a req_id is dropped.
+                    if msg.get("type") == "fleet_status":
+                        try:
+                            asyncio.get_running_loop().create_task(
+                                self._forward_fleet_status(msg.get("models", [])))
+                        except Exception:  # pragma: no cover - scheduling must never kill the reader
+                            pass
+                    else:
+                        logger.debug(f"[CONTROL] Frame without req_id dropped: type={msg.get('type')}")
                     continue
 
                 fut = self._pending.pop(req_id, None)
@@ -155,6 +164,14 @@ class ControlChannel:
                 if not fut.done():
                     fut.set_exception(ConnectionError(f"Control channel lost: {type(e).__name__}"))
             self._pending.clear()
+
+    async def _forward_fleet_status(self, models) -> None:
+        """Forward a pushed 'fleet_status' frame to every browser UI socket (best-effort)."""
+        try:
+            from app.websocket.connections import broadcast
+            await broadcast({"type": "fleet_status", "models": models or []})
+        except Exception as e:  # pragma: no cover - forwarding must never kill the reader
+            logger.debug("[CONTROL] fleet_status forward failed: %s", e)
 
     # --- public API --------------------------------------------------------------
 
