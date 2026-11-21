@@ -50,18 +50,16 @@ async def _chat_stream_once(config: NormalModeConfig, messages: List[Dict]):
 
 
 async def _stream_normal_turn(config: NormalModeConfig, messages: List[Dict]):
-    """Stream ONE normal-mode turn: vision self-heal, then backend-outage resume.
+    """Stream ONE normal-mode turn, recovering from recoverable provider errors.
 
     Returns (final_response, stats).
 
-    VISION SELF-HEALING FALLBACK (2026-08-24): a model with no mmproj rejects image
-    input with HTTP 500 - strip the base64 blobs and retry text-only once.
-
-    BACKEND-OUTAGE RESUME (2026-11-19 Strata OOM/restart): a recoverable
-    ``BackendUnavailableError`` does NOT kill the turn - the prepared ``messages`` are
-    preserved and re-sent by resume_after_backend_outage once the backend is healthy
-    again (with the live model-status + switch-model dialog), exactly like the agentic
-    path. Only a budget-exhausted RuntimeError escapes to the caller.
+    - Vision self-heal: a model with no mmproj rejects image input with HTTP 500 -
+      the base64 blobs are stripped and the turn retried text-only once.
+    - Backend-outage resume: a recoverable BackendUnavailableError does not kill the
+      turn - the prepared messages are preserved and re-sent by
+      resume_after_backend_outage once the backend is healthy again. Only a
+      budget-exhausted RuntimeError escapes to the caller.
     """
     from .backend_resume import resume_after_backend_outage
 
@@ -149,6 +147,20 @@ async def normal_mode(
     stopped = check_stop_event(config)
     if stopped:
         return stopped
+
+    # EMPTY RESPONSE GUARD (provider-agnostic): a reasoning model can spend its whole
+    # output budget thinking and return finish_reason="length" with zero visible text.
+    # Persisting "" as the assistant turn would make the NEXT request invalid on strict
+    # backends (DeepSeek: HTTP 400 "content, tool_calls or reasoning_content must be
+    # set"). Return a visible placeholder so the history stays well-formed.
+    if not (final_response or "").strip():
+        logger.warning(
+            f"[NORMAL] provider returned an EMPTY response (truncated="
+            f"{getattr(stats, 'truncated', None)}); using a placeholder so no empty "
+            "assistant message enters the history."
+        )
+        return ("[The model produced no visible answer - the output token limit was "
+                "reached during thinking. Please retry or lower the thinking level.]")
 
     return final_response
 

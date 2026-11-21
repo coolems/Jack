@@ -1023,6 +1023,57 @@ async def run_react_loop(
                 # safety net for anything that still slips through).
                 ai_response = strip_turn_stats_lines(ai_response)
 
+                # ---- EMPTY RESPONSE GUARD (provider-agnostic) ----
+                # A reasoning model can spend its ENTIRE output budget on thinking and return
+                # finish_reason="length" with zero visible content. Persisting that as an
+                # assistant turn (content="") makes the NEXT request invalid on strict
+                # backends (DeepSeek: HTTP 400 "content, tool_calls or reasoning_content must
+                # be set"). Never let an empty assistant message enter the history: re-ask
+                # (bounded by the truncation budget), then fall back to a visible placeholder
+                # so the loop and the DB stay well-formed.
+                if not ai_response.strip():
+                    if stats is not None and getattr(stats, "truncated", False) \
+                            and truncation_resumes < MAX_TRUNCATION_RESUMES:
+                        truncation_resumes += 1
+                        logger.warning(
+                            f"[AGENTIC.DEBUG] react_loop - EMPTY TRUNCATED RESPONSE "
+                            f"{truncation_resumes}/{MAX_TRUNCATION_RESUMES}: the output limit "
+                            f"was hit inside the thinking phase (no visible content). "
+                            f"Re-asking with a short-answer instruction."
+                        )
+                        if config.websocket:
+                            try:
+                                await config.websocket.send_text(json.dumps({
+                                    "type": "system",
+                                    "content": ("The model ran out of output tokens while thinking "
+                                                 f"(empty answer, resume {truncation_resumes}/{MAX_TRUNCATION_RESUMES}) - "
+                                                 "asking it to answer directly..."),
+                                }))
+                            except Exception:
+                                pass  # UI socket may already be closed
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[SYSTEM NOTICE] Your previous response was cut off by the output token "
+                                "limit while you were still thinking - it produced NO visible text. "
+                                "Do not spend so many tokens thinking: answer directly (or make your "
+                                "tool call now) and keep the reply short. End with 'Agentic AI: TASK DONE' "
+                                "when the task is genuinely finished."
+                            ),
+                        })
+                        tool_iteration += 1
+                        continue
+                    # Re-ask budget spent (or the provider did not flag a truncation): keep the
+                    # loop and the history well-formed with a visible placeholder instead of an
+                    # empty assistant message.
+                    logger.warning(
+                        "[AGENTIC.DEBUG] react_loop - provider returned an EMPTY response "
+                        f"(truncated={getattr(stats, 'truncated', None)}); using a placeholder "
+                        "so no empty assistant message enters the history."
+                    )
+                    ai_response = ("[The model produced no visible answer - the output token limit "
+                                   "was reached during thinking. Please retry or lower the thinking level.]")
+
                 # ---- TOOL CALL WRITTEN AS TEXT (auto-recovery) ----
                 # The provider returned prose carrying the template's own call markup, so the
                 # intended call produced no tool_calls delta and nothing ran. The usual cause:

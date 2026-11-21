@@ -221,14 +221,12 @@ def trim_history_to_token_limit(
 
 
 def sanitize_images_in_history(messages: List[Dict]) -> List[Dict]:
-    """Replace any base64 image data in messages with a lightweight reference
-    string like "[image: filename.png]".
+    """Replace base64 image data in messages with lightweight references.
 
-    This prevents the history list from ballooning with megabytes of base64.
-    The actual image files remain on disk and can be re-loaded when needed.
-
-    FIXED: Also sanitizes base64 data embedded in string content
-    (from tool results) not just the separate 'images' key.
+    Cleans both the separate 'images' key and base64 embedded in string content
+    (from tool results), replacing it with a reference like "[image: filename.png]".
+    This keeps the history list from ballooning; the actual image files remain on
+    disk and can be re-loaded when needed.
     """
     cleaned = []
     for msg in messages:
@@ -343,6 +341,19 @@ def load_conversation_history(
                     msg["_file_contents"] = fc
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Parse/decode error ignored at CLIENT/utils/history_manager.py:200")
+
+        # An assistant turn with no content, images or files is useless to the model and
+        # INVALID on strict backends (DeepSeek: HTTP 400 "content, tool_calls or
+        # reasoning_content must be set"). Such a row can exist when a reasoning model spent
+        # its whole output budget thinking and returned an empty answer. Drop it instead of
+        # re-sending it - provider-agnostic, so no backend ever sees a bare assistant turn.
+        if (role == "assistant" and not (content or "").strip()
+                and not media_urls and not file_contents):
+            logger.warning(
+                f"[HISTORY] dropping empty assistant message (id-less row, conv={conv_id}) "
+                "before it is sent to the provider"
+            )
+            continue
 
         messages.append(msg)
 

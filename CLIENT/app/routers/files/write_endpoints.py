@@ -30,10 +30,16 @@ def register_write_endpoints(router: APIRouter):
         upload_name = os.path.basename((file.filename or "upload.bin").replace("\\", "/")) or "upload.bin"
         safe_filename = f"{file_id}_{upload_name}"
         working_root_dir = _get_working_root_dir()
-        filepath = os.path.join(working_root_dir, safe_filename)
+        # Prompt-window attachments (drag/drop, paste, file picker) land in
+        # <working_root>/.temp/user_files/ - never in the working_root root.
+        # .temp/ is the standard scratch space (git-ignored), so attachments
+        # never reach GitHub.
+        upload_dir = os.path.join(working_root_dir, ".temp", "user_files")
+        os.makedirs(upload_dir, exist_ok=True)
+        filepath = os.path.join(upload_dir, safe_filename)
         with open(filepath, "wb") as f:
             f.write(content)
-        result = {"url": f"/files/{safe_filename}", "filename": file.filename, "size": len(content)}
+        result = {"url": f"/files/.temp/user_files/{safe_filename}", "filename": file.filename, "size": len(content)}
         if is_text_file(file.filename):
             text_content = read_text_file(filepath)
             result["is_text"] = True

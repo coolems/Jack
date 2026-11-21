@@ -143,6 +143,12 @@ llama_server/models/*/*
 CLIENT/.temp/*
 !CLIENT/.temp/.gitkeep
 
+# Prompt-window attachments (2026-11-21): every file added to the chat input
+# (drag/drop, paste, file picker) is stored in <working_root>/.temp/user_files/
+# instead of spanning the working_root root. Per-machine user content - never commit.
+# (.temp/* already covers this; kept explicit for clarity.)
+.temp/user_files/
+
 # LICENSE (2026-10-15 licensing plan v12): SERVER-side license state only
 (choice/company/email/ip_history/last_check). The CLIENT keeps no license files.
 /config/license_state.json
