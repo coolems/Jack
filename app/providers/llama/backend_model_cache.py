@@ -1,7 +1,8 @@
 """Last-known model cache for the LLM backend registry.
 
-llama/strata backends are only discovered when the endpoint answers /props, and DeepSeek
-endpoints only when GET /models answers. A DOWN endpoint therefore contributes nothing at
+llama/strata backends are only discovered when the endpoint answers /props, and hosted
+(DeepSeek/OpenAI) endpoints only when GET /models answers. A DOWN endpoint therefore
+contributes nothing at
 boot, so its models would vanish from the picker instead of showing up grayed/disabled.
 This module persists the last models each backend served, so ``build_model_catalog()`` can
 still list them as offline (``served=False``, ``online_slots=0``).
@@ -37,9 +38,9 @@ def _cache_path() -> str:
 
 
 def _identity(kind: str, host: str, port, base_url) -> str:
-    """Stable cache key for one backend: deepseek by base_url, others by host:port."""
-    if kind == "deepseek":
-        return f"deepseek|{(base_url or '').rstrip('/').lower()}"
+    """Stable cache key for one backend: hosted (deepseek/openai) by base_url, others by host:port."""
+    if kind in ("deepseek", "openai"):
+        return f"{kind}|{(base_url or '').rstrip('/').lower()}"
     return f"{kind}|{(host or '').strip().lower()}:{port}"
 
 
@@ -81,7 +82,7 @@ def _write(backends: dict) -> bool:
 def remember(registry) -> bool:
     """Merge the registry's CURRENTLY-DISCOVERED models into the cache.
 
-    Walks every DeepSeek endpoint (its /models list) and every llama/strata backend (its
+    Walks every hosted endpoint (its /models list) and every llama/strata backend (its
     discovered model key). A backend that produced a discovery replaces its cached entry;
     one that did not keeps whatever was cached before. Returns True when the cache changed.
     """
@@ -94,17 +95,17 @@ def remember(registry) -> bool:
         ]
         if not models:
             continue
-        fresh[_identity("deepseek", "", None, e.api_url)] = {
-            "kind": "deepseek",
+        fresh[_identity(e.kind, "", None, e.api_url)] = {
+            "kind": e.kind,
             "name": e.instance.name,
             "base_url": e.api_url,
             "models": models,
         }
 
     for b in getattr(registry, "backends", {}).values():
-        # DeepSeek children are covered by their endpoint above; only top-level
+        # Hosted children are covered by their endpoint above; only top-level
         # llama/strata backends carry their own single model.
-        if b.parent is not None or b.is_deepseek:
+        if b.parent is not None or b.is_hosted:
             continue
         if not b.model_key:
             continue

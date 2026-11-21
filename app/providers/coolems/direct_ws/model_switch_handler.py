@@ -34,10 +34,11 @@ def describe_routing(reg, model_filename: str, available_hint: str = "") -> tupl
     noun = reg.backend_noun()
     # Kind-aware advice: with the strata backend (config.SERVER_BACKEND="strata") the fix is
     # Strata itself — its model, its process, its API key — not a llama node we could launch.
-    # With the deepseek backend the fix is the account: the model id must be served by the
-    # key in config/deepseek_servers.json, and nothing is ever loaded locally.
-    hosted = noun in ("Strata endpoint", "DeepSeek endpoint")
+    # With the deepseek/openai backend the fix is the account: the model id must be served
+    # by the key in the matching servers.json, and nothing is ever loaded locally.
+    hosted = noun in ("Strata endpoint", "DeepSeek endpoint", "OpenAI endpoint")
     deepseek = noun == "DeepSeek endpoint"
+    openai = noun == "OpenAI endpoint"
     if nodes:
         where = ", ".join(
             f"{b.instance.name} ({b.instance.host}:{b.instance.port}, "
@@ -48,11 +49,15 @@ def describe_routing(reg, model_filename: str, available_hint: str = "") -> tupl
                "API key in config/strata_servers.json." if noun == "Strata endpoint"
                else "Check the API key in config/deepseek_servers.json - GET /models must "
                     "list this model id." if deepseek
+               else "Check the API key in config/openai_servers.json - GET /models must "
+                    "list this model id." if openai
                else "Fix or start a node with that model.")
         return False, (f"Model '{model_filename}' is configured but no {noun} is serving it "
                        f"right now: {where}. {fix}")
     tail = ("Pick a model the account serves (GET /models with the key in "
             "config/deepseek_servers.json)." if deepseek
+            else "Pick a model the account serves (GET /models with the key in "
+                 "config/openai_servers.json)." if openai
             else "Start Strata with that model (or set its API key) to use it." if hosted
             else "Start a node with that model to use it.")
     return False, (f"No {noun} is serving '{model_filename}'. Available: "

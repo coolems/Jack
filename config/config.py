@@ -39,10 +39,14 @@ PROVIDER: str = "coolems_server"                        # Relay mode for server
 #                  Attach-only like Strata: no process, no model loading; every request carries
 #                  a Bearer key. The payload is transformed to DeepSeek's shape and the response
 #                  back to ours (app/providers/deepseek/).
-#   "dynamic"   -> ALL of the above at once: the registry merges llama + strata + deepseek
-#                  endpoints into one fleet and the picker lists every model any endpoint
-#                  serves (a model with no healthy node is shown disabled/gray in the client).
-SERVER_BACKEND: str = "dynamic"                           # Local LLM engine ("llama" | "strata" | "deepseek" | "dynamic")
+#   "openai"    -> OpenAI's hosted API (config/openai_servers.json). Same attach-only contract
+#                  as DeepSeek: OpenAI-compatible wire, Bearer key per request, models from
+#                  GET /v1/models, reasoning via reasoning_effort (app/providers/openai/).
+#   "dynamic"   -> ALL of the above at once: the registry merges llama + strata + deepseek +
+#                  openai endpoints into one fleet and the picker lists every model any
+#                  endpoint serves (a model with no healthy node is shown disabled/gray in the
+#                  client).
+SERVER_BACKEND: str = "dynamic"                           # Local LLM engine ("llama" | "strata" | "deepseek" | "openai" | "dynamic")
 
 # --- Coolems Distributed Provider Configuration ---
 COOLEMS_SERVER_HOST: str = "0.0.0.0"                    # Host for coolems_server listener (0.0.0.0 = all interfaces including localhost)
@@ -149,6 +153,24 @@ DEEPSEEK_API_KEY: str = ""
 # Output ceiling per request. DeepSeek reports max_output_tokens 393216 per model; the
 # context guard clamps it down when the prompt leaves less room (see deepseek/streaming.py).
 DEEPSEEK_MAX_NEW_TOKENS: int = 32768
+
+# --- OpenAI Backend (2026-11): SERVER_BACKEND = "openai" ---
+# OpenAI is a HOSTED OpenAI-compatible API (https://api.openai.com/v1). Same attach-only
+# contract as DeepSeek: no spawn, no kill, no model loading; every request carries a Bearer
+# key. Models come from GET /v1/models and are the routing keys (gpt-4o, gpt-5, o3, ...);
+# /v1/models reports no per-model metadata, so context/vision/effort come from a small
+# static table in app/providers/openai/models.py with safe defaults for unknown ids.
+# Reasoning is sent as reasoning_effort (o-series: top-level, gpt-5: text.reasoning_effort);
+# o-series models reject temperature/top_p, so the payload drops them there.
+OPENAI_BASE_URL: str = "https://api.openai.com/v1"        # OpenAI API base URL (includes /v1, no trailing slash)
+# Bearer key for /models and /chat/completions.
+# Precedence: openai_servers.json entry 'api_key' > this value > env OPENAI_API_KEY.
+# Leave empty here and put the real key in config/openai_servers.json (gitignored) or in
+# the environment - never commit a real key.
+OPENAI_API_KEY: str = ""
+# Output ceiling per request; the context guard clamps it down when the prompt leaves less
+# room (see openai/streaming.py).
+OPENAI_MAX_NEW_TOKENS: int = 32768
 
 # --- Chrome CDP (Browser Debugging) ---
 CHROME_CDP_PORT: int = 9222                           # Chrome DevTools Protocol debugging port
@@ -343,6 +365,7 @@ def get_api_url() -> str:
     coolems_server picks its local LLM engine from SERVER_BACKEND: "llama" -> LLAMA_URL,
     "strata" -> STRATA_URL (the brain attaches to Strata, it never spawns it),
     "deepseek" -> DEEPSEEK_BASE_URL (hosted API, attach-only),
+    "openai" -> OPENAI_BASE_URL (hosted API, attach-only),
     "dynamic" -> LLAMA_URL (the mixed registry owns real routing; this URL is only the
     local disk-scan/OCR primary)."""
     if PROVIDER in ("llama", "coolems_server"):
@@ -350,6 +373,8 @@ def get_api_url() -> str:
             return STRATA_URL
         if SERVER_BACKEND == "deepseek":
             return DEEPSEEK_BASE_URL
+        if SERVER_BACKEND == "openai":
+            return OPENAI_BASE_URL
         if SERVER_BACKEND == "dynamic":
             return LLAMA_URL
         return LLAMA_URL
@@ -364,7 +389,7 @@ def get_provider_name() -> str:
 
 
 def set_server_backend(name: str) -> None:
-    """Runtime override of the local LLM engine ("llama" | "strata" | "deepseek" | "dynamic").
+    """Runtime override of the local LLM engine ("llama" | "strata" | "deepseek" | "openai" | "dynamic").
 
     code.py calls this when the CLI names the engine explicitly, which is more specific than
     config.SERVER_BACKEND. Both copies are updated: get_api_url() reads this module's global
@@ -916,5 +941,160 @@ def get_deepseek_server_instances() -> list["DeepSeekServerInstance"]:
             DEEPSEEK_BASE_URL,
         )
         return [_default_deepseek_instance()]
+
+    return instances
+# ---------------------------------------------------------------------------
+# OpenAI endpoints - config/openai_servers.json (2026-11 openai backend)
+# ---------------------------------------------------------------------------
+
+# Path to the hand-editable OpenAI endpoint list. Same contract as deepseek_servers.json:
+# the host is a hosted API (https://api.openai.com/v1), so an entry carries a base_url
+# instead of host/port. Every entry is ATTACH-ONLY: no process, no model loading.
+# Gitignored (per-machine, carries the Bearer key); the .example.json template is tracked
+# and bootstrap.py seeds the real file at first boot.
+OPENAI_SERVERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "openai_servers.json")
+
+
+@_dataclass(frozen=True)
+class OpenAIServerInstance(LlamaServerInstance):
+    """One hosted OpenAI endpoint to attach to at boot.
+
+    base_url is the endpoint identity (host/port are derived from it so the inherited
+    api_url property still works). ctx_per_slot is the per-model context window used when
+    the static metadata table reports none. concurrency is the fan-out cap for this
+    endpoint; None means the registry default of one slot per model.
+    """
+    api_key: Optional[str] = None
+    ctx_per_slot: Optional[int] = None
+    base_url: Optional[str] = None
+    # Set by the registry when one endpoint is expanded into one routable backend per
+    # served model id (see LlmBackendRegistry). Empty on the endpoint-level entry.
+    model_id: Optional[str] = None
+
+    @property
+    def kind(self) -> str:
+        return "openai"
+
+    @property
+    def is_spawnable(self) -> bool:
+        """False always: a hosted API, the brain only attaches."""
+        return False
+
+    @property
+    def api_url(self) -> str:
+        return (self.base_url or f"http://{self.host}:{self.port}").rstrip("/")
+
+    @property
+    def is_local(self) -> bool:
+        """A hosted API is never loopback, even when pointed at localhost in tests."""
+        return False
+
+
+def openai_auth_headers(api_key: Optional[str]) -> Optional[dict]:
+    """Bearer auth headers for an OpenAI endpoint, or None when no key is configured."""
+    key = (api_key or "").strip()
+    if not key:
+        return None
+    return {"Authorization": f"Bearer {key}"}
+
+
+def _default_openai_instance() -> "OpenAIServerInstance":
+    """The always-present endpoint (OPENAI_BASE_URL)."""
+    parsed = urlparse(OPENAI_BASE_URL)
+    return OpenAIServerInstance(
+        "openai", parsed.hostname or "api.openai.com",
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+        concurrency=None, api_key=None, base_url=OPENAI_BASE_URL,
+    )
+
+
+def _write_default_openai_file(path: str) -> None:
+    """Re-create a missing openai_servers.json with the default entry. Best-effort."""
+    try:
+        payload = _json.dumps(
+            [{"name": "openai", "base_url": OPENAI_BASE_URL, "api_key": ""}],
+            indent=2,
+        ) + "\n"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(payload)
+    except OSError as e:
+        _logger.error("[CONFIG] Could not re-create %s: %s", path, e)
+
+
+def get_openai_server_instances() -> list["OpenAIServerInstance"]:
+    """Fresh read + validation of config/openai_servers.json (mirror of the deepseek loader).
+
+    Hand-edited file, so forgiving but loud: a non-object entry or a base_url that is not an
+    http(s) URL is skipped with a warning; duplicate base_url is deduped (first wins); a
+    missing 'api_key' falls back to config.OPENAI_API_KEY, then env OPENAI_API_KEY; an
+    empty or invalid list falls back to the default endpoint, and a missing file is re-seeded
+    with that entry. Returns a non-empty list of OpenAIServerInstance.
+    """
+    path = OPENAI_SERVERS_FILE
+    env_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    config_key = (OPENAI_API_KEY or "").strip()
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = _json.load(f)
+    except FileNotFoundError:
+        _logger.warning(
+            "[CONFIG] %s not found - recreating it with the default endpoint %s",
+            path, OPENAI_BASE_URL,
+        )
+        _write_default_openai_file(path)
+        return [_default_openai_instance()]
+    except (OSError, ValueError) as e:
+        _logger.warning(
+            "[CONFIG] %s unreadable/invalid JSON (%s) - keeping the default endpoint %s "
+            "(the corrupt file is left in place for inspection; fix it to configure more endpoints)",
+            path, e, OPENAI_BASE_URL,
+        )
+        return [_default_openai_instance()]
+
+    if not isinstance(raw, list):
+        _logger.warning(
+            "[CONFIG] %s must be a JSON LIST of {name, base_url, api_key, concurrency} entries "
+            "- using the default endpoint %s", path, OPENAI_BASE_URL,
+        )
+        return [_default_openai_instance()]
+
+    instances: list[OpenAIServerInstance] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            _logger.warning("[CONFIG] openai_servers.json entry #%d is not an object - skipped", i)
+            continue
+        base = str(entry.get("base_url") or entry.get("url") or "").strip().rstrip("/")
+        name = str(entry.get("name") or "").strip()
+        if not base or urlparse(base).scheme not in ("http", "https") or not urlparse(base).hostname:
+            _logger.warning(
+                "[CONFIG] openai_servers.json entry #%d has an invalid 'base_url' (%r) - skipped "
+                "(expected e.g. %s)", i, base, OPENAI_BASE_URL,
+            )
+            continue
+        if base.lower() in seen:
+            _logger.warning("[CONFIG] openai_servers.json duplicate base_url %s - deduped", base)
+            continue
+        seen.add(base.lower())
+        parsed = urlparse(base)
+        concurrency = _parse_instance_concurrency(entry, loopback=False, index=i)
+        api_key = str(entry.get("api_key") or "").strip() or config_key or env_key or None
+        ctx_per_slot = _parse_instance_ctx_per_slot(entry, "openai_servers.json", i)
+        instances.append(
+            OpenAIServerInstance(name or parsed.hostname, parsed.hostname,
+                                 parsed.port or (443 if parsed.scheme == "https" else 80),
+                                 concurrency,
+                                 thinking=_parse_thinking(entry, "openai_servers.json", i),
+                                 api_key=api_key, ctx_per_slot=ctx_per_slot, base_url=base)
+        )
+
+    if not instances:
+        _logger.warning(
+            "[CONFIG] openai_servers.json has no valid entries - using the default endpoint %s "
+            "(the file is kept; add a {name, base_url, api_key, concurrency} entry to configure more endpoints)",
+            OPENAI_BASE_URL,
+        )
+        return [_default_openai_instance()]
 
     return instances

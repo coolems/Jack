@@ -22,8 +22,10 @@ from config import (
     get_llama_server_instances,
     get_strata_server_instances,
     get_deepseek_server_instances,
+    get_openai_server_instances,
     strata_auth_headers,
     deepseek_auth_headers,
+    openai_auth_headers,
     LLAMA_MAX_CONCURRENCY,
     LLAMA_SERVER_PARALLEL,
     CONTEXT_WINDOW_TOKENS,
@@ -40,15 +42,16 @@ def _is_local(host: str) -> bool:
     return host.lower() in ("127.0.0.1", "localhost", "::1")
 
 
-def _deepseek_child_instance(endpoint_instance, model_key: str, ctx):
-    """The instance of one DeepSeek model's routable child backend.
+def _hosted_child_instance(endpoint_instance, model_key: str, ctx):
+    """The instance of one hosted model's routable child backend (DeepSeek or OpenAI).
 
     Same endpoint identity (host/port/base_url/api_key/thinking override) plus the model id,
     so the child's api_url still resolves to the endpoint and its key is the model's queue key.
     """
-    from config import DeepSeekServerInstance
+    from config import DeepSeekServerInstance, OpenAIServerInstance
 
-    return DeepSeekServerInstance(
+    cls = OpenAIServerInstance if endpoint_instance.kind == "openai" else DeepSeekServerInstance
+    return cls(
         f"{endpoint_instance.name}:{model_key}",
         endpoint_instance.host, endpoint_instance.port,
         endpoint_instance.concurrency, endpoint_instance.thinking,
@@ -72,13 +75,13 @@ def _startup_reasoning_enabled() -> bool:
 
 
 class LlmBackend:
-    """One backend from config/llama_servers.json, config/strata_servers.json or
-    config/deepseek_servers.json.
+    """One backend from config/llama_servers.json, config/strata_servers.json,
+    config/deepseek_servers.json or config/openai_servers.json.
 
-    A DeepSeek entry is an ENDPOINT (one hosted base_url). Because one endpoint serves
-    several model ids, the registry expands it into one routable child backend per model
-    (registry.sync_deepseek_models) - the endpoint entry stays in registry.endpoints and
-    owns the /models probe; the children own queue groups.
+    A DeepSeek/OpenAI entry is an ENDPOINT (one hosted base_url). Because one endpoint
+    serves several model ids, the registry expands it into one routable child backend per
+    model (registry.sync_hosted_models) - the endpoint entry stays in registry.endpoints
+    and owns the /models probe; the children own queue groups.
     """
 
     def __init__(self, instance: LlamaServerInstance, allow_spawn: bool = True):
@@ -88,14 +91,16 @@ class LlmBackend:
             else (instance.host.lower(), instance.port)
         self.api_url: str = instance.api_url
         self.local: bool = _is_local(instance.host)
-        # (2026-11 strata / deepseek) Backend kind: "llama" for llama-server, "strata" for a
-        # Strata endpoint, "deepseek" for the hosted DeepSeek API. Both authenticated kinds
-        # are attach-only, so the brain only probes them and signs every request.
+        # (2026-11 strata / deepseek / openai) Backend kind: "llama" for llama-server,
+        # "strata" for a Strata endpoint, "deepseek"/"openai" for the hosted APIs. All
+        # authenticated kinds are attach-only, so the brain only probes them and signs
+        # every request.
         self.kind: str = getattr(instance, "kind", "llama")
-        self.is_deepseek: bool = self.kind == "deepseek"
+        self.is_hosted: bool = self.kind in ("deepseek", "openai")
         self.api_key: Optional[str] = getattr(instance, "api_key", None)
-        self.headers: Optional[dict] = (deepseek_auth_headers(self.api_key)
-                                        if self.is_deepseek else strata_auth_headers(self.api_key))
+        self.headers: Optional[dict] = (
+            (openai_auth_headers if self.kind == "openai" else deepseek_auth_headers)(self.api_key)
+            if self.is_hosted else strata_auth_headers(self.api_key))
         # LOCAL llama nodes may be spawned by us; everything else (remotes, Strata, DeepSeek)
         # is ATTACH-ONLY: a failed probe must never start or restart a process we do not own.
         # allow_spawn is False for the "dynamic" fleet: it never spawns, it only attaches to
@@ -203,6 +208,10 @@ class LlmBackend:
                 from ..deepseek.provider import DeepSeekProvider
                 self._provider = DeepSeekProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT,
                                                   headers=self.headers)
+            elif self.kind == "openai":
+                from ..openai.provider import OpenAIProvider
+                self._provider = OpenAIProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT,
+                                                headers=self.headers)
             else:
                 from .provider import LlamaProvider
                 self._provider = LlamaProvider(self.api_url, PROVIDER_DEFAULT_TIMEOUT)
@@ -224,7 +233,7 @@ class LlmBackend:
         key = model_key_of(model_key)
         if self.model_id is not None:
             return key == self.model_key or key in self.model_aliases
-        if self.is_deepseek:
+        if self.is_hosted:
             return any(m["key"] == key for m in self.endpoint_models)
         return key == self.model_key or key in self.model_aliases
 
@@ -352,10 +361,10 @@ class LlmBackend:
     async def probe_health(self) -> bool:
         """One health round-trip; marks healthy/unhealthy.
 
-        llama/Strata: /health (+ /props on success). DeepSeek endpoint: GET /models is the
-        health probe AND the discovery step - it lists the model ids this account serves, each
-        becoming a routable child backend (registry.sync_deepseek_models). A child backend just
-        mirrors its endpoint's health.
+        llama/Strata: /health (+ /props on success). DeepSeek/OpenAI endpoint: GET /models is
+        the health probe AND the discovery step - it lists the model ids this account serves,
+        each becoming a routable child backend (registry.sync_hosted_models). A child backend
+        just mirrors its endpoint's health.
 
         Discovery is refreshed before the healthy flag/event is published, so workers waking on
         the event already see the current model key and capacity.
@@ -368,8 +377,8 @@ class LlmBackend:
                 self._healthy_event.clear()
             return bool(self.healthy)
 
-        if self.is_deepseek:
-            return await self._probe_deepseek()
+        if self.is_hosted:
+            return await self._probe_hosted()
 
         from .http_client import get_async_client
         try:
@@ -413,15 +422,18 @@ class LlmBackend:
             self._notify_health_changed()
         return bool(self.healthy)
 
-    async def _probe_deepseek(self) -> bool:
-        """GET /models: health + model discovery for a DeepSeek endpoint.
+    async def _probe_hosted(self) -> bool:
+        """GET /models: health + model discovery for a DeepSeek/OpenAI endpoint.
 
-        DeepSeek has no /health or /props, so the model list IS the health answer: a 200
-        with at least one model means the account is reachable and routable. Each model
-        becomes a child backend (one queue group + workers per id), so switching models is
-        picking another id - nothing is loaded or reloaded.
+        The hosted APIs have no /health or /props, so the model list IS the health answer:
+        a 200 with at least one model means the account is reachable and routable. Each
+        model becomes a child backend (one queue group + workers per id), so switching
+        models is picking another id - nothing is loaded or reloaded.
         """
-        from ..deepseek.models import fetch_models
+        if self.kind == "openai":
+            from ..openai.models import fetch_models
+        else:
+            from ..deepseek.models import fetch_models
 
         try:
             models = await fetch_models(self.api_url, self.headers)
@@ -434,12 +446,15 @@ class LlmBackend:
             self.props_error = self.props_error or "/models returned no models"
             if not getattr(self, "_warned_props", False):
                 self._warned_props = True
+                _key_hint = ("config/openai_servers.json or config.OPENAI_API_KEY"
+                             if self.kind == "openai"
+                             else "config/deepseek_servers.json or config.DEEPSEEK_API_KEY")
                 logger.warning(
                     "[REGISTRY] %s answered no models (%s)%s - not routing to it until "
-                    "GET /models works (set 'api_key' in config/deepseek_servers.json or "
-                    "config.DEEPSEEK_API_KEY)",
+                    "GET /models works (set 'api_key' in %s)",
                     self.label, self.props_error,
                     "" if self.headers else " - this endpoint has NO Bearer key",
+                    _key_hint,
                 )
             if self.parent is None:
                 self._set_endpoint_health(False)
@@ -508,7 +523,7 @@ class LlmBackend:
         """Immediately take this node out of routing (a failed request beats a 30 s poll).
 
         The health poller re-probes and will bring it back automatically when it recovers.
-        A DeepSeek model child shares its endpoint's fate: a failure there (bad key,
+        A hosted model child shares its endpoint's fate: a failure there (bad key,
         unreachable host) takes the whole endpoint down, so every model group goes with it.
         """
         if self.parent is not None:
@@ -521,7 +536,7 @@ class LlmBackend:
             logger.warning("[REGISTRY] %s marked UNHEALTHY now: %s", self.label, reason or "request failed")
         self.healthy = False
         self._healthy_event.clear()
-        if self.is_deepseek:
+        if self.is_hosted:
             self._set_endpoint_health(False)
         elif was_healthy:
             self._notify_health_changed()
@@ -688,12 +703,12 @@ class LlmBackendRegistry:
 
     from_config(kind="strata") builds the same registry over config/strata_servers.json:
     every backend then reports kind="strata" and is attach-only.
-    from_config(kind="deepseek") builds it over config/deepseek_servers.json: each entry is a
-    hosted ENDPOINT. Because one endpoint serves several model ids, the registry keeps the
-    endpoint in ``endpoints`` (it owns the /models probe) and expands it into one routable
-    CHILD backend per model id in ``backends`` (one queue group + workers per id), so the
-    picker can switch between models and routing stays exact.
-    from_config(kind="dynamic") merges all three config files into one mixed fleet.
+    from_config(kind="deepseek"/"openai") builds it over the matching servers.json: each
+    entry is a hosted ENDPOINT. Because one endpoint serves several model ids, the registry
+    keeps the endpoint in ``endpoints`` (it owns the /models probe) and expands it into one
+    routable CHILD backend per model id in ``backends`` (one queue group + workers per id),
+    so the picker can switch between models and routing stays exact.
+    from_config(kind="dynamic") merges all four config files into one mixed fleet.
     """
 
     def __init__(self, instances: list[LlamaServerInstance], spawn_enabled: bool = True):
@@ -708,13 +723,13 @@ class LlmBackendRegistry:
         # de-dup by key (loader already dedupes; defensive for direct construction)
         seen = set()
         self.backends: dict[tuple, LlmBackend] = {}
-        # DeepSeek ENDPOINT backends (model_id None): probes /models and own their children.
+        # Hosted ENDPOINT backends (model_id None): probe /models and own their children.
         self.endpoints: dict[tuple, LlmBackend] = {}
         for inst in instances:
             b = LlmBackend(inst, allow_spawn=spawn_enabled)
             if b.key not in seen:
                 seen.add(b.key)
-                if b.is_deepseek and b.model_id is None:
+                if b.is_hosted and b.model_id is None:
                     self.endpoints[b.key] = b
                 else:
                     self.backends[b.key] = b
@@ -725,22 +740,26 @@ class LlmBackendRegistry:
 
         ``kind`` selects the source of truth: "llama" -> config/llama_servers.json
         (spawn-or-attach llama-server instances), "strata" -> config/strata_servers.json
-        (attach-only endpoints), "deepseek" -> config/deepseek_servers.json (attach-only
-        hosted endpoints, expanded per served model id), "dynamic" -> all three files merged
-        into one mixed fleet (llama + strata + deepseek; the picker lists every model any
-        endpoint serves). The dynamic fleet is ATTACH-ONLY even for local llama nodes: it
-        never spawns a service, it only uses what is already available (a down node stays
-        down and its models gray out in the picker).
+        (attach-only endpoints), "deepseek" -> config/deepseek_servers.json, "openai" ->
+        config/openai_servers.json (attach-only hosted endpoints, expanded per served model
+        id), "dynamic" -> all four files merged into one mixed fleet (llama + strata +
+        deepseek + openai; the picker lists every model any endpoint serves). The dynamic
+        fleet is ATTACH-ONLY even for local llama nodes: it never spawns a service, it only
+        uses what is already available (a down node stays down and its models gray out in
+        the picker).
         """
         if kind == "strata":
             instances = get_strata_server_instances()
         elif kind == "deepseek":
             instances = get_deepseek_server_instances()
+        elif kind == "openai":
+            instances = get_openai_server_instances()
         elif kind == "dynamic":
             instances = (
                 list(get_llama_server_instances())
                 + list(get_strata_server_instances())
                 + list(get_deepseek_server_instances())
+                + list(get_openai_server_instances())
             )
         else:
             instances = get_llama_server_instances()
@@ -748,36 +767,36 @@ class LlmBackendRegistry:
         reg.kind = kind
         return reg
 
-    # --- DeepSeek model expansion -------------------------------------------
+    # --- hosted model expansion (DeepSeek / OpenAI) --------------------------
 
-    def sync_deepseek_models(self) -> int:
-        """Create/update one routable child backend per model id of every DeepSeek endpoint.
+    def sync_hosted_models(self) -> int:
+        """Create/update one routable child backend per model id of every hosted endpoint.
 
         Idempotent: an existing child for a model id is updated in place (its ctx and
         thinking follow the latest /models entry, its health follows the endpoint); a model
         that disappeared from /models loses its child, so its queue group stops being
         advertised. Returns the number of child backends now routable.
         """
-        from ..deepseek.thinking import DeepSeekThinkingPolicy
-
         for endpoint in self.endpoints.values():
             for m in endpoint.endpoint_models:
                 key = (endpoint.instance.host.lower(), endpoint.instance.port, m["key"])
                 child = self.backends.get(key)
                 if child is None:
                     inst = endpoint.instance
-                    child = LlmBackend(_deepseek_child_instance(inst, m["key"], m["ctx"]))
+                    child = LlmBackend(_hosted_child_instance(inst, m["key"], m["ctx"]))
                     child.parent = endpoint
                     self.backends[key] = child
-                    logger.info("[REGISTRY] DeepSeek model '%s' is routable (%s)",
-                                m["id"], endpoint.label)
+                    logger.info("[REGISTRY] %s model '%s' is routable (%s)",
+                                endpoint.kind, m["id"], endpoint.label)
                 else:
                     child.ctx_per_slot = m["ctx"] or child.ctx_per_slot
                 child.model_key = m["key"]
                 child.model_label = m["id"]
                 child.model_aliases = set()
-                child.thinking = DeepSeekThinkingPolicy.from_model(
-                    m.get("raw") or {}, endpoint.thinking_override)
+                child.thinking = m["thinking"]
+                if endpoint.thinking_override is not None:
+                    child.thinking = type(m["thinking"]).from_override(
+                        endpoint.thinking_override, child.thinking)
                 child.healthy = bool(endpoint.healthy)
                 if child.healthy:
                     child._healthy_event.set()
@@ -789,8 +808,8 @@ class LlmBackendRegistry:
                         m["key"] == b.model_key for m in endpoint.endpoint_models)]
             for k in gone:
                 b = self.backends.pop(k)
-                logger.info("[REGISTRY] DeepSeek model '%s' is no longer served - its queue "
-                            "group is removed (%s)", b.model_label, endpoint.label)
+                logger.info("[REGISTRY] %s model '%s' is no longer served - its queue "
+                            "group is removed (%s)", endpoint.kind, b.model_label, endpoint.label)
 
         return len(self.backends)
 
@@ -809,8 +828,9 @@ class LlmBackendRegistry:
     def get_for_api_url(self, api_url: str, model: str = "") -> Optional[LlmBackend]:
         """The backend a request for *api_url* (and optionally *model*) will run on.
 
-        llama/Strata: the (host, port) entry. DeepSeek: the per-model CHILD backend when a
-        model is named (exact ctx + thinking for that id), else the endpoint itself.
+        llama/Strata: the (host, port) entry. Hosted (DeepSeek/OpenAI): the per-model CHILD
+        backend when a model is named (exact ctx + thinking for that id), else the endpoint
+        itself.
         """
         k = key_for_api_url(api_url)
         if not k:
@@ -837,7 +857,7 @@ class LlmBackendRegistry:
         return backend
 
     def children_of(self, endpoint: LlmBackend) -> list[LlmBackend]:
-        """The per-model child backends of one DeepSeek endpoint."""
+        """The per-model child backends of one hosted (DeepSeek/OpenAI) endpoint."""
         return [b for b in self.backends.values() if b.parent is endpoint]
 
     def healthy_backends(self) -> list[LlmBackend]:
@@ -926,7 +946,7 @@ class LlmBackendRegistry:
         return min(vals) if vals else CONTEXT_WINDOW_TOKENS
 
     def _row(self, b: LlmBackend) -> dict:
-        """One fleet-table row for a backend or a DeepSeek endpoint."""
+        """One fleet-table row for a backend or a hosted endpoint."""
         return {
             "name": b.instance.name,
             "host": b.instance.host,
@@ -952,8 +972,8 @@ class LlmBackendRegistry:
     def snapshot(self) -> list[dict]:
         """Per-backend state for the table / logs / error frames.
 
-        Routable backends (one per model for DeepSeek) plus any DeepSeek endpoint with no
-        children yet - that row is the endpoint itself, so a down endpoint still shows its
+        Routable backends (one per model for hosted endpoints) plus any hosted endpoint with
+        no children yet - that row is the endpoint itself, so a down endpoint still shows its
         error instead of an empty table.
         """
         rows = [self._row(b) for b in self.backends.values()]
@@ -969,14 +989,15 @@ class LlmBackendRegistry:
         request routed to the weaker node fails at template render time. Healthy state is
         irrelevant - a node that is merely down still defines what the template allows.
 
-        DeepSeek policies merge through DeepSeekThinkingPolicy.merge so the merged policy keeps
-        the canonical->effort mapping (ThinkingPolicy.merge builds a plain policy, which would
-        lose it and send an effort DeepSeek does not accept).
+        Hosted policies merge through their own .merge (DeepSeekThinkingPolicy /
+        OpenAIThinkingPolicy) so the merged policy keeps the canonical->effort mapping
+        (ThinkingPolicy.merge builds a plain policy, which would lose it and send an
+        effort the API does not accept).
         """
         policies = [b.thinking for b in self.backends_for_model(model)]
-        if policies and all(type(p).__name__ == "DeepSeekThinkingPolicy" for p in policies):
-            from ..deepseek.thinking import DeepSeekThinkingPolicy
-            return DeepSeekThinkingPolicy.merge(policies)
+        if policies and all(type(p).__name__ in ("DeepSeekThinkingPolicy", "OpenAIThinkingPolicy")
+                            for p in policies):
+            return type(policies[0]).merge(policies)
         return ThinkingPolicy.merge(policies)
 
     # --- lifecycle ------------------------------------------------------------
@@ -989,10 +1010,10 @@ class LlmBackendRegistry:
             return False
 
     async def probe_all(self) -> list[tuple[LlmBackend, bool]]:
-        """Probe every routable backend + every DeepSeek endpoint, IN PARALLEL.
+        """Probe every routable backend + every hosted endpoint, IN PARALLEL.
 
         A of down nodes would otherwise cost 5 s each (connect timeout) before the
-        server can accept its first client. DeepSeek endpoints are probed (GET /models)
+        server can accept its first client. Hosted endpoints are probed (GET /models)
         and their per-model children are (re)built from the answer afterwards.
         """
         targets = [e for e in self.endpoints.values()] + [
@@ -1000,7 +1021,7 @@ class LlmBackendRegistry:
         ]
         results = await asyncio.gather(*(self._probe_one(b) for b in targets))
         if self.endpoints:
-            self.sync_deepseek_models()
+            self.sync_hosted_models()
         self._remember_models()
         # Heartbeat: push a fresh fleet snapshot even when nothing flipped (keeps an open
         # outage dialog's slot counts / busy state current between transitions).
@@ -1032,7 +1053,7 @@ class LlmBackendRegistry:
         logger.info("=" * 78)
 
     def _kinds(self) -> set[str]:
-        """Every backend kind present, endpoints included (a down DeepSeek endpoint
+        """Every backend kind present, endpoints included (a down hosted endpoint
         still has no children yet, and its wording must not fall back to 'llama')."""
         kinds = {b.kind for b in self.backends.values()}
         kinds |= {e.kind for e in self.endpoints.values()}
@@ -1045,6 +1066,8 @@ class LlmBackendRegistry:
             return "STRATA BACKEND REGISTRY (from config/strata_servers.json)"
         if kinds == {"deepseek"}:
             return "DEEPSEEK BACKEND REGISTRY (from config/deepseek_servers.json)"
+        if kinds == {"openai"}:
+            return "OPENAI BACKEND REGISTRY (from config/openai_servers.json)"
         if kinds == {"llama"}:
             return "LLAMA BACKEND REGISTRY (from config/llama_servers.json)"
         return "LLM BACKEND REGISTRY (mixed: " + ", ".join(sorted(kinds)) + ")"
@@ -1060,6 +1083,8 @@ class LlmBackendRegistry:
             return "Strata endpoint"
         if kinds == {"deepseek"}:
             return "DeepSeek endpoint"
+        if kinds == {"openai"}:
+            return "OpenAI endpoint"
         if kinds == {"llama"}:
             return "llama node"
         return "backend"
@@ -1079,8 +1104,9 @@ class LlmBackendRegistry:
     async def start_all(self) -> bool:
         """Start/attach every configured instance and log the startup table.
 
-        DeepSeek endpoints are attached first (GET /models) and expanded into their
-        per-model child backends, so the fleet table lists one row per served model id.
+        Hosted (DeepSeek/OpenAI) endpoints are attached first (GET /models) and expanded
+        into their per-model child backends, so the fleet table lists one row per served
+        model id.
 
         Returns True when at least one backend is healthy (the SERVER can serve).
         """
@@ -1089,7 +1115,7 @@ class LlmBackendRegistry:
             ok = await e.ensure_started()
             results.append((e, ok))
         if self.endpoints:
-            self.sync_deepseek_models()
+            self.sync_hosted_models()
 
         for b in self.backends.values():
             if b.parent is not None:

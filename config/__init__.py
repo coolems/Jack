@@ -68,6 +68,15 @@ from .config import (
     get_deepseek_server_instances,
     deepseek_auth_headers,
 
+    # OpenAI backend (SERVER_BACKEND = "openai", 2026-11)
+    OPENAI_BASE_URL,
+    OPENAI_API_KEY,
+    OPENAI_MAX_NEW_TOKENS,
+    OPENAI_SERVERS_FILE,
+    OpenAIServerInstance,
+    get_openai_server_instances,
+    openai_auth_headers,
+
     # Chrome CDP (Browser Debugging)
     CHROME_CDP_PORT,
 

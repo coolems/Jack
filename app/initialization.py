@@ -104,9 +104,9 @@ async def init_provider_and_app(provider_name: str, api_url: str):
         logger.warning("Provider startup had issues - may still work if already running.")
 
     # Set OCR models from profiles.json ocr_model paths
-    if provider_name in ("llama", "coolems_server") and config.SERVER_BACKEND in ("strata", "deepseek"):
+    if provider_name in ("llama", "coolems_server") and config.SERVER_BACKEND in ("strata", "deepseek", "openai"):
         # 2026-11: OCR needs a dedicated llama.cpp OCR instance (profiles.json 'ocr_model'
-        # dirs + ocr_server_manager). Strata serves one chat model and DeepSeek runs no OCR
+        # dirs + ocr_server_manager). Strata serves one chat model and DeepSeek/OpenAI run no OCR
         # instance, so an empty list means OCR requests get a clear refusal instead of a
         # doomed launch. "dynamic" deliberately falls through to the local llama OCR path
         # below (the local llama engine is still available for OCR alongside the fleet).
@@ -193,6 +193,9 @@ def resolve_provider_and_url(cli_provider: str = None):
     elif provider_name == "deepseek":
         api_url = os.environ.get("DEEPSEEK_URL", config.DEEPSEEK_BASE_URL)
         logger.info(f"Using DeepSeek provider at {api_url}")
+    elif provider_name == "openai":
+        api_url = os.environ.get("OPENAI_URL", config.OPENAI_BASE_URL)
+        logger.info(f"Using OpenAI provider at {api_url}")
     elif provider_name == "coolems_server":
         backend = config.SERVER_BACKEND
         if backend == "llama":
@@ -208,12 +211,17 @@ def resolve_provider_and_url(cli_provider: str = None):
             api_url = os.environ.get("DEEPSEEK_URL", config.DEEPSEEK_BASE_URL)
             logger.info(f"Using coolems_server provider with DeepSeek at {api_url} "
                         f"(attach-only; key from config/deepseek_servers.json or config.DEEPSEEK_API_KEY)")
+        elif backend == "openai":
+            # 2026-11: the brain relays to OpenAI's hosted API; attach-only, Bearer key.
+            api_url = os.environ.get("OPENAI_URL", config.OPENAI_BASE_URL)
+            logger.info(f"Using coolems_server provider with OpenAI at {api_url} "
+                        f"(attach-only; key from config/openai_servers.json or config.OPENAI_API_KEY)")
         elif backend == "dynamic":
-            # 2026-11: mixed fleet - llama + strata + deepseek endpoints enumerated together.
+            # 2026-11: mixed fleet - llama + strata + deepseek + openai endpoints enumerated together.
             # LLAMA_URL is only the disk-scan/OCR primary; routing uses the registry.
             api_url = os.environ.get("LLAMA_URL", config.LLAMA_URL)
             logger.info(f"Using coolems_server provider with the DYNAMIC fleet (llama + strata "
-                        f"+ deepseek); local primary at {api_url}")
+                        f"+ deepseek + openai); local primary at {api_url}")
         else:
             # Default to llama if SERVER_BACKEND is misconfigured
             api_url = os.environ.get("LLAMA_URL", config.LLAMA_URL)
@@ -223,7 +231,7 @@ def resolve_provider_and_url(cli_provider: str = None):
     else:
         raise ValueError(
             f"Unknown server provider: '{provider_name}'. "
-            f"Valid server providers: 'llama', 'strata', 'deepseek', 'coolems_server'. "
+            f"Valid server providers: 'llama', 'strata', 'deepseek', 'openai', 'coolems_server'. "
             f"For client providers, use the CLIENT/ folder."
         )
 

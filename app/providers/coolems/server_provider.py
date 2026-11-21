@@ -73,8 +73,9 @@ class CoolemsServerProvider(BaseProvider):
         """The local inference backend this relay talks to, chosen by config.SERVER_BACKEND.
 
         "strata" -> StrataProvider (same wire format, Bearer key, attach-only),
-        "deepseek" -> DeepSeekProvider (hosted API, own payload/response transform,
-        attach-only), "llama" -> LlamaProvider. "dynamic" also maps to LlamaProvider: chat
+        "deepseek" -> DeepSeekProvider, "openai" -> OpenAIProvider (hosted APIs, own
+        payload/response transform, attach-only), "llama" -> LlamaProvider. "dynamic" also
+        maps to LlamaProvider: chat
         routing goes through the mixed registry + worker pool, so this handle only does the
         local GGUF disk scan and OCR.
         """
@@ -90,6 +91,11 @@ class CoolemsServerProvider(BaseProvider):
                 from ..deepseek.provider import DeepSeekProvider
                 self._local_provider = DeepSeekProvider(self._api_url, self._timeout)
                 logger.info(f"[SERVER] Local DeepSeekProvider initialized at {self._api_url} "
+                            f"(hosted API, attach-only; auth={'Bearer key' if self._local_provider.headers else 'none'})")
+            elif backend == "openai":
+                from ..openai.provider import OpenAIProvider
+                self._local_provider = OpenAIProvider(self._api_url, self._timeout)
+                logger.info(f"[SERVER] Local OpenAIProvider initialized at {self._api_url} "
                             f"(hosted API, attach-only; auth={'Bearer key' if self._local_provider.headers else 'none'})")
             else:
                 from ..llama.provider import LlamaProvider
@@ -196,9 +202,9 @@ class CoolemsServerProvider(BaseProvider):
         return ok
 
     async def _ensure_dynamic_backend_healthy(self) -> bool:
-        """Build the mixed llama+strata+deepseek registry and wait for one healthy node.
+        """Build the mixed llama+strata+deepseek+openai registry and wait for one healthy node.
 
-        SERVER_BACKEND="dynamic" enumerates every endpoint in the three config files at once.
+        SERVER_BACKEND="dynamic" enumerates every endpoint in the four config files at once.
         It is ATTACH-ONLY: nothing is ever spawned, so if no endpoint is already up the fleet
         simply reports unhealthy and the picker grays out every model. Chat routing stays
         per-backend through the worker pool.
@@ -213,7 +219,7 @@ class CoolemsServerProvider(BaseProvider):
         else:
             logger.error(
                 "[SERVER] No dynamic endpoint is healthy - chat stays refused until one "
-                "endpoint answers (llama /props, strata /health + /props, or deepseek /models)"
+                "endpoint answers (llama /props, strata /health + /props, or hosted /models)"
             )
         return ok
 
