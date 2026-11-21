@@ -106,7 +106,7 @@ const CycleBlock = {
 
     // ===== open / rebuild =====
 
-    _makeBlock(convId, turnId, startedAtMs, lastTurnSec) {
+    _makeBlock(convId, turnId, startedAtMs) {
         const node = document.createElement('div');
         node.className = 'cycle-block collapsed';
         node.dataset.convId = convId;
@@ -125,9 +125,8 @@ const CycleBlock = {
         const block = {
             convId, turnId, node, open: true, settled: false,
             startedAt: startedAtMs,
-            lastTurnSec: lastTurnSec || 0,
             counts: { turns: 0, tools: 0, tools_ok: 0, consents: 0, grants: 0, steers: 0, notices: 0 },
-            generated: 0, speed: 0,
+            generated: 0, speed: 0, genLiveEst: 0, _genPaintAt: 0,
             rows: [],            // {kind, step_no, at_ts, el} kept in at_ts order
             consents: {},        // request_id -> row element
             steerRows: {},       // steer_id -> {el, state} (ONE row per steering message)
@@ -189,8 +188,7 @@ const CycleBlock = {
         if (!container) return null;
 
         const block = this._makeBlock(convId, turnId,
-            Number(frame && frame.turn_started_at ? frame.turn_started_at * 1000 : Date.now()),
-            Number(frame && frame.last_turn_sec ? frame.last_turn_sec : 0));
+            Number(frame && frame.turn_started_at ? frame.turn_started_at * 1000 : Date.now()));
 
         CycleShell.hideWelcome();
         if (before && before.parentNode === container) container.insertBefore(block.node, before);
@@ -299,12 +297,15 @@ const CycleBlock = {
         // line counts them - the number always has rows behind it.
         if (c.steers) parts.push(`steers ${c.steers}`);
         if (c.notices) parts.push(`notices ${c.notices}`);
-        // NO TOKEN COUNTERS ON THE HEAD LINE (user request 2026-11-08): "X.XK gen" is gone.
-        // block.generated is still tracked (token_stats / turn_stats fold it in) because the
-        // chat-level token bar reads it; only the block stopped printing it. Speed stays -
-        // the user asked for speed on the row lines and on this head line.
+        // Per-loop generation amount + speed on the head line (user request 2026-11-21):
+        // the status bar no longer shows these, so each working loop's block carries its
+        // own gen count and speed. block.generated is the provider-CONFIRMED count
+        // (token_stats / persisted payload); while the AI streams, block.genLiveEst adds
+        // the chars/4 estimate of the text streamed since the last confirmed frame, so
+        // the number moves in real time. "K" only above 1000, plain number below.
+        const genTotal = block.generated + (block.genLiveEst || 0);
+        if (genTotal > 0) parts.push(`\u{1F4DD} ${_fmtTokens(genTotal)} gen`);
         if (block.speed) parts.push(`\u26A1 ${block.speed.toFixed(1)} tok/s`);
-        if (block.settled && block.lastTurnSec) parts.push(`\u21A9 ${_fmtSec(block.lastTurnSec)} last`);
         block.summaryEl.textContent = parts.join(' \u00b7 ');
     },
 
@@ -612,9 +613,22 @@ const CycleBlock = {
         this.refreshAiVisibilityBlock(block);
     },
 
-    /** Live streamed chunk (content|thinking) - visible strip only; the row comes at settle. */
+    /** Live streamed chunk (content|thinking) - visible strip only; the row comes at settle.
+     *  Also feeds the REAL-TIME gen count on the head line (user request 2026-11-21): the
+     *  provider only reports the exact count when a call finishes, so while the stream runs
+     *  the block counts streamed chars / 4 (the same estimate the backend uses) on top of
+     *  the last confirmed number. A token_stats frame zeroes the estimate - its exact count
+     *  replaces it - and settle() re-renders the final value. */
     addStreamChunk(block, kind, text) {
         CycleShell.appendStream(block, kind, text, null);
+        if (text) {
+            block.genLiveEst = (block.genLiveEst || 0) + Math.ceil(text.length / 4);
+            const now = Date.now();
+            if (!block._genPaintAt || now - block._genPaintAt >= 200) {
+                block._genPaintAt = now;
+                this._renderSummary(block);
+            }
+        }
         this.refreshAiVisibilityBlock(block);
     },
 
@@ -649,6 +663,13 @@ const CycleBlock = {
         this.owners = {};
     },
 };
+
+/** Dynamic token count for the block head (user request 2026-11-21): "K" only above 1000
+ *  (21.2K gen), the plain number below (342 gen). */
+function _fmtTokens(n) {
+    n = Math.max(0, Math.round(n));
+    return n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n);
+}
 
 function _fmtSec(total) {
     if (!isFinite(total) || total < 0) return '0:00';

@@ -34,11 +34,11 @@ Every consent dialog also has an **"Explain request"** button: it allows NOTHING
 - Do not overthink or think of posibilities outside the scope of the code you fix. Fixing code is to look how it was working before and minimize impact on the code. Stay exact on target user asked. Do not generate content/code that user did not asked.
 - When coding always aim to have files not biger then 10-16kB in size. if you need more code in the file then split in sublcasses and add this code in it's own folder (so better code/debug/fix) keep perfect code practices and do not use fallbacks unless asked.
 - When encountering an error in the code you fix or on the tool you have but not related with the job you do at the moment please rise this with asking tool to user with 2 posibilities 1.Debug Error and do a Fix (and continue) 2.Continue without fixing
-- When coding and you need to update docstrings please remove older docstrings and make always a new small but clear info, without keeping history of the changes in that place.
-- When user is asking for changes this means he wants samething you did so far modified. Not something new.
+- When coding and you need to update docstrings please do not keep history of docstrings changes there. make always a new small but clear info related to the current code.
+- When user is asking for changes this means he wants samething you did so far modified. Not something new. Always in those case dig for the root of the problem.
 - Before delivering final result remember to use testing tool to check if all tests for code passed ok.
 - When user is not aking for changes just present what he wanted without proposing help or a way to fix the problems. Just present findings and this is the real end of your job there.
-- When you have to to an important decision to make is also good to use asking tool to present directions to user so he can choose your favorite or give you some guidance.
+- When you have to to an important decision to make is also good to use "asking tool" to present directions to user so he can choose your favorite or give you some guidance.
 
 ## TOOL RESULTS - READ THEM CAREFULLY
 

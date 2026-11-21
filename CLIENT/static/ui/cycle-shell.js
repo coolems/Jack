@@ -377,7 +377,8 @@ const CycleShell = {
         const idx = Number(stepNo || 0);
         let seg = block.aiSeg[idx];
         if (!seg) {
-            seg = { wrapEl: null, labelEl: null, answerEl: null, thinkingEl: null,
+            seg = { stepNo: idx, wrapEl: null, labelEl: null,
+                    answerEl: null, thinkingEl: null,
                     hasAnswer: false, hasThinking: false };
             block.aiSeg[idx] = seg;
         }
@@ -417,6 +418,53 @@ const CycleShell = {
     },
 
     /**
+     * The step's LIVE THINKING TOKEN COUNT (user request 2026-11-21): the "turn N ·
+     * thinking + AI" label itself shows how many tokens this thinking process generated
+     * so far, a few spaces after the label words, in the label's own style (no separate
+     * chip). The provider only reports the exact count when a call finishes, so while the
+     * stream runs the count is the thinking box's accumulated chars / 4 (the same estimate
+     * the backend uses for token counting) - _paintThinkingLabel() re-derives it from the
+     * box's dataset.raw on every chunk, so a settled speech row (the full text of the step)
+     * snaps the number to its final value. "K" only above 1000, the plain number below (the
+     * same rule as the block head's gen count). The label element is created in _segWrap()
+     * and the thinking box back-references its segment (el._seg) when it is built.
+     */
+
+    /** The step label's words: "turn N · thinking" / "AI" / "thinking + AI". */
+    _segLabelText(seg) {
+        return 'turn ' + seg.stepNo + ' \u00b7 ' +
+            (seg.hasAnswer && seg.hasThinking ? 'thinking + AI'
+                : (seg.hasAnswer ? 'AI' : 'thinking'));
+    },
+
+    /** The live count this step's thinking generated so far: the box's accumulated
+     *  chars / 4 (the same estimate the backend uses). '' while the step has no thinking. */
+    _segThinkCount(seg) {
+        const el = seg.thinkingEl;
+        if (!el || !(el.dataset.raw || '').length) return '';
+        const n = Math.ceil(el.dataset.raw.length / 4);
+        return (n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n)) + ' tok';
+    },
+
+    /** Paint the step label: the words, then the live count a few spaces after, in the
+     *  label's own style (one plain text node - no separate element). */
+    _paintSegLabel(seg) {
+        if (!seg.labelEl) return;
+        const cnt = this._segThinkCount(seg);
+        seg.labelEl.textContent = this._segLabelText(seg) + (cnt ? '  ' + cnt : '');
+    },
+
+    /** Throttled repaint of the label (100 ms) after a thinking chunk. */
+    _paintThinkingLabel(el) {
+        const seg = el._seg;
+        if (!seg) return;
+        const now = Date.now();
+        if (el._thinkPaintAt && now - el._thinkPaintAt < 100) return;
+        el._thinkPaintAt = now;
+        this._paintSegLabel(seg);
+    },
+
+    /**
      * Mount a segment's element in STEP ORDER (ascending step_no), so answers read top-down
      * exactly as the loop produced them. Normally an element is created while its own step
      * streams and the arrival order is already correct; this guard covers the case where a
@@ -451,11 +499,9 @@ const CycleShell = {
         }
         if (kind === 'answer') seg.hasAnswer = true;
         if (kind === 'thinking') seg.hasThinking = true;
-        if (seg.labelEl) {
-            seg.labelEl.textContent = 'turn ' + sn + ' \u00b7 ' +
-                (seg.hasAnswer && seg.hasThinking ? 'thinking + AI'
-                    : (seg.hasAnswer ? 'AI' : 'thinking'));
-        }
+        // The label words (and the live count, once thinking has text) always come from one
+        // place: _paintSegLabel repaints the whole text node.
+        this._paintSegLabel(seg);
         return seg;
     },
 
@@ -573,15 +619,23 @@ const CycleShell = {
                 seg.thinkingEl.className = 'cycle-ai-thinking';
                 seg.thinkingEl.dataset.stepNo = String(sn);
                 seg.thinkingEl.dataset.raw = '';
+                // The box is a WRAPPER: its text lives in its own child so the per-chunk
+                // text repaint stays inside the child.
+                const txt = document.createElement('div');
+                txt.className = 'cycle-ai-thinking-text';
+                seg.thinkingEl.appendChild(txt);
+                seg.thinkingTextEl = txt;
                 seg.wrapEl.appendChild(seg.thinkingEl);
+                seg.thinkingEl._seg = seg;                    // the label paints from this box
             }
             const changed = live ? this._appendLive(seg.thinkingEl, visible)
                                  : this._mergeRow(seg.thinkingEl, visible);
             if (!changed) return;
+            this._paintThinkingLabel(seg.thinkingEl);
             // Thinking has no markdown repaint, so scrub the accumulated text directly.
-            seg.thinkingEl.textContent = (typeof scrubAiText === 'function' && _hasAiNoise(seg.thinkingEl.dataset.raw))
+            seg.thinkingTextEl.textContent = (typeof scrubAiText === 'function' && _hasAiNoise(seg.thinkingEl.dataset.raw))
                 ? scrubAiText(seg.thinkingEl.dataset.raw) : seg.thinkingEl.dataset.raw;
-            seg.thinkingEl.scrollTop = seg.thinkingEl.scrollHeight;
+            seg.thinkingTextEl.scrollTop = seg.thinkingTextEl.scrollHeight;
             if (live) this.scrollIfNeeded();
             return;
         }
@@ -684,6 +738,8 @@ const CycleShell = {
                 seg.answerEl._paintTimer = null;
             }
             if (seg.answerEl) this._paint(seg.answerEl, true);
+            // Final label repaint: the settled thinking text is the last word on the count.
+            this._paintSegLabel(seg);
         }
     },
 
@@ -708,12 +764,12 @@ const CycleShell = {
 
         const p = row.payload;
         const block = CycleBlock._makeBlock(convId, turnId,
-            Number(p.turn_started_at ? p.turn_started_at * 1000 : Date.now()),
-            Number(p.last_turn_sec || 0));
+            Number(p.turn_started_at ? p.turn_started_at * 1000 : Date.now()));
         block.open = false;
         block.settled = true;
         block.counts = Object.assign(block.counts, p.counts || {});
         block.generated = Number(p.turn_generated || 0);
+        block.genLiveEst = 0;   // a rebuilt turn is settled - no live estimate applies
         block.speed = Number(p.speed_tps || 0);
         block.finalText = (p.final && p.final.text) || '';
 

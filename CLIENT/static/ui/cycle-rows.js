@@ -8,10 +8,9 @@
  * consent payload, the image thumb) stays in the DOM inside .cycle-row-detail and is
  * revealed by clicking THAT ROW's own line - the list stays readable, nothing is lost.
  *
- * NO TOKEN COUNTERS IN THE BLOCK (user request 2026-11-08): "N tok out" and "X.XK sent"
- * are gone from the step rows, and "X.XK gen" is gone from the head line. Speed stays -
- * the user asked for it on the row line. The chat-level token bar (websocket.js
- * updateHistoryStatusBar) still carries the counters; only the turn block stopped showing them.
+ * TOKEN COUNTERS IN THE BLOCK (user request 2026-11-08, revised 2026-11-21): "N tok out"
+ * and "X.XK sent" are gone from the step rows. The head line carries the loop's own
+ * "N.NK gen" + speed (the status bar no longer shows them); step rows show speed only.
  *
  * STEERING IS A ROW OF THE BLOCK (2026-11-08, user request): a message typed while the
  * task runs is NOT a chat message and must never paint as a user bubble - it is a fact of
@@ -50,7 +49,8 @@ window.EMPTY_IO = EMPTY_IO;
  *
  * The AI strip must carry ONLY what the AI said to the user. These lines are protocol or
  * bookkeeping and were appearing inside the answer:
- *   'Loop stats: N / M | ...'  - the spliced turn-stats line (already on the block head),
+ *   'Loop stats: N / M | ...'  - the spliced turn-stats line (splicing was removed 2026-11-21;
+ *                                 old persisted answers still carry it, so the scrub stays),
  *   '<tool_call>...'      - llama.cpp streams tool-call markup as content when the
  *                                 model emits it as text; the tool row already shows the call,
  *   '[SYSTEM NOTICE] ...'      - loop plumbing; it belongs to a notice row, not the answer.

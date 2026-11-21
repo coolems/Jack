@@ -26,7 +26,6 @@ def build_normal_config(
     conversation_id: str | None = None,
     stop_event: Optional[asyncio.Event] = None,
     session_timer=None,   # (2026-08-23) active-time timer for this turn (pauses on user menus)
-    last_session_sec: float = 0.0,  # previous turn's duration for the UI "last session" stat
 ) -> "NormalModeConfig":
     """Build a NormalModeConfig with defaults from config.py."""
     # Lazy import to break circular dependency chain
@@ -44,7 +43,6 @@ def build_normal_config(
         conversation_id=conversation_id,
         stop_event=stop_event,
         session_timer=session_timer,
-        last_session_sec=last_session_sec,
     )
 
 
@@ -66,7 +64,6 @@ def build_agentic_config(
     ollama_tools: List[Dict] | None = None,
     api_key: str | None = None,
     session_timer=None,   # (2026-08-23) active-time timer for this turn (pauses on user menus)
-    last_session_sec: float = 0.0,  # previous turn's duration for the UI "last session" stat
     steer_source: Any = None,       # (2026-10-23) live mid-run steering queue (ChatChannel)
     on_steer_applied: Any = None,   # async callback: persist one applied steering message
     cycle: Any = None,              # (2026-11-08) this turn's app.cycle_recorder.CycleRecorder
@@ -90,7 +87,6 @@ def build_agentic_config(
         ollama_tools=ollama_tools or [],
         api_key=api_key,
         session_timer=session_timer,
-        last_session_sec=last_session_sec,
         steer_source=steer_source,
         on_steer_applied=on_steer_applied,
         cycle=cycle,

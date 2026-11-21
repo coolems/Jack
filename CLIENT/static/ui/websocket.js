@@ -205,16 +205,6 @@ function _fmtGB(bytes) {
 // / provider error is a notice row (or a .cycle-system node when no block owns it).
 // The old flat bubble renderers were removed with the conversational UI.
 
-// (2026-08-23 session stats) format seconds as MM:SS (or H:MM:SS past one hour).
-function formatSessionTime(totalSec) {
-    if (!isFinite(totalSec) || totalSec < 0) return '0:00';
-    const s = Math.floor(totalSec % 60);
-    const m = Math.floor((totalSec / 60) % 60);
-    const h = Math.floor(totalSec / 3600);
-    const mm = (h > 0 ? String(m).padStart(2, '0') : String(m));
-    return (h > 0 ? h + ':' : '') + mm + ':' + String(s).padStart(2, '0');
-}
-
 /**
  * Update the history status bar with token statistics.
  * Called from WebSocket token_stats messages (live, per-user, after every chat_stream call).
@@ -256,16 +246,7 @@ function updateHistoryStatusBar(data) {
     const remainingK = (remaining / 1024).toFixed(1);
 
     // Build the display string
-
-    // Add react loop stats if available (agentic mode)
-    let loopStatsPrefix = "";
-    if (data.loop_tools !== undefined && data.loop_tools > 0) {
-        const totalCalls = data.loop_tools;
-        const noToolCalls = data.loop_no_tools || 0;
-        loopStatsPrefix = `Loop stats: ${totalCalls} / ${noToolCalls} | `;
-    }
-
-    let text = loopStatsPrefix + `${windowK}K ctx | ${sentK}K sent | ${remainingK}K left`;
+    let text = `${windowK}K ctx | ${sentK}K sent | ${remainingK}K left`;
 
     // Store for debugging
     COOLEMS.tokensSentToOllama = sentTokens;
@@ -285,21 +266,6 @@ function updateHistoryStatusBar(data) {
         }
     }
 
-    // (2026-08-23 session stats) cumulative generated tokens + active session times.
-    // Shown in BOTH normal and agentic mode whenever the server includes the fields:
-    //   📝 N.NK gen  - total provider output for THIS turn (loop 1 -> current, summed live)
-    //   ⏱ MM:SS     - ACTIVE time of this turn so far (approval/consent menu pauses excluded)
-    //   ↩ MM:SS last- settled duration of the PREVIOUS completed turn ("last session")
-    if (data.session_generated_tokens !== undefined && data.session_generated_tokens > 0) {
-        text += ` | 📝 ${(data.session_generated_tokens / 1024).toFixed(1)}K gen`;
-    }
-    if (data.session_elapsed_sec !== undefined && data.session_elapsed_sec >= 0) {
-        text += ` | ⏱ ${formatSessionTime(data.session_elapsed_sec)}`;
-    }
-    if (data.last_session_sec !== undefined && data.last_session_sec > 0) {
-        text += ` | ↩ ${formatSessionTime(data.last_session_sec)} last`;
-    }
-
     // Update the display
     el.textContent = text;
 
@@ -317,14 +283,14 @@ function updateHistoryStatusBar(data) {
 // that OWNS the frame (threaded through handleWebSocketMessage(data, ownerConvId)), never
 // by whichever workspace happens to be current at delivery time.
 const ChatStreamState = {
-    states: {},   // convId -> { streamingBuffer, thinkingPending, inReplay, baselineAssistant, pendingTurnStatsLine }
+    states: {},   // convId -> { streamingBuffer, thinkingPending, inReplay, baselineAssistant }
 
     /** Get (or lazily create) the render state of one conversation. */
     get(convId) {
         if (!convId) return null;
         let s = this.states[convId];
         if (!s) {
-            s = { streamingBuffer: '', thinkingPending: '', inReplay: false, baselineAssistant: 0, pendingTurnStatsLine: '' };
+            s = { streamingBuffer: '', thinkingPending: '', inReplay: false, baselineAssistant: 0 };
             this.states[convId] = s;
         }
         return s;
@@ -336,16 +302,15 @@ const ChatStreamState = {
     clearAll() { this.states = {}; },
 };
 
-// Legacy aliases: COOLEMS.streamingBuffer / _inReplay / _baselineAssistant /
-// _pendingTurnStatsLine still work for the CURRENT conversation (message.js send path,
-// switch paths) - they proxy into ChatStreamState instead of holding their own copy.
+// Legacy aliases: COOLEMS.streamingBuffer / _inReplay / _baselineAssistant still work for
+// the CURRENT conversation (message.js send path, switch paths) - they proxy into
+// ChatStreamState instead of holding their own copy.
 (function defineLegacyStreamingAliases() {
     function alias(prop, key) {
         Object.defineProperty(COOLEMS, prop, {
             get: () => {
                 const s = COOLEMS.currentConversation ? ChatStreamState.get(COOLEMS.currentConversation) : null;
-                return s ? s[key] : (key === 'streamingBuffer' || key === 'pendingTurnStatsLine'
-                    || key === 'thinkingPending' ? '' : 0);
+                return s ? s[key] : (key === 'streamingBuffer' || key === 'thinkingPending' ? '' : 0);
             },
             set: v => {
                 if (!COOLEMS.currentConversation) return;   // no view - nothing to bind to
@@ -357,7 +322,6 @@ const ChatStreamState = {
     alias('thinkingPending', 'thinkingPending');
     alias('_inReplay', 'inReplay');
     alias('_baselineAssistant', 'baselineAssistant');
-    alias('_pendingTurnStatsLine', 'pendingTurnStatsLine');
 })();
 
 // ===== CYCLE-BLOCK REPLAY GUARD (2026-11-08 loop-history UI) =====================
@@ -427,24 +391,20 @@ function _paintNormalThinking(bubble, st, done = false) {
         blk.classList.add('done');
         if (head) head.textContent = 'Thought process';
     }
+    // LIVE token counter (user request 2026-11-21): how many tokens this thinking process
+    // generated so far, updating in real time. The provider only reports the exact count
+    // when a call finishes, so while the stream runs the counter counts the accumulated
+    // chars / 4 (the same estimate the backend uses). "K" only above 1000, plain below.
+    let cnt = blk.querySelector('.thinking-count');
+    if (!cnt) {
+        cnt = document.createElement('span');
+        cnt.className = 'thinking-count';
+        head.appendChild(cnt);
+    }
+    const n = Math.ceil(text.length / 4);
+    cnt.textContent = (n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n)) + ' tok';
 }
 
-// (2026-11-08 loop-history UI) FINAL TURN STATS: the old code spliced a stats line into
-// the answer bubble. The new view shows turn facts on the block's collapsed head, so this
-// folds the same numbers into that head (generated tokens + tok/s) instead of editing text.
-// Idempotent + replay-safe, and per-conversation: only the block of the frame's OWN turn
-// is touched, so a background workspace's stats can never rewrite the visible block.
-function applyTurnStatsLine(line, ownerConvId, turnId) {
-    if (!line || typeof line !== 'string') return;
-    const convId = ownerConvId || COOLEMS.currentConversation;
-    const block = _cycleTarget(convId, { turn_id: turnId });
-    if (!block) return;                       // no block on screen for this turn - nothing to fold
-    const gen = /([\d.]+)K gen/.exec(line);
-    if (gen) block.generated = Math.max(block.generated, parseFloat(gen[1]) * 1024);
-    const speed = /([\d.]+) tok\/s/.exec(line);
-    if (speed) block.speed = parseFloat(speed[1]);
-    CycleBlock._renderSummary(block);
-}
 function handleWebSocketMessage(data, ownerConvId) {
     // (2026-11-24 mix fix) every frame is handled against the state of the conversation that
     // OWNS it - never the one that happens to be on screen at delivery time. All live call
@@ -781,11 +741,6 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
 
-    if (data.type === 'turn_stats') {
-        applyTurnStatsLine(data.line, convId, data.turn_id);
-        return;
-    }
-
     if (data.type === 'token_stats') {
         // LIVE token stats pushed from server after every chat_stream() call.
         // (2026-11-24 mix fix) the status bar is a SINGLE view-level element: only frames
@@ -796,6 +751,7 @@ function handleWebSocketMessage(data, ownerConvId) {
             const block = _cycleTarget(convId, data);
             if (block) {
                 if (data.session_generated_tokens) block.generated = Math.max(block.generated, data.session_generated_tokens);
+                block.genLiveEst = 0;   // the confirmed count replaces the live estimate
                 if (data.generation_speed) block.speed = data.generation_speed;
                 CycleBlock._renderSummary(block);
             }

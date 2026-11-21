@@ -93,7 +93,7 @@ async def send_recovery_warning(websocket: Any, message: str, status: str = "war
         "status": status
     }))
     
-async def send_token_stats(websocket: Any, stats: TokenStats, loop_stats: Optional[Dict] = None):
+async def send_token_stats(websocket: Any, stats: TokenStats, session_stats: Optional[Dict] = None):
     """Send token statistics to one WebSocket client.
 
     Each connection is tied to exactly one conversation/user, so concurrent users never mix.
@@ -102,7 +102,7 @@ async def send_token_stats(websocket: Any, stats: TokenStats, loop_stats: Option
     Args:
         websocket: the FastAPI WebSocket connection to send to.
         stats: the TokenStats instance.
-        loop_stats: optional dict with "loop_tools" and "loop_no_tools" for agentic mode.
+        session_stats: optional dict with per-turn session fields (agentic / normal mode).
 
     Raises:
         Exception: if the WebSocket connection is closed or broken.
@@ -134,20 +134,13 @@ async def send_token_stats(websocket: Any, stats: TokenStats, loop_stats: Option
         }
         
         
-        # Add react loop stats if provided (agentic mode only)
-        if loop_stats:
-            payload["loop_tools"] = loop_stats.get("loop_tools", 0)
-            payload["loop_no_tools"] = loop_stats.get("loop_no_tools", 0)
-
-            # (2026-08-23 session stats) additive per-turn fields, present in BOTH modes:
-            #   session_generated_tokens - cumulative provider output for this whole turn
-            #                              (agentic: summed over all loops; normal: the one call)
-            #   session_elapsed_sec      - ACTIVE seconds of this turn so far (user-decision
-            #                              menu pauses excluded, see logic.base_mode.SessionTimer)
-            #   last_session_sec         - settled duration of the PREVIOUS completed turn
-            for _key in ("session_generated_tokens", "session_elapsed_sec", "last_session_sec"):
-                if loop_stats.get(_key) is not None:
-                    payload[_key] = loop_stats[_key]
+        # Add per-turn session stats if provided (present in BOTH modes):
+        #   session_generated_tokens - cumulative provider output for this whole turn
+        #                              (agentic: summed over all loops; normal: the one call)
+        if session_stats:
+            for _key in ("session_generated_tokens",):
+                if session_stats.get(_key) is not None:
+                    payload[_key] = session_stats[_key]
         # Send to WebSocket
         await websocket.send_text(json.dumps(payload))
         

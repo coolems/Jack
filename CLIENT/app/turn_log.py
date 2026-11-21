@@ -18,7 +18,8 @@ from typing import Any, Dict, List, Optional
 #
 # The AI strip must show ONLY what the AI said to the user. These lines are protocol or
 # bookkeeping, not speech, and they were landing inside the answer:
-#   * 'Loop stats: N / M | ...'    - the spliced turn-stats line (already on the block head),
+#   * 'Loop stats: N / M | ...'    - the spliced turn-stats line (splicing was removed 2026-11-21;
+#                                     old persisted answers still carry it, so the scrub stays),
 #   * '<tool_call>...</tool_call>'  - llama.cpp streams tool-call markup as content when the
 #                                     model emits it as text; the tool row already shows the call,
 #   * '[SYSTEM NOTICE] ...' / the user-message headers - loop plumbing, shown as block rows.
@@ -258,11 +259,9 @@ class TurnLog:
     """Counters + rows for one turn. Every row carries its own time (at_ts) so the
     UI can interleave steers with tools/consents inside a step group."""
 
-    def __init__(self, turn_started_at: Optional[float] = None, last_turn_sec: float = 0.0,
-                 turn_id: str = ""):
+    def __init__(self, turn_started_at: Optional[float] = None, turn_id: str = ""):
         self.turn_id = turn_id or ""
         self.turn_started_at = turn_started_at if turn_started_at is not None else time.time()
-        self.last_turn_sec = float(last_turn_sec or 0.0)
         self.steps: List[Dict] = []
         self.tools: List[Dict] = []
         self.consents: List[Dict] = []
@@ -487,7 +486,6 @@ class TurnLog:
             "turn_id": self.turn_id,
             "turn_started_at": self.turn_started_at,
             "elapsed_sec": round(float(elapsed_sec or 0.0), 1),
-            "last_turn_sec": round(float(self.last_turn_sec or 0.0), 1),
             "turn_generated": self.turn_generated,
             "window": int(last_step.get("context_window", 0) or 0),
             "prompt_tokens": int(last_step.get("prompt_tokens", 0) or 0),

@@ -204,12 +204,10 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
 
     # (2026-08-23 session stats) FRESH active-time timer for THIS turn. It counts only
     # real working time: ToolExecutor pauses it while a user-decision menu is open
-    # (python_exec approval / URL consent), so the reported 'current session time' in
-    # the UI never includes the minutes the AI spends waiting for a click. The previous
-    # turn's settled duration rides along as last_session_sec for the 'last session' stat.
+    # (python_exec approval / URL consent), so the reported session time never includes
+    # the minutes the AI spends waiting for a click.
     session_timer = SessionTimer()
     session_timer.start()
-    last_session_sec = float(getattr(channel, "last_session_duration_sec", 0.0) or 0.0)
 
     # (2026-11-08 loop history) ONE recorder per agentic turn, minted HERE with a fresh
     # turn_id. That id travels on every cycle_* frame and into the persisted turn_log row,
@@ -221,7 +219,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
     answer_msg_id = None
     if agent_mode:
         cycle = CycleRecorder(sink, conv_id, turn_id=str(uuid.uuid4()),
-                              turn_started_at=time.time(), last_turn_sec=last_session_sec)
+                              turn_started_at=time.time())
         # The id of the running turn is the identity steering frames must carry.
         channel.turn_id = cycle.turn_id
         # The live turn's recorder, so the ask_user_question tool can
@@ -279,7 +277,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                     ollama_tools=ollama_tools,
                     api_key=ws_key,
                     session_timer=session_timer,
-                        last_session_sec=last_session_sec,
                         # (2026-10-23 live steering) the running ReAct loop drains this
                         # channel's queue at each safe boundary; the callback persists each
                         # message only after it was actually injected.
@@ -305,7 +302,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                 conversation_id=conv_id,
                 stop_event=stop_event,
                 session_timer=session_timer,
-                last_session_sec=last_session_sec,
             )
             return await normal_mode(normal_config, conversation_history, enhanced_message, media_files)
 
@@ -437,11 +433,10 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         if cycle is not None and getattr(channel, "cycle", None) is cycle:
             channel.cycle = None
         # (2026-08-23 session stats) settle this turn's ACTIVE time on EVERY exit path
-        # (done / cancel / error - the early 'return' after a user Stop included) and hand it
-        # to the NEXT turn as 'last session'. Paused time (approval menus) is excluded.
+        # (done / cancel / error - the early 'return' after a user Stop included).
+        # Paused time (approval menus) is excluded.
         try:
             _elapsed = float(session_timer.stop())
-            channel.last_session_duration_sec = round(_elapsed, 1)
             logger.info(f"[CHATBUS] Session time settled for conv={conv_id}: {_elapsed:.1f}s active (approval-menu pauses excluded)")
         except Exception as e:  # pragma: no cover - stats must never break the turn
             logger.debug(f"Session timer settle failed for conv={conv_id}: {e}")

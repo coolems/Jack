@@ -126,6 +126,18 @@
 .thinking-header::after {
     content: "▾"; margin-left: auto; font-size: 11px; opacity: 0.7;
 }
+/* LIVE token counter (2026-11-21 user request): how many tokens this thinking process
+   generated so far, updating in real time. It sits at the header's right edge, left of
+   the collapse arrow (the arrow is ::after with margin-left:auto, so a real span before
+   it keeps its own spot). */
+.thinking-count {
+    margin-left: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    color: var(--thinking-border);
+    opacity: 0.8;
+}
+.thinking-header::after { margin-left: 6px; }
 .thinking-block.collapsed .thinking-header::after { content: "▸"; }
 
 .thinking-content::-webkit-scrollbar {

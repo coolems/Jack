@@ -1,8 +1,7 @@
 """Shared base code for normal and agentic chat modes.
 
 BaseModeConfig (shared fields), build_messages(), strip_images_from_messages(),
-attach_images_to_current_user_message(), is_vision_unavailable_error(), push_token_stats()
-and the session-stats helpers.
+attach_images_to_current_user_message(), is_vision_unavailable_error(), push_token_stats().
 """
 
 import logging
@@ -24,7 +23,7 @@ class SessionTimer:
 
     Counts only time actually spent working: waiting on a user-decision menu (python_exec
     approval, URL consent) is paused, so an approval wait adds nothing to the session time
-    shown in the UI status bar.
+    the chat bus logs when the turn settles.
     """
 
     def __init__(self):
@@ -97,10 +96,8 @@ class BaseModeConfig:
 
     # (2026-08-23 session stats) active-time timer for THIS turn. Created by the chat bus
     # before dispatch; paused while user-decision menus are open so reported session time
-    # only counts real working time. last_session_sec carries the PREVIOUS turn's duration
-    # (read from the channel) so the UI can show "last session" alongside the live one.
+    # only counts real working time.
     session_timer: Optional["SessionTimer"] = None
-    last_session_sec: float = 0.0
 
     # (2026-10-23 live steering) Per-turn source of user messages typed WHILE the agent
     # works. `steer_source` is a ChatChannel-like object exposing has_pending_steer() and
@@ -116,14 +113,12 @@ class BaseModeConfig:
     # block per turn instead of a flat chat. None for callers without a bus (tests, CLI).
     cycle: Any = None
     
-# (2026-10-11) FINAL TURN STATS HYGIENE: react_loop.py splices a "Loop stats:" line into the
-# persisted answer right above 'Agentic AI: TASK DONE' and the UI renders it from that text.
-# That line must NEVER be sent back to the model: when past answers carrying it were fed as
-# history, the model copied an OLD stats line verbatim into its new answer (few-shot
-# self-imitation), so a bubble could show TWO lines - one copied + one freshly spliced.
-# build_messages() strips them from history; react_loop strips any residual copy from the
-# model's own response before it is accumulated. The regex matches ONLY the exact spliced
-# shape ("Loop stats: N / M | ...") so prose that merely mentions the feature survives.
+# (2026-10-11) FINAL TURN STATS HYGIENE: answers persisted BEFORE the spliced "Loop stats:"
+# line was removed (2026-11-21) still carry it in the DB. That line must NEVER be sent back
+# to the model: when past answers carrying it were fed as history, the model copied an OLD
+# stats line verbatim into its new answer (few-shot self-imitation). build_messages() strips
+# them from history. The regex matches ONLY the exact spliced shape ("Loop stats: N / M | ...")
+# so prose that merely mentions the feature survives.
 _TURN_STATS_LINE_RE = re.compile(r"(?m)^[ \t]*Loop stats:\s*\d+\s*/\s*\d+[^\n]*$")
 
 
@@ -183,7 +178,7 @@ def build_messages(
 
     # (2026-10-11) Keep past turns' spliced "Loop stats:" lines out of the model's view -
     # see strip_turn_stats_from_messages(). Without this the model copies an old line into
-    # its new answer and a bubble ends up with two stats lines.
+    # its new answer.
     strip_turn_stats_from_messages(messages)
 
     current_message = {"role": "user", "content": user_message_content}
@@ -289,18 +284,18 @@ def is_vision_unavailable_error(error: BaseException) -> bool:
     return "vision is not available" in str(error).lower()
 
 
-async def push_token_stats(websocket: Any, stats: Any, loop_stats: Optional[Dict] = None):
+async def push_token_stats(websocket: Any, stats: Any, session_stats: Optional[Dict] = None):
     """Push token statistics to the UI over the per-user WebSocket.
 
     send_token_stats is imported lazily to keep the logic <-> app.websocket import graph
-    acyclic. loop_stats carries the agentic react-loop counters for the UI.
+    acyclic. session_stats carries per-turn session fields (session_generated_tokens).
     """
     if not websocket or not stats:
         return
 
     # FIXED: Lazy import to break circular import chain
     from app.websocket.message_types import send_token_stats
-    await send_token_stats(websocket, stats, loop_stats)
+    await send_token_stats(websocket, stats, session_stats)
 
 
 def check_stop_event(config: Any) -> Optional[str]:
@@ -317,19 +312,3 @@ def check_stop_event(config: Any) -> Optional[str]:
     return None
 
 
-def build_session_stats(config: Any) -> Dict[str, float]:
-    """Per-turn session stats for the UI status bar.
-
-    Keys: "session_elapsed_sec" (active seconds of the current turn, pauses excluded) and
-    "last_session_sec" (the previous completed turn). Cumulative generated tokens are counted
-    in react_loop.py; normal mode reports its single call's TokenStats directly.
-    """
-    elapsed = 0.0
-    timer = getattr(config, "session_timer", None)
-    if timer is not None:
-        try:
-            elapsed = max(0.0, timer.elapsed())
-        except Exception:
-            elapsed = 0.0
-    last_sec = float(getattr(config, "last_session_sec", 0.0) or 0.0)
-    return {"session_elapsed_sec": round(elapsed, 1), "last_session_sec": round(last_sec, 1)}

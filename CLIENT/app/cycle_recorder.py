@@ -26,12 +26,11 @@ class CycleRecorder:
     """One turn's recorder: rows in `self.log`, frames on `self.ws`."""
 
     def __init__(self, websocket: Any, conv_id: str, turn_id: str = "",
-                 turn_started_at: Optional[float] = None, last_turn_sec: float = 0.0):
+                 turn_started_at: Optional[float] = None):
         self.ws = websocket
         self.conv_id = conv_id
         self.turn_id = turn_id or ""
-        self.log = TurnLog(turn_started_at=turn_started_at, last_turn_sec=last_turn_sec,
-                           turn_id=self.turn_id)
+        self.log = TurnLog(turn_started_at=turn_started_at, turn_id=self.turn_id)
         self.settled = False
         self._step_no = 0
         self._granted_kinds: set = set()
@@ -63,7 +62,6 @@ class CycleRecorder:
         await self._send({
             "type": "cycle_start",
             "turn_started_at": self.log.turn_started_at,
-            "last_turn_sec": round(float(self.log.last_turn_sec or 0.0), 1),
         })
 
     async def begin_step(self) -> int:

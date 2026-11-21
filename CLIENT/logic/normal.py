@@ -18,7 +18,6 @@ from .base_mode import (
     is_vision_unavailable_error,
     push_token_stats,
     check_stop_event,
-    build_session_stats,
 )
 from app.providers.coolems_client.errors import BackendUnavailableError, ContextWindowExceededError
 
@@ -134,13 +133,9 @@ async def normal_mode(
 
     # Push token stats to the UI via WebSocket - bulletproof per-user delivery.
     # (2026-08-23 session stats) normal mode has exactly ONE provider call per turn, so
-    # the cumulative 'session generated tokens' is this call's count; elapsed/last times
-    # come from the turn's SessionTimer (approval pauses excluded - none occur in normal).
-    _sess_stats = build_session_stats(config)
+    # the cumulative 'session generated tokens' is this call's count.
     await push_token_stats(config.websocket, stats, {
         "session_generated_tokens": int(getattr(stats, "generated_tokens", 0) or 0),
-        "session_elapsed_sec": _sess_stats["session_elapsed_sec"],
-        "last_session_sec": _sess_stats["last_session_sec"],
     })
 
     # If stop was triggered during streaming, return early message
