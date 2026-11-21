@@ -711,6 +711,13 @@ AGENTIC_ITERATION_TIMEOUT_SEC: int = 180          # Timeout per single provider 
 # (image data sanitized separately). 160 chars hid the whole tool result from the UI.
 AGENTIC_TOOL_OUTPUT_MAX_CHARS: int = 6000
 
+# (2026-11-20) HARD CAP on one tool result entering the ReAct MESSAGE LIST. A single uncapped
+# result (read_file of a spilled grep = 1.46M chars) once added ~370K tokens in one iteration -
+# more than the whole 256K window - which fired the safe-margin popup, the guardian and a
+# loop-gutting trim in the same second. 16K chars (~4K tokens) keeps one result at ~1.5% of a
+# 256K window; the truncation note tells the model how to fetch the rest more narrowly.
+AGENTIC_TOOL_RESULT_HISTORY_MAX_CHARS: int = 16000
+
 # --- Database ---
 # FIX (2026-08-17): anchor the DB file to the CLIENT start point (<CLIENT>/) instead of
 # CWD-relative "chat_history.db" - a process started from another folder would otherwise

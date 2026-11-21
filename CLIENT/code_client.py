@@ -140,6 +140,18 @@ stop_events = {}
 atexit.register(WebInteract.cleanup)
 
 
+def _local_ocr_exit_cleanup():
+    """Terminate the CLIENT-local OCR llama-server (never leave an orphaned process)."""
+    try:
+        from app.providers.coolems_client import ocr_local
+        ocr_local.shutdown_local_ocr_server()
+    except Exception as e:
+        logger.warning(f"Local OCR server cleanup on exit failed (ignored): {e}")
+
+
+atexit.register(_local_ocr_exit_cleanup)
+
+
 if __name__ == "__main__":
     import uvicorn
 

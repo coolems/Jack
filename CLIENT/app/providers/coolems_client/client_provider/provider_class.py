@@ -630,31 +630,41 @@ class CoolemsClientProvider(BaseProvider):
 
 
     async def ocr_transcribe(self, image_base64: str, ocr_models: List[str]) -> str:
-        """Transcribe an image by delegating to the SERVER (revive).
+        """Transcribe an image LOCALLY on this CLIENT (never on the SERVER).
 
-        The CLIENT ships pixels + model names over a short-lived authenticated WS;
-        the SERVER runs its local LlamaProvider OCR path (the exact GLM-OCR call
-        format lives in app/providers/llama/ocr.py) and returns the extracted text.
+        The CLIENT runs its own dedicated llama-server (GLM-OCR + mmproj) on a side port;
+        the llama files are provisioned from the SERVER when missing. *ocr_models* is kept
+        for signature compatibility but ignored: local OCR always uses the GLM-OCR model.
         """
-        if not ocr_models:
-            return "ERROR: No OCR models configured."
-        # OCR can run long on the SERVER (its budget is config.OCR_TIMEOUT=120 s);
-        # give the response wait a matching margin so slow transcriptions don't die at 15 s.
-        import client_config as _cfg
-        ocr_recv_timeout = float(getattr(_cfg, "OCR_TIMEOUT", 120)) + 10
+        from .. import ocr_files, ocr_local
 
-        resp = await self.send_tool_request(
-            "ocr_request",
-            image_base64=image_base64,
-            ocr_models=list(ocr_models),
-            recv_timeout=ocr_recv_timeout,
-        )
-        if not resp or resp.get("type") != "ocr_response":
-            return f"ERROR: No OCR response from SERVER (got: {resp})"
-        text = str(resp.get("text", "")).strip()
-        if resp.get("success"):
-            return text
-        return text or "ERROR: SERVER-side OCR failed."
+        # 1. Provision llama-server.exe + DLLs + GLM-OCR + mmproj from the SERVER
+        #    when this CLIENT does not already hold them hash-verified.
+        try:
+            ok, msg = await ocr_files.provision_ocr_files(self)
+        except Exception as e:
+            logger.error("[CLIENT OCR] file provisioning failed: %s", e)
+            return f"ERROR: OCR file provisioning failed: {e}"
+        if not ok:
+            return f"ERROR: {msg}"
+
+        # 2. Launch / reuse the local OCR llama-server (blocking subprocess -> worker thread).
+        ok, base_url = await asyncio.to_thread(ocr_local.ensure_local_ocr_server)
+        if not ok:
+            return f"ERROR: {base_url}"
+
+        # 3. Transcribe locally (blocking HTTP POST -> worker thread), then STOP the server.
+        #    Lifecycle is strictly: start -> use -> stop when done (never left warm).
+        try:
+            text = await asyncio.to_thread(ocr_local.transcribe_local, base_url, image_base64)
+        except Exception as e:
+            return f"ERROR: local OCR failed: {e}"
+        finally:
+            try:
+                await asyncio.to_thread(ocr_local.shutdown_local_ocr_server)
+            except Exception as e:
+                logger.warning("[CLIENT OCR] post-use shutdown failed: %s", e)
+        return text
 
     async def tokenize(self, text: str) -> Optional[int]:
         """Exact token count of *text* via the SERVER (llama.cpp /tokenize).

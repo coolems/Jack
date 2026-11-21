@@ -92,6 +92,18 @@ def is_model_allowed(user_info: Dict, model_filename: str,
     return key in {_norm(a) for a in allowed if _norm(a)}
 
 
+def is_ocr_allowed(user_info: Dict) -> bool:
+    """Whether this profile may provision/use OCR (a non-empty 'ocr_model' is the gate).
+
+    Reuses the same profiles.json signal as server-side OCR: a role with an 'ocr_model'
+    directory configured has OCR rights; empty/null means no OCR. Fail-closed.
+    """
+    if not isinstance(user_info, dict):
+        return False
+    ocr_model = user_info.get("ocr_model")
+    return isinstance(ocr_model, str) and bool(ocr_model.strip())
+
+
 def filter_allowed_tools(user_info: Dict, requested_tools: List) -> List:
     """Filter the requested tool list against the profile's allowed_tools."""
     if not requested_tools:

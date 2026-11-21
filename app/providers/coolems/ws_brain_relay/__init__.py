@@ -14,6 +14,9 @@ connect_to_web_relay, _RelayTargetAdapter' resolves here.
 """
 
 from .connection import connect_to_web_relay  # noqa: F401
+from .ocr_relay_handlers import (  # noqa: F401
+    _handle_relay_ocr_provision_request,
+)
 from .request_handler import _handle_relay_request  # noqa: F401
 from .relay_handlers import (  # noqa: F401
     _RelayTargetAdapter,

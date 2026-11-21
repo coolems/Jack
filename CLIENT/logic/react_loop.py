@@ -29,6 +29,7 @@ from client_config import (
     AGENTIC_TOKEN_WARNING_THRESHOLD,
     AGENTIC_CONTEXT_GUARDIAN_WINDOW_FRACTION,
     AGENTIC_MAX_CONTEXT_GUARDIAN_INJECTIONS,
+    AGENTIC_TOOL_RESULT_HISTORY_MAX_CHARS,
     get_context_window,
 )
 
@@ -393,6 +394,15 @@ async def run_react_loop(
     token_warning_sent = False  # console warning fires once per run at the safe-margin threshold
     context_guardian_injections = 0
     guardian_armed = True
+
+    # MARKUP AUTO-RECOVERY BUDGET: when the model writes a tool call as literal text
+    # (the tool was not in the schema sent to it), we parse the named tool, inject it,
+    # and re-issue. Bounded so a hallucinated tool name (never in the catalog) cannot
+    # loop forever: at most MAX_MARKUP_RECOVERIES injections per run, each tool name
+    # attempted once.
+    markup_recoveries = 0
+    MAX_MARKUP_RECOVERIES = 3
+    markup_injected_names: set = set()
 
     # SERVER-TRUTH TOKEN ANCHOR (OVERHEAD form): after each provider call we remember the
     # REAL prompt_tokens llama.cpp reported for exactly the list we sent, and store it as
@@ -980,6 +990,18 @@ async def run_react_loop(
                         )
                         break
 
+                    # ---- request_tools intercept: grow the schema on demand ----
+                    # request_tools is a control-flow tool owned by the loop, not the
+                    # ToolExecutor (no SERVER source to compile). Grow the schema and
+                    # re-count its cost so the budget chain matches what is actually sent.
+                    _fn = (tc.get("function") or {}).get("name", "") if isinstance(tc, dict) else ""
+                    if _fn == "request_tools":
+                        _new_schema = await _handle_request_tools_call(tc, config, messages)
+                        if _new_schema is not None:
+                            _tools_for_est = _new_schema
+                            est_tools_tokens = await _schema_token_cost(config, _new_schema)
+                        continue
+
                     await _execute_single_tool_call(
                         tc, tool_executor, config, messages,
                         conversation_history
@@ -1001,11 +1023,27 @@ async def run_react_loop(
                 # safety net for anything that still slips through).
                 ai_response = strip_turn_stats_lines(ai_response)
 
-                # ---- TOOL CALL WRITTEN AS TEXT ----
-                # The provider returned prose that carries the template's own call markup, so
-                # the intended call produced no tool_calls delta and nothing ran. Name the
-                # cause in the log instead of letting it pass as an ordinary thinking step.
+                # ---- TOOL CALL WRITTEN AS TEXT (auto-recovery) ----
+                # The provider returned prose carrying the template's own call markup, so the
+                # intended call produced no tool_calls delta and nothing ran. The usual cause:
+                # the named tool was not in the schema sent to the model. Parse the name, inject
+                # it (+ its folder family), and re-issue so the call can actually run - the same
+                # resolution request_tools would give, but without the model having to know the
+                # escape hatch exists. Bounded (see the budget above); on budget-exhaustion or an
+                # unknown/hallucinated name we fall back to the plain warning.
                 if _looks_like_tool_markup(ai_response):
+                    _markup_names = _extract_markup_tool_names(ai_response)
+                    if markup_recoveries < MAX_MARKUP_RECOVERIES:
+                        _recovered = await _recover_markup_tools(
+                            config, messages, ai_response, _markup_names,
+                            markup_injected_names,
+                        )
+                        if _recovered is not None:
+                            markup_recoveries += 1
+                            _tools_for_est = _recovered
+                            est_tools_tokens = await _schema_token_cost(config, _recovered)
+                            tool_iteration += 1
+                            continue
                     logger.warning(
                         "[AGENTIC.DEBUG] react_loop - Unexecuted tool call: the reply contains "
                         "tool-call markup as plain text, so no tool ran. The function it names is "
@@ -1398,6 +1436,24 @@ def _format_turn_stats_line(last_stats: Any, loop_tools: int, loop_no_tools: int
 #: as TEXT produced a call that is never dispatched (see _looks_like_tool_markup).
 _TOOL_MARKUP_RE = re.compile(r"<tool_call\s*>|<function\s*=\s*[A-Za-z0-9_.-]+>", re.IGNORECASE)
 
+#: Captures the function NAME out of literal ``<function=name>`` markup so the loop can
+#: inject exactly the tool the model tried (but could not) call.
+_FUNCTION_NAME_RE = re.compile(r"<function\s*=\s*([A-Za-z0-9_.-]+)>", re.IGNORECASE)
+
+
+def _extract_markup_tool_names(text: Any) -> List[str]:
+    """Tool names the model wrote as literal ``<function=name>`` markup, first-seen order."""
+    if not isinstance(text, str):
+        return []
+    names: List[str] = []
+    seen: set = set()
+    for m in _FUNCTION_NAME_RE.finditer(text):
+        n = m.group(1)
+        if n and n not in seen:
+            seen.add(n)
+            names.append(n)
+    return names
+
 
 def _looks_like_tool_markup(text: Any) -> bool:
     """True when a reply carries a tool call as literal text instead of a native tool call.
@@ -1473,11 +1529,15 @@ async def _refresh_local_tools(config: Any) -> Optional[List[Dict]]:
         seam_names = orch.local_tool_names()
     except Exception:
         seam_names = local_names
+    old_names = _names(old)
     remote = [d for d in old if _name_of(d) not in seam_names]
     remote_names = _names(remote)
-    new = remote + [d for d in local if _name_of(d) not in remote_names]
+    # GATED (2026-11-20): local tools enter the schema only via request_tools. Refresh
+    # (re-decide role) the local tools ALREADY present; never auto-add a brand-new local
+    # tool, or the intent-gated starter set would regrow to "everything" on iteration 1.
+    new = remote + [d for d in local if _name_of(d) in old_names and _name_of(d) not in remote_names]
 
-    old_names, new_names = _names(old), _names(new)
+    new_names = _names(new)
     if new_names == old_names:
         return None
 
@@ -1488,6 +1548,119 @@ async def _refresh_local_tools(config: Any) -> Optional[List[Dict]]:
     )
     config.ollama_tools = new
     return new
+
+
+async def _handle_request_tools_call(tc: Dict, config: Any, messages: List[Dict]) -> Optional[List[Dict]]:
+    """Intercept a request_tools call: grow the schema, never dispatch to ToolExecutor.
+
+    request_tools is the lazy-schema escape hatch owned by the loop. It resolves the
+    requested names (+ their folder families) via the orchestrator, sets the grown schema
+    on config, appends a synthetic tool result, and returns the new schema so the caller
+    can re-count its token cost. Returns None when no orchestrator is available.
+    """
+    func = tc.get("function", {}) if isinstance(tc, dict) else {}
+    tool_id = tc.get("id", "")
+
+    try:
+        args_raw = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
+        args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+    except json.JSONDecodeError:
+        args = {}
+    names = args.get("names") if isinstance(args, dict) else []
+    if isinstance(names, str):
+        names = [names]
+    names = [n for n in (names or []) if isinstance(n, str) and n.strip()]
+
+    orch = getattr(config, "tool_orchestrator", None)
+    if orch is None:
+        content = "Error: request_tools unavailable (no tool orchestrator)."
+        messages.append({"role": "tool", "content": content, "tool_call_id": tool_id})
+        return None
+
+    def _name_of(d: Any) -> str:
+        return d.get("function", {}).get("name", "") if isinstance(d, dict) else ""
+
+    try:
+        current = list(getattr(config, "ollama_tools", None) or [])
+        current_names = {_name_of(d) for d in current}
+        new_schema = await orch.inject_tools(
+            current, names, api_key=getattr(config, "api_key", None),
+        )
+        config.ollama_tools = new_schema
+        added = sorted(_name_of(d) for d in new_schema if _name_of(d) not in current_names)
+        content = (f"Added tools to this turn's schema: {added or 'none (already available)'}. "
+                   "Continue with the task.")
+        logger.info(
+            f"[AGENTIC.DEBUG] react_loop - request_tools({sorted(names)}) -> schema "
+            f"{len(new_schema)} tool(s), added {added or 'none'}"
+        )
+    except Exception as e:
+        logger.error(f"[AGENTIC.DEBUG] react_loop - request_tools failed: {e}")
+        content = f"Error adding tools: {e}"
+        new_schema = None
+
+    messages.append({"role": "tool", "content": content, "tool_call_id": tool_id})
+    return new_schema
+
+
+async def _recover_markup_tools(
+    config: Any,
+    messages: List[Dict],
+    ai_response: str,
+    names: List[str],
+    injected_names: set,
+) -> Optional[List[Dict]]:
+    """Auto-recover a tool call the model wrote as literal text.
+
+    When a tool is not in the schema, a tool-capable model sometimes writes the call as
+    plain-text markup instead of a native ``tool_calls`` delta, so nothing runs. Resolve the
+    named tool the same way request_tools would (inject it + its folder family), persist the
+    model's own text, and re-issue. Returns the new schema only when something was actually
+    added; None otherwise (unknown/hallucinated name, no orchestrator, already attempted) so
+    the caller falls back to a warning and normal flow.
+    """
+    orch = getattr(config, "tool_orchestrator", None)
+    current = list(getattr(config, "ollama_tools", None) or [])
+
+    def _name_of(d: Any) -> str:
+        return d.get("function", {}).get("name", "") if isinstance(d, dict) else ""
+
+    existing = {_name_of(d) for d in current}
+    fresh = [n for n in names if n and n not in existing and n not in injected_names]
+    if orch is None or not fresh:
+        return None
+    injected_names.update(fresh)
+
+    try:
+        new_schema = await orch.inject_tools(
+            current, fresh, api_key=getattr(config, "api_key", None),
+        )
+    except Exception as e:
+        logger.error(f"[AGENTIC.DEBUG] react_loop - markup auto-recovery failed: {e}")
+        return None
+
+    config.ollama_tools = new_schema
+    added = sorted(_name_of(d) for d in new_schema if _name_of(d) not in existing)
+    if not added:
+        # The names were not in the catalog (hallucinated) - nothing grew, so do not loop.
+        return None
+
+    # Persist what the model wrote, then tell it the tools are now available natively.
+    if messages and messages[-1].get("role") == "assistant":
+        messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
+        invalidate_message_tokens(messages[-1])
+    else:
+        messages.append({"role": "assistant", "content": ai_response})
+    messages.append({"role": "user", "content": (
+        "[SYSTEM NOTICE] You wrote a tool call as plain text because that tool was not in "
+        f"your available schema. It is now available natively: {', '.join(added)}. Re-issue "
+        "the call as a REAL tool call (not as text) and continue."
+    )})
+    logger.info(
+        f"[AGENTIC.DEBUG] react_loop - markup auto-recovery: {sorted(fresh)} -> schema "
+        f"{len(new_schema)} tool(s), added {added}"
+    )
+    return new_schema
 
 
 def _is_valid_tool_call(tc: Dict) -> bool:
@@ -1575,6 +1748,25 @@ def _repair_json_arguments(args_str):
 
         logger.error(f"[AGENTIC.DEBUG] react_loop - Could not repair JSON arguments (length={len(args_str)}): {args_str[:200]}")
         return None
+
+
+def _clip_tool_result(text: str) -> str:
+    """Truncate one tool result before it enters the message list.
+
+    A single uncapped result (read_file of a spilled grep = 1.46M chars) once added
+    ~370K tokens in ONE iteration - more than the whole 256K window - which fired the
+    safe-margin popup, the context guardian and a loop-gutting trim in the same second
+    (see AGENTIC_TOOL_RESULT_HISTORY_MAX_CHARS). The head carries the useful content;
+    the cut tail is replaced with an honest size note so the model can re-query
+    narrowly instead of assuming the result was complete.
+    """
+    if len(text) <= AGENTIC_TOOL_RESULT_HISTORY_MAX_CHARS:
+        return text
+    cut = text[:AGENTIC_TOOL_RESULT_HISTORY_MAX_CHARS]
+    return (cut + f"\n\n[... tool result truncated to {AGENTIC_TOOL_RESULT_HISTORY_MAX_CHARS} "
+            f"of {len(text)} chars for the context budget - re-run the tool with a narrower "
+            f"query/output if the cut part is needed]")
+
 
 
 async def _execute_single_tool_call(
@@ -1673,10 +1865,11 @@ async def _execute_single_tool_call(
                 conversation_id=getattr(config, 'conversation_id', None)  # python_exec approval gate
             )
 
-        # Add tool result message
+        # Add tool result message (HISTORY-CAPPED: one oversized result used to blow the
+        # whole context budget in a single iteration -> guardian + loop-gutting trim).
         tool_result_msg = {
             "role": "tool",
-            "content": str(result_text),
+            "content": _clip_tool_result(str(result_text)),
             "tool_call_id": tool_id
         }
         messages.append(tool_result_msg)

@@ -42,6 +42,10 @@ from .relay_handlers import (  # noqa: E402
     _resolve_relay_client_user_info,
 )
 
+from .ocr_relay_handlers import (  # noqa: E402
+    _handle_relay_ocr_provision_request,
+)
+
 logger = logging.getLogger("COOLEMS.Provider.CoolemsServer")
 
 async def connect_to_web_relay(server_provider):
@@ -182,6 +186,9 @@ async def connect_to_web_relay(server_provider):
         # The role name the relay advertises is kept only for logs (advisory).
         _relay_client_keys: dict[str, str] = {}
         _relay_client_roles_advisory: dict[str, str] = {}  # log-only profile names from the relay
+        # OCR provisioning holds the shared brain socket for minutes (file streams); frames
+        # from OTHER relayed clients that arrive meanwhile are parked here and replayed.
+        _ocr_requeue: list = []
 
 
         try:
@@ -420,7 +427,14 @@ async def connect_to_web_relay(server_provider):
 
                             break
 
+                        # OCR provisioning holds the socket for minutes; frames from other
+                        # clients that arrived meanwhile were parked. Process them first
+                        # (FIFO) and save the newly received frame so it is not lost.
+                        if _ocr_requeue:
 
+                            _ocr_requeue.append(raw_msg)
+
+                            raw_msg = _ocr_requeue.pop(0)
 
                         msg = json.loads(raw_msg)
 
@@ -591,6 +605,10 @@ async def connect_to_web_relay(server_provider):
 
                         elif msg_type == "tokenize_request":
                             await _handle_relay_tokenize_request(ws, msg, server_provider)
+
+                        elif msg_type == "ocr_provision_request":
+                            logger.info(f"[SERVER<-RELAY] OCR provision request via relay (client={msg.get('_relay_from', '?')})")
+                            await _handle_relay_ocr_provision_request(ws, msg, server_provider, _ocr_requeue)
                 finally:
 
                     # (2026-08-20) relay link gone -> abort any generation still in flight

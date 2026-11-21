@@ -151,3 +151,10 @@ CLIENT/.temp/*
 # config/llama_node.example.json is the tracked template.
 config/llama_node.json
 config/.llama_node_state.json
+
+# CLIENT-local OCR runtime (2026-12): the whole CLIENT/llama_server/ folder is
+# machine-local - the SERVER pushes every file there (llama-server.exe, DLLs,
+# GLM-OCR model, mmproj) over the secure client link on first use (see
+# CLIENT/app/providers/coolems_client/ocr_files.py). Never commit; it is
+# re-provisioned automatically on any other PC.
+CLIENT/llama_server/

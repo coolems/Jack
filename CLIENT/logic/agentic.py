@@ -87,6 +87,19 @@ async def agentic_mode(
     except Exception as e:
         logger.debug(f"[AGENTIC.DEBUG] MCP instructions unavailable (non-fatal): {e}")
 
+    # Tool catalog: the SERVER ships a compact grouped index (name — purpose). Appended as
+    # DATA so the model can discover every allowed tool without paying for its full JSON
+    # schema — it pulls the schema on demand with request_tools. A no-op when the SERVER
+    # shipped no catalog (legacy server / zero tools).
+    try:
+        _orch = getattr(config, "tool_orchestrator", None)
+        _catalog = _orch.get_tool_catalog() if _orch is not None else ""
+        if _catalog:
+            agent_system += "\n\n" + _catalog
+            logger.info(f"[AGENTIC.DEBUG] +tool catalog ({len(_catalog)} chars)")
+    except Exception as e:
+        logger.debug(f"[AGENTIC.DEBUG] tool catalog unavailable (non-fatal): {e}")
+
     # Add image context if images are present (2026-08-23 fix: VISION-FIRST policy).
     # The uploaded pixels ride on THIS message as base64 (see build_messages below),
     # so the model can SEE them directly. transcribe_image is ONLY for explicit OCR asks -

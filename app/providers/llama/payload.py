@@ -24,6 +24,7 @@ def build_llama_payload(
     min_p: float = 0.0,
     presence_penalty: float = 0.0,
     thinking_kwargs: Dict = None,
+    cache_prompt: bool = False,
 ) -> Dict:
     """Build an OpenAI-compatible /v1/chat/completions payload.
 
@@ -62,6 +63,16 @@ def build_llama_payload(
 
     if tools:
         payload["tools"] = tools
+
+    # ---- Prompt KV-cache reuse (llama.cpp only) ----
+    # With intent-gated tool schemas the per-turn prompt is no longer 63 tools every time,
+    # and the system prompt + starter-set prefix is byte-stable across turns. cache_prompt
+    # lets llama.cpp reuse the KV cache for that shared prefix, cutting repeat-turn prefill
+    # latency. It never changes prompt_tokens (logical length) - it only skips recompute.
+    # Sent only when the caller opts in: Strata/DeepSeek reuse this payload builder and
+    # must not get the llama.cpp-specific field.
+    if cache_prompt:
+        payload["cache_prompt"] = True
 
     # ---- Reasoning control ----
     # Only what ThinkingPolicy produced, verbatim. An empty dict is deliberately not added:

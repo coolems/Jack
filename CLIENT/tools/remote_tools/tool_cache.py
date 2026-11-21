@@ -33,6 +33,8 @@ class ToolCache:
         self.max_entries = max_entries
         self._definitions: List[Dict] = []
         self._allowed_tools: Optional[List[str]] = None
+        self._categories: Dict[str, str] = {}  # tool name -> on-disk folder
+        self._catalog: str = ""                 # compact grouped text index for the prompt
         self._source_code: Dict[str, str] = {}
         self._shared_deps: Dict[str, Dict[str, str]] = {}  # tool_name -> {dep_name: source}
         self._compiled: Dict[str, Any] = {}  # name -> callable function
@@ -72,6 +74,28 @@ class ToolCache:
     def get_allowed_tools(self) -> Optional[List[str]]:
         """Role-filtered tool names from the SERVER (None = no explicit filter)."""
         return self._allowed_tools
+
+
+    def set_categories(self, categories: Dict[str, str]):
+        """Store the SERVER-shipped tool name -> folder map."""
+        self._categories = dict(categories or {})
+        logger.info(f"Cache: {len(self._categories)} tool categories stored")
+
+
+    def get_categories(self) -> Dict[str, str]:
+        """Tool name -> folder map from the SERVER (empty when not delivered)."""
+        return dict(self._categories)
+
+
+    def set_catalog(self, catalog: str):
+        """Store the SERVER-shipped compact tool catalog (prompt discovery index)."""
+        self._catalog = catalog or ""
+        logger.info(f"Cache: tool catalog stored ({len(self._catalog)} chars)")
+
+
+    def get_catalog(self) -> str:
+        """Compact grouped tool index from the SERVER ('' when not delivered)."""
+        return self._catalog
 
 
 
@@ -259,6 +283,9 @@ class ToolCache:
 
         self._allowed_tools = None
 
+        self._categories.clear()
+        self._catalog = ""
+
         self._source_code.clear()
 
         self._shared_deps.clear()
@@ -285,6 +312,8 @@ class ToolCache:
             "compiled_entries": len(self._compiled),
 
             "allowed_tools": self._allowed_tools,
+            "categories": len(self._categories),
+            "catalog_chars": len(self._catalog),
 
             "shared_modules": list(k for k, v in self._shared_sources.items() if v),
             "manifest_entries": len(self._manifests),

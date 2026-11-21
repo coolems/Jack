@@ -286,15 +286,19 @@ def create_websocket_handler(
         # ============================================================
         ollama_tools = None
         if agent_mode and tool_orchestrator:
-            # Pass the API key to get filtered tools based on role
-            # (2026-08-29 threadless refactor): get_ollama_tools is async now — the
-            # lazy SERVER fetch runs directly on this loop instead of in a worker thread.
-            ollama_tools = await tool_orchestrator.get_ollama_tools(api_key=ws_key)
+            # Intent-gated starter set (2026-11-20): send only the tool folders matching
+            # this message's detected intent + the request_tools escape hatch. The model
+            # discovers the rest via the catalog and pulls it on demand, so a plain "hi"
+            # no longer pays for ~63 full tool schemas. starter_tools is async — the lazy
+            # SERVER fetch runs directly on this loop.
+            ollama_tools = await tool_orchestrator.starter_tools(
+                api_key=ws_key, tool_types=_tool_types,
+            )
 
-            # Log what tools are available to this role
+            # Log the gated starter set actually sent to this role.
             if ollama_tools:
                 tool_names = [t.get("function", {}).get("name", "unknown") for t in ollama_tools]
-                logger.info(f"[ROLE] Role '{role}' has access to {len(ollama_tools)} tools: {tool_names}")
+                logger.info(f"[ROLE] Role '{role}' starter set ({len(ollama_tools)} tools): {tool_names}")
             else:
                 logger.info(f"[ROLE] Role '{role}' has NO tools available (agent mode may not work)")
 

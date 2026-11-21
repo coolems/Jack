@@ -23,6 +23,7 @@ not: each sibling imports them from its own module and nothing outside the packa
 them - except _sha_prefix, needed by direct_ws/tool_code_handler.py for integrity hashes.
 """
 
+from .catalog import build_tool_catalog
 from .config_constants import extract_config_constants
 from .constants import EXCLUDED_TOOL_DIRS, SKIP_FILES
 from .dna_data_files import get_dna_data_files
@@ -37,6 +38,7 @@ __all__ = [
     "EXCLUDED_TOOL_DIRS",
     "SKIP_FILES",
     "_sha_prefix",
+    "build_tool_catalog",
     "extract_config_constants",
     "get_all_shared_sources",
     "get_client_tools_dir",

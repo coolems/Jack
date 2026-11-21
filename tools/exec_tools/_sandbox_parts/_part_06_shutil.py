@@ -111,11 +111,7 @@
             def _disk_usage(path):
                 s = (path.decode("utf-8", "replace")
                      if isinstance(path, bytes) else str(path))
-                if not _inside(s, [ROOT]):
-                    raise FileNotFoundError(
-                        "[Errno 2] No such file or directory (outside working_root -- "
-                        "python_exec sandbox blocks metadata access outside %s)" % root
-                    )
+                _meta_ok(s, [ROOT])
                 return _orig_du(path)
             _jps_shutil.disk_usage = _disk_usage
     except Exception as _jps_stage_exc:

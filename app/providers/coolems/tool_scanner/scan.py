@@ -27,11 +27,17 @@ def get_client_tools_dir():
 
 def scan_tool_definitions(tools_dir):
 
-    """Scan tools directory and extract all tool definitions using AST (no exec). Returns (definitions_list, allowed_tools_names)."""
+    """Scan the tools directory and extract every tool definition via AST (no exec).
+
+    Returns (definitions, allowed_tools, categories) where categories maps each tool
+    name to its on-disk folder. The folder was already known in the walk loop and is
+    what powers the CLIENT's intent-gated starter sets + the catalog grouping."""
 
     definitions = []
 
     allowed_tools = []
+
+    categories = {}
 
 
     try:
@@ -90,10 +96,12 @@ def scan_tool_definitions(tools_dir):
 
                     allowed_tools.append(tool_name)
 
+                    categories[tool_name] = item
+
 
     except Exception as e:
 
         logger.error(f"[SERVER] Error scanning tools directory: {e}", exc_info=True)
 
 
-    return definitions, allowed_tools
+    return definitions, allowed_tools, categories

@@ -46,20 +46,39 @@
         except Exception:
             pass
 
-        # CONSENT FIX (2026-10-12): the metadata wrappers below used to answer "not found /
-        # False" for EVERY outside path -- even ones the local user had already
-        # approved via the OUT-OF-SANDBOX FILE CONSENT GATE (defined later in this
-        # same function, resolved here at call time). That made os.stat/exists/isdir/
-        # getsize LIE after an approval while open/listdir worked fine. _consent_ok()
-        # consults the gate's decision cache: an outside path already allowed this run
-        # (or under an approved parent dir) falls through to the original call; a deny,
-        # timeout or unasked path stays fail-closed. Metadata probes never ASK -- only
-        # data operations do -- so no dialog spam from existence checks.
-        def _consent_ok(s):
+        # METADATA CONSENT (2026-11-20): the whole metadata category (stat/lstat/
+        # access/readlink/os.path/pathlib/nt/disk_usage) goes through the OUT-OF-
+        # SANDBOX FILE CONSENT GATE (defined later in this same function, resolved
+        # here at call time). An outside path already decided this run (allow or
+        # deny, incl. an approved parent dir) is served from the gate's cache; an
+        # UNDECIDED outside path ASKS THE LOCAL USER -- same card kind "file", same
+        # per-path + subtree decision cache, so one approval covers the whole area
+        # and no dialog spam. strict=True (stat/getsize family): a deny/timeout
+        # raises (original FileNotFoundError without a relay, the gate's
+        # "NOT allowed" PermissionError with one). strict=False (existence
+        # predicates): a deny/timeout answers the ORIGINAL no-leak answer (False)
+        # so probe-style code keeps working. PATH-dir carve-out never asks.
+        def _meta_ok(s, roots, msg="metadata access", strict=True):
+            if _inside(s, roots):
+                return True
+            if _in_path_dirs(s):
+                return True  # PATH-dir existence carve-out -- never ask
+            if not _NET_CONSENT_ON or _NET_REQ_DIR is None:
+                # No relay: the original instant hard block, byte-identical message.
+                if strict:
+                    raise FileNotFoundError(
+                        "[Errno 2] No such file or directory (outside working_root -- "
+                        "python_exec sandbox blocks %s outside %s)" % (msg, root))
+                return False
             try:
-                return _fs_cached(_norm(s)) == "allow"
-            except Exception:
-                return False  # cannot resolve / not decided -> fail closed
+                # The file consent gate decides (cached ask, fail-closed on timeout).
+                # Returns None on allow; raises PermissionError on deny/timeout.
+                _fs_deny(msg, s)
+            except PermissionError:
+                if strict:
+                    raise
+                return False  # existence predicate: deny -> "not found" (no leak)
+            return True
 
         # ---- METADATA SCOPING (hardening 2026-09-17) -------------------------
         # os.stat / lstat / access / readlink previously leaked path EXISTENCE and
@@ -87,11 +106,7 @@
                         return orig(path, *a, **k)  # fd or exotic arg -> original handles it
                 if s is not None and (_is_devnull(s) or _is_dev_or_pipe(s)):
                     return orig(path, *a, **k)
-                if not _inside(s, roots) and not _consent_ok(s):
-                    raise FileNotFoundError(
-                        "[Errno 2] No such file or directory (outside working_root -- "
-                        "python_exec sandbox blocks metadata access outside %s)" % root
-                    )
+                _meta_ok(s, roots)
                 return orig(path, *a, **k)
             wrapped.__name__ = nm
             return wrapped
@@ -118,8 +133,7 @@
                             s = _real_os.fspath(path)
                         except Exception:
                             return _orig_access(path, *a, **k)
-                    if s is not None and not _is_devnull(s) and not _inside(s, [ROOT]) and not _in_path_dirs(s) \
-                        and not _consent_ok(s):
+                    if s is not None and not _is_devnull(s) and not _meta_ok(s, [ROOT], strict=False):
                         return False
                     return _orig_access(path, *a, **k)
                 _os_access.__name__ = "os.access"
@@ -143,8 +157,7 @@
                 def _path_exists(p):
                     if isinstance(p, (str, bytes)):
                         s = p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p)
-                        if not _inside(s, [ROOT]) and not _in_path_dirs(s) \
-                                and not _consent_ok(s):
+                        if not _meta_ok(s, [ROOT], strict=False):
                             return False
                     return _orig_exists(p)
                 _op.exists = _path_exists
@@ -154,8 +167,7 @@
                     def wrapped(p):
                         if isinstance(p, (str, bytes)):
                             s = p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p)
-                            if not _inside(s, [ROOT]) and not _in_path_dirs(s) \
-                                    and not _consent_ok(s):
+                            if not _meta_ok(s, [ROOT], strict=False):
                                 return False
                         return orig_fn(p)
                     wrapped.__name__ = nm
@@ -166,11 +178,7 @@
                 def _path_getsize(f):
                     if isinstance(f, (str, bytes)):
                         s = f.decode("utf-8", "replace") if isinstance(f, bytes) else str(f)
-                        if not _inside(s, [ROOT]) and not _consent_ok(s):
-                            raise FileNotFoundError(
-                                "[Errno 2] No such file or directory (outside working_root -- "
-                                "python_exec sandbox blocks metadata access outside %s)" % root
-                            )
+                        _meta_ok(s, [ROOT])
                     return _orig_getsize(f)
                 _op.getsize = _path_getsize
         except Exception as _jps_mod_exc:
@@ -199,11 +207,8 @@
                 orig = getattr(_jps_Path, nm)
                 def wrapped(self, *a, **k):
                     s = _path_str(self)
-                    if s is not None and not _inside(s, roots) and not _consent_ok(s):
-                        raise FileNotFoundError(
-                            "[Errno 2] No such file or directory (outside working_root -- "
-                            "python_exec sandbox blocks access outside %s)" % root
-                        )
+                    if s is not None:
+                        _meta_ok(s, roots, "access")
                     return orig(self, *a, **k)
                 wrapped.__name__ = nm
                 return wrapped
@@ -214,8 +219,7 @@
                 orig = getattr(_jps_Path, nm)
                 def wrapped(self, *a, **k):
                     s = _path_str(self)
-                    if (s is not None and not _inside(s, [ROOT]) and not _in_path_dirs(s)
-                            and not _consent_ok(s)):
+                    if (s is not None and not _meta_ok(s, [ROOT], strict=False)):
                         return False  # existence predicates: no leak outside ROOT
                     return orig(self, *a, **k)
                 wrapped.__name__ = nm

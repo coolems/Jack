@@ -486,6 +486,9 @@ async def chat_stream(
         tools=tools,
         max_tokens=safe_max_tokens,
         thinking_kwargs=thinking_kwargs,
+        # Prompt KV-cache reuse is a llama.cpp extension; Strata reuses this same
+        # chat_stream with provider_name="strata", so gate it to the real llama path.
+        cache_prompt=(provider_name == "llama"),
     )
 
     if tools:
@@ -698,11 +701,37 @@ async def chat_stream(
                                 model=model, prompt_tokens=prompt_tokens,
                                 context_window=window, reason=error_body,
                             )
+                        # (2026-11-21 strata resilience) A 400 whose body names the engine
+                        # being down/restarting is an OUTAGE, not a bad request: the engine
+                        # answered mid-crash (e.g. basalt OOM-killed on the shared GPU after
+                        # the OCR model loaded). Raise the typed recoverable error so the
+                        # CLIENT preserves the call and resumes; a bare RuntimeError here is
+                        # non-retryable and kills the whole turn, and the demotion below
+                        # would wrongly blame the model's template.
+                        if _is_backend_unavailable(response.status_code, error_body):
+                            low_body = error_body.lower()
+                            logger.warning(
+                                f"[BACKEND-DOWN] HTTP 400 from {api_url}: "
+                                f"engine down/restarting - {error_body[:200]}"
+                            )
+                            raise BackendUnavailableError(
+                                f"Backend {api_url} is unavailable (HTTP 400): {error_body.strip()[:300]}",
+                                model=model,
+                                oom=("mib free" in low_body or "out of memory" in low_body),
+                                reason=error_body,
+                            )
                         # If we sent thinking keys and the endpoint rejected the request, its
                         # advertised knob is not usable: demote so the next request sends
-                        # nothing instead of failing the same way every turn.
-                        _demote_thinking(api_url, model,
-                                         f"HTTP 400: {error_body.strip()[:160]}", thinking_kwargs)
+                        # nothing instead of failing the same way every turn. Only a body that
+                        # NAMES a thinking key proves the template rejected the knob - a
+                        # generic 400 (e.g. "Unterminated string" from a strict template) is
+                        # about something else and must not disable thinking for the node.
+                        low_body = error_body.lower()
+                        if any(t in low_body for t in ("reasoning_effort", "enable_thinking",
+                                                      "thinking_budget", "reasoning effort",
+                                                      "chat_template_kwargs")):
+                            _demote_thinking(api_url, model,
+                                             f"HTTP 400: {error_body.strip()[:160]}", thinking_kwargs)
                         raise RuntimeError(f"llama.cpp returned HTTP 400: {error_body.strip()[:300]}")
                 elif response.status_code != 200:
                     error_text = await response.aread()

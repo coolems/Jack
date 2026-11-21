@@ -48,7 +48,7 @@ async def _handle_tools_request(ws, user_info, server_provider):
         solves the problem where server knows admin role but client-side python_exec
         defaults to "user" and blocks everything.
     """
-    from ..tool_scanner import get_client_tools_dir, scan_tool_definitions, get_shared_utils_source, get_all_shared_sources, extract_config_constants, get_dna_data_files, get_framework_sources, get_shared_hashes
+    from ..tool_scanner import get_client_tools_dir, scan_tool_definitions, build_tool_catalog, get_shared_utils_source, get_all_shared_sources, extract_config_constants, get_dna_data_files, get_framework_sources, get_shared_hashes
 
     tools_dir = get_client_tools_dir()
     if not tools_dir:
@@ -58,15 +58,25 @@ async def _handle_tools_request(ws, user_info, server_provider):
         }))
         return
 
-    definitions, allowed_tools = scan_tool_definitions(tools_dir)
+    definitions, allowed_tools, categories = scan_tool_definitions(tools_dir)
 
     # Filter by user role permissions
     if user_info and hasattr(server_provider, '_auth_gateway'):
         tool_names = [d.get("function", {}).get("name") for d in definitions]
         filtered_names = server_provider._auth_gateway.get_allowed_tools(user_info, tool_names)
+        _allowed_set = set(filtered_names)
         definitions = [d for d in definitions
-                       if d.get("function", {}).get("name") in set(filtered_names)]
+                       if d.get("function", {}).get("name") in _allowed_set]
+        # Keep the category map consistent with the filtered definitions so the
+        # CLIENT never advertises (or starts) a tool the role cannot use.
+        categories = {name: folder for name, folder in categories.items()
+                      if name in _allowed_set}
         allowed_tools = filtered_names
+
+    # Compact catalog (built AFTER role filtering so it never advertises a tool the
+    # role cannot use). Ships with the response; the CLIENT appends it to the prompt
+    # so the model can discover tools without paying for their full JSON schema.
+    tool_catalog = build_tool_catalog(definitions, categories)
 
     # --- Shared modules: send BOTH new dict format AND legacy string format ---
     shared_sources = get_all_shared_sources(tools_dir)  # Dict with all module sources (utils, path_guard, ssrf_defense, web_interact/*)
@@ -104,11 +114,13 @@ async def _handle_tools_request(ws, user_info, server_provider):
     # verify each one before exec'ing it (fail-closed when hashes are present).
     shared_hashes = get_shared_hashes(tools_dir)
 
-    logger.info(f"[SERVER->CLIENT] Sending {len(definitions)} tool definitions + {len(shared_sources)} shared modules + {len(config_constants)} config constants + {len(dna_data)} DNA data files + system_prompt ({len(system_prompt)} chars) + chat_prompt ({len(chat_prompt)} chars) (role={config_constants.get('CURRENT_USER_ROLE', 'N/A')}) to authenticated role={user_info.get('role') if user_info else 'unknown'}")
+    logger.info(f"[SERVER->CLIENT] Sending {len(definitions)} tool definitions (+catalog {len(tool_catalog)} chars, {len(categories)} categories) + {len(shared_sources)} shared modules + {len(config_constants)} config constants + {len(dna_data)} DNA data files + system_prompt ({len(system_prompt)} chars) + chat_prompt ({len(chat_prompt)} chars) (role={config_constants.get('CURRENT_USER_ROLE', 'N/A')}) to authenticated role={user_info.get('role') if user_info else 'unknown'}")
     await ws.send(json.dumps({
         "type": "tools_response",
         "definitions": definitions,
         "allowed_tools": allowed_tools,
+        "tool_categories": categories,                 # tool name -> folder (intent-gating + catalog)
+        "tool_catalog": tool_catalog,                  # compact grouped text index for the prompt
         "shared_utils_source": shared_utils_legacy,   # Legacy: backward compat for old clients
         "shared_sources": shared_sources,               # New: dict with ALL shared modules (incl. app.dna.* delivered from SERVER)
         "config_constants": config_constants,           # FIX (2026-01-31): constants + role for web_search etc.

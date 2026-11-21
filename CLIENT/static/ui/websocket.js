@@ -474,6 +474,26 @@ function handleWebSocketMessage(data, ownerConvId) {
         if (typeof ApprovalDialog !== 'undefined') {
             ApprovalDialog.updateFleet(data.models || [], !!data.server_down);
         }
+        // The pushed catalog also carries each model's discovered `thinking` block.
+        // Refresh the Think chip from it: loadModels() only runs on page load, so a model
+        // that (re)loads after that (node restart, new endpoint) would leave the chip
+        // stuck on "Think: n/a" / "Thinking not available" until a page reload.
+        if (Array.isArray(data.models) && data.models.length > 0) {
+            COOLEMS.thinkingCaps = {};
+            data.models.forEach(m => { if (m && m.name) COOLEMS.thinkingCaps[m.name] = m.thinking || null; });
+            // Rebuild the picker only when the push reveals a model it does not list yet
+            // (a node with a new model came online) - loadModels() then re-fetches and
+            // repaints both picker and chip. Never on an empty/partial list: that would
+            // blank the picker.
+            const sel = document.getElementById('modelSelector');
+            const known = sel ? new Set(Array.from(sel.options).map(o => o.value)) : null;
+            const hasNew = data.models.some(m => m && m.name && (!known || !known.has(m.name)));
+            if (hasNew) {
+                if (typeof loadModels === 'function') loadModels().catch(() => {});
+            } else if (typeof updateThinkingUI === 'function') {
+                updateThinkingUI();
+            }
+        }
         return;
     }
 

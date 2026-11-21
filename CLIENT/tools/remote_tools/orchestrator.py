@@ -18,6 +18,63 @@ from .dynamic_loader import DynamicModuleLoader, ToolCompilationError
 logger = logging.getLogger("COOLEMS.Tools.Remote.Orchestrator")
 
 
+def _def_name(d: Any) -> str:
+    """Tool name from a definition dict ('' when malformed)."""
+    return d.get("function", {}).get("name", "") if isinstance(d, dict) else ""
+
+
+#: The escalation escape hatch. Always present in an intent-gated starter set so the
+#: model can pull any catalogued tool's full schema on demand (see inject_tools + the
+#: react_loop request_tools intercept). A control-flow tool owned by the loop — never
+#: dispatched to ToolExecutor.
+REQUEST_TOOLS_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "request_tools",
+        "description": (
+            "Add more tools to this turn's available schema. Call this when you need a "
+            "tool that is listed in the catalog but not available yet. Pass the exact "
+            "tool names; each tool's whole category is loaded so related tools come together."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Exact tool names to make available (from the catalog).",
+                },
+            },
+            "required": ["names"],
+        },
+    },
+}
+
+#: User-intent -> tool folders for the per-turn starter set. Intent names come from
+#: app.detection.detect_tool_requirement(); folders are the SERVER's on-disk tool folders
+#: (tools_response.tool_categories). Tools outside these folders are reached on demand
+#: via request_tools.
+_INTENT_CATEGORY_MAP = {
+    "web": {"web_tools", "search_tools"},
+    "browser": {"web_interact"},
+    "file": {"file_tools", "edit_tools", "search_tools", "exec_tools", "test_tools", "git_tools"},
+    "pdf": {"file_tools", "edit_tools", "exec_tools"},
+    "ocr": {"vision_tools"},
+    "calc": {"exec_tools"},
+    "time": {"time_tools"},
+}
+
+#: CLIENT-local tools are never in the SERVER catalog (the SERVER does not know them).
+#: Appended to the catalog so the model can still discover + request them. Dynamic
+#: mcp__<server>__<tool> names are described by the per-turn MCP notes instead.
+_LOCAL_TOOL_HINTS = (
+    "\n\n## CLIENT-local (also available on request)\n"
+    "- ask_user_question — ask the user a question on a card (blocking or timed)\n"
+    "- list_mcp_servers / list_mcp_resources / list_mcp_resource_templates / "
+    "read_mcp_resource — inspect connected MCP servers and read their resources"
+)
+
+
 class RemoteToolOrchestrator:
     """Remote tool orchestrator - fetches tools from SERVER on-demand.
 
@@ -177,6 +234,13 @@ class RemoteToolOrchestrator:
             # Store in cache
             self._cache.set_definitions(definitions, allowed_tools)
 
+            # Tool taxonomy + catalog: the SERVER ships the per-tool folder and a compact
+            # grouped text index. The folder map drives starter_tools(); the catalog is
+            # appended to the prompt so the model can discover tools without paying for
+            # their full JSON schema.
+            self._cache.set_categories(result.get("tool_categories", {}))
+            self._cache.set_catalog(result.get("tool_catalog", ""))
+
             # FIX (2026-08-17): DNA data files from SERVER -- synced into the CLIENT's own
             # app/dna directory (NEVER working_root) so delivered app.dna.* modules read them there.
             dna_data = result.get("dna_data", {})
@@ -314,6 +378,109 @@ class RemoteToolOrchestrator:
 
         logger.info(f"get_ollama_tools: returning {len(tool_defs)} tool definitions")
         return tool_defs
+
+    def get_tool_catalog(self) -> str:
+        """Compact tool index for the agent prompt (SERVER catalog + CLIENT-local hints).
+
+        Sync: the catalog was cached by install_from_response during lazy init, which the
+        handler's starter_tools() call has already awaited before the turn runs. Returns ''
+        when the SERVER shipped no catalog (empty tool list / legacy server)."""
+        catalog = self._cache.get_catalog()
+        return (catalog + _LOCAL_TOOL_HINTS) if catalog else ""
+
+    async def starter_tools(self, api_key: str = None, tool_types: List[str] = None) -> List[Dict]:
+        """Intent-gated per-turn schema: only the folders matching the user's intent + request_tools.
+
+        Replaces get_ollama_tools() as the per-turn schema source. The model discovers the
+        rest via the catalog and pulls it on demand with request_tools (see inject_tools).
+        request_tools is ALWAYS present so escalation never depends on a schema the model
+        does not already have.
+        """
+        await self._ensure_initialized()
+
+        folders = set()
+        for t in (tool_types or []):
+            folders.update(_INTENT_CATEGORY_MAP.get(t, ()))
+
+        categories = self._cache.get_categories()
+        allowed = set(self._cache.get_allowed_tools() or [])
+        defs = self._cache.get_definitions()
+
+        out: List[Dict] = []
+        for d in defs:
+            name = _def_name(d)
+            if allowed and name not in allowed:
+                continue
+            if categories.get(name) in folders:
+                out.append(d["definition"] if "definition" in d else d)
+
+        # request_tools always rides along (the escalation escape hatch).
+        out.append(REQUEST_TOOLS_DEFINITION)
+
+        logger.info(
+            f"starter_tools: intent={list(tool_types or [])} -> {len(out)} tool(s) "
+            f"({sorted(_def_name(d) for d in out)})"
+        )
+        return out
+
+    async def inject_tools(self, current_schema: List[Dict], names: List[str],
+                           api_key: str = None) -> List[Dict]:
+        """Grow the schema to include the requested tools + their whole folder families.
+
+        Resolves each requested name against the cached remote definitions (adding the
+        tool's entire folder so one request pulls the neighbourhood) and the CLIENT-local
+        seams. Returns the new complete schema (remote + local + request_tools). Idempotent:
+        tools already present and request_tools are kept, never duplicated.
+        """
+        await self._ensure_initialized()
+
+        categories = self._cache.get_categories()
+        allowed = set(self._cache.get_allowed_tools() or [])
+        defs = self._cache.get_definitions()
+
+        requested = {n for n in (names or []) if isinstance(n, str) and n.strip()}
+        folders_to_add = set()
+        for d in defs:
+            name = _def_name(d)
+            if name in requested and categories.get(name):
+                folders_to_add.add(categories[name])
+
+        local = await self.local_definitions(api_key)
+        local_by_name = {_def_name(d): d for d in local}
+
+        existing = {_def_name(d) for d in (current_schema or [])}
+
+        out: List[Dict] = []
+        seen: set = set()
+
+        def _add(d: Dict) -> None:
+            name = _def_name(d)
+            if name and name not in seen:
+                seen.add(name)
+                out.append(d)
+
+        # Remote: keep already-granted + add the requested folders' tools (role-filtered).
+        for d in defs:
+            name = _def_name(d)
+            if allowed and name not in allowed:
+                continue
+            if name in existing or categories.get(name) in folders_to_add:
+                _add(d["definition"] if "definition" in d else d)
+
+        # Local: keep already-granted + add explicitly requested local tools.
+        for name, d in local_by_name.items():
+            if name in existing or name in requested:
+                _add(d)
+
+        # request_tools always stays.
+        _add(REQUEST_TOOLS_DEFINITION)
+
+        added = sorted(seen - existing)
+        logger.info(
+            f"inject_tools: requested={sorted(requested)} -> schema {len(out)} tool(s) "
+            f"(added: {added or 'none'})"
+        )
+        return out
 
     async def is_tool_allowed(self, tool_name: str, api_key: str = None) -> bool:
         """Check if a tool name exists in our registry.

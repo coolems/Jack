@@ -16,6 +16,7 @@ from .active_conversations import _active_convs
 from .log import logger
 from .model_switch_handler import _handle_model_switch_direct
 from .ocr_handler import _handle_ocr_request
+from .ocr_files_handler import _handle_ocr_provision_request
 from .tokenize_handler import _handle_tokenize_request
 from .tool_code_handler import _handle_tool_code_request
 from .tools_request_handler import _handle_tools_request
@@ -252,11 +253,14 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                 await _handle_tool_code_request(ws, msg, user_info, server_provider)
 
             elif t == "ocr_request":
-                # (2026-08-23 revive) OCR runs HERE on the SERVER: the local LlamaProvider
-                # owns the exact GLM-OCR call format ("Text Recognition:" prompt). The CLIENT
-                # ships pixels + model names; transcribed text comes back in ocr_response.
+                # (2026-08-23 revive) LEGACY path: OCR on the SERVER. Kept for older clients
+                # that predate CLIENT-local OCR; the CLIENT now runs its own llama instance.
                 logger.info(f"[SERVER<-CLIENT] OCR request via Direct WS from {peer}: models={msg.get('ocr_models')}")
                 await _handle_ocr_request(ws, msg, server_provider)
+
+            elif t == "ocr_provision_request":
+                logger.info(f"[SERVER<-CLIENT] OCR provision request via Direct WS from {peer}")
+                await _handle_ocr_provision_request(ws, msg, user_info)
 
             elif t == "tokenize_request":
                 await _handle_tokenize_request(ws, msg, server_provider)

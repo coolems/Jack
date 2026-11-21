@@ -211,6 +211,7 @@ class AuthGateway:
             "role": role,
             "allowed_tools": profile.get("allowed_tools"),  # None = all tools allowed
             "allowed_models": allowed_models,  # None = all models allowed (filenames)
+            "ocr_model": profile.get("ocr_model"),  # non-empty -> this role may use OCR
             "max_parallel_slots": slots,       # REQUIRED: parallel generations for this user
             "max_connections": profile.get("max_connections", 1),
             "max_rate_limit": profile.get("max_rate_limit", PROFILE_DEFAULT_RATE_LIMIT),
