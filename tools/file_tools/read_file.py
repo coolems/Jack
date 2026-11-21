@@ -1,5 +1,15 @@
-"""Read file content from working_root directory with secure path resolution."""
+"""Read file content from working_root directory with secure path resolution.
 
+Part reading (2026-11-26): read_file accepts an optional ``part`` argument so a
+large file can be read in fixed-size chunks instead of one giant result that the
+agent's 16K-char tool-result budget truncates (see AGENTIC_TOOL_RESULT_HISTORY_MAX_CHARS
+in CLIENT/client_config/config.py). Each chunk is READ_FILE_PART_CHARS chars and the
+returned text is prefixed with a ``[read_file <name> - part P/T]`` marker so the
+caller always knows which slice it got and how many exist. Omitting ``part`` returns
+the whole file (the original behaviour), which is fine for files that fit the budget.
+"""
+
+import math
 import os
 
 from tools.utils import (get_working_root, resolve_path_to_dir, validate_filename,
@@ -9,11 +19,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Chars per part. Sized to fit a single read under the agent's 16K-char tool-result
+# budget with room for the part marker line, so a requested part is never itself
+# truncated before the model sees it. The split happens on the decoded string, so
+# multi-byte UTF-8 characters are never cut in half.
+READ_FILE_PART_CHARS: int = 15_000
+
+
 __tool_description__ = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read a file's text content.",
+        "description": (
+            "Read a file's text content. Use 'part' to read a large file in chunks: "
+            "the response is prefixed with '[read_file <name> - part P/T]' so you know "
+            "which slice you got and how many parts the file has in total."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -25,6 +46,15 @@ __tool_description__ = {
                     "type": "string",
                     "description": "Directory; '' = working_root.",
                     "default": ""
+                },
+                "part": {
+                    "type": "integer",
+                    "description": (
+                        "1-based part number to read (omit or 0 = whole file). Each part is "
+                        f"{READ_FILE_PART_CHARS} chars; the reply's 'part P/T' marker lists "
+                        "the total T so you can fetch the remaining parts one by one."
+                    ),
+                    "default": 0
                 }
             },
             "required": ["filename"]
@@ -33,7 +63,7 @@ __tool_description__ = {
 }
 
 
-def read_file(filename: str, path: str = "") -> str:
+def read_file(filename: str, path: str = "", part: int = 0) -> str:
     """Read a file's content from the working_root directory.
 
         SECURITY RULE - CRITICAL:
@@ -45,9 +75,11 @@ def read_file(filename: str, path: str = "") -> str:
             filename: Just the file name (no path). Example: 'myfile.txt'. NEVER include '/' or '\\'.
             path: Directory path only (no filename). Relative paths resolve against working_root ONLY.
                   Empty string reads from working_root. Use dot or root for working_root.
+            part: 1-based part number to return, or 0/omitted for the whole file. The result
+                  is prefixed with ``[read_file <name> - part P/T]`` when a part is requested.
 
         Returns:
-            The content of the file as a string, or an error message on failure.
+            The content (or the requested part) as a string, or an error message on failure.
 
     """
     try:
@@ -78,8 +110,26 @@ def read_file(filename: str, path: str = "") -> str:
         with open(filepath, 'rb') as f:
             content = f.read().decode('utf-8')
 
-        logger.info(f"[read_file] Read '{filename}' from '{dirpath}' ({len(content)} chars)")
-        return content
+        total = max(1, math.ceil(len(content) / READ_FILE_PART_CHARS))
+
+        # Whole-file read (original behaviour): return everything unchanged.
+        if part is None or part <= 0:
+            logger.info(f"[read_file] Read '{filename}' from '{dirpath}' ({len(content)} chars)")
+            return content
+
+        if part > total:
+            return (f"Error: part {part} requested but '{filename}' has only {total} "
+                    f"part(s) ({len(content)} chars). Use part=1..{total}.")
+
+        start = (part - 1) * READ_FILE_PART_CHARS
+        end = min(start + READ_FILE_PART_CHARS, len(content))
+        chunk = content[start:end]
+
+        marker = (f"[read_file {filename} - part {part}/{total} "
+                  f"(chars {start}-{end} of {len(content)})]")
+        logger.info(f"[read_file] Read '{filename}' part {part}/{total} "
+                    f"('{dirpath}', chars {start}-{end} of {len(content)})")
+        return marker + "\n" + chunk
 
     except ValueError as e:
         # Path validation errors are security violations — log and reject

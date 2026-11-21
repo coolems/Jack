@@ -124,6 +124,16 @@ textarea {
 .think-toggle:disabled { opacity: 0.45; cursor: default; }
 .think-toggle:disabled:hover { background: var(--bg-secondary); color: var(--text-secondary); }
 
+/* (2026-11-26) voice toggles (mic / speaker) - same grey chip as Think, .active = accent.
+   The mic adds a pulsing red dot while listening so the state is visible at a glance. */
+.voice-toggle.recording { border-color: var(--danger); color: var(--danger); }
+.voice-toggle.recording::before {
+    content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--danger); margin-right: 2px;
+    animation: voicePulse 1.2s ease-in-out infinite;
+}
+@keyframes voicePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
 /* ===== MODAL ===== */
 .modal {
     display: none; position: fixed; top: 0; left: 0;

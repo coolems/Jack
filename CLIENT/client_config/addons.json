@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Voice addons the CLIENT can use: TTS (speak text) and STT (transcribe audio).",
+    "Managed live from Settings > Addons (POST /api/addons); you can also edit this",
+    "file directly - it is re-read on every save and at startup.",
+    "NOTHING IS ENABLED BY DEFAULT. Local providers are free and private (audio never",
+    "leaves this machine); the OpenAI providers need an API key and send audio to OpenAI.",
+    "TTS language: detect_language=true auto-detects en/de/ro from the text itself",
+    "(Romanian diacritics, German umlauts/ss); 'voices' maps each language to a voice",
+    "style. Texts without diacritics fall back to fallback_lang - pass lang explicitly",
+    "to the speech endpoint to force a language."
+  ],
+  "addons": [
+    {
+      "name": "tts",
+      "enabled": true,
+      "provider": "supertonic",
+      "model": "supertonic-3",
+      "speed": 1.0,
+      "total_steps": 10,
+      "silence_duration": 0.3,
+      "detect_language": true,
+      "fallback_lang": "en",
+      "voices": {
+        "en": "M1",
+        "de": "M1",
+        "ro": "M1"
+      },
+      "speaker": "",
+      "openai_model": "gpt-4o-mini-tts",
+      "openai_voice": "alloy",
+      "openai_api_key": ""
+    },
+    {
+      "name": "stt",
+      "enabled": true,
+      "provider": "faster_whisper",
+      "model": "medium",
+      "device": "auto",
+      "language": "auto",
+      "mic": "",
+      "openai_model": "gpt-4o-mini-transcribe",
+      "openai_api_key": ""
+    }
+  ]
+}

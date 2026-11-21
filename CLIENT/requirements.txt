@@ -45,3 +45,13 @@ starlette==0.46.2
 urllib3==2.6.3
 uvicorn[standard]==0.34.3
 websockets==12.0
+
+# Voice addons (Settings > Addons, app/addons/) - 2026-07. Both are OPTIONAL at
+# runtime: nothing imports them unless an addon is enabled in client_config/addons.json,
+# so a CLIENT without these packages still boots fine (the addon endpoints report
+# 'engine failed to load' honestly). Pinned from the verified test venv.
+supertonic==1.3.1        # local TTS (app/addons/tts/supertonic/) - EN/DE/RO, free, private
+soundfile==0.14.0        # WAV encoding for supertonic output
+faster-whisper==1.2.1    # local STT (app/addons/stt/faster_whisper/) - auto-detects 100+ languages
+ctranslate2==4.9.0       # faster-whisper inference backend (CPU/CUDA)
+av==19.0.2               # audio decoding for STT uploads (webm/wav/mp3/ogg/m4a)

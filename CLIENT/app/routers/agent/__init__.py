@@ -15,6 +15,7 @@ is defined here and is the package's only import surface."""
 
 from fastapi import APIRouter
 
+from .addons import register as _register_addons
 from .auth_setup import register as _register_auth
 from .mcp_servers import register as _register_mcp_servers
 from .model_switching import register as _register_model_switching
@@ -33,6 +34,8 @@ def create_agent_router(provider, model_name: str, api_timeout: int,
     # resolution and keeps the OpenAPI operation ordering stable).
     _register_auth(router, provider, model_name, api_timeout, agent, stop_events)
     _register_settings(router, provider, model_name, api_timeout, agent, stop_events)
+    # Addons tab: own path group /api/addons/* - registered with the other config-management routes.
+    _register_addons(router, provider, model_name, api_timeout, agent, stop_events)
     # MCP tab: own path group /api/mcp/* - registered with the other config-management routes.
     _register_mcp_servers(router, provider, model_name, api_timeout, agent, stop_events)
     _register_search_engines(router, provider, model_name, api_timeout, agent, stop_events)

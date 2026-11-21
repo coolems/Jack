@@ -259,6 +259,23 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         except Exception as e:  # pragma: no cover - MCP must never block the UI boot
             logger.warning(f"[MCP] startup wiring failed (MCP tools report it honestly): {e}")
 
+        # ===== Voice addons (TTS + STT) =====
+        # Built from CLIENT/client_config/addons.json. Nothing is enabled by default, so
+        # this is a no-op unless the user enabled an addon in Settings > Addons. The
+        # registry is built here (cheap: one JSON read); engine loading (model
+        # download/load) runs in background tasks, so a slow first load never holds
+        # the page. A failure never stops the UI - the addon endpoints report it.
+        try:
+            from app.addons.registry import wire_addons
+            _addons_reg = wire_addons()
+            if _addons_reg is not None:
+                enabled = [e.name for e in _addons_reg.entries() if e.enabled]
+                for e in _addons_reg.entries():
+                    _addons_reg._load_task(e.name)
+                logger.info(f"[Addons] {len(enabled)} enabled addon(s) - loading in the background")
+        except Exception as e:  # pragma: no cover - addons must never block the UI boot
+            logger.warning(f"[Addons] startup wiring failed (addon endpoints report it honestly): {e}")
+
         # Scratch retention: MCP payloads spill to .temp so a clipped result still has a
         # locator, but they must not accumulate forever. Bounded cleanup at startup only.
         try:
@@ -340,6 +357,16 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
         # The background connect (if still running) is cancelled first, so it cannot open a
         # connection after this close.
         await _close_mcp(_mcp_state.get("task") if isinstance(_mcp_state, dict) else None)
+        # Voice addon engines (TTS/STT models) are in-process - release them so no
+        # model memory outlives the CLIENT. Never raises: shutdown must not fail
+        # because of an addon.
+        try:
+            from app.addons.registry import get_registry
+            _ar = get_registry()
+            if _ar is not None:
+                _ar.close()
+        except Exception as e:  # pragma: no cover - shutdown must never raise
+            logger.debug(f"[Addons] close on shutdown failed (non-fatal): {e}")
         # (2026-09-08 multi-chat) stop the bus' cleanup task first
         chat_bus.stop_cleanup()
         if provider is not None:

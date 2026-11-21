@@ -497,6 +497,14 @@ function handleWebSocketMessage(data, ownerConvId) {
         } else if (data.turn_id && payload.turn_id) {
             CycleShell.rebuild(convId, { id: data.turn_id, payload: payload }, null);
         }
+        // (2026-11-26) voice: an agentic turn settles HERE, before 'done' arrives. The final
+        // answer text lives in the payload - hand it to the speaker NOW. By the time 'done'
+        // runs, settle() has set block.open=false, so CycleBlock.current() is null and the
+        // text would be lost (the old 'done' read path silently dropped every agentic answer).
+        // Only LIVE turns speak: a replayed cycle_end must never re-speak an old answer.
+        if (typeof VoiceUI !== 'undefined' && (!st || !st.inReplay)) {
+            VoiceUI.onTurnDone(convId, (payload.final && payload.final.text) || '');
+        }
         return;
     }
 
@@ -575,6 +583,8 @@ function handleWebSocketMessage(data, ownerConvId) {
 
     if (data.type === 'content' || data.type === 'thinking') {
         const kind = data.type === 'thinking' ? 'thinking' : 'answer';
+        // (2026-11-26) voice: the first frame of a turn resets its tool/answer tracking.
+        if (typeof VoiceUI !== 'undefined') VoiceUI.onTurnStart(convId, data.turn_id);
         const block = _cycleTarget(convId, data);
         if (block) {
             if (!_replayShouldRenderCycleFrame(convId, data.turn_id)) return;
@@ -642,6 +652,8 @@ function handleWebSocketMessage(data, ownerConvId) {
     }
 
     if (data.type === 'tool_start') {
+        // (2026-11-26) voice: a tool ran in this turn -> auto-speak must skip it.
+        if (typeof VoiceUI !== 'undefined') VoiceUI.onToolStart(convId);
         // Tool row + the live last-tool strip (live timer, input 5 / output 4). The strip
         // appears with the FIRST running tool of the turn and is removed once the final
         // answer starts being delivered (cycle_final / settle).
@@ -795,6 +807,13 @@ function handleWebSocketMessage(data, ownerConvId) {
             // strip - it is live work-in-progress only, so it never outlives the answer
             // (normally it is already gone at the first answer chunk / cycle_final).
             CycleBlock.settle(block, block.finalText || '', false);
+        }
+        // (2026-11-26) voice: auto-speak the final answer when the speaker toggle is on
+        // and this turn used NO tool calls. Normal (non-block) turns carry the answer in
+        // the stream buffer - read it BEFORE the reset below. Agentic turns were already
+        // spoken at cycle_end; their stream buffer is empty here, so this is a no-op.
+        if (typeof VoiceUI !== 'undefined' && (!st || !st.inReplay)) {
+            VoiceUI.onTurnDone(convId, (block ? (block.finalText || '') : '') || st.streamingBuffer || '');
         }
         st.streamingBuffer = '';
         st.thinkingPending = '';

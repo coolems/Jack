@@ -12,6 +12,19 @@
     .se-toggle { cursor: pointer; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
     .se-off .se-name { color: var(--text-secondary); opacity: .55; }
 
+    /* ===== Addons tab: per-addon selector buttons (TTS | STT) ===== */
+    .addons-addon-btn {
+        appearance: none; cursor: pointer; font-family: inherit; font-size: 13px;
+        color: var(--text-secondary); background: var(--bg-tertiary);
+        border: 1px solid var(--border-color); border-radius: 6px; padding: 7px 12px;
+        transition: color .15s ease, border-color .15s ease, background .15s ease;
+    }
+    .addons-addon-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+    .addons-addon-btn.active {
+        color: var(--text-primary); border-color: var(--accent);
+        background: rgba(255,255,255,0.04);
+    }
+
 
 
     /* ===== Settings modal tabs (Authentication | Agent / Search) ===== */
@@ -50,6 +63,7 @@
 #settingsModal.setup-mode #clearKeyBtn { display: none; }
 #settingsModal.setup-mode .settings-tab[data-pane="agent"] { display: none; }
 #settingsModal.setup-mode .settings-tab[data-pane="mcp"] { display: none; }
+#settingsModal.setup-mode .settings-tab[data-pane="addons"] { display: none; }
 
 /* ===== QUESTION DIALOG COLOR (Settings > Runtime) =====
    A palette of ready-made tints plus a free colour picker. The chosen colour is saved to

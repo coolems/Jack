@@ -105,6 +105,15 @@
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
                         <span id="thinkLabel">Think</span>
                     </button>
+                    <!-- (2026-11-26) voice toggles: same grey style as Think. Mic = speak-to-prompt
+                         (5 s silence -> transcribe -> append/send). Speaker = auto-speak the last
+                         answer of a turn that used NO tool calls. -->
+                    <button class="think-toggle voice-toggle" id="micToggle" onclick="VoiceUI.toggleMic()" title="Voice input - click to start listening">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                    </button>
+                    <button class="think-toggle voice-toggle" id="spkToggle" onclick="VoiceUI.toggleSpeaker()" title="Auto-speak - click to hear the AI's final answers">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
+                    </button>
                     <button class="send-btn" id="sendBtn" onclick="handleSendClick()" title="Send message">
                         <svg id="sendIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                     </button>
@@ -257,6 +266,8 @@
                             onclick="switchSettingsTab('runtime')">Runtime</button>
                     <button type="button" class="settings-tab" data-pane="mcp"
                             onclick="switchSettingsTab('mcp')">MCP</button>
+                    <button type="button" class="settings-tab" data-pane="addons"
+                            onclick="switchSettingsTab('addons')">Addons</button>
                 </div>
 
                 <!-- Tab: Authentication (server address + email + API key).
@@ -696,6 +707,200 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Tab: Addons - voice addons (TTS + STT). One page per addon, picked
+                     with the selector; each page has its provider (local free/private
+                     <-> OpenAI paid) + fields + a live test. Managed live over
+                     client_config/addons.json via GET/POST /api/addons (MCP pattern):
+                     a save validates, writes and re-wires the engines - no restart.
+                     Nothing is enabled by default; the first enable downloads the
+                     model to .temp/addons/models/ in the background. -->
+                <div id="settingsPaneAddons" class="settings-pane" data-pane="addons">
+                    <div class="form-group">
+                        <label>Voice Addons</label>
+                        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 10px;">
+                            Voice addons for this machine: <b>TTS</b> speaks text aloud (Supertonic locally - free, private, EN/DE/RO - or OpenAI), <b>STT</b> turns your voice into text (faster-whisper locally - auto-detects the language - or OpenAI). Pick an addon below to configure it; local providers never send audio anywhere, the OpenAI ones need a key and send audio to OpenAI.
+                        </p>
+                        <div id="addonsSelector" style="display:flex; gap:8px; margin-bottom:10px;"></div>
+                        <div id="addonsState" style="font-size:12px; margin-bottom:10px;"></div>
+                        <div id="addonsPageBody">
+
+                        <!-- ===== TTS page ===== -->
+                        <div id="addonsPageTTS" style="display:none; gap:10px;">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <input type="checkbox" id="ttsEnabled" style="width:18px; height:18px;" onchange="addonsToggleEnabled()" title="Saves immediately - the model downloads in the background">
+                                <label for="ttsEnabled" style="font-weight:600;">Enable TTS</label>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <select id="ttsProvider" onchange="addonsToggleProviderFields('tts', this.value)"
+                                        style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    <option value="supertonic">Local - Supertonic (free, private)</option>
+                                    <option value="openai">OpenAI (paid, audio leaves this machine)</option>
+                                </select>
+                            </div>
+                            <div id="ttsLocalFields" style="display:grid; gap:8px;">
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <select id="ttsModel" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <option value="supertonic-3">supertonic-3 (newer)</option>
+                                        <option value="supertonic-2">supertonic-2</option>
+                                    </select>
+                                    <span style="color:var(--text-secondary); font-size:12px;">model</span>
+                                </div>
+                                <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+                                    <label style="font-size:13px; color:var(--text-secondary);">speed
+                                        <input type="number" id="ttsSpeed" min="0.5" max="2" step="0.05" value="1.0"
+                                               style="width:70px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    </label>
+                                    <label style="font-size:13px; color:var(--text-secondary);">quality steps
+                                        <input type="number" id="ttsSteps" min="1" max="100" step="1" value="10"
+                                               style="width:60px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    </label>
+                                    <label style="font-size:13px; color:var(--text-secondary);">silence (s)
+                                        <input type="number" id="ttsSilence" min="0" max="2" step="0.1" value="0.3"
+                                               style="width:60px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    </label>
+                                </div>
+                                <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+                                    <label style="font-size:13px; color:var(--text-secondary); display:flex; align-items:center; gap:6px;">
+                                        <input type="checkbox" id="ttsDetect" checked style="width:16px; height:16px;">
+                                        auto-detect language (EN/DE/RO)
+                                    </label>
+                                    <label style="font-size:13px; color:var(--text-secondary);">fallback
+                                        <select id="ttsFallback" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option value="en">en</option><option value="de">de</option><option value="ro">ro</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+                                    <label style="font-size:13px; color:var(--text-secondary);">EN voice
+                                        <select id="ttsVoiceEn" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option>M1</option><option>M2</option><option>F1</option><option>F2</option><option>M3</option><option>F3</option>
+                                        </select>
+                                    </label>
+                                    <label style="font-size:13px; color:var(--text-secondary);">DE voice
+                                        <select id="ttsVoiceDe" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option>M1</option><option>M2</option><option>F1</option><option>F2</option><option>M3</option><option>F3</option>
+                                        </select>
+                                    </label>
+                                    <label style="font-size:13px; color:var(--text-secondary);">RO voice
+                                        <select id="ttsVoiceRo" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option>M1</option><option>M2</option><option>F1</option><option>F2</option><option>M3</option><option>F3</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <label style="font-size:13px; color:var(--text-secondary);">speaker
+                                        <select id="ttsSpeaker" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option value="">System default speaker</option>
+                                        </select>
+                                    </label>
+                                    <button onclick="addonsListDevices('tts')" style="padding:6px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); cursor:pointer; font-size:12px;" title="Re-scan the system's audio output devices">↻ List devices</button>
+                                </div>
+                            </div>
+                            <div id="ttsOpenaiFields" style="display:none; gap:8px;">
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <select id="ttsOaModel" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <option value="gpt-4o-mini-tts">gpt-4o-mini-tts (cheap)</option>
+                                        <option value="gpt-4o-tts">gpt-4o-tts (premium)</option>
+                                    </select>
+                                    <select id="ttsOaVoice" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <option>alloy</option><option>echo</option><option>fable</option><option>onyx</option>
+                                        <option>nova</option><option>shimmer</option><option>coral</option><option>verse</option>
+                                        <option>ballad</option><option>ash</option><option>sage</option><option>amuch</option><option>shield</option>
+                                    </select>
+                                </div>
+                                <input type="password" id="ttsOaKey" placeholder="OpenAI API key (sk-...)" autocomplete="off" spellcheck="false"
+                                       style="width:100%; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-family:monospace;">
+                            </div>
+                            <div style="display:grid; gap:6px; border-top:1px solid var(--border-color); padding-top:10px;">
+                                <label style="font-size:13px; color:var(--text-secondary);">Test (uses the settings on this page, saved or not)</label>
+                                <textarea id="ttsTestText" rows="2" placeholder="Type text to speak - e.g. Hello dear friends. It is so nice to see you again."
+                                          style="width:100%; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); resize:vertical;"></textarea>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <select id="ttsTestLang" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <option value="">auto-detect</option><option value="en">en</option><option value="de">de</option><option value="ro">ro</option>
+                                    </select>
+                                    <button onclick="addonsTestTts()" style="padding:6px 16px; background:var(--accent); color:white; border:none; border-radius:6px; cursor:pointer; font-size:13px;">▶ Speak</button>
+                                    <span id="ttsTestStatus" style="font-size:12px; color:var(--text-secondary);"></span>
+                                </div>
+                                <audio id="ttsTestPlayer" controls style="display:none; width:100%;"></audio>
+                            </div>
+                        </div>
+
+                        <!-- ===== STT page ===== -->
+                        <div id="addonsPageSTT" style="display:none; gap:10px;">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <input type="checkbox" id="sttEnabled" style="width:18px; height:18px;" onchange="addonsToggleEnabled()" title="Saves immediately - the model downloads in the background">
+                                <label for="sttEnabled" style="font-weight:600;">Enable STT (voice to text)</label>
+                            </div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <select id="sttProvider" onchange="addonsToggleProviderFields('stt', this.value)"
+                                        style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    <option value="faster_whisper">Local - faster-whisper (free, private)</option>
+                                    <option value="openai">OpenAI (paid, audio leaves this machine)</option>
+                                </select>
+                            </div>
+                            <div id="sttLocalFields" style="display:grid; gap:8px;">
+                                <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
+                                    <label style="font-size:13px; color:var(--text-secondary);">model
+                                        <select id="sttModel" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option value="tiny">tiny (fastest)</option>
+                                            <option value="base">base</option>
+                                            <option value="small" selected>small (recommended)</option>
+                                            <option value="medium">medium</option>
+                                            <option value="large-v3">large-v3 (best, slow)</option>
+                                        </select>
+                                    </label>
+                                    <label style="font-size:13px; color:var(--text-secondary);">device
+                                        <select id="sttDevice" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option value="auto">auto (GPU if available)</option>
+                                            <option value="cpu">cpu</option>
+                                            <option value="cuda">cuda</option>
+                                        </select>
+                                    </label>
+                                    <label style="font-size:13px; color:var(--text-secondary);">language
+                                        <select id="sttLang" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option value="auto">auto-detect (EN/DE/RO + 100 more)</option>
+                                            <option value="en">en</option><option value="de">de</option><option value="ro">ro</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <label style="font-size:13px; color:var(--text-secondary);">microphone
+                                        <select id="sttMic" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option value="">System default microphone</option>
+                                        </select>
+                                    </label>
+                                    <button onclick="addonsListDevices('stt')" style="padding:6px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); cursor:pointer; font-size:12px;" title="Re-scan the system's audio input devices">↻ List devices</button>
+                                </div>
+                            </div>
+                            <div id="sttOpenaiFields" style="display:none; gap:8px;">
+                                <select id="sttOaModel" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe (cheap)</option>
+                                    <option value="gpt-4o-transcribe">gpt-4o-transcribe (premium)</option>
+                                </select>
+                                <input type="password" id="sttOaKey" placeholder="OpenAI API key (sk-...)" autocomplete="off" spellcheck="false"
+                                       style="width:100%; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-family:monospace;">
+                            </div>
+                            <div style="display:grid; gap:6px; border-top:1px solid var(--border-color); padding-top:10px;">
+                                <label style="font-size:13px; color:var(--text-secondary);">Test (records from your microphone)</label>
+                                <div style="display:flex; gap:8px; align-items:center;">
+                                    <button id="sttRecordBtn" onclick="addonsToggleSttRecord()" style="padding:6px 16px; background:var(--accent); color:white; border:none; border-radius:6px; cursor:pointer; font-size:13px;">⏺ Record test</button>
+                                    <input type="file" id="sttTestFile" accept="audio/*" onchange="addonsTestSttFile(this.files[0])" title="Or pick an audio file instead">
+                                    <span id="sttTestStatus" style="font-size:12px; color:var(--text-secondary);"></span>
+                                </div>
+                                <textarea id="sttTestText" rows="2" readonly placeholder="Transcript appears here..."
+                                          style="width:100%; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); resize:vertical;"></textarea>
+                            </div>
+                        </div>
+                        </div><!-- /addonsPageBody -->
+
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <button onclick="saveAddons()" style="padding:6px 16px; background:var(--accent); color:white; border:none; border-radius:6px; cursor:pointer; font-size:13px;">Save Addons</button>
+                            <span id="addonsStatus" style="font-size:12px; color:var(--text-secondary);"></span>
+                        </div>
+                    </div>
+                </div>
         </div>
     </div>
 
@@ -730,7 +935,7 @@
     </script>
     <script src="/static/ui/workspace-view.js?v=20261108a"></script>
     <script src="/static/ui/chat-socket-pool.js?v=20261115q"></script>
-    <script src="/static/ui/websocket.js?v=20261117a">
+    <script src="/static/ui/websocket.js?v=20261126a">
     </script>
     <script src="/static/ui/message.js?v=20261117a">
     
@@ -797,6 +1002,8 @@
     </script>
     <script src="/static/ui/runtime-settings.js?v=20261115q"></script>
     <script src="/static/ui/mcp-settings.js?v=20261117c"></script>
+    <script src="/static/ui/addons-settings.js?v=20260712a"></script>
+    <script src="/static/ui/voice-ui.js?v=20261126a"></script>
     <script src="/static/ui/approval-dialog.js?v=20261115q"></script>
     <script src="/static/ui/ui-controls.js?v=20261117a">
     
