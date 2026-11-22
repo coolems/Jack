@@ -8,24 +8,11 @@ import json
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 
-from client_config import MODEL_SWITCH_PHASE1_TIMEOUT, MODEL_SWITCH_POLL_INTERVAL, \
-    MODEL_SWITCH_MAX_WAIT_SEC, PROTOCOL_VERSION
+from client_config import MODEL_SWITCH_PHASE1_TIMEOUT, PROTOCOL_VERSION
 from . import _check_protocol, apply_auth_info
 from .errors import ServerUnreachableError
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsClient")
-
-
-def _models_match(current: str, target: str) -> bool:
-    """Compare two model names ignoring .gguf extension and path."""
-    import os
-    c = os.path.basename(current).lower()
-    t = os.path.basename(target).lower()
-    if c.endswith(".gguf"):
-        c = c[:-5]
-    if t.endswith(".gguf"):
-        t = t[:-5]
-    return c == t
 
 
 class UserCancelled(Exception):
@@ -250,8 +237,7 @@ async def get_current_model_websocket(provider, force: bool = False):
     """Get currently loaded model via web relay.
 
     force=True tells the SERVER to bypass its fresh in-memory model-state cache
-    and verify via /v1/models (used by the post-switch poller for immediate,
-    authoritative confirmation).
+    and verify via /v1/models for an immediate, authoritative answer.
     """
 
     ws_url, ssl_context = provider._get_ws_url_and_ssl()
@@ -286,19 +272,18 @@ async def get_current_model_websocket(provider, force: bool = False):
 
 
 async def switch_model_websocket(provider, model_filename: str):
-    """Switch model on the remote server over the web relay.
+    """Ask the SERVER whether the swarm serves *model_filename* (via the web relay).
 
-    Wait budgets come from CLIENT config (MODEL_SWITCH_MAX_WAIT_SEC). UI broadcasts happen in
-    the agent router on the main event loop; this only talks to the relay and logs one line per state
-    change.
+    (2026-10 fleet) the SERVER never reloads: every node keeps the model it started with,
+    so the 'model_switch' frame is answered INSTANTLY with a routing verdict. This function
+    returns that verdict as-is - success or failure - and never polls. The old Phase-2
+    reload poll (up to MODEL_SWITCH_MAX_WAIT_SEC) waited for a restart that never happens,
+    which left the switch task stuck for minutes and blocked every later switch with a
+    409 "already in progress".
     """
-    import websockets
-    import time as _time
-
     ws_url, ssl_context = provider._get_ws_url_and_ssl()
     api_key = provider._load_api_key()
 
-    # --- Phase 1: send command inside a bounded window (fail fast, no open-ended hangs) ---
     try:
         async with asyncio.timeout(MODEL_SWITCH_PHASE1_TIMEOUT):
             # (2026-09-23 v4) fail-closed TLS for the internet-facing relay link:
@@ -318,47 +303,18 @@ async def switch_model_websocket(provider, model_filename: str):
 
                 await ws.send(json.dumps({"type": "model_switch", "model": model_filename}))
 
-                try:
-                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
-                    if msg.get("type") == "model_switch_response":
-                        success = msg.get("success", False)
-                        message = msg.get("message", "")
-                        return success, message
-                except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed):
-                    # No fast response - SERVER started the reload and dropped us. Expected path.
-                    pass
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                if msg.get("type") == "model_switch_response":
+                    success = msg.get("success", False)
+                    message = msg.get("message", "")
+                    logger.info(f"[MODEL SWITCH] SERVER routing verdict for {model_filename}: "
+                                f"{'served' if success else 'not served'} - {message}")
+                    return success, message
+                return False, f"Unexpected SERVER response to model_switch: {msg.get('type')}"
     except TimeoutError:  # asyncio.timeout expiry (py3.11+)
-        logger.info(f"[MODEL SWITCH] Phase 1 window ({MODEL_SWITCH_PHASE1_TIMEOUT}s) expired while waiting for SERVER to accept the command - continuing to poll")
+        return False, (f"SERVER did not answer the model routing check within "
+                       f"{MODEL_SWITCH_PHASE1_TIMEOUT}s")
     except Exception as e:
         # Unexpected transport problem before we even got a response.
-        logger.error(f"[MODEL SWITCH] Phase 1 failed: {type(e).__name__}: {e}")
-        return False, f"Could not send switch command to SERVER ({type(e).__name__})"
-
-    # --- Phase 2: silently poll until server restarts with correct model (bounded wait) ---
-    logger.info(f"[MODEL SWITCH] Waiting for Server to reload ({model_filename}, up to {MODEL_SWITCH_MAX_WAIT_SEC}s)")
-
-    start = _time.monotonic()
-    last_poll_error = ""
-
-    while True:
-        await asyncio.sleep(MODEL_SWITCH_POLL_INTERVAL)
-
-        elapsed = int(_time.monotonic() - start)
-        if elapsed >= MODEL_SWITCH_MAX_WAIT_SEC:
-            detail = f" Last error: {last_poll_error}." if last_poll_error else ""
-            return False, (f"Server did not restart with the requested model within "
-                           f"{MODEL_SWITCH_MAX_WAIT_SEC}s.{detail}")
-
-        ok, err, _models = await health_check_websocket(provider)
-        if not ok:
-            # Expected while the SERVER is down/reloading - keep waiting (no error log).
-            last_poll_error = err or "health check failed"
-            continue
-
-        # Server is up — verify the correct model loaded
-        # force=True: skip the SERVER's fresh-cache shortcut so this check always
-        # reflects what llama.cpp actually reports (immediate post-switch confirmation).
-        current_model = await get_current_model_websocket(provider, force=True)
-        if current_model and _models_match(current_model, model_filename):
-            return True, f"Model switched to {model_filename}"
-        last_poll_error = f"server up but wrong model ({current_model})"
+        logger.error(f"[MODEL SWITCH] Routing check failed: {type(e).__name__}: {e}")
+        return False, f"Could not ask the SERVER about this model ({type(e).__name__})"

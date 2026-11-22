@@ -74,6 +74,14 @@ class OpenAIProvider(BaseProvider):
         """The Bearer headers this endpoint is called with (None = no key configured)."""
         return self._headers
 
+    # ---- balance (balance chip) -------------------------------------------
+
+    async def get_balance(self) -> Optional[Dict[str, Any]]:
+        """Offer the billing portal; organization costs are not a credit balance."""
+        if self._api_url == "https://api.openai.com/v1":
+            return {"kind": "openai_credit_grants"}
+        return None
+
     # ---- model metadata ---------------------------------------------------
 
     async def _models_cached(self, force: bool = False) -> List[Dict]:

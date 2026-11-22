@@ -78,20 +78,23 @@ def apply_auth_info(auth_response: dict, context: str = "") -> None:
         where = f" via {context}" if context else ""
         logger.info(f"[CLIENT] Received context_window={server_context_window} from SERVER{where}")
 
-        # (2026-09-29) authoritative role/email cache - the CLIENT keeps no identity on disk.
-        # The SERVER's auth_ok is the single source of truth; every consumer reads it via
-        # app.keys.get_key_role() / get_key_email().
-        try:
-            import app.keys as _keys_mod
-            role = auth_response.get("role")
-            if isinstance(role, str) and role.strip():
-                _keys_mod._server_role = role.strip()
-            email = auth_response.get("email")
-            if isinstance(email, str) and email.strip():
-                _keys_mod._server_email = email.strip()
-        except Exception as e:  # pragma: no cover - defensive; never break the auth path
-            logger.debug("[CLIENT] Could not cache auth_ok role/email: %s", e)
-    
+    # (2026-09-29) authoritative role/email cache - the CLIENT keeps no identity on disk.
+    # The SERVER's auth_ok is the single source of truth; every consumer reads it via
+    # app.keys.get_key_role() / get_key_email(). Independent of context_window: an
+    # auth_ok without context_window must still refresh identity and profile flags.
+    try:
+        import app.keys as _keys_mod
+        role = auth_response.get("role")
+        if isinstance(role, str) and role.strip():
+            _keys_mod._server_role = role.strip()
+        email = auth_response.get("email")
+        if isinstance(email, str) and email.strip():
+            _keys_mod._server_email = email.strip()
+        # (2026-11 balance chip) profile flag - the SERVER decides visibility.
+        if "show_provider_balance" in auth_response:
+            _keys_mod._show_provider_balance = bool(auth_response.get("show_provider_balance"))
+    except Exception as e:  # pragma: no cover - defensive; never break the auth path
+        logger.debug("[CLIENT] Could not cache auth_ok role/email: %s", e)
 
     # License payload from the SERVER -> in-memory cache. Independent of context_window:
     # the SERVER sends it on every auth_ok and stats frame.

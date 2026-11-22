@@ -159,6 +159,10 @@ async def _authenticate_direct_client(ws, server_provider, peer):
             "allowed_models": [m.get("name", "") for m in allowed_models if isinstance(m, dict)],
             "allowed_tools": allowed_tools,  # None = all tools, list = restricted
             "max_parallel_slots": user_info.get("max_parallel_slots"),
+            # (2026-11 balance chip) profile flag shipped to the CLIENT so it can
+            # decide whether the provider-balance chip is visible. Decided on the
+            # server from profiles.json only.
+            "show_provider_balance": bool(user_info.get("show_provider_balance", False)),
             "context_window": SERVER_CONTEXT_WINDOW,  # smallest healthy per-slot context
             "license": license_server.current_status()  # {use, company[, email, private_licensed]} — slim payload for the client badge
         }))

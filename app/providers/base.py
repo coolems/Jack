@@ -152,6 +152,19 @@ class BaseProvider(ABC):
         """
         ...
 
+    async def get_balance(self) -> Optional[Dict[str, Any]]:
+        """Return the account balance for this provider, or None if the provider
+        has no billable account (local models) or the info is unavailable.
+
+        Default: None. Cloud providers (DeepSeek, OpenAI) override this with a
+        free metadata GET (no tokens, no cost). Implementations should cache the
+        result for at least 30 seconds so busy agentic turns do not hammer the API.
+
+        Returns:
+            Dict like {"currency": "CNY", "total": "110.00", ...} or None.
+        """
+        return None
+
     # Optional method for multi-instance providers
     def router_status(self) -> Optional[str]:
         """Return status summary of all instances (for multi-instance providers).

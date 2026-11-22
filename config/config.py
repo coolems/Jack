@@ -970,7 +970,6 @@ class OpenAIServerInstance(LlamaServerInstance):
     # Set by the registry when one endpoint is expanded into one routable backend per
     # served model id (see LlmBackendRegistry). Empty on the endpoint-level entry.
     model_id: Optional[str] = None
-
     @property
     def kind(self) -> str:
         return "openai"

@@ -220,6 +220,9 @@ class AuthGateway:
 # The file CONTENT is loaded in direct_ws.tools_request_handler._handle_tools_request() and shipped to the CLIENT
             # so python_exec enforces exactly this profile's constraints where it executes.
             "python_exec_blocked_libs": profile.get("python_exec_blocked_libs"),
+            # (2026-11 balance chip) profile flag: may this user see the provider
+            # balance chip in the client UI? Decided HERE on the server only.
+            "show_provider_balance": bool(profile.get("show_provider_balance", False)),
         }
 
         logger.info(

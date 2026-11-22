@@ -488,6 +488,29 @@ async def connect_to_web_relay(server_provider):
 
 
 
+                        elif msg_type == "balance_request":
+                            # (2026-11 balance chip) Balance of the provider serving the
+                            # requested model. Gated by the RELAYED CLIENT's profile flag:
+                            # users without show_provider_balance never learn the number.
+                            logger.info(f"[SERVER<-RELAY] Balance request via relay (client={msg.get('_relay_from', '?')})")
+                            _bl_user_info = await _resolve_relay_client_user_info(ws, msg, server_provider)
+                            if not (_bl_user_info and _bl_user_info.get("show_provider_balance")):
+                                await _relay_send(ws, {
+                                    "type": "balance_response",
+                                    "req_id": msg.get("req_id"),
+                                    "enabled": False,
+                                    "balance": None
+                                }, msg.get("_relay_from") or "")
+                            else:
+                                balance = await server_provider.get_balance_for_model(
+                                    msg.get("model", "") or "")
+                                await _relay_send(ws, {
+                                    "type": "balance_response",
+                                    "req_id": msg.get("req_id"),
+                                    "enabled": True,
+                                    "balance": balance
+                                }, msg.get("_relay_from") or "")
+
                         elif msg_type == "current_model":
                             # (2026-08-23 fix) force=True bypasses the fresh model-state cache
                             # (2026-11 dynamic) route through the fleet-aware method so the

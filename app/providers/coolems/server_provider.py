@@ -508,6 +508,30 @@ class CoolemsServerProvider(BaseProvider):
                 return b.model_label or b.model_key or None
         return None
 
+    async def get_balance_for_model(self, model: str) -> Optional[Dict]:
+        """(2026-11 balance chip) Balance of the provider that serves *model*.
+
+        Resolves model -> backend(s) via the registry; hosted backends (deepseek/
+        openai) know their own account, local ones have no billable balance (None).
+        Never raises - a balance lookup must not disturb a running turn.
+        """
+        try:
+            from ..llama.backend_registry import get_registry
+            reg = get_registry()
+            if reg is not None:
+                for b in reg.backends_for_model(model or ""):
+                    if b.kind in ("deepseek", "openai"):
+                        provider = b.provider()
+                        if provider is not None:
+                            return await provider.get_balance()
+                # dynamic fleet not yet probed: ask the local backend's provider
+                local = self._get_local_provider()
+                if getattr(local, "name", "") in ("deepseek", "openai"):
+                    return await local.get_balance()
+        except Exception as e:
+            logger.warning("[SERVER] balance lookup for %r failed: %s", model, e)
+        return None
+
     async def get_models_list(self) -> List[Dict]:
         return await self._get_local_provider().get_models_list()
 

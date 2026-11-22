@@ -22,8 +22,9 @@ from app.providers.coolems_client.client_provider import is_model_switching, _se
 
 logger = logging.getLogger("COOLEMS")
 
-# Module-level list to keep references to background model switch tasks.
-_model_switch_tasks: list = []
+# Module-level map (task -> requested model) to keep references to background
+# model switch tasks and to know WHICH model each running task is switching to.
+_model_switch_tasks: dict = {}
 
 
 def register(router: APIRouter, provider, model_name: str, api_timeout: int,
@@ -58,10 +59,11 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
 
     @router.post("/api/llama/load-model")
     async def load_model(data: Dict):
-        """Switch the currently loaded model in llama.cpp.
+        """Ask the SERVER whether the swarm serves the requested model.
 
-        Stops the current server and restarts it with the new model.
-        Runs in background thread to avoid blocking the HTTP response.
+        (2026-10 fleet) there is no reload: nodes keep the model they started with, so this
+        is a routing check that the SERVER answers instantly. The check runs as a background
+        task (kept in _model_switch_tasks) so the HTTP response returns right away.
 
         Expects: {"model": "ModelName.gguf"}
         Returns: {"status": "ok"|"error", "message": "..."}
@@ -79,10 +81,21 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         logger.info(f"[MODEL SWITCH] ===== POST RECEIVED: switching to {model_filename} =====")
         logger.info(f"[MODEL SWITCH] Provider type: {type(provider).__name__}")
 
-        # --- GUARD 1: Block if a switch task is already running ---
-        _model_switch_tasks[:] = [t for t in _model_switch_tasks if not t.done()]
+        # --- GUARD 1: Block if a DIFFERENT switch task is already running ---
+        # (2026-11 switch fix) a duplicate request for the SAME model that is already
+        # switching is idempotent: answer ok instead of a 409, so a double-click or a
+        # retry can never wedge the UI behind "already in progress".
+        for t in [t for t in _model_switch_tasks if t.done()]:
+            _model_switch_tasks.pop(t, None)
         if _model_switch_tasks:
-            logger.warning(f"[MODEL SWITCH] Blocked - {len(_model_switch_tasks)} switch task(s) still running")
+            if model_filename in _model_switch_tasks.values():
+                logger.info(f"[MODEL SWITCH] Duplicate request for {model_filename} - a switch to it is already running")
+                return {
+                    "status": "ok",
+                    "message": f"Switch to '{model_filename}' is already in progress.",
+                    "model": model_filename
+                }
+            logger.warning(f"[MODEL SWITCH] Blocked - switch to {', '.join(_model_switch_tasks.values())} still running")
             return JSONResponse(
                 status_code=409,
                 content={"status": "error", "message": "Model switch already in progress. Please wait."}
@@ -124,18 +137,18 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         # (2026-09 threadless refactor): _do_switch() is an ASYNC task on THIS loop -
         # there is no background thread anymore; it awaits provider.switch_model() directly.
         async def _do_switch():
-            """Wait for the SERVER reload within the configured budget and report ONE clean result.
+            """Ask the SERVER for a routing verdict and report ONE clean result.
 
-            No fallbacks: either the provider confirms the new model is loaded (success),
-            or it reports why not (failure). Progress is logged every
-            MODEL_SWITCH_PROGRESS_LOG_SEC while waiting.
+            (2026-10 fleet) there is no reload: the SERVER answers the model_switch frame
+            instantly, so this task finishes in seconds. Either the swarm serves the model
+            (success) or it reports exactly why not (failure). Progress is logged every
+            MODEL_SWITCH_PROGRESS_LOG_SEC only if the SERVER is slow to answer.
             """
-            from client_config import MODEL_SWITCH_MAX_WAIT_SEC, MODEL_SWITCH_PROGRESS_LOG_SEC
+            from client_config import MODEL_SWITCH_PROGRESS_LOG_SEC
             start_time = asyncio.get_event_loop().time()
 
             try:
-                logger.info(f"[MODEL SWITCH] Starting background switch to {model_filename} "
-                            f"(will wait up to {MODEL_SWITCH_MAX_WAIT_SEC}s for the SERVER reload)")
+                logger.info(f"[MODEL SWITCH] Starting routing check for {model_filename}")
 
                 # Broadcast "reloading" status before doing the actual request (on main event loop ✓)
                 await broadcast_model_switch_status("reloading", f"Checking the swarm for {model_filename}", model_filename)
@@ -193,16 +206,13 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
                 logger.error(f"[MODEL SWITCH] Unexpected exception after {elapsed}s: {type(e).__name__}: {e}", exc_info=True)
                 await broadcast_model_switch_status("failed", f"{type(e).__name__}: {e}", model_filename)
             finally:
-                try:
-                    _model_switch_tasks.remove(task)
-                except ValueError:
-                    logger.debug("Caught expected value/key error")
+                _model_switch_tasks.pop(task, None)
                 # Reset flag so periodic checks resume normally
                 _set_model_switching(False)
                 logger.info(f"[MODEL SWITCH] Task cleanup complete. Active switch tasks: {len(_model_switch_tasks)}")
 
         task = asyncio.create_task(_do_switch())
-        _model_switch_tasks.append(task)
+        _model_switch_tasks[task] = model_filename
         logger.info(f"[MODEL SWITCH] Task created (id={id(task)}). Active switch tasks: {len(_model_switch_tasks)}")
 
         return {
@@ -250,6 +260,27 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
             "authenticated_role": role,
         }
 
+
+    @router.get("/api/balance")
+    async def get_balance(request: Request, model: str = ""):
+        """(2026-11 balance chip) Provider balance for the model loaded in this workspace.
+
+        Visibility is decided on the SERVER: the profile flag show_provider_balance
+        arrives in auth_ok and is cached by apply_auth_info(); when it is off this
+        endpoint answers enabled=false and the number is never revealed. balance is
+        null for local models (no billable account).
+        """
+        from app.keys import get_show_provider_balance
+        if not get_show_provider_balance():
+            return {"enabled": False, "balance": None}
+        try:
+            result = await provider.get_balance_async(model)
+        except Exception as e:
+            logger.warning(f"[BALANCE] Balance lookup failed: {e}")
+            result = None
+        if result is None:
+            return {"enabled": True, "balance": None}
+        return result
 
     @router.get("/api/agent/dna")
     async def get_agent_dna():

@@ -174,6 +174,80 @@ function formatFileSize(bytes) {
     return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 }
 
+/* ===== PROVIDER BALANCE CHIP =========================================
+ * (2026-11 balance chip) Shows the remaining balance of the provider that
+ * serves the model loaded in this workspace (DeepSeek: CNY, OpenAI: USD).
+ *
+ * Visibility is decided on the SERVER: the profile flag show_provider_balance
+ * arrives in auth_ok (apply_auth_info caches it) and /api/balance answers
+ * enabled=false for profiles without it - the number is never revealed.
+ * balance=null means the loaded model has no billable account (local llama)
+ * or the lookup failed: the chip stays hidden in both cases.
+ *
+ * Refresh points: page load (loadModels), model switch (switchModel + the
+ * success broadcast) and every 'done' frame (websocket.js) - the last one
+ * throttled to 30s so a busy agentic turn does not spam the free endpoint.
+ * =================================================================== */
+let _lastBalanceFetch = 0;
+let _balanceRequestId = 0;
+const BALANCE_THROTTLE_MS = 30000;
+
+async function fetchBalance(model) {
+    try {
+        const r = await fetch('/api/balance?model=' + encodeURIComponent(model || ''));
+        if (!r.ok) return null;
+        return await r.json();
+    } catch (e) {
+        return null;
+    }
+}
+
+function updateBalanceChip(data) {
+    const chip = document.getElementById('balanceChip');
+    if (!chip) return;
+    const bal = (data && data.enabled) ? data.balance : null;
+    const label = document.getElementById('balanceChipText');
+    const link = document.getElementById('balanceChipLink');
+    const openaiCredits = bal?.kind === 'openai_credit_grants';
+    if (link) link.hidden = !openaiCredits;
+    if (label) label.hidden = openaiCredits;
+    if (openaiCredits && link) {
+        chip.title = 'View the current prepaid credit balance on OpenAI';
+        chip.classList.remove('low');
+        chip.style.display = 'flex';
+        return;
+    }
+    if (!bal || bal.total === null || bal.total === undefined) {
+        chip.style.display = 'none';
+        return;
+    }
+    const cur = bal.currency === 'USD' ? '$' : (bal.currency === 'CNY' ? '\u00A5' : bal.currency + ' ');
+    const text = cur + String(bal.total);
+    if (label) label.textContent = text;
+    chip.title = 'Provider balance: ' + text
+        + (bal.is_available === false ? ' (insufficient funds)' : '');
+    chip.classList.toggle('low', bal.is_available === false);
+    chip.style.display = 'flex';
+}
+
+/** Refresh the chip for the selected model, at most once per 30s. */
+function refreshBalanceThrottled(force) {
+    const sel = document.getElementById('modelSelector');
+    const model = sel ? sel.value : '';
+    if (!model) {
+        updateBalanceChip(null);
+        return;
+    }
+    const now = Date.now();
+    if (!force && now - _lastBalanceFetch < BALANCE_THROTTLE_MS) return;
+    _lastBalanceFetch = now;
+    const request = ++_balanceRequestId;
+    if (force) updateBalanceChip(null);
+    fetchBalance(model).then(data => {
+        if (request === _balanceRequestId && sel.value === model) updateBalanceChip(data);
+    });
+}
+
 /**
  * Load ALL models from disk (llama_server/models/*.gguf)
  * Shows currently loaded model with indicator
@@ -230,6 +304,8 @@ async function loadModels() {
         // The picker changed (possibly to another model), so re-check which thinking
         // levels are selectable.
         if (typeof updateThinkingUI === 'function') updateThinkingUI();
+        // (2026-11 balance chip) the loaded model may have changed - refresh the chip.
+        refreshBalanceThrottled(true);
 
     } catch (e) { 
         logError('Failed to load models:', e); 
@@ -254,6 +330,8 @@ async function switchModel(modelName) {
     // honors first (the capability map is already in COOLEMS.thinkingCaps from the last
     // catalog load).
     if (typeof updateThinkingUI === 'function') updateThinkingUI();
+    // (2026-11 balance chip) the balance belongs to the NEW model - refresh now.
+    refreshBalanceThrottled(true);
     
     // Find which model is currently LOADED (the one with ⬤ indicator)
     const sel = document.getElementById('modelSelector');
@@ -329,7 +407,7 @@ async function switchModel(modelName) {
                 const b = document.getElementById('sendBtn');
                 if (b) b.disabled = false;
             }
-        }, 345000);
+        }, 90000);
         
     } catch (e) {
         showNotification('\u2717 Failed to switch model: ' + e.message, 'error');

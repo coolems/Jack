@@ -14,6 +14,12 @@ Wire transport: WebSocket TEXT frames, one JSON object per frame - no binary fra
   response    <- {type:"response", content}
   done        <- {type:"done"}
   stop        -> {type:"stop", conv_id}
+  balance_request  -> {type:"balance_request", model, req_id?}
+  balance_response <- {type:"balance_response", req_id?, enabled, balance}
+                      balance: {currency, total, granted, topped_up, is_available}
+                      or null (local model / no key / endpoint failed).
+                      enabled=false when the client's profile has
+                      show_provider_balance off (the number is never revealed).
 
 request.enable_thinking is a bool (show reasoning or not) or a canonical level
 "none"/"low"/"medium"/"high". The SERVER translates a level into the serving model's own

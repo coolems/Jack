@@ -59,6 +59,9 @@ class DeepSeekProvider(BaseProvider):
         self._is_healthy = True
         self._last_check = 0.0
         self._models: List[Dict] = []
+        # (2026-11 balance chip) 30s cache so busy agentic turns do not hammer the API
+        self._balance_cache: Optional[Dict] = None
+        self._balance_ts: float = 0.0
 
     @property
     def name(self) -> str:
@@ -72,6 +75,48 @@ class DeepSeekProvider(BaseProvider):
     def headers(self) -> Optional[dict]:
         """The Bearer headers this endpoint is called with (None = no key configured)."""
         return self._headers
+
+    # ---- balance (balance chip) -------------------------------------------
+
+    async def get_balance(self) -> Optional[Dict[str, Any]]:
+        """Account balance from the free metadata endpoint GET /user/balance.
+
+        Costs nothing (no tokens). Cached for 30s so a busy agentic turn does not
+        re-fetch on every done frame. Returns None when no key is configured or
+        the endpoint fails, so a balance check can never break a turn.
+        """
+        import time
+        if self._balance_cache is not None and (time.time() - self._balance_ts) < 30:
+            return self._balance_cache
+        if not self._headers:
+            return None
+        try:
+            from ..llama.http_client import get_async_client
+            client = await get_async_client()
+            resp = await client.get(f"{self._api_url}/user/balance",
+                                    timeout=10.0, headers=self._headers)
+            if resp.status_code != 200:
+                logger.warning("[DEEPSEEK] /user/balance returned HTTP %d", resp.status_code)
+                return None
+            data = resp.json()
+            out: Dict[str, Any] = {"currency": "CNY", "total": None,
+                                   "granted": None, "topped_up": None,
+                                   "is_available": bool(data.get("is_available"))}
+            for info in data.get("balance_infos") or []:
+                if isinstance(info, dict):
+                    out["currency"] = str(info.get("currency") or out["currency"])
+                    out["total"] = info.get("total_balance")
+                    out["granted"] = info.get("granted_balance")
+                    out["topped_up"] = info.get("topped_up_balance")
+                    break
+            if out["total"] is None:
+                return None
+            self._balance_cache = out
+            self._balance_ts = time.time()
+            return out
+        except Exception as e:
+            logger.warning("[DEEPSEEK] balance fetch failed: %s", e)
+            return None
 
     # ---- model metadata ---------------------------------------------------
 

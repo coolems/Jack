@@ -34,6 +34,19 @@
 .input-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .input-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
+/* (2026-11 balance chip) provider balance for the loaded model. Fixed-width pill
+   between the Agent button and the model selector; the selector (flex: 1 1 auto)
+   shrinks to make room. Hidden by default via inline style in index.html. */
+.balance-chip {
+    display: flex; align-items: center; gap: 5px;
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    color: var(--text-secondary); padding: 4px 9px; border-radius: 6px;
+    font-size: 12px; line-height: 1; white-space: nowrap; flex-shrink: 0;
+    max-width: 110px; overflow: hidden;
+}
+.balance-chip span { overflow: hidden; text-overflow: ellipsis; }
+.balance-chip.low { color: #f87171; border-color: rgba(248, 113, 113, 0.4); }
+
 .icon-btn {
     background: none; border: none; color: var(--text-secondary);
     cursor: pointer; padding: 6px; border-radius: 6px;

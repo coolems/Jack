@@ -829,6 +829,9 @@ function handleWebSocketMessage(data, ownerConvId) {
             COOLEMS.userScrolledUp = false;
             COOLEMS.autoScrollEnabled = true;
             hideScrollIndicator();
+            // (2026-11 balance chip) a response finished - the provider just spent
+            // money. Refresh the chip (throttled to 30s inside the helper).
+            if (typeof refreshBalanceThrottled === 'function') refreshBalanceThrottled(false);
         }
         return;
     }

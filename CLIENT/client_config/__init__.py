@@ -71,9 +71,7 @@ from .config import (
 
     # --- Model Switch Timing (CLIENT side) ---
     MODEL_SWITCH_PHASE1_TIMEOUT,
-    MODEL_SWITCH_POLL_INTERVAL,
     MODEL_SWITCH_PROGRESS_LOG_SEC,
-    MODEL_SWITCH_MAX_WAIT_SEC,
     MODEL_SWITCH_CLIENT_BUDGET_SEC,
 
     # --- Backend-outage resilience (2026-11-19 Strata OOM / engine restart) ---

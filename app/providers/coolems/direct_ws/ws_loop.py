@@ -224,6 +224,27 @@ async def _run_authenticated_loop(ws, server_provider, user_info, conn_id, authe
                     "models": models
                 }))
 
+            elif t == "balance_request":
+                # (2026-11 balance chip) Balance of the provider serving the
+                # requested model. Gated by the profile flag: users without
+                # show_provider_balance never learn the number.
+                if not user_info or not user_info.get("show_provider_balance"):
+                    await ws.send(json.dumps({
+                        "type": "balance_response",
+                        "req_id": msg.get("req_id"),
+                        "enabled": False,
+                        "balance": None,
+                    }))
+                    continue
+                logger.info(f"[SERVER<-CLIENT] Balance request via Direct WS from {peer}: model={msg.get('model', '?')}")
+                balance = await server_provider.get_balance_for_model(msg.get("model", "") or "")
+                await ws.send(json.dumps({
+                    "type": "balance_response",
+                    "req_id": msg.get("req_id"),
+                    "enabled": True,
+                    "balance": balance,
+                }))
+
             elif t == "current_model":
                 # (2026-08-23 fix) force=True bypasses the fresh model-state cache so a
                 # post-switch verification reports the NEW model immediately.

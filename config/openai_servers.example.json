@@ -1,3 +1,7 @@
 [
-  { "name": "openai", "base_url": "https://api.openai.com/v1", "api_key": "" }
+  {
+    "name": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": ""
+  }
 ]

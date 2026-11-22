@@ -572,16 +572,14 @@ WS_HANDSHAKE_TIMEOUT: int = 10          # Timeout (s) for the WS auth handshake
 WEB_RELAY_DEFAULT_PORT: int = 8443      # Default relay port when USE_WEB_SERVER has no explicit port
 
 # --- Model Switch Timing (CLIENT side, single source of truth) ---
-# The SERVER does its own reload wait internally (config.LLAMA_SERVER_MODEL_LOAD_BUDGET_SEC,
-# 240 s default - sized for a COLD load of a ~23 GB model; see the 2026-09-09 switch-timeout fix),
-# so every CLIENT-side budget below must EXCEED that. These are bounded waits with clean
-# status messages - there is NO fallback logic: we either confirm the new model loaded or
-# report failure after MODEL_SWITCH_MAX_WAIT_SEC.
-MODEL_SWITCH_PHASE1_TIMEOUT: int = 30   # (s) Phase 1 window: WS connect + auth + send command + await fast response
-MODEL_SWITCH_POLL_INTERVAL: float = 2.0 # (s) between health polls while waiting for the server reload
-MODEL_SWITCH_PROGRESS_LOG_SEC: int = 20 # (s) between "Waiting..." progress logs / UI broadcasts
-MODEL_SWITCH_MAX_WAIT_SEC: int = 300    # (s) total Phase 2 wait budget before declaring failure (5 min)
-MODEL_SWITCH_CLIENT_BUDGET_SEC: int = 330  # (s) executor timeout for the whole switch call; must exceed MAX_WAIT + margin
+# (2026-10 fleet) the SERVER never reloads: every node keeps the model it started with,
+# so the 'model_switch' frame is answered INSTANTLY with a routing verdict. There is no
+# reload wait budget anymore - the old Phase-2 poll (MODEL_SWITCH_POLL_INTERVAL /
+# MODEL_SWITCH_MAX_WAIT_SEC) waited for a restart that never happens and was removed.
+# What remains: the connect+verdict window and a hard ceiling for the whole call.
+MODEL_SWITCH_PHASE1_TIMEOUT: int = 30   # (s) WS connect + auth + send command + await the routing verdict
+MODEL_SWITCH_PROGRESS_LOG_SEC: int = 20 # (s) between "Waiting..." progress logs / UI broadcasts (only if the SERVER is slow)
+MODEL_SWITCH_CLIENT_BUDGET_SEC: int = 60  # (s) hard ceiling for the whole switch call (the verdict is instant; this only bounds a hung SERVER)
 
 # --- Backend-outage resilience (2026-11-19 Strata OOM / engine restart) ---
 # When the SERVER tags a chat error as 'backend_unavailable' (HTTP 503, OOM reserve, no-progress

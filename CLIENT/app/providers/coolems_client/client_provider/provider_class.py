@@ -508,6 +508,23 @@ class CoolemsClientProvider(BaseProvider):
 
 
 
+    async def get_balance_async(self, model: str = ""):
+        """(2026-11 balance chip) Provider balance for *model* over the persistent
+        control channel. Returns {"enabled": bool, "balance": dict|None} or None
+        when the channel is unavailable. The SERVER gates on the profile flag and
+        resolves model -> provider; local models yield balance=None.
+        """
+        from ..control_channel import get_control_channel
+
+        resp = await get_control_channel(self).request(
+            "balance_request", timeout=15.0, model=model or "")
+
+        if not resp or resp.get("type") != "balance_response":
+            return None
+
+        return {"enabled": bool(resp.get("enabled")), "balance": resp.get("balance")}
+
+
     async def close_control_channel(self):
 
         """Tear down the control channel (app shutdown). Idempotent."""

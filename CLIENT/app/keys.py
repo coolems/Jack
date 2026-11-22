@@ -53,6 +53,9 @@ def is_boot_pending() -> bool:
 # successful WebSocket auth - this is the single source of truth for role display.
 _server_role: Optional[str] = None
 _server_email: Optional[str] = None
+# (2026-11 balance chip) profile flag from the SERVER's auth_ok: may this user see
+# the provider-balance chip? Decided on the SERVER from profiles.json only.
+_show_provider_balance: bool = False
 
 
 def _self_heal_keys_file() -> None:
@@ -380,6 +383,15 @@ def get_key_role(key: str = "") -> Optional[str]:
     if _server_role:
         return _server_role
     return "user"  # fallback until the SERVER confirms a role via auth_ok
+
+
+def get_show_provider_balance() -> bool:
+    """True when the SERVER's profile allows this user to see the provider balance.
+
+    Cached from the SERVER's auth_ok by apply_auth_info(); fails closed (False)
+    before the first successful WebSocket auth.
+    """
+    return _show_provider_balance
 
 
 def get_key_email(key: str = "") -> Optional[str]:
