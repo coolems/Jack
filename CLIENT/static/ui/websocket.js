@@ -84,6 +84,8 @@ function stopGeneration() {
         return;
     }
 
+    pendingChatSends.delete(COOLEMS.currentConversation);
+
     // CRITICAL FIX: Always reset UI state immediately to prevent button from getting stuck.
     // (2026-09-10 stale-task fix) This runs FIRST, so the red stop button is cleared even if
     // the backend call below fails or times out - clicking Stop can never leave a ghost state.
@@ -792,11 +794,6 @@ function handleWebSocketMessage(data, ownerConvId) {
         return;
     }
 
-    if (data.type === 'model_switch_status') {
-        handleModelSwitchStatus(data);
-        return;
-    }
-
     if (data.type === 'done') {
         // (2026-11-24 mix fix) 'done' settles the conversation that OWNS it. The send button,
         // file panel and scroll state belong to the view on screen - a background workspace's
@@ -874,75 +871,6 @@ function handleWebSocketMessage(data, ownerConvId) {
 function appendExecApprovalCard(data, mount) { ApprovalDialog.appendCard(data, mount); }
 function submitExecApproval(data, btn) { ApprovalDialog.submitDecision(data, btn); }
 async function startExecAutoApproveCountdown(card, data) { return ApprovalDialog.startAutoApproveCountdown(card, data); }
-
-/**
- * Handle model_switch_status broadcast messages from server.
- * Updates the connection status indicator with live model switch progress.
- */
-let _modelSwitchSuccessShownFor = null;  // guard: one "good" message per switch
-
-function handleModelSwitchStatus(data) {
-    const { status, message, model } = data;
-
-    // Shorten model name for display (just the filename without path)
-    const modelName = model ? model.split('/').pop() : '';
-
-    let uiStatus = 'connecting';  // default pulsing/orange state
-    let uiMessage = message;
-
-    switch(status) {
-        case 'started':
-            uiStatus = 'connecting';
-            uiMessage = `Routing model...`;
-            break;
-        case 'reloading':
-            uiStatus = 'connecting';
-            uiMessage = `Checking the swarm (${modelName})`;
-            break;
-        case 'waiting':
-            uiStatus = 'connecting';
-            uiMessage = message || 'Waiting for server to reload...';
-            break;
-        case 'success':
-            uiStatus = 'connected';
-            uiMessage = `Connected (${modelName})`;
-            // Store the new model name in global state
-            if (modelName) {
-                COOLEMS.currentModel = modelName;
-            }
-            // (2026-08-23 fix) This is the ONLY place the "good" message appears:
-            // it arrives only after the SERVER confirmed the reload. Refresh the
-            // dropdown so the UI immediately shows the NEW model (+ loaded marker).
-            if (_modelSwitchSuccessShownFor !== modelName) {
-                _modelSwitchSuccessShownFor = modelName;
-                // (2026-10 fleet) NO reload: the SERVER confirms the swarm serves this
-                // model, and each chat request is routed to a matching node.
-                if (message) log('[MODEL ROUTING] ' + message);
-                showNotification('\u2713 ' + (modelName ? modelName + ' — routed' : 'Model routed'), 'success');
-                if (typeof loadModels === 'function') {
-                    loadModels().catch(() => {});
-                }
-            } else {
-                log('[MODEL SWITCH] Duplicate success broadcast for ' + modelName + ' ignored');
-            }
-            // Switch finished - send button can come back.
-            COOLEMS.modelSwitchPending = false;
-            const _sbOk = document.getElementById('sendBtn');
-            if (_sbOk) _sbOk.disabled = false;
-            break;
-        case 'failed':
-            uiStatus = 'error';
-            uiMessage = `Switch failed: ${message}`;
-            _modelSwitchSuccessShownFor = null;  // allow a good message on the next switch
-            showNotification(`Model switch failed: ${message}`, 'error');
-            COOLEMS.modelSwitchPending = false;
-            const _sbFail = document.getElementById('sendBtn');
-            if (_sbFail) _sbFail.disabled = false;
-            break;
-    }
-
-    updateConnectionStatus(uiStatus, uiMessage);
-}
 
 function triggerWebSearch(query) {
     // (2026-11-08) the last AI text is either the newest block's answer strip or the last

@@ -28,31 +28,41 @@ from .. import _parse_web_relay_address
 
 logger = logging.getLogger("COOLEMS.Provider.CoolemsClient")
 
-# Global flag to suppress spurious connection errors during model reload
-_model_switch_in_progress = False
+# (2026-12-04 per-workspace parallelism) a REFERENCE COUNT, not a boolean: several
+# workspaces can run routing checks for DIFFERENT models at the same time, and the
+# first one to finish must not lift the suppression for the others.
+_model_switch_in_progress = 0
 
 def is_model_switching() -> bool:
 
     """Return True while a model switch task is running."""
 
-    return _model_switch_in_progress
+    return _model_switch_in_progress > 0
 
 
 
 
 
-def _set_model_switching(value: bool) -> None:
+def _begin_model_switch() -> None:
 
-    """Set the global model-switch-in-progress flag.
+    """Enter one model switch (agent router, before the routing check starts)."""
 
-        Called from the agent router to suppress spurious connection errors while the
-        SERVER reloads for a model switch.
+    global _model_switch_in_progress
+
+    _model_switch_in_progress += 1
+
+def _end_model_switch() -> None:
+
+    """Leave one model switch (agent router, in the task's finally block).
+
+        The count drops to zero only when the LAST concurrent switch finishes, so
+        connection-error suppression stays on for every switch still in flight.
 
     """
 
     global _model_switch_in_progress
 
-    _model_switch_in_progress = value
+    _model_switch_in_progress = max(0, _model_switch_in_progress - 1)
 
 
 

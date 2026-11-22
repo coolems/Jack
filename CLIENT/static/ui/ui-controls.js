@@ -257,7 +257,7 @@ async function loadModels() {
         const r = await fetch('/api/models'); 
         const models = await r.json();
         const sel = document.getElementById('modelSelector'); 
-        const cur = sel.value;
+        const cur = COOLEMS.currentConversation ? '' : sel.value;
         
         // Determine which model to select:
         // 1. PRESERVE the user's current selection when it is still served (2026-10 fleet:
@@ -287,19 +287,21 @@ async function loadModels() {
         // the levels that model honors.
         COOLEMS.thinkingCaps = {};
         models.forEach(m => { if (m && m.name) COOLEMS.thinkingCaps[m.name] = m.thinking || null; });
-        sel.innerHTML = models.map(m => {
-            const name = m.name;
-            const sizeStr = m.size ? ` (${formatFileSize(m.size)})` : '';
-            const loadedStr = m.loaded ? ' ⬤' : '';
-            const selected = (name === defaultModel) ? ' selected' : '';
-            const mtpStr = /mtp/i.test(name) ? ' [MTP]' : '';
-            const offline = (m.served === false);
-            const slotsStr = (m.online_slots > 0) ? ` · ${m.online_slots} slot(s)` : '';
-            const stateStr = offline ? ' — no node' : slotsStr;
-            return '<option value="' + name + '"' + selected + (offline ? ' disabled' : '')
-                + '>' + name + sizeStr + stateStr + loadedStr + mtpStr + '</option>';
-        }).join('');
-        
+        sel.replaceChildren(...models.map(m => {
+            const option = document.createElement('option');
+            option.value = m.name;
+            option.disabled = m.served === false;
+            const size = m.size ? ` (${formatFileSize(m.size)})` : '';
+            const state = option.disabled ? ' — no node' : (m.online_slots > 0 ? ` · ${m.online_slots} slot(s)` : '');
+            option.textContent = m.name + size + state + (m.loaded ? ' ⬤' : '') + (/mtp/i.test(m.name) ? ' [MTP]' : '');
+            return option;
+        }));
+        if (COOLEMS.currentConversation) {
+            setModelPicker(workspaceModel(COOLEMS.currentConversation));
+            return;
+        }
+        if (defaultModel) sel.value = defaultModel;
+
         log('Loaded ' + models.length + ' models (fleet catalog)');
         // The picker changed (possibly to another model), so re-check which thinking
         // levels are selectable.
@@ -312,108 +314,93 @@ async function loadModels() {
     }
 }
 
-/**
- * Request a model - 2026-10 fleet: the SERVER ROUTES to a node serving it (no reload).
- *
- * (2026-08-23 fix) The UI no longer polls /api/models or shows its own success
- * message: the AUTHORITATIVE result comes from the 'model_switch_status'
- * broadcast pushed by the agent router when the SERVER confirms the routing
- * (websocket.js handleModelSwitchStatus -> "success" notification + dropdown
- * refresh). This function only starts the request and reports hard failures.
- */
-async function switchModel(modelName) {
-    if (!modelName) { logError('[MODEL SWITCH] No model name provided'); return; }
-    
-    log('[MODEL SWITCH] Switching to: ' + modelName);
+// Keep confirmed assignments separate from pending writes. Requests for one workspace
+// are serialized; requests for different workspaces can finish independently.
+const workspaceModelWrites = new Map();
 
-    // The picker already shows the new model, so re-evaluate which thinking levels it
-    // honors first (the capability map is already in COOLEMS.thinkingCaps from the last
-    // catalog load).
-    if (typeof updateThinkingUI === 'function') updateThinkingUI();
-    // (2026-11 balance chip) the balance belongs to the NEW model - refresh now.
-    refreshBalanceThrottled(true);
-    
-    // Find which model is currently LOADED (the one with ⬤ indicator)
+function workspaceModel(convId) {
+    if (convId) return workspaceModelWrites.get(convId)?.model || COOLEMS.convModels[convId] || null;
+    return document.getElementById('modelSelector')?.value || null;
+}
+
+/** Project a workspace's assignment into the shared picker without changing it. */
+function setModelPicker(model) {
     const sel = document.getElementById('modelSelector');
-    let currentlyLoadedModel = null;
-    if (sel) {
-        const allOptions = sel.querySelectorAll('option');
-        for (const opt of allOptions) {
-            if (opt.textContent.includes('\u2B24')) {
-                currentlyLoadedModel = opt.value;
-                break;
-            }
-        }
+    if (!sel) return;
+    sel.querySelector('option[data-workspace-model]')?.remove();
+    if (!model || !Array.from(sel.options).some(option => option.value === model)) {
+        const option = document.createElement('option');
+        option.dataset.workspaceModel = '';
+        option.value = model || '';
+        option.textContent = model ? `${model} — unavailable` : 'Server default';
+        option.disabled = true;
+        sel.prepend(option);
     }
-    
-    // Check if this is the same model already loaded
-    if (currentlyLoadedModel && currentlyLoadedModel === modelName) {
-        log('[MODEL SWITCH] Already on this model (' + modelName + '), skipping.');
+    sel.value = model || '';
+    updateThinkingUI();
+    refreshBalanceThrottled(true);
+}
+
+function persistWorkspaceModel(convId, model) {
+    const previous = workspaceModelWrites.get(convId);
+    const write = { model };
+    const result = (previous?.done || Promise.resolve()).then(async () => {
+        try {
+            const response = await fetch(`/api/conversations/${convId}/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model })
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            COOLEMS.convModels[convId] = model;
+            return true;
+        } catch (e) {
+            logError('[MODEL PERSIST] Failed to save workspace model:', e);
+            return false;
+        }
+    });
+    workspaceModelWrites.set(convId, write);
+    write.done = result.then(saved => {
+        const latest = workspaceModelWrites.get(convId) === write;
+        if (latest) workspaceModelWrites.delete(convId);
+        if (latest && !saved) {
+            if (COOLEMS.currentConversation === convId) setModelPicker(workspaceModel(convId));
+            showNotification(`Could not save ${model} for the workspace. Previous model retained.`, 'error');
+        }
+        return saved;
+    });
+    return write.done;
+}
+
+async function switchModel(model) {
+    const convId = COOLEMS.currentConversation;
+    if (isConversationSwitching()) {
+        if (convId) setModelPicker(workspaceModel(convId));
         return;
     }
-    
-    log('[MODEL SWITCH] Current loaded: ' + (currentlyLoadedModel || 'unknown') + ', target: ' + modelName);
-    
-    // Disable UI during switch
-    const sendBtn = document.getElementById('sendBtn');
-    if (sendBtn) sendBtn.disabled = true;
-    
-    showNotification('\u23F3 Requesting model ' + modelName + '... routing to a serving node.', 'info');
-    
+    if (!model) return;
+    const saved = convId ? persistWorkspaceModel(convId, model) : Promise.resolve(true);
+    updateThinkingUI();
+    refreshBalanceThrottled(true);
+    if (!await saved) return;
+    // This is an availability check, not a reload or a prerequisite for sending.
     try {
-        log('[MODEL SWITCH] Sending POST to /api/llama/load-model...');
-        const r = await fetch('/api/llama/load-model', {
+        const response = await fetch('/api/llama/load-model', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: modelName })
+            body: JSON.stringify({ model })
         });
-        
-        log('[MODEL SWITCH] Response status: ' + r.status);
-        
-        if (!r.ok) {
-            const errData = await r.json().catch(() => ({}));
-            throw new Error(errData.detail || errData.message || 'HTTP ' + r.status);
+        const data = await response.json();
+        if (!response.ok || data.status !== 'ok') {
+            throw new Error(data.message || data.detail || `HTTP ${response.status}`);
         }
-        
-        const data = await r.json();
-        log('[MODEL SWITCH] Server accepted: ' + data.message);
-        
-        // SERVER confirmed the requested model is ALREADY loaded (no reload happened,
-        // so no model_switch_status broadcast will come). This IS a server-side
-        // confirmation, so we may show the good message now and restore the UI.
-        if (/already loaded/i.test(data.message || '')) {
-            COOLEMS.modelSwitchPending = false;
-            const b2 = document.getElementById('sendBtn');
-            if (b2) b2.disabled = false;
-            showNotification('\u2713 ' + (data.message || modelName), 'success');
-            if (typeof loadModels === 'function') {
-                loadModels().catch(() => {});
-            }
-            return;
+        if (COOLEMS.currentConversation === convId && workspaceModel(convId) === model) {
+            showNotification(`${model} is available`, 'success');
         }
-        
-        // NOTE: no polling / success notification here on purpose.
-        // The "good" message is shown ONLY by websocket.js when the SERVER
-        // confirms the reload (model_switch_status -> 'success'), and that same
-        // handler refreshes the model dropdown so the UI shows the new model.
-        // Send button stays disabled until that confirmation arrives (websocket.js
-        // re-enables it on success/failed). Safety net: force-re-enable after the
-        // SERVER-side switch budget in case the broadcast never reaches us.
-        COOLEMS.modelSwitchPending = true;
-        setTimeout(() => {
-            if (COOLEMS.modelSwitchPending) {
-                log('[MODEL SWITCH] No confirmation received - re-enabling send button (safety net)');
-                COOLEMS.modelSwitchPending = false;
-                const b = document.getElementById('sendBtn');
-                if (b) b.disabled = false;
-            }
-        }, 90000);
-        
     } catch (e) {
-        showNotification('\u2717 Failed to switch model: ' + e.message, 'error');
-        logError('[MODEL SWITCH] Exception:', e);
-        COOLEMS.modelSwitchPending = false;
-        if (sendBtn) sendBtn.disabled = false;
+        if (COOLEMS.currentConversation === convId && workspaceModel(convId) === model) {
+            showNotification(`Could not confirm routing for ${model}: ${e.message}`, 'warning');
+        }
     }
 }
 

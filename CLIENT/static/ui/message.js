@@ -350,59 +350,71 @@ async function sendSteerMessage() {
     }
 }
 
-async function sendMessage() {
-    // Clear any error bar on new send
+// A send waiting for its socket belongs to that workspace, even if the user leaves.
+const pendingChatSends = new Map();
+let preparingChatSend = false;
 
+async function sendMessage() {
+    if (isConversationSwitching()) return;
     const input = document.getElementById('messageInput');
     const message = input.value.trim();
     if (!message && COOLEMS.selectedFiles.length === 0) return;
     if (COOLEMS.isStreaming) { showNotification('Please wait for current response...', 'warning'); return; }
-    if (!COOLEMS.currentConversation) { await newChat(); await new Promise(r => setTimeout(r, 500)); }
+    if (!COOLEMS.currentConversation) await newChat();
+    const convId = COOLEMS.currentConversation;
+    if (!convId || pendingChatSends.has(convId)) return;
+    const files = COOLEMS.selectedFiles.slice();
+    const payload = {
+        message,
+        model: workspaceModel(convId),
+        agent_mode: COOLEMS.agentMode,
+        media_files: files.map(f => f.url),
+        enable_thinking: COOLEMS.enableThinking
+    };
 
     COOLEMS.userScrolledUp = false;
     COOLEMS.autoScrollEnabled = true;
     hideScrollIndicator();
-
-    const fileContentsForDisplay = COOLEMS.selectedFiles.filter(f => f.content).map(f => ({ filename: f.name, content: f.content, type: 'text' }));
-    // SECURITY fix 2026-10-05: appendMessage is async (media tokens minted via header auth).
-    await appendMessage('user', message, false, COOLEMS.selectedFiles.map(f => f.url), fileContentsForDisplay);
-    input.value = ''; input.style.height = 'auto'; document.getElementById('filePreview').innerHTML = '';
-    // (2026-09-08 multi-chat UI fix) a user send is always LIVE: leave replay mode so
-    // the incoming stream of THIS turn renders normally.
-    COOLEMS._inReplay = false;
-    // (2026-10-23 live steering) remember whether THIS turn can be steered
-    COOLEMS.streamingAgentMode = !!COOLEMS.agentMode;
-    COOLEMS.isStreaming = true; COOLEMS.streamingBuffer = ''; COOLEMS.thinkingPending = ''; setButtonState(true);
-    const payload = {
-        message,
-        model: document.getElementById('modelSelector').value,
-        agent_mode: COOLEMS.agentMode,
-        media_files: COOLEMS.selectedFiles.map(f => f.url),
-        enable_thinking: COOLEMS.enableThinking
-    };
-    COOLEMS.selectedFiles = [];
-    // (2026-09-08 multi-chat) send on THIS chat's pooled socket; if it is not open
-    // yet, wait briefly for the handshake instead of the old fixed 1s timeout.
-    const _sendWs = () => ChatSocketPool.isOpen(COOLEMS.currentConversation)
-        ? ChatSocketPool.sockets[COOLEMS.currentConversation].ws : null;
-    if (_sendWs() && _sendWs().readyState === WebSocket.OPEN) {
-        _sendWs().send(JSON.stringify(payload));
-    } else {
-        ChatSocketPool.ensure(COOLEMS.currentConversation);
-        let _tries = 0;
-        const _waitOpen = () => {
-            _tries++;
-            const w = _sendWs();
-            if (w && w.readyState === WebSocket.OPEN) { w.send(JSON.stringify(payload)); return; }
-            if (_tries >= 50) { // ~5s budget
-                showNotification('Connection not available. Please retry.', 'error');
-                COOLEMS.isStreaming = false; setButtonState(false);
-                return;
-            }
-            setTimeout(_waitOpen, 100);
-        };
-        _waitOpen();
+    const fileContents = files.filter(f => f.content).map(f => ({ filename: f.name, content: f.content, type: 'text' }));
+    preparingChatSend = true;
+    try {
+        await appendMessage('user', message, false, payload.media_files, fileContents);
+    } finally {
+        preparingChatSend = false;
     }
+    input.value = ''; input.style.height = 'auto'; document.getElementById('filePreview').innerHTML = '';
+    COOLEMS.selectedFiles = [];
+    COOLEMS._inReplay = false;
+    COOLEMS.streamingAgentMode = !!payload.agent_mode;
+    COOLEMS.isStreaming = true;
+    COOLEMS.streamingBuffer = '';
+    COOLEMS.thinkingPending = '';
+    setButtonState(true);
+
+    pendingChatSends.set(convId, payload);
+    ChatSocketPool.updateChatStatus(convId, 'queued');
+    ChatSocketPool.ensure(convId);
+    let tries = 0;
+    const sendWhenOpen = () => {
+        if (pendingChatSends.get(convId) !== payload) return;
+        const ws = ChatSocketPool.sockets[convId]?.ws;
+        if (ws?.readyState === WebSocket.OPEN) {
+            pendingChatSends.delete(convId);
+            ws.send(JSON.stringify(payload));
+        } else if (++tries < 50) {
+            setTimeout(sendWhenOpen, 100);
+        } else {
+            pendingChatSends.delete(convId);
+            ChatSocketPool.updateChatStatus(convId, 'idle');
+            if (COOLEMS.currentConversation === convId) {
+                COOLEMS.isStreaming = false;
+                COOLEMS.streamingAgentMode = false;
+                setButtonState(false);
+            }
+            showNotification('Could not send the message: workspace connection unavailable.', 'error');
+        }
+    };
+    sendWhenOpen();
 }
 
 

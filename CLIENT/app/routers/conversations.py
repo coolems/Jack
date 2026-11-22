@@ -62,20 +62,34 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
     async def create_conversation(request: Request):
         current_ip = get_client_ip(request)
 
+        # (2026-12-04 per-workspace model) the new workspace inherits the model the user
+        # currently has in the picker (optional JSON body {"model": "..."}); the global
+        # default is only the fallback for legacy callers.
+        new_model = model_name
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                value = body.get("model")
+                candidate = value.strip() if isinstance(value, str) else ""
+                if candidate:
+                    new_model = candidate
+        except Exception:
+            pass  # no body / not JSON -> default model
+
         conv_id = str(uuid.uuid4())
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO conversations (id, title, model, ip_address) VALUES (?, ?, ?, ?)",
-                (conv_id, "New Workspace", model_name, current_ip)
+                (conv_id, "New Workspace", new_model, current_ip)
             )
             conn.commit()
         finally:
             close_db_connection(conn)
 
-        logger.info(f"Created conversation {conv_id} for client {current_ip}")
-        return {"id": conv_id, "title": "New Workspace"}
+        logger.info(f"Created conversation {conv_id} for client {current_ip} (model={new_model})")
+        return {"id": conv_id, "title": "New Workspace", "model": new_model}
 
     @router.get("")
     async def list_conversations(
@@ -146,7 +160,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 (conv_id,)
             )
             rows = cursor.fetchall()
-            cursor.execute("SELECT system_prompt, working_root FROM conversations WHERE id = ?", (conv_id,))
+            cursor.execute("SELECT system_prompt, working_root, model FROM conversations WHERE id = ?", (conv_id,))
             conv_info_full = cursor.fetchone()
         finally:
             close_db_connection(conn)
@@ -173,6 +187,9 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             "system_prompt": conv_info_full[0] if conv_info_full else f"You are {agent.get_name()}.",
             # Per-chat working root (2026-08-29): additive field. NULL for legacy chats -> UI keeps current folder.
             "working_root": conv_info_full[1] if conv_info_full and len(conv_info_full) > 1 else None,
+            # (2026-12-04 per-workspace model) the model assigned to THIS workspace - the
+            # UI restores the picker from it on switch, so workspaces never drift.
+            "model": conv_info_full[2] if conv_info_full and len(conv_info_full) > 2 else None,
             # Cycle history (2026-11-08): one row per agentic turn, already normalized
             # by turn_ops.load_turn_logs -> the UI rebuilds collapsed cycle blocks from it.
             "turn_logs": load_turn_logs(conv_id),
@@ -219,8 +236,10 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
     async def update_conversation(conv_id: str, data: Dict, request: Request):
         """Update conversation properties.
 
-        Accepts: title, system_prompt, color
+        Accepts: title, system_prompt, color, model
         - color: one of VALID_COLORS or None to clear
+        - model: (2026-12-04 per-workspace model) the model assigned to THIS workspace;
+          the UI persists the picker choice here so a workspace switch restores it.
         """
         current_ip = get_client_ip(request)
 
@@ -240,6 +259,13 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                 if new_color is not None and new_color not in VALID_COLORS:
                     new_color = None  # invalid color - clear
                 cursor.execute("UPDATE conversations SET color = ? WHERE id = ?", (new_color, conv_id))
+            if "model" in data:
+                # (2026-12-04 per-workspace model) non-empty string only - an empty value
+                # must never wipe the workspace's assignment.
+                value = data["model"]
+                new_model = value.strip() if isinstance(value, str) else ""
+                if new_model:
+                    cursor.execute("UPDATE conversations SET model = ? WHERE id = ?", (new_model, conv_id))
 
             conn.commit()
         finally:

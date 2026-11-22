@@ -16,6 +16,7 @@ let isSwitchingConversation = false;
  */
 async function getChatSessionStatus(convId) {
     if (!convId) return 'idle';
+    if (pendingChatSends.has(convId)) return 'queued';
     try {
         const res = await fetch(`/api/conversations/${convId}/status`);
         if (res.ok) {
@@ -128,7 +129,7 @@ async function _renderHistory(convId, data) {
 
 
 async function newChat() {
-    if (isSwitchingConversation) {
+    if (isConversationSwitching()) {
         showNotification('Please wait, switching workspace...', 'warning');
         return;
     }
@@ -136,10 +137,15 @@ async function newChat() {
     let oldConvId = null, data = null;
     try {
         isSwitchingConversation = true;      // (2026-10-09 audit fix) was missing - a second click raced the stash/swap
-        const response = await fetch('/api/conversations', { 
-            method: 'POST'
+        const model = workspaceModel(COOLEMS.currentConversation);
+        const response = await fetch('/api/conversations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model })
         });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         data = await response.json();
+        COOLEMS.convModels[data.id] = data.model;
 
         oldConvId = COOLEMS.currentConversation;
         // (2026-10-09 per-workspace views) park the outgoing workspace's live view — it keeps
@@ -153,6 +159,7 @@ async function newChat() {
         // the container swap any await window would render them into the OUTGOING DOM.
         WorkspaceViews.suspend(data.id);
         COOLEMS.currentConversation = data.id;
+        setModelPicker(workspaceModel(data.id));
 
         // (2026-09-08 multi-chat UI fix) a brand-new chat is NEVER generating: reset the
         // per-chat generation state so the button shows blue (send) for it, even if the
@@ -192,6 +199,7 @@ async function newChat() {
         if (oldConvId && WorkspaceViews.hasView(oldConvId)) {
             COOLEMS.currentConversation = oldConvId;
             WorkspaceViews.restore(oldConvId);
+            setModelPicker(workspaceModel(oldConvId));
             ChatSocketPool.ensure(oldConvId);
         }
         if (oldConvId) WorkspaceViews.resume(oldConvId);
@@ -204,7 +212,7 @@ async function newChat() {
 }
 
 async function deleteConversation(id) {
-    if (isSwitchingConversation) {
+    if (isConversationSwitching()) {
         showNotification('Please wait, operation in progress...', 'warning');
         return;
     }
@@ -218,6 +226,8 @@ async function deleteConversation(id) {
             // queued frames and attention badge in ALL cases — a background socket for a
             // deleted conversation would otherwise keep queueing frames into nothing.
             WorkspaceViews.drop(id, true);
+            pendingChatSends.delete(id);
+            delete COOLEMS.convModels[id];
             // (2026-11-24 mix fix) drop its per-conversation render state as well.
             if (typeof ChatStreamState !== 'undefined') ChatStreamState.drop(id);
             // (2026-11-08 loop-history UI) its turn blocks, timers and turn_id ownership go too,
@@ -292,7 +302,7 @@ async function _activateWorkingRoot(path, convId) {
 
 async function loadConversation(id) {
     // Prevent switching while already switching
-    if (isSwitchingConversation) {
+    if (isConversationSwitching()) {
         showNotification('Please wait, already switching workspace...', 'warning');
         return;
     }
@@ -358,6 +368,7 @@ async function loadConversation(id) {
             // the stashed DOM was NOT rebuilt from DB, so there is nothing to duplicate.
             WorkspaceViews.flushFrames(newConvId);
 
+            setModelPicker(workspaceModel(newConvId));
             await _activateWorkingRoot(_stash.workingRoot || '', newConvId);
             await loadConversations();                    // sidebar: active class + badges
             // (2026-10-09 switch-race fix) outgoing workspace may go back to background - resume its routing.
@@ -375,6 +386,7 @@ async function loadConversation(id) {
         // turn_id ownership first, or rebuild() would treat the dead nodes as "already rendered".
         if (typeof CycleBlock !== 'undefined') CycleBlock.clear(newConvId);
 
+        await workspaceModelWrites.get(newConvId)?.done;
         const response = await fetch(`/api/conversations/${newConvId}/messages`);
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -441,6 +453,8 @@ async function loadConversation(id) {
         // OUTGOING workspace's DOM. From here on this view is current; ensure() then sets the
         // COOLEMS.ws alias to THIS chat's socket and queued frames flush straight after it.
         COOLEMS.currentConversation = newConvId;          // flip right before the swap
+        COOLEMS.convModels[newConvId] = data.model;
+        setModelPicker(workspaceModel(newConvId));
         ChatSocketPool.clearAttention(newConvId);         // user is looking at it now — no badge
 
         // (2026-11-24 mix fix) NOW that currentConversation IS newConvId, bind its per-conv
@@ -596,11 +610,14 @@ async function editAndResend(messageIndex, newContent) {
         return;
     }
 
-    if (isSwitchingConversation) {
+    if (isConversationSwitching()) {
         showNotification('Please wait, workspace is loading...', 'warning');
         return;
     }
 
+    const convId = COOLEMS.currentConversation;
+    const model = workspaceModel(convId);
+    isSwitchingConversation = true;
     log('[EDIT] Starting edit at index:', messageIndex, 'new content:', newContent.substring(0, 50));
 
     // Clear any UI state from previous streaming
@@ -612,7 +629,7 @@ async function editAndResend(messageIndex, newContent) {
     try {
         // STEP 1: Truncate conversation on server
         const truncateResponse = await fetch(
-            `/api/conversations/${COOLEMS.currentConversation}/messages/truncate`,
+            `/api/conversations/${convId}/messages/truncate`,
             {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
@@ -631,12 +648,12 @@ async function editAndResend(messageIndex, newContent) {
 
         // STEP 2: The socket STAYS OPEN (multi-chat pool) — no close/reconnect dance needed.
         // Any in-flight session for this chat is stopped so the rebuild starts clean.
-        fetch(`/api/stop/${COOLEMS.currentConversation}`, { method: 'POST' }).catch(() => {});
+        await fetch(`/api/stop/${convId}`, { method: 'POST' }).catch(() => {});
 
         // STEP 3: Reload entire conversation from server
         log('[EDIT] Reloading conversation from server...');
 
-        const response = await fetch(`/api/conversations/${COOLEMS.currentConversation}/messages`);
+        const response = await fetch(`/api/conversations/${convId}/messages`);
         if (!response.ok) {
             throw new Error(`Failed to load workspace: ${response.status}`);
         }
@@ -661,8 +678,8 @@ async function editAndResend(messageIndex, newContent) {
         // (2026-11-08) the truncate already pruned this turn's turn_log rows server-side, so the
         // rebuild shows only the surviving history. Release the workspace's blocks + turn_id
         // ownership BEFORE wiping, or rebuild() would see the dead nodes as "already rendered".
-        if (typeof CycleBlock !== 'undefined') CycleBlock.clear(COOLEMS.currentConversation);
-        const hist = await _renderHistory(COOLEMS.currentConversation, data);
+        if (typeof CycleBlock !== 'undefined') CycleBlock.clear(convId);
+        const hist = await _renderHistory(convId, data);
 
         log('[EDIT] UI rebuilt with', hist.messages, 'messages,', hist.blocks, 'turn block(s)');
 
@@ -676,9 +693,9 @@ async function editAndResend(messageIndex, newContent) {
         log('[EDIT] Appended edited message to UI');
 
         // STEP 6: Make sure this chat's pooled socket is open (it was never closed — ensure() reuses it)
-        ChatSocketPool.ensure(COOLEMS.currentConversation);
+        ChatSocketPool.ensure(convId);
         const _editWs = () => {
-            const e = ChatSocketPool.sockets[COOLEMS.currentConversation];
+            const e = ChatSocketPool.sockets[convId];
             return e ? e.ws : null;
         };
 
@@ -702,11 +719,9 @@ async function editAndResend(messageIndex, newContent) {
         COOLEMS.thinkingPending = '';
         setButtonState(true);
 
-        const modelSelector = document.getElementById('modelSelector');
-
         const payload = {
             message: newContent,
-            model: modelSelector ? modelSelector.value : null,
+            model,
             agent_mode: COOLEMS.agentMode,
             media_files: [],
             enable_thinking: COOLEMS.enableThinking
@@ -718,25 +733,18 @@ async function editAndResend(messageIndex, newContent) {
 
     } catch (error) {
         console.error('[EDIT] Failed:', error);
-            showNotification('Failed to edit message: ' + error.message, 'error');
-            COOLEMS.isStreaming = false;
-            COOLEMS.streamingAgentMode = false;
-            setButtonState(false);
-
-        log('[EDIT] Attempting to recover by reloading conversation');
-        try {
-            // (2026-09-08 multi-chat) the socket stays open — just reload the view.
-            await loadConversation(COOLEMS.currentConversation);
-        } catch (reloadError) {
-            console.error('[EDIT] Recovery failed:', reloadError);
-            showNotification('Please refresh the page to continue', 'error');
-        }
+        showNotification('Failed to edit message: ' + error.message, 'error');
+        COOLEMS.isStreaming = false;
+        COOLEMS.streamingAgentMode = false;
+        setButtonState(false);
+    } finally {
+        isSwitchingConversation = false;
     }
 }
 
 // Helper function to check if a conversation switch is in progress
 window.isConversationSwitching = function() {
-    return isSwitchingConversation;
+    return isSwitchingConversation || preparingChatSend;
 };
 
 // Helper function to get current conversation ID

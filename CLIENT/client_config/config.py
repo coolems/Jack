@@ -637,7 +637,7 @@ COOLEMS_RECONNECT_MAX_DELAY: float = 30.0
 # --- Multi-Chat Background Sessions (2026-09-08) ---
 # A chat's AI session keeps running in the CLIENT backend even while you view another chat.
 CHAT_BACKGROUND_FRAME_BUFFER: int = 400   # frames kept per background chat until it finishes (bounded memory)
-CLIENT_MAX_OPEN_CHAT_WS: int = 6          # UI LRU cap on simultaneously open per-chat sockets
+CLIENT_MAX_OPEN_CHAT_WS: int = 10         # UI LRU cap on simultaneously open per-chat sockets (2026-12-04: 10 parallel workspaces)
 
 # --- Live steering (2026-10-23) ---
 # While an agentic task is running, the user can type in the prompt box and press Enter:

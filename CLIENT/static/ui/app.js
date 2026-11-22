@@ -76,6 +76,8 @@ window.COOLEMS = {
     })(),
     // model_key -> capability description from the SERVER catalog ({levels, supported,...})
     thinkingCaps: {},
+    // Last confirmed assignment for each workspace opened in this tab.
+    convModels: Object.create(null),
     isStreaming: false,
     // (2026-10-23 live steering) true when the CURRENT in-flight turn is agentic, i.e. it
     // has a ReAct loop that can accept a mid-run steering message. Normal-mode completions

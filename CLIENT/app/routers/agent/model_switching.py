@@ -2,9 +2,7 @@
 provider health/status, the agent DNA summary and the role display route.
 
 Nodes keep the model they were started with: selecting a model asks the SERVER whether a
-node serves it, and chat requests then route to that node, otherwise the SERVER answers
-"no node is serving X". There is no reload path, so the MODEL_SWITCH_* wait budget
-resolves immediately.
+node serves it. Every chat request independently routes using its own model key.
 """
 
 from typing import Dict
@@ -18,18 +16,19 @@ import logging
 # (2026-08-20 review #7): live reader instead of an import-time capture -- the SERVER
 # rewrites CONTEXT_WINDOW_TOKENS after every auth via apply_auth_info().
 import client_config.config as _cfg_live
-from app.providers.coolems_client.client_provider import is_model_switching, _set_model_switching
+from app.providers.coolems_client.client_provider import (
+    _begin_model_switch,
+    _end_model_switch,
+)
 
 logger = logging.getLogger("COOLEMS")
-
-# Module-level map (task -> requested model) to keep references to background
-# model switch tasks and to know WHICH model each running task is switching to.
-_model_switch_tasks: dict = {}
 
 
 def register(router: APIRouter, provider, model_name: str, api_timeout: int,
              agent, stop_events) -> None:
     """Attach the model/status/settings endpoints to *router*."""
+    routing_checks: dict[str, asyncio.Task] = {}
+
     @router.get("/api/models")
     async def get_models():
         """Models available to this caller - filtered by the SERVER for this role.
@@ -40,9 +39,6 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
         model_default, preserve, budget, enforced, source, hint. supported: false means no
         thinking keys are sent to that model and the UI chip reads "Think: n/a" with hint as the
         reason (ui-controls.js updateThinkingUI).
-
-        While a model switch is running the SERVER is reloading, so an empty list is EXPECTED and
-        is logged as INFO, not ERROR.
         """
         try:
             # (2026-08-20) persistent control channel (async); role filtering still done on SERVER
@@ -51,176 +47,34 @@ def register(router: APIRouter, provider, model_name: str, api_timeout: int,
             logger.error(f"[MODELS] Failed to get models from provider ({type(provider).__name__}): {e}", exc_info=True)
             models = []
 
-        if is_model_switching():
-            # Expected state while the SERVER reloads - not an error. One clean INFO line, no traceback.
-            logger.info(f"[MODELS] Model switch in progress - model list unavailable until the SERVER finishes reloading")
-
         return models
 
     @router.post("/api/llama/load-model")
     async def load_model(data: Dict):
-        """Ask the SERVER whether the swarm serves the requested model.
+        """Return the routing verdict for this exact model key, without reloading."""
+        value = data.get("model")
+        model = value.strip() if isinstance(value, str) else ""
+        if not model:
+            return JSONResponse(status_code=400, content={"detail": "Model name is required"})
 
-        (2026-10 fleet) there is no reload: nodes keep the model they started with, so this
-        is a routing check that the SERVER answers instantly. The check runs as a background
-        task (kept in _model_switch_tasks) so the HTTP response returns right away.
-
-        Expects: {"model": "ModelName.gguf"}
-        Returns: {"status": "ok"|"error", "message": "..."}
-        """
-        import os as _os
-        from app.websocket.connections import broadcast_model_switch_status
-
-        model_filename = data.get("model", "").strip()
-        if not model_filename:
-            return JSONResponse(
-                status_code=400,
-                content={"status": "error", "message": "Model filename is required"}
-            )
-
-        logger.info(f"[MODEL SWITCH] ===== POST RECEIVED: switching to {model_filename} =====")
-        logger.info(f"[MODEL SWITCH] Provider type: {type(provider).__name__}")
-
-        # --- GUARD 1: Block if a DIFFERENT switch task is already running ---
-        # (2026-11 switch fix) a duplicate request for the SAME model that is already
-        # switching is idempotent: answer ok instead of a 409, so a double-click or a
-        # retry can never wedge the UI behind "already in progress".
-        for t in [t for t in _model_switch_tasks if t.done()]:
-            _model_switch_tasks.pop(t, None)
-        if _model_switch_tasks:
-            if model_filename in _model_switch_tasks.values():
-                logger.info(f"[MODEL SWITCH] Duplicate request for {model_filename} - a switch to it is already running")
-                return {
-                    "status": "ok",
-                    "message": f"Switch to '{model_filename}' is already in progress.",
-                    "model": model_filename
-                }
-            logger.warning(f"[MODEL SWITCH] Blocked - switch to {', '.join(_model_switch_tasks.values())} still running")
-            return JSONResponse(
-                status_code=409,
-                content={"status": "error", "message": "Model switch already in progress. Please wait."}
-            )
-
-        # --- GUARD 2: Skip if the requested model is already loaded ---
-        current_model = None
-        try:
-            current_model = await provider.get_current_model_async()  # (2026-08-20) control channel
-            logger.info(f"[MODEL SWITCH] Currently loaded model: {current_model}")
-        except Exception as e:
-            logger.warning(f"[MODEL SWITCH] Could not get current model: {e}")
-
-        if current_model:
-            basename_req = _os.path.basename(model_filename).lower()
-            basename_cur = _os.path.basename(current_model).lower()
-            # Compare with .gguf stripped for flexibility
-            req_stripped = basename_req[:-5] if basename_req.endswith('.gguf') else basename_req
-            cur_stripped = basename_cur[:-5] if basename_cur.endswith('.gguf') else basename_cur
-
-            # FIX: Use exact match only. Substring matching was incorrectly blocking
-            # switches between different quantizations of the same model
-            # (e.g. Q6_K -> Q3_K_M both report as "Qwen3.6-27B-MTP" from the API).
-            if req_stripped == cur_stripped:
-                logger.info(f"[MODEL SWITCH] Model {model_filename} already loaded - skipping switch")
-                return {
-                    "status": "ok",
-                    "message": f"Model '{model_filename}' is already loaded.",
-                    "model": model_filename
-                }
-
-        # SET FLAG IMMEDIATELY — before any delay or background task creation.
-        # This ensures periodic health checks suppress errors from the very start.
-        _set_model_switching(True)
-
-        # Broadcast "started" status to all connected UI clients (on main event loop ✓)
-        await broadcast_model_switch_status("started", "Routing model...", model_filename)
-
-        # (2026-09 threadless refactor): _do_switch() is an ASYNC task on THIS loop -
-        # there is no background thread anymore; it awaits provider.switch_model() directly.
-        async def _do_switch():
-            """Ask the SERVER for a routing verdict and report ONE clean result.
-
-            (2026-10 fleet) there is no reload: the SERVER answers the model_switch frame
-            instantly, so this task finishes in seconds. Either the swarm serves the model
-            (success) or it reports exactly why not (failure). Progress is logged every
-            MODEL_SWITCH_PROGRESS_LOG_SEC only if the SERVER is slow to answer.
-            """
-            from client_config import MODEL_SWITCH_PROGRESS_LOG_SEC
-            start_time = asyncio.get_event_loop().time()
-
+        async def check():
+            _begin_model_switch()
             try:
-                logger.info(f"[MODEL SWITCH] Starting routing check for {model_filename}")
-
-                # Broadcast "reloading" status before doing the actual request (on main event loop ✓)
-                await broadcast_model_switch_status("reloading", f"Checking the swarm for {model_filename}", model_filename)
-
-                # Progress broadcaster: runs on THIS (main) event loop as its own task and
-                # sends UI updates + one clean progress log line while we await the switch below.
-                progress_event = asyncio.Event()
-
-                async def _progress_broadcaster():
-                    next_log_at = MODEL_SWITCH_PROGRESS_LOG_SEC
-                    while not progress_event.is_set():
-                        await asyncio.sleep(1)
-                        elapsed = int(asyncio.get_event_loop().time() - start_time)
-                        if elapsed >= next_log_at:
-                            logger.info(f"[MODEL ROUTING] Waiting for SERVER to confirm routing {model_filename}... ({elapsed}s)")
-                            try:
-                                await broadcast_model_switch_status("waiting", f"Waiting... {elapsed}s", model_filename)
-                            except Exception as bcast_err:
-                                logger.debug(f"[MODEL SWITCH] Progress broadcast failed (UI clients may be gone): {bcast_err}")
-                            next_log_at += MODEL_SWITCH_PROGRESS_LOG_SEC
-
-                progress_task = asyncio.create_task(_progress_broadcaster())
-
-                try:
-                    # (2026-09 threadless refactor): direct await - switch_model() is async now.
-                    # The old run_in_executor(None, ...) wrapper pushed the call onto a default executor
-                    # thread that then spawned ANOTHER event loop inside the provider (double-threading).
-                    # Awaiting it here keeps everything on this one loop; the progress broadcaster below
-                    # still runs concurrently with the switch.
-                    success, message = await provider.switch_model(model_filename)
-                finally:
-                    # Signal broadcaster to stop and let it finish cleanly
-                    progress_event.set()
-                    try:
-                        await asyncio.wait_for(progress_task, timeout=3)
-                    except asyncio.TimeoutError:
-                        pass
-
-                elapsed = int(asyncio.get_event_loop().time() - start_time)
-
-                if success:
-                    # (2026-10 fleet) success = the swarm serves this model; no reload.
-                    logger.info(f"[MODEL ROUTING] ===== SERVED: {model_filename} ({elapsed}s) - {message} =====")
-                    await broadcast_model_switch_status(
-                        "success", message or f"Routed to {model_filename}", model_filename
-                    )
-                else:
-                    # Provider returned a real failure reason (not served / auth / mesh down).
-                    logger.error(f"[MODEL ROUTING] FAILED after {elapsed}s: {message}")
-                    await broadcast_model_switch_status("failed", message, model_filename)
-
-            except Exception as e:
-                elapsed = int(asyncio.get_event_loop().time() - start_time)
-                # Unexpected error inside the switch task itself (not a SERVER-side failure).
-                logger.error(f"[MODEL SWITCH] Unexpected exception after {elapsed}s: {type(e).__name__}: {e}", exc_info=True)
-                await broadcast_model_switch_status("failed", f"{type(e).__name__}: {e}", model_filename)
+                return await provider.switch_model(model)
+            except Exception:
+                logger.exception("Routing check failed for %s", model)
+                return False, "Model routing check failed"
             finally:
-                _model_switch_tasks.pop(task, None)
-                # Reset flag so periodic checks resume normally
-                _set_model_switching(False)
-                logger.info(f"[MODEL SWITCH] Task cleanup complete. Active switch tasks: {len(_model_switch_tasks)}")
+                _end_model_switch()
+                routing_checks.pop(model, None)
 
-        task = asyncio.create_task(_do_switch())
-        _model_switch_tasks[task] = model_filename
-        logger.info(f"[MODEL SWITCH] Task created (id={id(task)}). Active switch tasks: {len(_model_switch_tasks)}")
-
-        return {
-            "status": "ok",
-            "message": (f"Routing request for {model_filename} started. No reload - the swarm "
-                        f"serves it if a matching node is online."),
-            "model": model_filename
-        }
+        # No await before registration: simultaneous requests for the same key share
+        # a verdict; requests for different keys never wait on one another here.
+        task = routing_checks.get(model)
+        if task is None:
+            task = routing_checks[model] = asyncio.create_task(check())
+        success, message = await asyncio.shield(task)
+        return {"status": "ok" if success else "error", "message": message, "model": model}
 
     @router.get("/api/ollama/status")
     async def get_ollama_status(request: Request):

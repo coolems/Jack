@@ -28,7 +28,7 @@
  */
 
 const WorkspaceViews = {
-    maxStashed: 8,        // stashed DOM trees kept in memory (LRU)
+    maxStashed: 10,       // stashed DOM trees kept in memory (LRU) - 2026-12-04: in sync with the socket cap
     maxQueuedFrames: 500, // per-workspace background frame queue cap (drop-oldest)
 
     views: {},            // convId -> { node, streamingBuffer, baselineAssistant, scrollPos, midStream }
@@ -112,7 +112,7 @@ const WorkspaceViews = {
             if (!this.views[id]) continue;
             if (id === COOLEMS.currentConversation) continue;
             const st = (typeof ChatSocketPool !== 'undefined') ? (ChatSocketPool.statuses[id] || 'idle') : 'idle';
-            if (st === 'generating' || st === 'queued') continue;   // never kill a live view
+            if (st === 'generating' || st === 'queued' || pendingChatSends.has(id)) continue;   // never kill a live view
             // (2026-11-15) a card the user still has to answer is live work: dropping the
             // stashed DOM would destroy the only card they can click.
             if (typeof ChatSocketPool !== 'undefined' && ChatSocketPool.hasPendingCard(id)) continue;

@@ -21,11 +21,12 @@ CoolemsClientProvider, is_model_switching, relay_ws_connect' resolves here.
 """
 
 from .connection_modes import (  # noqa: F401
+    _begin_model_switch,
+    _end_model_switch,
     _live_relay_host_port,
     _model_switch_in_progress,
     _parse_direct_ws_address,
     _relay_mode,
-    _set_model_switching,
     is_model_switching,
 )
 from .provider_class import CoolemsClientProvider  # noqa: F401

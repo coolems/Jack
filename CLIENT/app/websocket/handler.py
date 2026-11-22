@@ -49,6 +49,20 @@ logger = logging.getLogger("COOLEMS")
 ws_logger = logging.getLogger("COOLEMS.WebSocket")
 
 
+def _conversation_model(conv_id: str) -> str | None:
+    """Return the saved model, or None for a workspace with no assignment."""
+    from app.db_manager import get_db_connection, close_db_connection
+
+    if not conv_id:
+        return None
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT model FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+        return (row[0] or None) if row else None
+    finally:
+        close_db_connection(conn)
+
+
 def _is_user_cancelled(error) -> bool:
     """Check if an error/result is a user-initiated cancellation."""
     if not isinstance(error, BaseException):
@@ -125,10 +139,6 @@ def create_websocket_handler(
 
         client_ip = get_ws_client_ip(websocket)
 
-        # (2026-08-23 fix, DEFECT A): register this UI connection in the broadcast registry.
-        # Without this _active_connections stayed empty forever and every
-        # broadcast_model_switch_status(...) reached 0 clients — so the green
-        # "Model switched" + dropdown refresh never arrived after a real switch.
         register_connection(websocket, client_ip=client_ip, conv_id=conv_id)
 
         # Get role for logging
@@ -210,7 +220,9 @@ def create_websocket_handler(
 
         # Step 3: Extract validated fields (all type-safe now)
         user_msg = payload.message
-        model = payload.model or model_name
+        # (2026-12-04 per-workspace model) precedence: explicit per-request model >
+        # the model stored on THIS workspace's row > the global default.
+        model = payload.model or _conversation_model(cid) or model_name
         # The SERVER delivers the finished prompt (identity + tool contract); a
         # per-request override from the client wins if one is actually sent.
         system_prompt = payload.system_prompt or get_system_prompt()

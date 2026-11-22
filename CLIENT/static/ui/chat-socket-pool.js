@@ -30,7 +30,7 @@ const ChatSocketPool = {
     // agentic and therefore accepts a mid-run steering message. Reported by chat_status.
     agentModes: {},
     order: [],            // LRU order: least recently used at index 0
-    maxOpen: 6,           // CLIENT_MAX_OPEN_CHAT_WS default; refined from config when available
+    maxOpen: 10,          // Idle eviction target; live sockets are never evicted.
 
     // ===== Sidebar attention markers (2026-10-09) ==================================
     // Orthogonal to session status: a chat can be 'generating' AND waiting on a dialog.
@@ -136,7 +136,7 @@ const ChatSocketPool = {
             if (!this.sockets[id]) continue;
             if (id === COOLEMS.currentConversation) continue;
             const st = this.statuses[id];
-            if (st === 'generating' || st === 'queued') continue;   // never kill a live session
+            if (st === 'generating' || st === 'queued' || pendingChatSends.has(id)) continue;   // never kill a live session
             // (2026-11-15) a chat waiting on a consent card is live work: closing this socket
             // would leave the user's card with no transport to deliver the answer on.
             if (this.hasPendingCard(id)) continue;
