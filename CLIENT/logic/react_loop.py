@@ -56,6 +56,11 @@ from .tool_lock import tool_lock, SCREEN_BROWSER_TOOLS
 # histogram, unremovable block, injected notices, per-tool schema cost, top contributors)
 # instead of a single percentage line.
 from .context_report import build_budget_report, log_budget
+from .tool_arguments import argument_problem, input_error
+from .tool_markup import (
+    parse_markup_tool_calls as _parse_markup_tool_calls,
+    looks_like_tool_markup as _looks_like_tool_markup,
+)
 
 
 logger = logging.getLogger("COOLEMS.Logic.ReactLoop")
@@ -387,10 +392,7 @@ async def run_react_loop(
     guardian_armed = True
 
     # MARKUP AUTO-RECOVERY BUDGET: when the model writes a tool call as literal text
-    # (the tool was not in the schema sent to it), we parse the named tool, inject it,
-    # and re-issue. Bounded so a hallucinated tool name (never in the catalog) cannot
-    # loop forever: at most MAX_MARKUP_RECOVERIES injections per run, each tool name
-    # attempted once.
+    # Bound retries for malformed replies and attempt each missing tool name once.
     markup_recoveries = 0
     MAX_MARKUP_RECOVERIES = 3
     markup_injected_names: set = set()
@@ -895,7 +897,17 @@ async def run_react_loop(
             # Check for tool calls — FILTER OUT MALFORMED ONES (empty/whitespace names)
             raw_tool_calls = _extract_tool_calls(provider_result)
             tool_calls = [tc for tc in raw_tool_calls if _is_valid_tool_call(tc)]
+            markup_calls = []
+            if not raw_tool_calls and _looks_like_tool_markup(provider_result):
+                markup_calls = _parse_markup_tool_calls(provider_result)
+                declared = {(d.get("function") or {}).get("name")
+                            for d in (getattr(config, "ollama_tools", None) or [])}
+                if all(tc["function"]["name"] in declared for tc in markup_calls):
+                    tool_calls = markup_calls
 
+
+            if raw_tool_calls and len(tool_calls) != len(raw_tool_calls):
+                tool_calls = []  # Do not execute a partial batch.
 
             if tool_calls:
 
@@ -1044,33 +1056,35 @@ async def run_react_loop(
                     ai_response = ("[The model produced no visible answer - the output token limit "
                                    "was reached during thinking. Please retry or lower the thinking level.]")
 
-                # ---- TOOL CALL WRITTEN AS TEXT (auto-recovery) ----
-                # The provider returned prose carrying the template's own call markup, so the
-                # intended call produced no tool_calls delta and nothing ran. The usual cause:
-                # the named tool was not in the schema sent to the model. Parse the name, inject
-                # it (+ its folder family), and re-issue so the call can actually run - the same
-                # resolution request_tools would give, but without the model having to know the
-                # escape hatch exists. Bounded (see the budget above); on budget-exhaustion or an
-                # unknown/hallucinated name we fall back to the plain warning.
-                if _looks_like_tool_markup(ai_response):
-                    _markup_names = _extract_markup_tool_names(ai_response)
-                    if markup_recoveries < MAX_MARKUP_RECOVERIES:
-                        _recovered = await _recover_markup_tools(
-                            config, messages, ai_response, _markup_names,
-                            markup_injected_names,
-                        )
-                        if _recovered is not None:
-                            markup_recoveries += 1
-                            _tools_for_est = _recovered
-                            est_tools_tokens = await _schema_token_cost(config, _recovered)
-                            tool_iteration += 1
-                            continue
-                    logger.warning(
-                        "[AGENTIC.DEBUG] react_loop - Unexecuted tool call: the reply contains "
-                        "tool-call markup as plain text, so no tool ran. The function it names is "
-                        "not in the schema sent to the model (check the Tool schema REFRESHED / "
-                        "[ROLE] lines and the MCP registry state)."
-                    )
+                if raw_tool_calls or _looks_like_tool_markup(ai_response):
+                    stopped = check_stop_event(config)
+                    if stopped:
+                        final_response = stopped
+                        break
+                    if _has_pending_steers(config) and await _apply_pending_steers(config, messages):
+                        tool_iteration += 1
+                        continue
+                    if markup_recoveries >= MAX_MARKUP_RECOVERIES or tool_iteration + 1 >= AGENTIC_MAX_TOOL_ITERATIONS:
+                        final_response = ("I couldn't complete the turn because the model repeatedly "
+                                          "returned an invalid tool call. The rejected call did not run.")
+                        await _rec(cycle.announce_final(step_no) if cycle else None)
+                        break
+                    markup_recoveries += 1
+                    names = list(dict.fromkeys(tc["function"]["name"] for tc in markup_calls))
+                    recovered = await _recover_markup_tools(config, messages, names, markup_injected_names)
+                    if recovered is not None:
+                        _tools_for_est = recovered
+                        est_tools_tokens = await _schema_token_cost(config, recovered)
+                    else:
+                        logger.info("Rejected unresolved tool reply; requesting a native call (%d/%d)",
+                                    markup_recoveries, MAX_MARKUP_RECOVERIES)
+                        messages.append({"role": "user", "content": (
+                            "[SYSTEM NOTICE] Your previous tool call was invalid and did not run. "
+                            "Send a native tool call with a declared name and valid arguments, not markup. "
+                            "If a tool is missing, use request_tools with its exact catalog name."
+                        )})
+                    tool_iteration += 1
+                    continue
 
                 # ---- LIVE STEERING vs. premature completion ----
                 # The user typed a correction while this (possibly final) answer was
@@ -1374,41 +1388,8 @@ async def run_react_loop(
 
 
 
-#: Tool-call markup the chat template renders for a native call. A model that writes it
-#: as TEXT produced a call that is never dispatched (see _looks_like_tool_markup).
-_TOOL_MARKUP_RE = re.compile(r"<tool_call\s*>|<function\s*=\s*[A-Za-z0-9_.-]+>", re.IGNORECASE)
-
-#: Captures the function NAME out of literal ``<function=name>`` markup so the loop can
-#: inject exactly the tool the model tried (but could not) call.
-_FUNCTION_NAME_RE = re.compile(r"<function\s*=\s*([A-Za-z0-9_.-]+)>", re.IGNORECASE)
-
-
-def _extract_markup_tool_names(text: Any) -> List[str]:
-    """Tool names the model wrote as literal ``<function=name>`` markup, first-seen order."""
-    if not isinstance(text, str):
-        return []
-    names: List[str] = []
-    seen: set = set()
-    for m in _FUNCTION_NAME_RE.finditer(text):
-        n = m.group(1)
-        if n and n not in seen:
-            seen.add(n)
-            names.append(n)
-    return names
-
-
-def _looks_like_tool_markup(text: Any) -> bool:
-    """True when a reply carries a tool call as literal text instead of a native tool call.
-
-    Tool-capable chat templates render a call as
-    ``<tool_call><function=name><parameter=key>value</parameter></function>``. When the model
-    emits that markup inside delta.content there is no ``tool_calls`` delta to dispatch, so
-    the call silently does nothing. Both markers are required so a log excerpt or docstring
-    that mentions a single tag does not trip the guard.
-    """
-    if not isinstance(text, str) or "<function=" not in text:
-        return False
-    return bool(_TOOL_MARKUP_RE.search(text))
+# Tool-call markup parsing lives in logic/tool_markup.py (imported above as
+# _parse_markup_tool_calls / _extract_markup_tool_names / _looks_like_tool_markup).
 
 
 async def _schema_token_cost(config: Any, tools: List[Dict]) -> int:
@@ -1506,12 +1487,13 @@ async def _handle_request_tools_call(tc: Dict, config: Any, messages: List[Dict]
     try:
         args_raw = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
         args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
         args = {}
     names = args.get("names") if isinstance(args, dict) else []
-    if isinstance(names, str):
-        names = [names]
-    names = [n for n in (names or []) if isinstance(n, str) and n.strip()]
+    if not isinstance(names, list) or not names or any(not isinstance(n, str) or not n.strip() for n in names):
+        messages.append({"role": "tool", "tool_call_id": tool_id,
+                         "content": input_error("request_tools", "names must be a non-empty array of catalog names")})
+        return None
 
     orch = getattr(config, "tool_orchestrator", None)
     if orch is None:
@@ -1530,7 +1512,7 @@ async def _handle_request_tools_call(tc: Dict, config: Any, messages: List[Dict]
         )
         config.ollama_tools = new_schema
         added = sorted(_name_of(d) for d in new_schema if _name_of(d) not in current_names)
-        content = (f"Added tools to this turn's schema: {added or 'none (already available)'}. "
+        content = (f"Added tools to this turn's schema: {added or 'none (already available or not found in the catalog)'}. "
                    "Continue with the task.")
         logger.info(
             f"[AGENTIC.DEBUG] react_loop - request_tools({sorted(names)}) -> schema "
@@ -1548,7 +1530,6 @@ async def _handle_request_tools_call(tc: Dict, config: Any, messages: List[Dict]
 async def _recover_markup_tools(
     config: Any,
     messages: List[Dict],
-    ai_response: str,
     names: List[str],
     injected_names: set,
 ) -> Optional[List[Dict]]:
@@ -1556,8 +1537,8 @@ async def _recover_markup_tools(
 
     When a tool is not in the schema, a tool-capable model sometimes writes the call as
     plain-text markup instead of a native ``tool_calls`` delta, so nothing runs. Resolve the
-    named tool the same way request_tools would (inject it + its folder family), persist the
-    model's own text, and re-issue. Returns the new schema only when something was actually
+    named tool the same way request_tools would (inject it + its folder family) and ask
+    for a native call without replaying the malformed markup. Returns the new schema only when something was actually
     added; None otherwise (unknown/hallucinated name, no orchestrator, already attempted) so
     the caller falls back to a warning and normal flow.
     """
@@ -1587,12 +1568,6 @@ async def _recover_markup_tools(
         # The names were not in the catalog (hallucinated) - nothing grew, so do not loop.
         return None
 
-    # Persist what the model wrote, then tell it the tools are now available natively.
-    if messages and messages[-1].get("role") == "assistant":
-        messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
-        invalidate_message_tokens(messages[-1])
-    else:
-        messages.append({"role": "assistant", "content": ai_response})
     messages.append({"role": "user", "content": (
         "[SYSTEM NOTICE] You wrote a tool call as plain text because that tool was not in "
         f"your available schema. It is now available natively: {', '.join(added)}. Re-issue "
@@ -1627,7 +1602,7 @@ def _is_valid_tool_call(tc: Dict) -> bool:
     
     name = func.get("name", "")
     if not isinstance(name, str) or not name.strip():
-        logger.warning(f"[AGENTIC.DEBUG] react_loop - Filtered out malformed tool call with empty/whitespace name: {tc}")
+        logger.info("Rejected native tool call with an empty name")
         return False
     
     return True
@@ -1636,14 +1611,14 @@ def _is_valid_tool_call(tc: Dict) -> bool:
 def _extract_tool_calls(result: Any) -> list:
     """Extract tool calls from provider result."""
     if isinstance(result, dict) and result.get("type") == "tool_calls":
-        return result["tool_calls"]
+        return result.get("tool_calls") if isinstance(result.get("tool_calls"), list) and result["tool_calls"] else [None]
 
 
     if isinstance(result, str):
         try:
             parsed = json.loads(result)
             if isinstance(parsed, dict) and parsed.get("type") == "tool_calls":
-                return parsed["tool_calls"]
+                return parsed.get("tool_calls") if isinstance(parsed.get("tool_calls"), list) and parsed["tool_calls"] else [None]
         except json.JSONDecodeError:
             logger.debug("[AGENTIC.DEBUG] react_loop - Response is plain text (not JSON), no tool calls")
 
@@ -1688,7 +1663,7 @@ def _repair_json_arguments(args_str):
 
 
 
-        logger.error(f"[AGENTIC.DEBUG] react_loop - Could not repair JSON arguments (length={len(args_str)}): {args_str[:200]}")
+        logger.debug("Could not repair JSON arguments (length=%d)", len(args_str))
         return None
 
 
@@ -1749,12 +1724,12 @@ async def _execute_single_tool_call(
             except json.JSONDecodeError:
                 logger.warning(f"[AGENTIC.DEBUG] react_loop - Malformed JSON in tool arguments for {tool_name}, attempting repair")
                 parsed_args = _repair_json_arguments(args_str)
-                if not parsed_args:
-                    raise ValueError(f"Could not parse/repair tool arguments: {args_str[:200]}")
+                if parsed_args is None:
+                    raise ValueError("invalid argument JSON")
         else:
             parsed_args = args_str
-    except Exception as e:
-        logger.error(f"[AGENTIC.DEBUG] react_loop - Failed to parse arguments for {tool_name}: {e}")
+    except (ValueError, RecursionError):
+        logger.info("Rejected malformed JSON arguments for %s", tool_name)
 
         # Tell the model WHAT to do instead of echoing its own broken JSON back at it.
         # The usual cause is the output token limit cutting the tool-call JSON mid-string,
@@ -1774,6 +1749,15 @@ async def _execute_single_tool_call(
         messages.append(tool_result_msg)
         return
 
+
+    schema = next(((d.get("function") or {}).get("parameters")
+                   for d in (getattr(config, "ollama_tools", None) or [])
+                   if (d.get("function") or {}).get("name") == tool_name), None)
+    problem = argument_problem(parsed_args, schema)
+    if problem:
+        logger.info("Rejected invalid arguments for %s", tool_name)
+        messages.append({"role": "tool", "content": input_error(tool_name, problem), "tool_call_id": tool_id})
+        return
 
     try:
         # ToolExecutor.execute() returns the tool result text.

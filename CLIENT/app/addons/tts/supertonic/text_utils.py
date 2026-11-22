@@ -1,16 +1,18 @@
 """Text sanitization + language auto-detection for the Supertonic engine.
 
 sanitize_for_lang(text, lang) - per-language character fixes BEFORE synthesis.
-  The German voice has a character whitelist and hard-fails on unsupported chars
-  (discovered by testing: raw eszett and curly quotes raise
-  "Found 1 unsupported character(s)"). The fixes are phonetically identical:
-    de: eszett->ss, curly quotes->straight, en/em-dash->hyphen, ellipsis->...
-    ro: a/â/î/s/ț diacritics stripped (a, a, i, s, t) - the engine wants plain ASCII
-  Everything else passes through untouched.
+  German (de) fix list (discovered by testing): eszett->ss, curly quotes->straight,
+  en/em-dash->hyphen, ellipsis->...
+  Romanian (ro) and English (en) pass through UNCHANGED. supertonic-3's own
+  tokenizer supports the Romanian diacritics: its NFKD normalization decomposes
+  ă/â/î -> a/i + combining breve/circumflex and ș/ț -> s/t + combining cedilla,
+  and the text is wrapped in the <ro> token, so the model pronounces them correctly.
+  Stripping the diacritics (the old code) forced plain ASCII - the "Romanian
+  voices are missing their diacritics" bug.
 
 detect_language(text, fallback) - character-fingerprint scan (microseconds, no ML):
-  Romanian diacritics (a/â/î/s/ț) exist ONLY in Romanian -> 100% certain.
-  German: eszett is German-only; umlauts (ae/oe/ue) are ambiguous in the world's
+  Romanian diacritics (ă/â/î/ș/ț, incl. legacy cedilla ş/ţ) exist ONLY in Romanian.
+  German: eszett is German-only; umlauts (ä/ö/ü) are ambiguous in the world's
   languages (Swedish/Danish) but NEVER occur in English or Romanian, so within our
   en/de/ro set a single umlaut already means German. Everything else -> fallback.
 """
@@ -18,10 +20,24 @@ detect_language(text, fallback) - character-fingerprint scan (microseconds, no M
 import re
 from typing import List
 
-_RO_CHARS = set("âîșț")
+#: Romanian diacritics (composed + legacy cedilla + uppercase). Exists ONLY in ro.
+_RO_CHARS = set("ăâîșțĂÂÎȘȚşţŞŢ")
 _DE_UMLAUTS = set("äöü")
 
+#: supertonic-2's unicode indexer has NO Romanian diacritics (verified against its
+#: unicode_indexer.json: ă/â/î/ș/ț all map to -1). supertonic-3 tokenizes them via
+#: NFKD (combining breve/circumflex/cedilla are in its indexer). So when the model
+#: is supertonic-2 we rewrite diacritics to plain letters - a phonetic fallback
+#: (Romanian is respelled the same way in ASCII anyway: "să" -> "sa").
+_RO_FALLBACK = {
+    "ă": "a", "â": "a", "î": "i", "ș": "s", "ț": "t",
+    "Ă": "A", "Â": "A", "Î": "I", "Ș": "S", "Ț": "T",
+    "ş": "s", "ţ": "t", "Ş": "S", "Ţ": "T",
+}
+
 #: (pattern, replacement) per language - applied in order, case preserved where noted.
+#: "ro" is intentionally ABSENT: it falls back to the neutral "en" fixes (curly
+#: quotes/dashes) without ever stripping the diacritics.
 _FIXES = {
     "de": [
         ("ß", "ss"),
@@ -33,15 +49,6 @@ _FIXES = {
         ("–", "-"),
         ("—", "-"),
         ("…", "..."),
-    ],
-    "ro": [
-        ("ă", "a"),
-        ("â", "a"),
-        ("î", "i"),
-        ("ș", "s"),
-        ("ş", "s"),
-        ("ț", "t"),
-        ("ţ", "t"),
     ],
     "en": [
         ("„", '"'),
@@ -56,12 +63,20 @@ _FIXES = {
 }
 
 
-def sanitize_for_lang(text: str, lang: str) -> str:
-    """Apply the per-language character fixes, then collapse whitespace."""
+def sanitize_for_lang(text: str, lang: str, model: str = "supertonic-3") -> str:
+    """Apply the per-language character fixes, then collapse whitespace.
+
+    Romanian and English text keeps its diacritics - supertonic-3 tokenizes them
+    correctly (see module docstring); only German needs the phonetic rewrite list.
+    supertonic-2 has no Romanian diacritics in its indexer, so for that model the
+    diacritics are respelled to plain letters (phonetic, ASCII-safe).
+    """
     if not text:
         return ""
     for pat, rep in _FIXES.get(lang, _FIXES["en"]):
         text = text.replace(pat, rep)
+    if model == "supertonic-2":
+        text = "".join(_RO_FALLBACK.get(c, c) for c in text)
     # Normalize line breaks / tabs to spaces; keep the sentence punctuation as-is.
     text = re.sub(r"[\r\n\t]+", " ", text)
     text = re.sub(r"[ ]{2,}", " ", text)

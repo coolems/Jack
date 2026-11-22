@@ -105,7 +105,10 @@ class SupertonicEngine:
             if self._cfg.detect_language else self._cfg.fallback_lang
         )
         voice = self._pick_voice(voice, lang)
-        sentences = [sanitize_for_lang(s, lang) for s in split_into_sentences(text)]
+        sentences = [
+            sanitize_for_lang(s, lang, self._cfg.model)
+            for s in split_into_sentences(text)
+        ]
         sentences = [s for s in sentences if s]
         if not sentences:
             raise ValueError("text became empty after sanitization")

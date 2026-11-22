@@ -34,7 +34,7 @@ STT_PROVIDERS = ("faster_whisper", "openai")
 STT_MODELS = ("tiny", "base", "small", "medium", "large-v3")
 STT_DEVICES = ("auto", "cpu", "cuda")
 LANGS = ("en", "de", "ro")
-VOICES = ("M1", "M2", "F1", "F2", "M3", "F3")
+VOICES = ("M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5")
 OPENAI_VOICES = ("alloy", "echo", "fable", "onyx", "nova", "shimmer", "coral",
                  "verse", "ballad", "ash", "sage", "amuch", "shield")
 
@@ -82,7 +82,7 @@ def _clamp(v: Any, lo: float, hi: float, default: float) -> float:
 
 def _int_clamp(v: Any, lo: int, hi: int, default: int) -> int:
     try:
-        return int(v)
+        return min(hi, max(lo, int(v)))
     except (TypeError, ValueError):
         return default
 
@@ -114,6 +114,10 @@ def _entry(raw: Any, problems: List[str]) -> Optional[Any]:
         if fb not in LANGS:
             problems.append(f"tts: fallback_lang must be one of {LANGS}")
             return None
+        model = str(raw.get("model", "supertonic-3"))
+        if model not in TTS_MODELS:
+            problems.append(f"tts: model must be one of {TTS_MODELS}")
+            return None
         ov = str(raw.get("openai_voice", "alloy"))
         if ov not in OPENAI_VOICES:
             problems.append(f"tts: openai_voice must be one of {OPENAI_VOICES}")
@@ -122,7 +126,7 @@ def _entry(raw: Any, problems: List[str]) -> Optional[Any]:
             name=name,
             enabled=bool(raw.get("enabled", False)),
             provider=provider,
-            model=str(raw.get("model", "supertonic-3")) if str(raw.get("model", "supertonic-3")) in TTS_MODELS else "supertonic-3",
+            model=model,
             speed=_clamp(raw.get("speed", 1.0), 0.5, 2.0, 1.0),
             total_steps=_int_clamp(raw.get("total_steps", 10), 1, 100, 10),
             silence_duration=_clamp(raw.get("silence_duration", 0.3), 0.0, 2.0, 0.3),

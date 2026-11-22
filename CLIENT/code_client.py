@@ -188,6 +188,10 @@ if __name__ == "__main__":
     # loop. In SETUP MODE it instead becomes a background task on uvicorn's own loop (see the
     # deferred_boot= argument of create_app) - no second asyncio.run is ever needed.
     async def _boot():
+        from app.asyncio_teardown import install_teardown_handler
+
+        if not setup_boot:  # setup mode already installed it in the ASGI startup event
+            install_teardown_handler()
         return await init_provider_and_app(final_provider_name, final_api_url)
 
     if setup_boot:

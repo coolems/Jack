@@ -29,7 +29,7 @@ async def chat_non_streaming(
     """One non-streaming OpenAI completion.
 
     thinking_mode: canonical level ("none"/"low"/"medium"/"high") translated into
-    OpenAI's reasoning_effort (placement per family); None sends no reasoning keys.
+    OpenAI's top-level reasoning_effort; None sends no reasoning keys.
     """
     mode = normalize_mode(thinking_mode) if thinking_mode else ""
     from .streaming import _policy_for

@@ -22,6 +22,7 @@ let addonsActive = 'tts';   // which addon page is shown
 let addonsSaving = false;   // one save at a time - keeps UI and file in sync
 let addonsSaveQueued = false; // a toggle happened while a save was running -> save again after
 let addonsAudioUrl = null;  // object URL of the last test speech (revoked on replace)
+let addonsSaveTimer = null; // auto-save debounce (600 ms after the last field change)
 
 const ADDON_LABELS = { tts: '🔊 Text to Speech (TTS)', stt: '🎙 Speech to Text (STT)' };
 
@@ -91,9 +92,9 @@ function addonsFillPage(a) {
         setVal('ttsSilence', a.silence_duration);
         setChk('ttsDetect', a.detect_language);
         setSel('ttsFallback', ['en', 'de', 'ro'], a.fallback_lang);
-        setSel('ttsVoiceEn', ['M1', 'M2', 'F1', 'F2', 'M3', 'F3'], (a.voices || {}).en || 'M1');
-        setSel('ttsVoiceDe', ['M1', 'M2', 'F1', 'F2', 'M3', 'F3'], (a.voices || {}).de || 'M1');
-        setSel('ttsVoiceRo', ['M1', 'M2', 'F1', 'F2', 'M3', 'F3'], (a.voices || {}).ro || 'M1');
+        setSel('ttsVoiceEn', ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'], (a.voices || {}).en || 'M1');
+        setSel('ttsVoiceDe', ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'], (a.voices || {}).de || 'M1');
+        setSel('ttsVoiceRo', ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'], (a.voices || {}).ro || 'M1');
         setVal('ttsSpeaker', a.speaker || '');
         setSel('ttsOaModel', ['gpt-4o-mini-tts', 'gpt-4o-tts'], a.openai_model);
         setSel('ttsOaVoice', ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'coral', 'verse', 'ballad', 'ash', 'sage', 'amuch', 'shield'], a.openai_voice);
@@ -207,26 +208,34 @@ function addonsToggleEnabled() {
     saveAddons();
 }
 
+/**
+ * (2026-11-26) Auto-save: every field change saves after 600 ms of quiet -
+ * no Save button needed. The enable checkboxes save immediately (above); all
+ * other fields (voices, provider, model, speed, keys, devices...) go through
+ * this debounce so rapid typing/switching produces one save, not ten.
+ */
+function addonsAutoSave() {
+    if (addonsSaveTimer) clearTimeout(addonsSaveTimer);
+    addonsSaveTimer = setTimeout(() => { addonsSaveTimer = null; saveAddons(); }, 600);
+}
+
 /** Collect both pages, save the whole list, re-read the live state. */
 async function saveAddons() {
     if (addonsSaving) { addonsSaveQueued = true; return; }
     addonsSaving = true;
     addonsStatus('Saving...');
     try {
-        // Re-fill BOTH pages from the last server state before reading them back:
-        // only the active page is kept in sync by addonsRenderPage, so the inactive
-        // page's DOM fields would otherwise still hold their HTML defaults and a
-        // save would silently overwrite the other addon's saved config.
-        // EXCEPTION: the active page's enable checkbox - the user may have just
-        // flipped it, and re-filling would reset it to the server state (the
-        // "enable saves itself off" bug). Capture it first, restore it after.
-        const active = addonsList.find(x => x.name === addonsActive);
-        const activeChk = active && document.getElementById(active.name + 'Enabled');
-        const activeChecked = activeChk ? activeChk.checked : false;
-        for (const a of addonsList) addonsFillPage(a);
-        // Restore the checkbox the user just flipped (the fill above reset it
-        // to the server state); addonsReadPage reads from the DOM.
-        if (activeChk) activeChk.checked = activeChecked;
+        // Re-fill only the INACTIVE page from the last server state before
+        // reading it back: its DOM still holds stale values and a read would
+        // otherwise overwrite the other addon's saved config.
+        // The ACTIVE page is NEVER re-filled here - its DOM is the user's live
+        // intent (they may have just changed a voice/model/toggle), and a
+        // re-fill would reset it to the not-yet-saved server state (the
+        // "voice switches back after a few seconds" bug).
+        for (const a of addonsList) {
+            if (a.name === addonsActive) continue;
+            addonsFillPage(a);
+        }
         for (const a of addonsList) addonsReadPage(a);
         const r = await fetch('/api/addons', {
             method: 'POST',
@@ -261,11 +270,47 @@ async function addonsTestTts() {
     const player = document.getElementById('ttsTestPlayer');
     const status = document.getElementById('ttsTestStatus');
     if (!text.trim()) { if (status) status.textContent = 'Type some text first.'; return; }
+    // If an auto-save is still pending (600 ms debounce), flush it first: the
+    // server-side engine reads voices from addons.json, so a test fired before
+    // the save would still hear the previous voice.
+    if (addonsSaveTimer) { clearTimeout(addonsSaveTimer); addonsSaveTimer = null; await saveAddons(); }
     if (status) { status.textContent = 'Synthesizing (first run loads the model)...'; status.style.color = 'var(--warning, #f59e0b)'; }
     if (player) player.style.display = 'none';
     try {
+        // (2026-11-26 fix) the test must use the voice the page shows: the endpoint
+        // fell back to the per-language voice from addons.json, so switching the
+        // voice dropdowns (unsaved) still heard the old voice. The test language
+        // picks the voice; 'auto' uses the fallback language's voice.
+        // (audit fix) when the provider is OpenAI the voice is the OpenAI dropdown
+        // (alloy/nova/...) - sending a local name (M1/F1) makes the API 400.
+        // OpenAI also auto-detects the language from the text, so no lang param.
+        const provider = (document.getElementById('ttsProvider') || {}).value || 'supertonic';
+        let voice = '';
+        let langParam = lang;
+        if (provider === 'openai') {
+            voice = (document.getElementById('ttsOaVoice') || {}).value || 'alloy';
+            langParam = '';
+        } else if (lang) {
+            // Explicit test language: use THAT language's voice dropdown.
+            const voiceSel = document.getElementById('ttsVoice' + { en: 'En', de: 'De', ro: 'Ro' }[lang]);
+            voice = voiceSel ? voiceSel.value : '';
+        } else {
+            // Auto-detect: mirror the server's fingerprint (RO diacritics,
+            // eszett/umlauts) so the test ALWAYS sends the voice the user picked
+            // for the detected language - even if detect_language is off
+            // server-side (that was the "stuck to one male voice" bug: with
+            // detection off the engine fell back to the EN voice for every text).
+            const t = text.slice(0, 2000);
+            let det = (document.getElementById('ttsFallback') || {}).value || 'en';
+            if (/[\u0103\u00e2\u00ee\u0219\u021b]/.test(t)) det = 'ro';
+            else if (/\u00df|[\u00e4\u00f6\u00fc]/.test(t)) det = 'de';
+            langParam = det;
+            const voiceSel = document.getElementById('ttsVoice' + { en: 'En', de: 'De', ro: 'Ro' }[det]);
+            voice = voiceSel ? voiceSel.value : '';
+        }
         const url = '/api/addons/speech?text=' + encodeURIComponent(text)
-            + '&lang=' + encodeURIComponent(lang);
+            + '&lang=' + encodeURIComponent(langParam)
+            + '&voice=' + encodeURIComponent(voice);
         const r = await fetch(url);
         const ct = r.headers.get('content-type') || '';
         if (!r.ok) {
@@ -281,7 +326,7 @@ async function addonsTestTts() {
         }
         addonsAudioUrl = URL.createObjectURL(blob);
         if (player) { player.src = addonsAudioUrl; player.style.display = ''; player.play().catch(() => {}); }
-        if (status) { status.textContent = 'Done - lang used: ' + (lang || 'auto'); status.style.color = 'var(--success, #4caf50)'; }
+        if (status) { status.textContent = 'Done - lang: ' + (langParam || 'auto') + ', voice: ' + (voice || 'auto'); status.style.color = 'var(--success, #4caf50)'; }
     } catch (e) {
         if (status) { status.textContent = 'Test failed: ' + e.message; status.style.color = 'var(--danger)'; }
     }

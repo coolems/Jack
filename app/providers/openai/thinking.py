@@ -1,9 +1,9 @@
 """OpenAI thinking policy - the hosted API's own vocabulary, from the static model table.
 
-OpenAI exposes reasoning as reasoning_effort (low/medium/high), placed differently per
-family: o-series models take a TOP-LEVEL reasoning_effort, gpt-5 nests it under
-text.format.reasoning_effort, and non-reasoning models (gpt-4o, gpt-4.1) take no
-reasoning key at all.
+OpenAI exposes reasoning as reasoning_effort (low/medium/high). Every reasoning
+family (o-series, gpt-5, gpt-6) takes a TOP-LEVEL reasoning_effort - verified against
+api.openai.com; a nested text.format body is rejected ("Unknown parameter: 'text'").
+Non-reasoning models (gpt-4o, gpt-4.1) take no reasoning key at all.
 
 So the canonical UI levels map onto OpenAI's spellings here:
   none   -> no reasoning_effort key (OpenAI has no off switch; the model keeps its own)
@@ -30,13 +30,14 @@ _LEVEL_TO_EFFORT = {"low": "low", "medium": "medium", "high": "high"}
 class OpenAIThinkingPolicy(ThinkingPolicy):
     """Thinking capability of one OpenAI model, read from its static metadata row.
 
-    placement is where the body key goes: "top" (o-series) or "text" (gpt-5's
-    text.format). No token-budget knob exists, so budget stays False.
+    placement is kept for shape compatibility; reasoning_effort is always sent
+    top-level, so only "top" is meaningful. No token-budget knob exists, so budget
+    stays False.
     """
 
     def __init__(self, *, placement: str = "top", **kwargs):
         super().__init__(**kwargs)
-        self.placement = placement if placement in ("top", "text") else "top"
+        self.placement = "top"
 
     def map(self, mode: str) -> Optional[str]:
         """OpenAI's spelling for a canonical level, or None when it has none."""
@@ -116,8 +117,7 @@ def thinking_body(policy: ThinkingPolicy, mode: str) -> Dict:
     """The OpenAI body keys for one canonical level; {} sends no reasoning keys.
 
     No level (or 'none') means the model keeps its own default, which is exactly what
-    an un-set picker should do. The key placement follows the policy (o-series top
-    level, gpt-5 under text.format).
+    an un-set picker should do. reasoning_effort is always sent top level.
     """
     if not hasattr(policy, "placement"):
         return {}
@@ -127,8 +127,6 @@ def thinking_body(policy: ThinkingPolicy, mode: str) -> Dict:
     effort = policy.map(mode)
     if not effort:
         return {}
-    if policy.placement == "text":
-        return {"text": {"format": {"type": "text", "reasoning_effort": effort}}}
     return {"reasoning_effort": effort}
 
 

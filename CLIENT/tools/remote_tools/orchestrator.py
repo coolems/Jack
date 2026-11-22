@@ -444,6 +444,10 @@ class RemoteToolOrchestrator:
             name = _def_name(d)
             if name in requested and categories.get(name):
                 folders_to_add.add(categories[name])
+        # A requested name may be a CATEGORY name from the catalog (e.g. "exec_tools"),
+        # not a tool name. Resolve it to the whole folder so the model's intent is honoured
+        # instead of resolving to nothing and stalling the markup auto-recovery.
+        folders_to_add |= requested & {c for c in categories.values() if c}
 
         local = await self.local_definitions(api_key)
         local_by_name = {_def_name(d): d for d in local}
@@ -724,6 +728,9 @@ class RemoteToolOrchestrator:
             logger.error(f"Tool '{tool_name}' not found in registry after ensure_tool_loaded")
             return f"Error: Tool '{tool_name}' is not available."
 
+        if not isinstance(arguments, dict):
+            return f"Error: '{tool_name}' did not run: arguments must be a JSON object."
+
         try:
             # SECURITY (2026-07-15): the model must NEVER be able to set or
             # override 'working_root'/'work_folder'. The real root comes from the
@@ -737,6 +744,20 @@ class RemoteToolOrchestrator:
                         f"'{tool_name}' arguments -- system working_root always wins."
                     )
                     del arguments[_p]
+
+            # Bind before invoking the tool: a TypeError from inside the tool is
+            # a runtime failure, not a bad call. The exported schema is checked upstream.
+            try:
+                signature = inspect.signature(func)
+            except (ValueError, TypeError):
+                signature = None
+            if signature is not None:
+                try:
+                    signature.bind(**arguments)
+                except TypeError as exc:
+                    logger.info("Rejected arguments that do not bind to %s", tool_name)
+                    return (f"Error: '{tool_name}' did not run: {exc}. "
+                            "Re-issue a native tool call using its schema.")
 
             # Call the tool function with arguments.
             #

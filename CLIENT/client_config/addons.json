@@ -6,9 +6,9 @@
     "NOTHING IS ENABLED BY DEFAULT. Local providers are free and private (audio never",
     "leaves this machine); the OpenAI providers need an API key and send audio to OpenAI.",
     "TTS language: detect_language=true auto-detects en/de/ro from the text itself",
-    "(Romanian diacritics, German umlauts/ss); 'voices' maps each language to a voice",
-    "style. Texts without diacritics fall back to fallback_lang - pass lang explicitly",
-    "to the speech endpoint to force a language."
+    "(Romanian diacritics, German umlauts/ss) and then speaks with THAT language's",
+    "voice from 'voices'. Texts without diacritics fall back to fallback_lang - pass",
+    "lang explicitly to the speech endpoint to force a language."
   ],
   "addons": [
     {
@@ -16,15 +16,15 @@
       "enabled": true,
       "provider": "supertonic",
       "model": "supertonic-3",
-      "speed": 1.0,
+      "speed": 1.3,
       "total_steps": 10,
-      "silence_duration": 0.3,
+      "silence_duration": 1.2,
       "detect_language": true,
       "fallback_lang": "en",
       "voices": {
         "en": "M1",
-        "de": "M1",
-        "ro": "M1"
+        "de": "M2",
+        "ro": "M2"
       },
       "speaker": "",
       "openai_model": "gpt-4o-mini-tts",
@@ -33,7 +33,7 @@
     },
     {
       "name": "stt",
-      "enabled": true,
+      "enabled": false,
       "provider": "faster_whisper",
       "model": "medium",
       "device": "auto",

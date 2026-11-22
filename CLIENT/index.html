@@ -105,11 +105,13 @@
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
                         <span id="thinkLabel">Think</span>
                     </button>
-                    <!-- (2026-11-26) voice toggles: same grey style as Think. Mic = speak-to-prompt
-                         (5 s silence -> transcribe -> append/send). Speaker = auto-speak the last
-                         answer of a turn that used NO tool calls. -->
+                    <!-- (2026-11-26) voice toggles: same grey style as Think. Mic = 3-state cycle:
+                         off -> "Audio to prompt" (append everything, no auto-send) ->
+                         "Directly to AI" (5 s silence -> transcribe -> send). Speaker =
+                         auto-speak the last answer of a turn that used NO tool calls. -->
                     <button class="think-toggle voice-toggle" id="micToggle" onclick="VoiceUI.toggleMic()" title="Voice input - click to start listening">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+                        <span id="micLabel"></span>
                     </button>
                     <button class="think-toggle voice-toggle" id="spkToggle" onclick="VoiceUI.toggleSpeaker()" title="Auto-speak - click to hear the AI's final answers">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>
@@ -732,7 +734,7 @@
                                 <label for="ttsEnabled" style="font-weight:600;">Enable TTS</label>
                             </div>
                             <div style="display:flex; gap:8px; align-items:center;">
-                                <select id="ttsProvider" onchange="addonsToggleProviderFields('tts', this.value)"
+                                <select id="ttsProvider" onchange="addonsToggleProviderFields('tts', this.value); addonsAutoSave()"
                                         style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                     <option value="supertonic">Local - Supertonic (free, private)</option>
                                     <option value="openai">OpenAI (paid, audio leaves this machine)</option>
@@ -740,7 +742,7 @@
                             </div>
                             <div id="ttsLocalFields" style="display:grid; gap:8px;">
                                 <div style="display:flex; gap:8px; align-items:center;">
-                                    <select id="ttsModel" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    <select id="ttsModel" onchange="addonsAutoSave()" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                         <option value="supertonic-3">supertonic-3 (newer)</option>
                                         <option value="supertonic-2">supertonic-2</option>
                                     </select>
@@ -748,49 +750,49 @@
                                 </div>
                                 <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
                                     <label style="font-size:13px; color:var(--text-secondary);">speed
-                                        <input type="number" id="ttsSpeed" min="0.5" max="2" step="0.05" value="1.0"
+                                        <input type="number" id="ttsSpeed" min="0.5" max="2" step="0.05" value="1.0" onchange="addonsAutoSave()"
                                                style="width:70px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                     </label>
                                     <label style="font-size:13px; color:var(--text-secondary);">quality steps
-                                        <input type="number" id="ttsSteps" min="1" max="100" step="1" value="10"
+                                        <input type="number" id="ttsSteps" min="1" max="100" step="1" value="10" onchange="addonsAutoSave()"
                                                style="width:60px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                     </label>
                                     <label style="font-size:13px; color:var(--text-secondary);">silence (s)
-                                        <input type="number" id="ttsSilence" min="0" max="2" step="0.1" value="0.3"
+                                        <input type="number" id="ttsSilence" min="0" max="2" step="0.1" value="0.3" onchange="addonsAutoSave()"
                                                style="width:60px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                     </label>
                                 </div>
                                 <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
                                     <label style="font-size:13px; color:var(--text-secondary); display:flex; align-items:center; gap:6px;">
-                                        <input type="checkbox" id="ttsDetect" checked style="width:16px; height:16px;">
+                                        <input type="checkbox" id="ttsDetect" checked onchange="addonsAutoSave()" style="width:16px; height:16px;">
                                         auto-detect language (EN/DE/RO)
                                     </label>
                                     <label style="font-size:13px; color:var(--text-secondary);">fallback
-                                        <select id="ttsFallback" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <select id="ttsFallback" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                             <option value="en">en</option><option value="de">de</option><option value="ro">ro</option>
                                         </select>
                                     </label>
                                 </div>
                                 <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
                                     <label style="font-size:13px; color:var(--text-secondary);">EN voice
-                                        <select id="ttsVoiceEn" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
-                                            <option>M1</option><option>M2</option><option>F1</option><option>F2</option><option>M3</option><option>F3</option>
+                                        <select id="ttsVoiceEn" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option>M1</option><option>M2</option><option>M3</option><option>M4</option><option>M5</option><option>F1</option><option>F2</option><option>F3</option><option>F4</option><option>F5</option>
                                         </select>
                                     </label>
                                     <label style="font-size:13px; color:var(--text-secondary);">DE voice
-                                        <select id="ttsVoiceDe" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
-                                            <option>M1</option><option>M2</option><option>F1</option><option>F2</option><option>M3</option><option>F3</option>
+                                        <select id="ttsVoiceDe" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option>M1</option><option>M2</option><option>M3</option><option>M4</option><option>M5</option><option>F1</option><option>F2</option><option>F3</option><option>F4</option><option>F5</option>
                                         </select>
                                     </label>
                                     <label style="font-size:13px; color:var(--text-secondary);">RO voice
-                                        <select id="ttsVoiceRo" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
-                                            <option>M1</option><option>M2</option><option>F1</option><option>F2</option><option>M3</option><option>F3</option>
+                                        <select id="ttsVoiceRo" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                            <option>M1</option><option>M2</option><option>M3</option><option>M4</option><option>M5</option><option>F1</option><option>F2</option><option>F3</option><option>F4</option><option>F5</option>
                                         </select>
                                     </label>
                                 </div>
                                 <div style="display:flex; gap:8px; align-items:center;">
                                     <label style="font-size:13px; color:var(--text-secondary);">speaker
-                                        <select id="ttsSpeaker" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <select id="ttsSpeaker" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                             <option value="">System default speaker</option>
                                         </select>
                                     </label>
@@ -799,17 +801,17 @@
                             </div>
                             <div id="ttsOpenaiFields" style="display:none; gap:8px;">
                                 <div style="display:flex; gap:8px; align-items:center;">
-                                    <select id="ttsOaModel" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    <select id="ttsOaModel" onchange="addonsAutoSave()" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                         <option value="gpt-4o-mini-tts">gpt-4o-mini-tts (cheap)</option>
                                         <option value="gpt-4o-tts">gpt-4o-tts (premium)</option>
                                     </select>
-                                    <select id="ttsOaVoice" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                    <select id="ttsOaVoice" onchange="addonsAutoSave()" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                         <option>alloy</option><option>echo</option><option>fable</option><option>onyx</option>
                                         <option>nova</option><option>shimmer</option><option>coral</option><option>verse</option>
                                         <option>ballad</option><option>ash</option><option>sage</option><option>amuch</option><option>shield</option>
                                     </select>
                                 </div>
-                                <input type="password" id="ttsOaKey" placeholder="OpenAI API key (sk-...)" autocomplete="off" spellcheck="false"
+                                <input type="password" id="ttsOaKey" placeholder="OpenAI API key (sk-...)" autocomplete="off" spellcheck="false" onchange="addonsAutoSave()"
                                        style="width:100%; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-family:monospace;">
                             </div>
                             <div style="display:grid; gap:6px; border-top:1px solid var(--border-color); padding-top:10px;">
@@ -834,7 +836,7 @@
                                 <label for="sttEnabled" style="font-weight:600;">Enable STT (voice to text)</label>
                             </div>
                             <div style="display:flex; gap:8px; align-items:center;">
-                                <select id="sttProvider" onchange="addonsToggleProviderFields('stt', this.value)"
+                                <select id="sttProvider" onchange="addonsToggleProviderFields('stt', this.value); addonsAutoSave()"
                                         style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                     <option value="faster_whisper">Local - faster-whisper (free, private)</option>
                                     <option value="openai">OpenAI (paid, audio leaves this machine)</option>
@@ -843,7 +845,7 @@
                             <div id="sttLocalFields" style="display:grid; gap:8px;">
                                 <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:center;">
                                     <label style="font-size:13px; color:var(--text-secondary);">model
-                                        <select id="sttModel" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <select id="sttModel" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                             <option value="tiny">tiny (fastest)</option>
                                             <option value="base">base</option>
                                             <option value="small" selected>small (recommended)</option>
@@ -852,14 +854,14 @@
                                         </select>
                                     </label>
                                     <label style="font-size:13px; color:var(--text-secondary);">device
-                                        <select id="sttDevice" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <select id="sttDevice" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                             <option value="auto">auto (GPU if available)</option>
                                             <option value="cpu">cpu</option>
                                             <option value="cuda">cuda</option>
                                         </select>
                                     </label>
                                     <label style="font-size:13px; color:var(--text-secondary);">language
-                                        <select id="sttLang" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <select id="sttLang" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                             <option value="auto">auto-detect (EN/DE/RO + 100 more)</option>
                                             <option value="en">en</option><option value="de">de</option><option value="ro">ro</option>
                                         </select>
@@ -867,7 +869,7 @@
                                 </div>
                                 <div style="display:flex; gap:8px; align-items:center;">
                                     <label style="font-size:13px; color:var(--text-secondary);">microphone
-                                        <select id="sttMic" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                        <select id="sttMic" onchange="addonsAutoSave()" style="padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                             <option value="">System default microphone</option>
                                         </select>
                                     </label>
@@ -875,11 +877,11 @@
                                 </div>
                             </div>
                             <div id="sttOpenaiFields" style="display:none; gap:8px;">
-                                <select id="sttOaModel" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
+                                <select id="sttOaModel" onchange="addonsAutoSave()" style="padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary);">
                                     <option value="gpt-4o-mini-transcribe">gpt-4o-mini-transcribe (cheap)</option>
                                     <option value="gpt-4o-transcribe">gpt-4o-transcribe (premium)</option>
                                 </select>
-                                <input type="password" id="sttOaKey" placeholder="OpenAI API key (sk-...)" autocomplete="off" spellcheck="false"
+                                <input type="password" id="sttOaKey" placeholder="OpenAI API key (sk-...)" autocomplete="off" spellcheck="false" onchange="addonsAutoSave()"
                                        style="width:100%; box-sizing:border-box; padding:8px 12px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); font-family:monospace;">
                             </div>
                             <div style="display:grid; gap:6px; border-top:1px solid var(--border-color); padding-top:10px;">
@@ -1002,8 +1004,8 @@
     </script>
     <script src="/static/ui/runtime-settings.js?v=20261115q"></script>
     <script src="/static/ui/mcp-settings.js?v=20261117c"></script>
-    <script src="/static/ui/addons-settings.js?v=20260712a"></script>
-    <script src="/static/ui/voice-ui.js?v=20261126a"></script>
+    <script src="/static/ui/addons-settings.js?v=20261126l"></script>
+    <script src="/static/ui/voice-ui.js?v=20261126g"></script>
     <script src="/static/ui/approval-dialog.js?v=20261115q"></script>
     <script src="/static/ui/ui-controls.js?v=20261117a">
     

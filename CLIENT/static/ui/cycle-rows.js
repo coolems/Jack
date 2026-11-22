@@ -66,10 +66,13 @@ window.EMPTY_IO = EMPTY_IO;
  */
 const AI_NOISE_PATTERNS = [
     /^[ \t]*Loop stats:\s*\d+\s*\/\s*\d+[^\n]*$/gm,
-    /^[ \t]*<tool_call>[\s\S]*?<\/tool_call>[ \t]*$/gm,
-    /^[ \t]*<tool_call>[^\n]*$/gm,
-    /^[ \t]*<function[^\n]*>$/gm,
+    /^[ \t]*<tool_call\s*>[\s\S]*?<\/tool_call\s*>[ \t]*$/gim,
+    /^[ \t]*<tool_call\s*>[\s\S]*(?![\s\S])/gim,
+    /^[ \t]*<\/tool_call>[ \t]*$/gm,
+    /^[ \t]*<function\s*=[\s\S]*(?![\s\S])/gim,
     /^[ \t]*<\/function>[ \t]*$/gm,
+    /^[ \t]*<parameter\s*=[^\n]*>[^\n]*$/gm,
+    /^[ \t]*<\/parameter>[ \t]*$/gm,
     /^[ \t]*\[SYSTEM NOTICE\][^\n]*$/gm,
     /^[ \t]*\[USER MESSAGE WHILE YOU WERE WORKING[^\n]*$/gm,
     /^[ \t]*\[USER STOP REQUEST[^\n]*$/gm,
@@ -77,7 +80,8 @@ const AI_NOISE_PATTERNS = [
 
 function scrubAiText(text) {
     if (!text) return '';
-    let cleaned = String(text);
+    // Strip bare XML parameters only inside a function block, not standalone HTML.
+    let cleaned = String(text).replace(/^[ \t]*<function\s*=[^>\n]+>[\s\S]*?<\/function\s*>[ \t]*$/gim, '');
     for (const re of AI_NOISE_PATTERNS) cleaned = cleaned.replace(re, '');
     if (cleaned === text) return cleaned;
     return cleaned.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
@@ -87,11 +91,12 @@ window.scrubAiText = scrubAiText;
 /** Cheap sentinel test so the scrub regexes only run on text that could contain noise
  *  (the strip repaints on every chunk - a full regex pass per token would be wasteful).
  *  No marker sentinels here: the marker is never scrubbed, so it must not trigger a pass. */
-const AI_NOISE_SENTINELS = ['Loop stats:', '<tool_call', '<function', '[SYSTEM NOTICE]', '[USER MESSAGE WHILE', '[USER STOP REQUEST'];
+const AI_NOISE_SENTINELS = ['Loop stats:', '<tool_call', '</tool_call', '<function', '</function', '<parameter', '</parameter', '[SYSTEM NOTICE]', '[USER MESSAGE WHILE', '[USER STOP REQUEST'];
 
 function _hasAiNoise(text) {
     if (!text) return false;
-    for (const s of AI_NOISE_SENTINELS) if (text.includes(s)) return true;
+    const lower = text.toLowerCase();
+    for (const s of AI_NOISE_SENTINELS) if (lower.includes(s.toLowerCase())) return true;
     return false;
 }
 window._hasAiNoise = _hasAiNoise;

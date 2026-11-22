@@ -35,10 +35,13 @@ from typing import Any, Dict, List, Optional
 # static/ui/cycle-rows.js mirrors these patterns.
 _AI_NOISE_PATTERNS = (
     re.compile(r"(?m)^[ \t]*Loop stats:\s*\d+\s*/\s*\d+[^\n]*$"),
-    re.compile(r"(?m)^[ \t]*<tool_call>[\s\S]*?</tool_call>[ \t]*$"),
-    re.compile(r"(?m)^[ \t]*<tool_call>[^\n]*$"),
-    re.compile(r"(?m)^[ \t]*<function[^\n]*>$"),
+    re.compile(r"(?im)^[ \t]*<tool_call\s*>[\s\S]*?</tool_call\s*>[ \t]*$"),
+    re.compile(r"(?im)^[ \t]*<tool_call\s*>[\s\S]*\Z"),
+    re.compile(r"(?m)^[ \t]*</tool_call>[ \t]*$"),
+    re.compile(r"(?im)^[ \t]*<function\s*=[\s\S]*\Z"),
     re.compile(r"(?m)^[ \t]*</function>[ \t]*$"),
+    re.compile(r"(?m)^[ \t]*<parameter\s*=[^\n]*>[^\n]*$"),
+    re.compile(r"(?m)^[ \t]*</parameter>[ \t]*$"),
     re.compile(r"(?m)^[ \t]*\[SYSTEM NOTICE\][^\n]*$"),
     re.compile(r"(?m)^[ \t]*\[USER MESSAGE WHILE YOU WERE WORKING[^\n]*$"),
     re.compile(r"(?m)^[ \t]*\[USER STOP REQUEST[^\n]*$"),
@@ -49,7 +52,8 @@ def scrub_ai_text(text: str) -> str:
     """Remove protocol/bookkeeping lines from AI speech. Returns "" when nothing is left."""
     if not isinstance(text, str) or not text:
         return ""
-    cleaned = text
+    # Strip bare XML parameters only inside a function block, not standalone HTML.
+    cleaned = re.sub(r"(?im)^[ \t]*<function\s*=[^>\n]+>[\s\S]*?</function\s*>[ \t]*$", "", text)
     for pat in _AI_NOISE_PATTERNS:
         cleaned = pat.sub("", cleaned)
     if cleaned == text:

@@ -6,8 +6,9 @@ worker pool, auth profiles, streaming frames, token stats, stop button) is share
 what differs is the wire shape and the lifecycle:
 
   request   our llama-shaped values -> OpenAI body (payload.py): no top_k/min_p/
-            presence_penalty/chat_template_kwargs, reasoning_effort instead (o-series
-            top-level, gpt-5 under text.format), temperature/top_p dropped for o-series
+            presence_penalty/chat_template_kwargs, reasoning_effort top level for
+            reasoning models, temperature/top_p dropped for them, max_tokens renamed
+            to max_completion_tokens for gpt-5/gpt-6/o-series
   response  SSE delta.content / delta.reasoning_content / tool-call deltas / usage ->
             our content + {type:"thinking"} frames + TokenStats (streaming.py)
   models    GET /models is the source of truth for the ids; ctx/vision/effort come from
@@ -112,7 +113,7 @@ class OpenAIProvider(BaseProvider):
         """Stream an OpenAI completion through the shared SSE machinery.
 
         enable_thinking: bool (show reasoning) or a canonical level "none"/"low"/"medium"/
-        "high"; a level is translated into OpenAI's reasoning_effort (placement per family).
+        "high"; a level is translated into OpenAI's top-level reasoning_effort.
         """
         if self._has_image_content(messages) and not self._model_supports_images(model):
             raise self._vision_error(model)

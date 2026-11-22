@@ -34,7 +34,9 @@ from ..llama.streaming import _iter_sse_with_stall
 from ..llama.thinking import normalize_mode
 from ..token_stats import TokenStats
 from .payload import build_openai_payload
+from .responses import chat_responses
 from .thinking import OPENAI_EFFORTS, OpenAIThinkingPolicy, thinking_body
+from .wire_profiles import TOOLS_RESPONSES, profile_for
 
 logger = logging.getLogger("COOLEMS.Provider.OpenAI.Streaming")
 
@@ -48,8 +50,8 @@ _THINK_RESERVE_TOKENS = {"low": 512, "medium": 1536, "high": 4096}
 def _policy_for(api_url: str, model: str) -> OpenAIThinkingPolicy:
     """Thinking policy of the OpenAI model that will answer, from the registry.
 
-    No registry (direct use, tests) -> a policy with the documented levels, so a plain
-    call still gets valid reasoning keys.
+    No registry (direct use, tests) -> a policy built from the model's wire profile,
+    so a plain call still gets valid reasoning keys (classic families get none).
     """
     try:
         from ..llama.backend_registry import get_registry
@@ -65,8 +67,12 @@ def _policy_for(api_url: str, model: str) -> OpenAIThinkingPolicy:
                 return policy
     except Exception:  # pragma: no cover - defensive
         pass
-    return OpenAIThinkingPolicy.from_model(
-        {"efforts": list(OPENAI_EFFORTS), "default": "medium", "placement": "top"})
+    profile = profile_for(model)
+    return OpenAIThinkingPolicy.from_model({
+        "efforts": list(profile.efforts) or list(OPENAI_EFFORTS),
+        "default": profile.default_effort or "medium",
+        "placement": profile.reasoning_placement,
+    })
 
 
 def _msg_chars(m: dict) -> int:
@@ -165,6 +171,17 @@ async def chat_stream(
                 f"OpenAI is not reachable at {api_url}. Check the Bearer key in "
                 "config/openai_servers.json ('api_key') or config.OPENAI_API_KEY."
             )
+
+    # gpt-5.6/gpt-6 reject function tools in /chat/completions entirely (their default
+    # reasoning is non-disableable, so even omitting reasoning_effort still 400s) ->
+    # route tool requests to /v1/responses.
+    profile = profile_for(model)
+    if tools and profile.tools_mode == TOOLS_RESPONSES:
+        return await chat_responses(
+            api_url=api_url, timeout=timeout, model=model, messages=messages,
+            tools=tools, reasoning_effort=body.get("reasoning_effort"),
+            context_window=window, headers=headers, websocket=websocket,
+        )
 
     full_response_parts: List[str] = []
     content_buffer = ""
@@ -308,7 +325,8 @@ async def chat_stream(
                         f"completion_tokens={completion_tokens})")
         if was_truncated:
             logger.warning(f"[TRUNCATED] Generation hit the output limit "
-                           f"({payload['max_tokens']} tokens) before finishing.")
+                           f"({payload.get(profile_for(model).token_key)} "
+                           f"tokens) before finishing.")
 
         stats = TokenStats(
             prompt_tokens=prompt_tokens,

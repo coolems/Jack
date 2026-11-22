@@ -5,6 +5,10 @@ so context window, vision and reasoning effort come from a small static table ke
 model family (longest prefix wins: gpt-4o-2024-11-20 -> gpt-4o). An id with no table
 entry gets safe defaults: no vision, no reasoning effort, and the config context
 fallback - the model still routes, it just cannot be told to think.
+
+The request SHAPE (reasoning levels, default effort, where the reasoning key goes)
+comes from openai/wire_profiles.py, not from this table: ctx/max_output/vision are the
+only fields declared here.
 """
 
 import logging
@@ -13,38 +17,27 @@ from typing import Dict, List, Optional
 from ..llama.http_client import get_async_client
 from ..llama.model_identity import model_key as model_key_of
 from .thinking import OpenAIThinkingPolicy
+from .wire_profiles import family_for, profile_for
 
 logger = logging.getLogger("COOLEMS.Provider.OpenAI.Models")
 
 # Static per-family metadata: ctx (context window), max_output (output ceiling),
-# vision (image input), efforts (reasoning_effort levels, cheapest first),
-# default (the model's own default effort), placement (where reasoning_effort goes:
-# "top" for o-series, "text" for gpt-5's text.format).
+# vision (image input). Reasoning fields come from wire_profiles for the same family.
 KNOWN_MODELS: Dict[str, dict] = {
-    "gpt-4o": {"ctx": 128000, "max_output": 16384, "vision": True, "efforts": []},
-    "gpt-4o-mini": {"ctx": 128000, "max_output": 16384, "vision": True, "efforts": []},
-    "gpt-4o-audio": {"ctx": 128000, "max_output": 16384, "vision": True, "efforts": []},
-    "gpt-4.1": {"ctx": 1000000, "max_output": 32768, "vision": True, "efforts": []},
-    "gpt-5": {"ctx": 272000, "max_output": 128000, "vision": True,
-              "efforts": ["low", "medium", "high"], "default": "medium", "placement": "text"},
-    "gpt-5.1": {"ctx": 272000, "max_output": 128000, "vision": True,
-                "efforts": ["low", "medium", "high"], "default": "medium", "placement": "text"},
-    "gpt-5.2": {"ctx": 272000, "max_output": 128000, "vision": True,
-                "efforts": ["low", "medium", "high"], "default": "medium", "placement": "text"},
-    "gpt-5.4": {"ctx": 272000, "max_output": 128000, "vision": True,
-                "efforts": ["low", "medium", "high"], "default": "medium", "placement": "text"},
-    "gpt-5.5": {"ctx": 272000, "max_output": 128000, "vision": True,
-                "efforts": ["low", "medium", "high"], "default": "medium", "placement": "text"},
-    "gpt-5.6": {"ctx": 272000, "max_output": 128000, "vision": True,
-                "efforts": ["low", "medium", "high"], "default": "medium", "placement": "text"},
-    "gpt-6": {"ctx": 272000, "max_output": 128000, "vision": True,
-              "efforts": ["low", "medium", "high"], "default": "medium", "placement": "text"},
-    "o1": {"ctx": 200000, "max_output": 100000, "vision": True,
-           "efforts": ["low", "medium", "high"], "default": "medium", "placement": "top"},
-    "o3": {"ctx": 200000, "max_output": 100000, "vision": True,
-           "efforts": ["low", "medium", "high"], "default": "medium", "placement": "top"},
-    "o4-mini": {"ctx": 200000, "max_output": 100000, "vision": True,
-                "efforts": ["low", "medium", "high"], "default": "medium", "placement": "top"},
+    "gpt-4o": {"ctx": 128000, "max_output": 16384, "vision": True},
+    "gpt-4o-mini": {"ctx": 128000, "max_output": 16384, "vision": True},
+    "gpt-4o-audio": {"ctx": 128000, "max_output": 16384, "vision": True},
+    "gpt-4.1": {"ctx": 1000000, "max_output": 32768, "vision": True},
+    "gpt-5": {"ctx": 272000, "max_output": 128000, "vision": True},
+    "gpt-5.1": {"ctx": 272000, "max_output": 128000, "vision": True},
+    "gpt-5.2": {"ctx": 272000, "max_output": 128000, "vision": True},
+    "gpt-5.4": {"ctx": 272000, "max_output": 128000, "vision": True},
+    "gpt-5.5": {"ctx": 272000, "max_output": 128000, "vision": True},
+    "gpt-5.6": {"ctx": 272000, "max_output": 128000, "vision": True},
+    "gpt-6": {"ctx": 272000, "max_output": 128000, "vision": True},
+    "o1": {"ctx": 200000, "max_output": 100000, "vision": True},
+    "o3": {"ctx": 200000, "max_output": 100000, "vision": True},
+    "o4-mini": {"ctx": 200000, "max_output": 100000, "vision": True},
 }
 
 
@@ -52,24 +45,20 @@ def metadata_for(model_id: str) -> dict:
     """The static metadata for one model id: exact table row first, then the longest
     matching family prefix, then safe defaults (no vision, no efforts, no ctx).
 
-    A family matches when the id starts with it AND the next char is not a digit, so
-    "gpt-5.1-2025-11-13" matches gpt-5.1 (not gpt-5) and "gpt-5-2025-08-07" matches gpt-5.
+    Family matching is wire_profiles.family_for (a family matches when the id starts
+    with it AND the next char is not a digit, so "gpt-5.1-2025-11-13" matches gpt-5.1
+    and "gpt-5-2025-08-07" matches gpt-5). The reasoning fields are merged in from the
+    family's wire profile, so the shape lives in exactly one table.
     """
-    mid = (model_id or "").strip().lower()
-    if mid in KNOWN_MODELS:
-        return dict(KNOWN_MODELS[mid])
-    best = ""
-    for family in KNOWN_MODELS:
-        if not mid.startswith(family):
-            continue
-        nxt = mid[len(family):len(family) + 1]
-        if nxt and nxt.isdigit():
-            continue
-        if len(family) > len(best):
-            best = family
-    if best:
-        return dict(KNOWN_MODELS[best])
-    return {"ctx": None, "max_output": None, "vision": False, "efforts": []}
+    family = family_for(model_id)
+    meta = dict(KNOWN_MODELS.get(family) or {"ctx": None, "max_output": None,
+                                             "vision": False})
+    profile = profile_for(model_id)
+    meta["efforts"] = list(profile.efforts)
+    if profile.reasoning_key:
+        meta["default"] = profile.default_effort
+        meta["placement"] = profile.reasoning_placement
+    return meta
 
 
 def parse_models(payload: dict, override: Optional[dict] = None) -> List[Dict]:

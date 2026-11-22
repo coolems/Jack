@@ -16,6 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import asyncio
 import logging
+
+from app.asyncio_teardown import install_teardown_handler
+
 logger = logging.getLogger("COOLEMS")
 
 
@@ -189,6 +192,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
 
     @app.on_event("startup")
     async def startup_event():
+        install_teardown_handler()
         api_keys = get_api_keys()
         logger.info("=" * 60)
         logger.info("COOLEMS API Startup v5.0.0")

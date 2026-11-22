@@ -1,21 +1,25 @@
 """Payload transform: our llama-shaped payload -> OpenAI's /chat/completions body.
 
-OpenAI accepts the OpenAI surface but rejects some llama.cpp keys:
+The request SHAPE comes from openai/wire_profiles.py (one row per model family): the
+output-ceiling key name, whether sampling params are accepted, and the reasoning key.
 
-  sent      model, messages, stream, temperature (non-reasoning models only),
-            max_tokens, top_p, tools, stream_options (only with stream=true),
-            reasoning_effort / text.format.reasoning_effort (reasoning models)
+  sent      model, messages, stream, temperature (classic families only),
+            max_tokens / max_completion_tokens (per profile.token_key),
+            top_p (classic families only), tools, stream_options (only with stream=true),
+            reasoning_effort (reasoning families, always top level)
   dropped   top_k, min_p, presence_penalty, frequency_penalty, chat_template_kwargs,
-            temperature + top_p for o-series models (they reject sampling params)
+            temperature + top_p for reasoning families (they reject sampling params)
   echoed    reasoning_content on an assistant tool_calls turn (kept when present)
 
-Verified against api.openai.com: unknown extra keys are tolerated, but o-series models
-400 on temperature/top_p, so those keys are dropped for them.
+Verified against api.openai.com: unknown extra keys are tolerated, but reasoning
+families 400 on temperature/top_p and on a nested text.format body.
 """
 
 from typing import Dict, List, Optional
 
 from config import LLAMA_SERVER_TEMP, OPENAI_MAX_NEW_TOKENS
+
+from .wire_profiles import TOOLS_CHAT_NO_REASONING, is_reasoning, profile_for
 
 # Keys our llama payload carries that OpenAI has no use for.
 _DROP_KEYS = ("top_k", "min_p", "presence_penalty", "frequency_penalty",
@@ -50,9 +54,11 @@ def _clean_message(msg) -> dict:
 
 
 def _is_reasoning_model(model: str) -> bool:
-    """True for families that reject sampling params (o-series)."""
-    mid = (model or "").lower()
-    return mid.startswith(("o1", "o3", "o4"))
+    """True for families that reject sampling params and need max_completion_tokens.
+
+    Delegates to openai.wire_profiles: the family table is the single source of truth.
+    """
+    return is_reasoning(model)
 
 
 def build_openai_payload(
@@ -68,21 +74,23 @@ def build_openai_payload(
 ) -> Dict:
     """Build an OpenAI /chat/completions body from our request values.
 
-    thinking_body: {"reasoning_effort": "..."} (o-series) or
-    {"text": {"format": {"type": "text", "reasoning_effort": "..."}}} (gpt-5) from
+    thinking_body: {"reasoning_effort": "..."} (o-series, gpt-5, gpt-6) from
     openai.thinking.thinking_body(); empty sends no reasoning keys, so the model keeps
     its documented default.
     """
     if max_tokens is None:
         max_tokens = OPENAI_MAX_NEW_TOKENS
 
+    profile = profile_for(model)
     payload: Dict = {
         "model": model,
         "messages": [_clean_message(m) for m in (messages or [])],
         "stream": stream,
-        "max_tokens": max_tokens,
     }
-    if not _is_reasoning_model(model):
+    # The family's wire profile names the output-ceiling key (gpt-5/gpt-6/o-series
+    # reject 'max_tokens'; they take max_completion_tokens).
+    payload[profile.token_key] = max_tokens
+    if profile.sampling_params:
         if temperature is None:
             temperature = LLAMA_SERVER_TEMP
         payload["temperature"] = temperature
@@ -94,6 +102,10 @@ def build_openai_payload(
         payload["stream_options"] = {"include_usage": True}
     if thinking_body:
         payload.update(thinking_body)
+    # gpt-5.4/gpt-5.5 400 on "Function tools with reasoning_effort are not supported":
+    # with tools present they must not carry an explicit reasoning_effort.
+    if tools and profile.tools_mode == TOOLS_CHAT_NO_REASONING:
+        payload.pop("reasoning_effort", None)
     return payload
 
 
@@ -108,17 +120,22 @@ def transform_llama_payload(llama_payload: Dict, *,
     """
     body = {k: v for k, v in (llama_payload or {}).items() if k not in _DROP_KEYS}
     body["messages"] = [_clean_message(m) for m in body.get("messages") or []]
-    if _is_reasoning_model(str(body.get("model") or "")):
+    profile = profile_for(str(body.get("model") or ""))
+    if not profile.sampling_params:
         body.pop("temperature", None)
         body.pop("top_p", None)
+    if profile.token_key != "max_tokens" and "max_tokens" in body:
+        body[profile.token_key] = body.pop("max_tokens")
     if body.get("stream"):
         body["stream_options"] = {"include_usage": True}
     else:
         body.pop("stream_options", None)
     if max_tokens is not None:
-        body["max_tokens"] = max_tokens
+        body[profile.token_key] = max_tokens
     if thinking_body is not None:
         body.pop("reasoning_effort", None)
         body.pop("text", None)
         body.update(thinking_body)
+    if body.get("tools") and profile.tools_mode == TOOLS_CHAT_NO_REASONING:
+        body.pop("reasoning_effort", None)
     return body

@@ -409,7 +409,9 @@ const CycleShell = {
     },
 
     _mergeRow(el, text) {
-        const have = el.dataset.raw || '';
+        const raw = el.dataset.raw || '';
+        const have = typeof scrubAiText === 'function' && _hasAiNoise(raw) ? scrubAiText(raw) : raw;
+        el.dataset.raw = have;
         if (have === text) return false;                   // the stream already painted exactly this
         if (text.startsWith(have)) el.dataset.raw = text;  // the row IS the whole streamed text
         else if (have.includes(text)) return false;        // row is a subset already on screen
@@ -550,14 +552,15 @@ const CycleShell = {
      * behavior the plain (non-block) answer bubble already had.
      */
     _paintLive(el) {
-        el.dataset.raw = el.dataset.raw || '';
-        if (typeof scrubAiText === 'function' && _hasAiNoise(el.dataset.raw)) {
-            el.dataset.raw = scrubAiText(el.dataset.raw);
-        }
+        // Keep the source intact until the closing tag arrives in a later chunk.
+        const visibleText = () => {
+            const raw = el.dataset.raw || '';
+            return typeof scrubAiText === 'function' && _hasAiNoise(raw) ? scrubAiText(raw) : raw;
+        };
         if (typeof parseMarkdown !== 'function') {
             // No markdown renderer loaded: plain text still needs newlines preserved.
             el.classList.add('live');
-            el.textContent = el.dataset.raw;
+            el.textContent = visibleText();
             return;
         }
         // Markdown paints <p> + <br>, so the live pre-wrap class must go - keeping it would
@@ -567,14 +570,14 @@ const CycleShell = {
         if (!el._lastPaint || now - el._lastPaint >= this.LIVE_PAINT_MS) {
             if (el._paintTimer) { clearTimeout(el._paintTimer); el._paintTimer = null; }
             el._lastPaint = now;
-            el.innerHTML = parseMarkdown(el.dataset.raw, true);
+            el.innerHTML = parseMarkdown(visibleText(), true);
             return;
         }
         if (!el._paintTimer) {
             el._paintTimer = setTimeout(() => {
                 el._paintTimer = null;
                 el._lastPaint = Date.now();
-                el.innerHTML = parseMarkdown(el.dataset.raw, true);
+                el.innerHTML = parseMarkdown(visibleText(), true);
             }, this.LIVE_PAINT_MS - (now - el._lastPaint));
         }
     },
@@ -595,16 +598,15 @@ const CycleShell = {
      */
     appendStream(block, kind, text, stepNo, final) {
         if (!block || !text) return;
-        // Protocol lines never enter the AI strip (see CycleRows/scrubAiText): a live chunk
-        // that is only marker markup paints NOTHING, so the answer grows with real words only.
-        const visible = (typeof scrubAiText === 'function') ? scrubAiText(text) : text;
+        const live = stepNo == null;
+        // Scrub assembled text when painting, not individual stream fragments.
+        const visible = (!live && typeof scrubAiText === 'function') ? scrubAiText(text) : text;
         if (!visible) return;
         const empty = block.aiEl.querySelector('.cycle-ai-empty');
         if (empty) empty.remove();
         // The strip now has text, so its Copy chip becomes visible (CSS hides it while
         // data-empty="1", i.e. before the first answer chunk of this turn).
         block.aiEl.dataset.empty = '0';
-        const live = stepNo == null;
         // WHICH STEP THIS TEXT BELONGS TO. cycle_step for step N only arrives AFTER that
         // step's chunks (settle_step runs when the provider call is done), so while step N
         // streams counts.turns is still N-1 - a live chunk belongs to N, the step streaming
@@ -652,9 +654,6 @@ const CycleShell = {
             seg.answerEl.dataset.final = '1';
             seg.wrapEl.dataset.final = '1';
         }
-        // The SCRUBBED chunk is what accumulates, so dataset.raw matches the scrubbed
-        // speech row the backend flushes for this same text - _mergeRow can then recognise
-        // it as already painted instead of appending the answer a second time.
         const changed = live ? this._appendLive(seg.answerEl, visible)
                              : this._mergeRow(seg.answerEl, visible);
         if (!changed) return;
