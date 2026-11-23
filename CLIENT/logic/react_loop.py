@@ -422,8 +422,9 @@ async def run_react_loop(
     # FULL context window as reported by the SERVER - the same number the UI status bar
     # shows ("200K ctx"). The guardian threshold is measured against THIS, not against the
     # 0.90 history budget, so a notice can never claim "nearly full" while the bar shows
-    # ~100K tokens still free. Read live: the SERVER rewrites CONTEXT_WINDOW_TOKENS on
-    # every auth handshake.
+    # ~100K tokens still free. This is only the starting value: both numbers are re-read
+    # at the top of every iteration (see WINDOW REFRESH below), because the window that
+    # matters is the one the backend that answers THIS run reports in its stats frame.
     window_tokens = get_context_window() or token_limit
 
     # Output room is guaranteed SERVER-side now: streaming.py clamps
@@ -536,6 +537,16 @@ async def run_react_loop(
             # so a dense tool result cannot slip past the trim/guardian gate under a chars/4
             # under-count (the HTTP 400 "prompt too long" root cause).
             await refresh_exact_token_cache(getattr(config, "provider", None), messages)
+
+            # WINDOW REFRESH (every iteration): the auth handshake can only report a
+            # fleet-wide window, while the stats frame of the PREVIOUS call carries the real
+            # window of the backend that served it (adopted into CONTEXT_WINDOW_TOKENS by
+            # push_token_stats). Re-reading both numbers here means a window learned mid-run
+            # applies to THIS run instead of the next one - a run that started on a
+            # fleet-minimum figure used to keep trimming/guarding against it while >900K
+            # tokens were actually free.
+            token_limit = max_history_tokens()
+            window_tokens = get_context_window() or token_limit
 
             message_budget = max(1024, token_limit - est_tools_tokens)
             local_est_now = get_token_count(messages) + est_tools_tokens
@@ -894,6 +905,66 @@ async def run_react_loop(
 
 
 
+            # Handle incomplete generations before parsing tool markup or honoring
+            # a completion marker. The backend may have emitted either before cutoff.
+            if getattr(stats, "truncated", False):
+                stopped = check_stop_event(config)
+                if stopped:
+                    final_response = stopped
+                    break
+                discarded = getattr(stats, "discarded_tool_calls", False)
+                partial = provider_result if isinstance(provider_result, str) else ""
+                if discarded or _extract_tool_calls(partial) or _looks_like_tool_markup(partial):
+                    discarded = True
+                    partial = ""
+                # A marker in an incomplete generation is not a completion signal.
+                partial = partial.replace("Agentic AI: TASK DONE", "").strip()
+                if _has_pending_steers(config) and await _apply_pending_steers(config, messages):
+                    tool_iteration += 1
+                    continue
+                if partial:
+                    temp_thinking.append(partial)
+                if (truncation_resumes >= MAX_TRUNCATION_RESUMES
+                        or tool_iteration + 1 >= AGENTIC_MAX_TOOL_ITERATIONS):
+                    notice = "The model response was cut off and could not be completed."
+                    if discarded:
+                        notice += " The incomplete tool-call batch did not run."
+                    final_response = "\n\n".join([*temp_thinking, notice])
+                    await _rec(cycle.announce_final(step_no) if cycle else None)
+                    break
+
+                truncation_resumes += 1
+                if discarded:
+                    instruction = ("Your previous tool-call batch was cut off and none of that batch ran. "
+                                   "If still needed, send one small, complete tool call with valid arguments. "
+                                   "Do not repeat tools whose results are already in history.")
+                elif partial:
+                    # Preserve the full answer for the user, but only send the tail back
+                    # so a large partial response does not consume the next context window.
+                    messages.append({"role": "assistant", "content": partial[-8192:]})
+                    instruction = ("Your previous answer was cut off. The preceding message contains its tail. "
+                                   "Continue from there without repeating earlier text and finish concisely.")
+                else:
+                    instruction = ("Your previous response was cut off before producing a visible answer. "
+                                   "Answer directly and briefly, or make one small tool call if needed.")
+                logger.warning("[AGENTIC] Recovering incomplete generation (%s/%s, discarded_tools=%s)",
+                               truncation_resumes, MAX_TRUNCATION_RESUMES, discarded)
+                if config.websocket:
+                    try:
+                        await config.websocket.send_text(json.dumps({
+                            "type": "system",
+                            "content": ("The model response was cut off. "
+                                        f"Recovering ({truncation_resumes}/{MAX_TRUNCATION_RESUMES})…"),
+                        }))
+                    except Exception:
+                        pass  # UI socket may already be closed
+                messages.append({"role": "user", "content": (
+                    "[SYSTEM NOTICE] " + instruction
+                    + " End with 'Agentic AI: TASK DONE' only when the task is finished."
+                )})
+                tool_iteration += 1
+                continue
+
             # Check for tool calls — FILTER OUT MALFORMED ONES (empty/whitespace names)
             raw_tool_calls = _extract_tool_calls(provider_result)
             tool_calls = [tc for tc in raw_tool_calls if _is_valid_tool_call(tc)]
@@ -1005,56 +1076,8 @@ async def run_react_loop(
                 # No tool calls - check if task is truly done
                 ai_response = provider_result if isinstance(provider_result, str) else str(provider_result)
 
-                # ---- EMPTY RESPONSE GUARD (provider-agnostic) ----
-                # A reasoning model can spend its ENTIRE output budget on thinking and return
-                # finish_reason="length" with zero visible content. Persisting that as an
-                # assistant turn (content="") makes the NEXT request invalid on strict
-                # backends (DeepSeek: HTTP 400 "content, tool_calls or reasoning_content must
-                # be set"). Never let an empty assistant message enter the history: re-ask
-                # (bounded by the truncation budget), then fall back to a visible placeholder
-                # so the loop and the DB stay well-formed.
                 if not ai_response.strip():
-                    if stats is not None and getattr(stats, "truncated", False) \
-                            and truncation_resumes < MAX_TRUNCATION_RESUMES:
-                        truncation_resumes += 1
-                        logger.warning(
-                            f"[AGENTIC.DEBUG] react_loop - EMPTY TRUNCATED RESPONSE "
-                            f"{truncation_resumes}/{MAX_TRUNCATION_RESUMES}: the output limit "
-                            f"was hit inside the thinking phase (no visible content). "
-                            f"Re-asking with a short-answer instruction."
-                        )
-                        if config.websocket:
-                            try:
-                                await config.websocket.send_text(json.dumps({
-                                    "type": "system",
-                                    "content": ("The model ran out of output tokens while thinking "
-                                                 f"(empty answer, resume {truncation_resumes}/{MAX_TRUNCATION_RESUMES}) - "
-                                                 "asking it to answer directly..."),
-                                }))
-                            except Exception:
-                                pass  # UI socket may already be closed
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "[SYSTEM NOTICE] Your previous response was cut off by the output token "
-                                "limit while you were still thinking - it produced NO visible text. "
-                                "Do not spend so many tokens thinking: answer directly (or make your "
-                                "tool call now) and keep the reply short. End with 'Agentic AI: TASK DONE' "
-                                "when the task is genuinely finished."
-                            ),
-                        })
-                        tool_iteration += 1
-                        continue
-                    # Re-ask budget spent (or the provider did not flag a truncation): keep the
-                    # loop and the history well-formed with a visible placeholder instead of an
-                    # empty assistant message.
-                    logger.warning(
-                        "[AGENTIC.DEBUG] react_loop - provider returned an EMPTY response "
-                        f"(truncated={getattr(stats, 'truncated', None)}); using a placeholder "
-                        "so no empty assistant message enters the history."
-                    )
-                    ai_response = ("[The model produced no visible answer - the output token limit "
-                                   "was reached during thinking. Please retry or lower the thinking level.]")
+                    ai_response = "[The model produced no visible answer. Please retry.]"
 
                 if raw_tool_calls or _looks_like_tool_markup(ai_response):
                     stopped = check_stop_event(config)
@@ -1172,75 +1195,6 @@ async def run_react_loop(
                     final_response = separator.join(temp_thinking)
                     break
                 else:
-                    # TRUNCATION: the server reports finish_reason == "length" via
-                    # stats.truncated. A cut-off answer must NOT be treated as a normal
-                    # thinking step - that would hit the max-thinking-iterations re-ask loop.
-                    if stats and getattr(stats, "truncated", False):
-                        if truncation_resumes < MAX_TRUNCATION_RESUMES:
-                            truncation_resumes += 1
-                            logger.warning(
-                                f"[AGENTIC.DEBUG] react_loop - TRUNCATED RESPONSE {truncation_resumes}/{MAX_TRUNCATION_RESUMES}: "
-                                f"provider hit its output limit ({stats.generated_tokens} tokens) mid-answer. Asking for a resume."
-                            )
-                            if config.websocket:
-                                try:
-                                    await config.websocket.send_text(json.dumps({
-                                        "type": "system",
-                                        "content": ("Response was cut off at the output limit - "
-                                                     f"asking the model to resume ({truncation_resumes}/{MAX_TRUNCATION_RESUMES})..."),
-                                    }))
-                                except Exception:
-                                    pass  # UI socket may already be closed
-                            # The model can only resume if it SEES what it already wrote - add the partial
-                            # answer to the message list first (same merge rule as the normal thinking path).
-                            if messages and messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
-                                messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
-                                invalidate_message_tokens(messages[-1])  # content mutated in place -> refresh cached token count
-                            else:
-                                messages.append({"role": "assistant", "content": ai_response})
-
-                            resume_msg = {
-                                "role": "user",
-                                "content": (
-                                    "[SYSTEM NOTICE] Your previous response was CUT OFF mid-sentence by the output token limit. "
-                                    "Continue EXACTLY where you stopped - do NOT repeat or re-describe anything already written, "
-                                    "and finish the answer now. End your response with 'Agentic AI: TASK DONE'."
-                                ),
-                            }
-                            messages.append(resume_msg)
-
-                            # Keep the partial in temp_thinking: at TASK DONE time final_response is built from
-                            # ALL accumulated steps, so both halves of the split answer end up in history.
-                            # (This does NOT count as a thinking iteration for the max-thinking counter.)
-                            temp_thinking.append(ai_response)
-
-                            tool_iteration += 1
-                            continue
-                        else:
-                            # Resume budget spent: accept the best partial answer instead of looping forever.
-                            logger.warning(
-                                f"[AGENTIC.DEBUG] react_loop - TRUNCATION RESUME BUDGET SPENT ({MAX_TRUNCATION_RESUMES}): "
-                                f"accepting partial answer as final instead of looping."
-                            )
-                            if config.websocket:
-                                try:
-                                    await config.websocket.send_text(json.dumps({
-                                        "type": "system",
-                                        "content": ("Model kept hitting the output limit - delivering the best partial answer. "
-                                                     "The response may be incomplete."),
-                                    }))
-                                except Exception:
-                                    pass
-                            temp_thinking.append(ai_response)
-                            separator = "\n\n" + "=" * 50 + "\n\n"
-                            final_response = separator.join(temp_thinking) if len(temp_thinking) > 1 else ai_response
-                            # Keep the history contract: final answers end with the TASK DONE marker.
-                            if "Agentic AI: TASK DONE" not in final_response:
-                                final_response += "\n\nAgentic AI: TASK DONE"
-                            # The answer row still opens - this IS the delivered answer.
-                            await _rec(cycle.announce_final(step_no) if cycle else None)
-                            break
-
                     # Increment consecutive thinking counter
                     consecutive_thinking_count += 1
 

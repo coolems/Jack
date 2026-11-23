@@ -128,7 +128,8 @@ async def chat_stream_direct_websocket(
                             total_duration=msg.get("total_duration", 0.0),
                             provider_name="coolems_server", model=model,
                             context_window=msg.get("context_window", 131072),
-                            truncated=bool(msg.get("truncated", False)),  # TRUNCATION FIX (2026-09-10): forward finish_reason flag
+                            truncated=bool(msg.get("truncated", False)),
+                            discarded_tool_calls=bool(msg.get("discarded_tool_calls", False)),
                         )
                     elif t == "done":
                         logger.info(f"[CLIENT] Received done after {msg_count} frames")

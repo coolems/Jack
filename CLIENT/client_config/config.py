@@ -793,6 +793,33 @@ def get_context_window() -> int:
     return CONTEXT_WINDOW_TOKENS
 
 
+def set_context_window(window, source: str = "") -> int | None:
+    """Adopt *window* as the live CONTEXT_WINDOW_TOKENS; return the value now in force.
+
+    The window has two sources and the NARROWER one used to win by accident: the auth
+    handshake can only report a fleet-wide figure, while every stats frame carries the
+    window of the backend that actually answered (TokenStats.context_window - the same
+    number the UI status bar renders). Writing the serving model's window here keeps the
+    trim budget, the context guardian and the status bar on ONE number, so a notice can no
+    longer claim "92% full" while most of the window is free.
+
+    Missing/zero/unchanged values are a no-op (this is called on every stats frame).
+    """
+    global CONTEXT_WINDOW_TOKENS
+    try:
+        value = int(window or 0)
+    except (TypeError, ValueError):
+        return CONTEXT_WINDOW_TOKENS
+    if value <= 0 or value == CONTEXT_WINDOW_TOKENS:
+        return CONTEXT_WINDOW_TOKENS
+    previous = CONTEXT_WINDOW_TOKENS
+    CONTEXT_WINDOW_TOKENS = value
+    logging.getLogger("COOLEMS").info(
+        f"[CLIENT] context_window {previous} -> {value} (source: {source or 'unknown'})"
+    )
+    return CONTEXT_WINDOW_TOKENS
+
+
 def get_model_name() -> str:
     """Live read of MODEL_NAME (boot-time default until SERVER reports the loaded model)."""
     return MODEL_NAME

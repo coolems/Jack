@@ -35,6 +35,7 @@ from config import (
     LLAMA_MODEL_STATE_TTL_SEC,
 )
 
+from ..stream_completion import StreamCompletion
 from ..token_stats import TokenStats
 from .converter import convert_messages_for_vision
 from .payload import build_llama_payload
@@ -42,6 +43,7 @@ from .thinking import ThinkingPolicy, normalize_mode
 from .model_utils import _is_mmproj_file, normalize_model_name
 from .vision_support import VisionNotAvailableError, make_vision_error, _looks_like_mmproj_error
 from .http_client import get_async_client
+from .request_retry import stream_with_request_retry
 from .errors import BackendUnavailableError, ContextWindowExceededError
 from . import model_state
 
@@ -356,6 +358,7 @@ async def chat_stream(
 
     # Track if generation was stopped by user
     was_stopped = False
+    stream_completion = StreamCompletion()
 
     async def flush_content():
         """Flush the content buffer to the WebSocket client."""
@@ -590,9 +593,9 @@ async def chat_stream(
             # Use shared HTTP client pool — no new client created per request
             http_client = await get_async_client()
 
-            async with http_client.stream(
-                "POST",
-                f"{api_url}/v1/chat/completions",
+            async with stream_with_request_retry(
+                http_client, f"{api_url}/v1/chat/completions",
+                stop_event=stop_event, conv_id=conv_id,
                 json=llama_payload,
                 # (2026-11 strata) Bearer auth headers when the backend needs them (Strata);
                 # None on the llama path, which stays byte-for-byte the old request.
@@ -800,6 +803,10 @@ async def chat_stream(
 
                     data_str = line[5:].strip()
                     if data_str == "[DONE]":
+                        stream_completion.done = True
+                        break
+                    if not stream_completion.accept_event(data_str):
+                        logger.warning("[STREAM] Backend response exceeded the SSE output limit")
                         break
 
                     try:
@@ -887,17 +894,14 @@ async def chat_stream(
                                     await flush_content()
 
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse SSE line: {line[:100]}")
-                        continue
+                        stream_completion.damaged = True
+                        logger.warning("[STREAM] Invalid SSE JSON; discarding unfinished output")
+                        break
 
                 # Final flush (skip if stopped - already flushed on break)
                 if not was_stopped:
                     await flush_content()
                     await flush_thinking()
-
-                # Return accumulated tool calls if any
-                if accumulated_tool_calls:
-                    logger.info(f"Received {len(accumulated_tool_calls)} native tool call(s)")
 
                 full_response = ''.join(full_response_parts)
                 total_duration = time.time() - start_time
@@ -927,16 +931,15 @@ async def chat_stream(
                     prompt_tokens = max(1, sum(len(str(m.get("content", ""))) // 4 for m in messages))
                     completion_tokens = max(1, len(full_response) // 4)
 
-                # TRUNCATION FIX (2026-09-10): expose finish_reason to the client. "length" with no
-                # tool call means the answer was CUT OFF at max_tokens - the ReAct loop must treat it
-                # differently from a normal thinking step (resume/accept) instead of re-asking forever.
-                was_truncated = bool(finish_reason == "length" and not accumulated_tool_calls)
+                was_truncated, discard_tools = stream_completion.classify(
+                    finish_reason, bool(accumulated_tool_calls), was_stopped
+                )
                 if finish_reason:
                     logger.info(
                         f"[Llama.cpp] finish_reason={finish_reason!r} (truncated={was_truncated}, "
                         f"completion_tokens={completion_tokens})"
                     )
-                if was_truncated:
+                if was_truncated and finish_reason == "length":
                     logger.warning(
                         f"[TRUNCATED] Generation hit the output limit ({safe_max_tokens} tokens) before finishing. "
                         f"The client will resume or accept this partial answer instead of looping."
@@ -947,6 +950,7 @@ async def chat_stream(
                     prompt_tokens=prompt_tokens,
                     generated_tokens=completion_tokens,
                     truncated=was_truncated,
+                    discarded_tool_calls=discard_tools and not was_stopped,
                     generation_speed=gen_speed,
                     total_duration=round(total_duration, 2),
                     provider_name=provider_name,
@@ -960,7 +964,7 @@ async def chat_stream(
                     f"remaining={stats.tokens_remaining}"
                 )
 
-                if accumulated_tool_calls:
+                if accumulated_tool_calls and not discard_tools:
                     return json.dumps({
                         "type": "tool_calls",
                         "tool_calls": accumulated_tool_calls

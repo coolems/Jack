@@ -313,7 +313,8 @@ const ChatSocketPool = {
                  t === 'tool_end' || t === 'image_generated' || t === 'recovery_warning' ||
                  t === 'token_stats') st = 'generating';   // queue_start = the turn actually began
         else if (t === 'done' || t === 'error' || t === 'cancelled' ||
-                 t === 'provider_error' || t === 'execution_fail') st = 'idle';
+                 t === 'provider_error' || t === 'ollama_error' || t === 'execution_fail' ||
+                 t === 'cycle_end') st = 'idle';
         // system frames keep the current state.
 
         if (st !== this.statuses[convId]) {
@@ -332,7 +333,9 @@ const ChatSocketPool = {
 
     _setDot(convId, status) {
         const item = document.querySelector(`.chat-history-item[data-conv-id="${convId}"]`);
-        if (!item) return;   // sidebar not rendered yet — dot is added on next render via class
+        // Global activity must update even when the sidebar has no row for this chat.
+        this._updatePill();
+        if (!item) return;
         let dot = item.querySelector('.chat-status-dot');
         if (!dot) {
             dot = document.createElement('span');
@@ -340,7 +343,6 @@ const ChatSocketPool = {
             item.insertBefore(dot, anchor ? anchor.nextSibling : null);
         }
         dot.className = `chat-status-dot status-${status}`;
-        this._updatePill();
     },
 
     // ===== Attention badge API (2026-10-09) =========================================
@@ -403,8 +405,7 @@ const ChatSocketPool = {
 
         const span = el.querySelector('span');
         if (!span) return;
-        // strip a previous multi-chat suffix before appending the new one
-        let text = span.textContent.replace(/\s*·\s*(\d+(?: gen)?(?: · \d+ queued)?|(\d+ (?:chats|workspaces) live))$/, '');
+        const text = COOLEMS._lastConnectionMessage || 'Disconnected';
         let suffix = '';
         if (generating || queued) {
             suffix = ` · ${generating} gen`;

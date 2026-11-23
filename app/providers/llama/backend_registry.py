@@ -936,13 +936,21 @@ class LlmBackendRegistry:
         return sum(b.capacity for b in self.backends.values() if b.healthy)
 
     def effective_context_window(self) -> int:
-        """Smallest healthy per-slot context (the client trims prompts against this).
+        """Smallest healthy per-slot context of the INTERCHANGEABLE llama pool.
 
-        With mixed machines, using the minimum is the only safe global number: a prompt
-        sized for 181k could overflow a node that only has 64k per slot.
+        The client trims prompts against this figure at load time, and a prompt sent to
+        the llama pool may land on any healthy node, so the minimum over that pool is the
+        only safe global number (a prompt sized for 181k would overflow a 64k node).
+
+        Hosted children (OpenAI / DeepSeek) and Strata endpoints are NOT part of that pool:
+        each serves its own model with its own window, so folding them in produced a
+        meaningless global minimum - gpt-4o's 128000 made a 1M-token request look 92% full
+        and tripped the client's context guardian while >900K tokens were free. The window
+        that really matters for a request travels in its own stats frame
+        (TokenStats.context_window of the backend that served it).
         """
         vals = [b.ctx_per_slot for b in self.backends.values()
-                if b.healthy and b.ctx_per_slot and b.ctx_per_slot > 0]
+                if b.kind == "llama" and b.healthy and b.ctx_per_slot and b.ctx_per_slot > 0]
         return min(vals) if vals else CONTEXT_WINDOW_TOKENS
 
     def _row(self, b: LlmBackend) -> dict:

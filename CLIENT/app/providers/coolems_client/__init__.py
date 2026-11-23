@@ -73,9 +73,12 @@ def apply_auth_info(auth_response: dict, context: str = "") -> None:
         return
     server_context_window = auth_response.get("context_window")
     if server_context_window is not None:
-        import client_config.config as _cfg
-        _cfg.CONTEXT_WINDOW_TOKENS = int(server_context_window)
+        # Routed through the config setter: ONE mutation point for the live window, and the
+        # same log line format as the per-request stats adoption (that one carries the
+        # window of the backend that actually answered and therefore wins later on).
+        from client_config import set_context_window
         where = f" via {context}" if context else ""
+        set_context_window(server_context_window, f"SERVER auth_ok{where}")
         logger.info(f"[CLIENT] Received context_window={server_context_window} from SERVER{where}")
 
     # (2026-09-29) authoritative role/email cache - the CLIENT keeps no identity on disk.

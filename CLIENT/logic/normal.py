@@ -143,19 +143,15 @@ async def normal_mode(
     if stopped:
         return stopped
 
-    # EMPTY RESPONSE GUARD (provider-agnostic): a reasoning model can spend its whole
-    # output budget thinking and return finish_reason="length" with zero visible text.
-    # Persisting "" as the assistant turn would make the NEXT request invalid on strict
-    # backends (DeepSeek: HTTP 400 "content, tool_calls or reasoning_content must be
-    # set"). Return a visible placeholder so the history stays well-formed.
+    if getattr(stats, "truncated", False):
+        if getattr(stats, "discarded_tool_calls", False):
+            return "The model response was cut off. The incomplete tool-call batch did not run."
+        partial = (final_response or "").strip()
+        notice = "The model response was cut off before it finished."
+        return f"{partial}\n\n{notice}" if partial else notice
+
     if not (final_response or "").strip():
-        logger.warning(
-            f"[NORMAL] provider returned an EMPTY response (truncated="
-            f"{getattr(stats, 'truncated', None)}); using a placeholder so no empty "
-            "assistant message enters the history."
-        )
-        return ("[The model produced no visible answer - the output token limit was "
-                "reached during thinking. Please retry or lower the thinking level.]")
+        return "The model produced no visible answer. Please retry."
 
     return final_response
 

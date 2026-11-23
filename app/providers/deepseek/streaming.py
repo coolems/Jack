@@ -32,6 +32,7 @@ from ..llama.converter import convert_messages_for_vision
 from ..llama.http_client import get_async_client
 from ..llama.streaming import _iter_sse_with_stall
 from ..llama.thinking import normalize_mode
+from ..stream_completion import StreamCompletion
 from ..token_stats import TokenStats
 from .payload import build_deepseek_payload
 from .thinking import DEEPSEEK_EFFORTS, DeepSeekThinkingPolicy, thinking_body
@@ -176,6 +177,7 @@ async def chat_stream(
     completion_tokens = 0
     finish_reason: Optional[str] = None
     was_stopped = False
+    stream_completion = StreamCompletion()
 
     async def flush_content():
         nonlocal content_buffer, message_counter, last_send_time
@@ -238,6 +240,10 @@ async def chat_stream(
                     continue
                 data_str = line[5:].strip()
                 if data_str == "[DONE]":
+                    stream_completion.done = True
+                    break
+                if not stream_completion.accept_event(data_str):
+                    logger.warning("[STREAM] Backend response exceeded the SSE output limit")
                     break
                 try:
                     data = json.loads(data_str)
@@ -287,8 +293,9 @@ async def chat_stream(
                                 or (now - last_send_time) >= STREAM_BUFFER_TIMEOUT_SEC):
                             await flush_content()
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse SSE line: {line[:100]}")
-                    continue
+                    stream_completion.damaged = True
+                    logger.warning("[STREAM] Invalid SSE JSON; discarding unfinished output")
+                    break
 
             if not was_stopped:
                 await flush_content()
@@ -302,11 +309,13 @@ async def chat_stream(
             prompt_tokens = max(1, est_prompt_tokens)
             completion_tokens = max(1, len(full_response) // 4)
 
-        was_truncated = bool(finish_reason == "length" and not accumulated_tool_calls)
+        was_truncated, discard_tools = stream_completion.classify(
+            finish_reason, bool(accumulated_tool_calls), was_stopped
+        )
         if finish_reason:
             logger.info(f"[DeepSeek] finish_reason={finish_reason!r} (truncated={was_truncated}, "
                         f"completion_tokens={completion_tokens})")
-        if was_truncated:
+        if was_truncated and finish_reason == "length":
             logger.warning(f"[TRUNCATED] Generation hit the output limit "
                            f"({payload['max_tokens']} tokens) before finishing.")
 
@@ -314,6 +323,7 @@ async def chat_stream(
             prompt_tokens=prompt_tokens,
             generated_tokens=completion_tokens,
             truncated=was_truncated,
+            discarded_tool_calls=discard_tools and not was_stopped,
             generation_speed=round(completion_tokens / total_duration, 1)
             if total_duration > 0 and completion_tokens > 0 else None,
             total_duration=round(total_duration, 2),
@@ -322,7 +332,7 @@ async def chat_stream(
             context_window=window,
         )
 
-        if accumulated_tool_calls:
+        if accumulated_tool_calls and not discard_tools:
             logger.info(f"Received {len(accumulated_tool_calls)} native tool call(s)")
             return json.dumps({"type": "tool_calls", "tool_calls": accumulated_tool_calls}), stats
         return full_response, stats

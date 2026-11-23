@@ -27,7 +27,7 @@ function updateConnectionStatus(status, message) {
     const el = document.getElementById('connectionStatus');
     if (!el) return;
 
-    // Store previous status for model switch recovery
+    // Keep the base connection label separate from the workspace activity suffix.
     COOLEMS._lastConnectionStatus = status;
     COOLEMS._lastConnectionMessage = message;
 
@@ -37,6 +37,7 @@ function updateConnectionStatus(status, message) {
 
     // Also update the status in COOLEMS state for debugging
     COOLEMS.connectionStatus = status;
+    ChatSocketPool._updatePill();
 }
 
 function handleSendClick() {
@@ -788,7 +789,8 @@ function handleWebSocketMessage(data, ownerConvId) {
             if (!convId || convId === COOLEMS.currentConversation) {
                 COOLEMS.isStreaming = false;
                 setButtonState(false);
-                updateConnectionStatus('error', 'Provider Error');
+                // This request failed, not the browser socket. Keep the error
+                // on the turn, without changing the shared connection badge.
             }
         }
         return;

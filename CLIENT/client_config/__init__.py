@@ -121,6 +121,7 @@ from .config import (
     # (2026-08-20) live readers -- prefer these over bare name imports for values the
     # SERVER updates at runtime (context window, model).
     get_context_window,
+    set_context_window,   # adopt the SERVING model's window from a stats frame
     get_model_name,
     _load_settings,
     _save_settings,

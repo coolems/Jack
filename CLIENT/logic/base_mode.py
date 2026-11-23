@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import asyncio
 import time
 
-from client_config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE
+from client_config import MODEL_NAME, PROVIDER_DEFAULT_TEMPERATURE, set_context_window
 from app.providers import BaseProvider
 
 
@@ -289,7 +289,16 @@ async def push_token_stats(websocket: Any, stats: Any, session_stats: Optional[D
 
     send_token_stats is imported lazily to keep the logic <-> app.websocket import graph
     acyclic. session_stats carries per-turn session fields (session_generated_tokens).
+
+    Also ADOPTS stats.context_window as the live context window (before any early return, so
+    a turn without a socket still keeps the budget truthful): the stats frame names the
+    backend that answered this request, while the auth handshake can only report a fleet-wide
+    figure. This is the one place every mode passes through, so the trim budget, the context
+    guardian and the status bar all read the SERVING model's window.
     """
+    if stats:
+        set_context_window(getattr(stats, "context_window", 0), "provider stats")
+
     if not websocket or not stats:
         return
 

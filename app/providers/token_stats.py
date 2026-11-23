@@ -29,6 +29,7 @@ class TokenStats:
     provider_name: str = ""
     model: str = ""
     context_window: int = 131072
+    discarded_tool_calls: bool = False
 
     # Derived properties
     @property
@@ -51,6 +52,7 @@ class TokenStats:
             "prompt_tokens": self.prompt_tokens,
             "generated_tokens": self.generated_tokens,
             "truncated": self.truncated,
+            "discarded_tool_calls": self.discarded_tool_calls,
             "generation_speed": self.calculated_speed,
             "total_duration": round(self.total_duration, 2),
             "provider_name": self.provider_name,

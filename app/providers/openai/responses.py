@@ -144,7 +144,7 @@ def _to_responses_tools(tools: Optional[list]) -> List[Dict]:
     return out
 
 
-def _parse_responses_output(data: Dict) -> Tuple[str, List[Dict]]:
+def _parse_responses_output(data: Dict, *, incomplete: bool = False) -> Tuple[str, List[Dict]]:
     """Responses 'output' -> (result_str, tool_calls).
 
     result_str is the chat-completions-shaped tool_calls JSON when the model called a
@@ -175,6 +175,8 @@ def _parse_responses_output(data: Dict) -> Tuple[str, List[Dict]]:
                         texts.append(part)
                     elif isinstance(part, dict) and part.get("type") == "output_text":
                         texts.append(str(part.get("text") or ""))
+    if incomplete:
+        return "".join(texts), tool_calls
     if tool_calls:
         return json.dumps({"type": "tool_calls", "tool_calls": tool_calls}), tool_calls
     text = "".join(texts).strip()
@@ -259,7 +261,8 @@ async def chat_responses(
                        f"({type(e).__name__}: {e})")
         raise ConnectionError("OpenAI connection dropped mid-response. Please try again.") from None
 
-    result_str, tool_calls = _parse_responses_output(data)
+    incomplete = data.get("status") == "incomplete"
+    result_str, tool_calls = _parse_responses_output(data, incomplete=incomplete)
     usage = data.get("usage") or {}
     prompt_tokens = int(usage.get("input_tokens") or 0)
     generated_tokens = int(usage.get("output_tokens") or 0)
@@ -277,6 +280,8 @@ async def chat_responses(
     stats = TokenStats(
         prompt_tokens=prompt_tokens,
         generated_tokens=generated_tokens,
+        truncated=incomplete,
+        discarded_tool_calls=incomplete and bool(tool_calls),
         generation_speed=round(generated_tokens / duration, 1) if duration > 0 else None,
         total_duration=round(duration, 2),
         provider_name="openai",
