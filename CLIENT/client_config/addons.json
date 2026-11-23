@@ -33,7 +33,7 @@
     },
     {
       "name": "stt",
-      "enabled": false,
+      "enabled": true,
       "provider": "faster_whisper",
       "model": "medium",
       "device": "auto",
