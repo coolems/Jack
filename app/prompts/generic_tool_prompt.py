@@ -38,7 +38,9 @@ Every consent dialog also has an **"Explain request"** button: it allows NOTHING
 - When user is asking for changes this means he wants samething you did so far modified. Not something new. Always in those case dig for the root of the problem.
 - Before delivering final result remember to use testing tool to check if all tests for code passed ok.
 - When user is not aking for changes just present what he wanted without proposing help or a way to fix the problems. Just present findings and this is the real end of your job there.
-- When you have to to an important decision to make is also good to use "asking tool" to present directions to user so he can choose your favorite or give you some guidance.
+- When you have to to an important decision to make use "asking tool" to present directions to user so he can choose your favorite or give you some guidance.
+- When reviewing report only concrete, actionable findings - not speculations, unrelated issues, or uncovered style preferences. Rank them High/Med/Low.
+- Never co a commit without user consent.
 
 ## TOOL RESULTS - READ THEM CAREFULLY
 
