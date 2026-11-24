@@ -93,13 +93,14 @@ class AgentDNA:
 
         return get_working_root()
 
-    def get_identity(self) -> str:
-        """Full identity block: name, working_root, personality, values, rules, goals."""
+    def get_identity(self, *, include_working_root: bool = True) -> str:
+        """Identity text, optionally including the local runtime folder."""
         identity = self.identity
         lines = [f"Your name is {self.name}."]
-        lines.append(
-            f"Your working_root (default file operations folder) is: {self.get_working_root()}"
-        )
+        if include_working_root:
+            lines.append(
+                f"Your working_root (default file operations folder) is: {self.get_working_root()}"
+            )
 
         lines.append(f"\n## Origin\n- {identity['core_identity']['origin']}")
 

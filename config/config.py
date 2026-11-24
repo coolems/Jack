@@ -179,7 +179,7 @@ CHROME_CDP_PORT: int = 9222                           # Chrome DevTools Protocol
 # HTTP port of the local CLIENT web UI. Defined in BOTH config packages on purpose:
 # SERVER root code.py launches CLIENT with it; CLIENT/entry/cli_parser.py uses it as its
 # --port default (CLIENT/client_config/config.py holds the client-side copy). Change ONE, change
-# the other - tests/test_port_single_source_of_truth.py fails if a stray literal appears.
+# the other - the two copies must stay equal.
 CLIENT_UI_PORT: int = 8000
 
 # --- Provider Defaults ---

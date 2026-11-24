@@ -13,8 +13,11 @@ async function copyTextToClipboard(raw) {
     const ta = document.createElement('textarea');
     ta.value = raw; ta.style.cssText = 'position:fixed;left:-999999px';
     document.body.appendChild(ta); ta.select();
-    if (!document.execCommand('copy')) throw new Error('copy failed');
-    document.body.removeChild(ta);
+    try {
+        if (!document.execCommand('copy')) throw new Error('copy failed');
+    } finally {
+        ta.remove();
+    }
 }
 
 function _markCopied(btn) {
@@ -428,7 +431,7 @@ async function buildMediaUrl(url) {
     const rel = String(url || '').replace(/^\/files\//, '');
     if (typeof window.getMediaToken !== 'function') throw new Error('media token helper unavailable');
     const token = await window.getMediaToken(rel);
-    return '/api/download?path=' + encodeURIComponent(rel) + '&inline=true&t=' + encodeURIComponent(token);
+    return withConv('/api/download?path=' + encodeURIComponent(rel) + '&inline=true&t=' + encodeURIComponent(token));
 }
 
 // Click handler: open the full-size image in a new tab.
@@ -443,6 +446,7 @@ async function openMessageImage(img) {
         u.searchParams.set('path', rel);
         u.searchParams.set('inline', 'true');
         u.searchParams.set('t', token);
+        applyConvToUrl(u);
         window.open(u.toString(), '_blank');
     } catch (e) {
         showNotification('Could not open image', 'error');
@@ -550,7 +554,7 @@ async function appendMessage(role, content, streaming = false, mediaUrls = [], f
             if (!imgEl) return;
             try {
                 const token = await window.getMediaToken(String(entry.rel).replace(/^\/files\//, ''));
-                imgEl.src = '/api/download?path=' + encodeURIComponent(String(entry.rel).replace(/^\/files\//, '')) + '&inline=true&t=' + encodeURIComponent(token);
+                imgEl.src = withConv('/api/download?path=' + encodeURIComponent(String(entry.rel).replace(/^\/files\//, '')) + '&inline=true&t=' + encodeURIComponent(token));
             } catch (e) {
                 messageImageError(imgEl);
             }

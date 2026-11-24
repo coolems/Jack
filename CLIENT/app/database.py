@@ -2,7 +2,7 @@
 
 Creates the conversations/messages tables on first run (anchored to
 config.DB_PATH) and applies additive column migrations (file_contents,
-ip_address, color). All connections go through app.db_manager
+ip_address, color, parent_id). All connections go through app.db_manager
 (WAL mode, busy timeout, foreign keys enabled).
 """
 
@@ -11,6 +11,7 @@ import logging
 
 from client_config import MODEL_NAME
 from app.db_manager import get_db_connection, init_db_manager
+from app.workspace_tree import migrate_workspace_ids
 
 logger = logging.getLogger("COOLEMS.Database")
 
@@ -59,6 +60,7 @@ def init_db(db_path: str):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
 
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
         table_exists = cursor.fetchone()
@@ -73,6 +75,7 @@ def init_db(db_path: str):
                     system_prompt TEXT DEFAULT 'You are an AI assistant.',
                     ip_address TEXT DEFAULT 'unknown',
                     working_root TEXT DEFAULT NULL,
+                    parent_id TEXT REFERENCES conversations(id) ON DELETE RESTRICT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -121,6 +124,13 @@ def init_db(db_path: str):
                 logger.info("Added working_root column to conversations")
             # Cycle history for pre-existing databases (added 2026-12-04).
             _create_turn_log_table(cursor)
+            if "parent_id" not in conv_cols:
+                cursor.execute(
+                    "ALTER TABLE conversations ADD COLUMN parent_id TEXT "
+                    "REFERENCES conversations(id) ON DELETE RESTRICT"
+                )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id)")
+        migrate_workspace_ids(cursor)
         conn.commit()
         logger.info("Database initialized successfully")
     except Exception as e:

@@ -55,6 +55,37 @@ function escapeJsAttr(value) {
         .replace(/\t/g, '\\t');
 }
 
+// ===== WORKSPACE SCOPING (file panel) =====
+// File-panel requests must carry the active workspace's id so the backend resolves the
+// working_root PER CONVERSATION instead of reading one process-global (two tabs on two
+// workspaces used to race the Files panel). fetch() calls get the id via the
+// X-Conversation-Id header injected in api-key.js; anchor/<img>/<iframe> downloads
+// cannot send headers, so they use convParam()/withConv()/applyConvToUrl() below.
+function currentConvId() {
+    return (typeof COOLEMS !== 'undefined' && COOLEMS.currentConversation)
+        ? String(COOLEMS.currentConversation) : '';
+}
+
+function convParam() {
+    const id = currentConvId();
+    return id ? 'conversation_id=' + encodeURIComponent(id) : '';
+}
+
+function withConv(url) {
+    if (typeof url !== 'string' || !url) return url;
+    const p = convParam();
+    if (!p) return url;
+    return url + (url.indexOf('?') === -1 ? '?' : '&') + p;
+}
+
+function applyConvToUrl(url) {
+    const id = currentConvId();
+    if (id && url && typeof url.searchParams === 'object') {
+        url.searchParams.set('conversation_id', id);
+    }
+    return url;
+}
+
 // ===== SHARED STATE =====
 window.COOLEMS = {
     currentConversation: null,
@@ -199,6 +230,18 @@ function updateCurrentTime() {
 
 
 // ===== DRAG AND DROP =====
+// Safe check for whether a drag event carries file payloads. e.dataTransfer is null on
+// some drag events (notably dragend, and in some engines dragleave), and
+// dataTransfer.types is a DOMStringList (no .includes) in older browsers. Guard both.
+function hasDraggedFiles(e) {
+    const dt = e && e.dataTransfer;
+    if (!dt) return false;
+    const types = dt.types;
+    if (typeof types.includes === 'function') return types.includes('Files');
+    if (typeof types.contains === 'function') return types.contains('Files');
+    return false;
+}
+
 let dragCounter = 0;
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -210,15 +253,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.body.addEventListener('dragenter', (e) => {
+        if (!hasDraggedFiles(e)) return;
         dragCounter++;
-        if (e.dataTransfer.types.includes('Files')) {
-            dragOverlay.classList.add('active');
-            if (inputWrapper) inputWrapper.classList.add('drag-over');
-        }
+        dragOverlay.classList.add('active');
+        if (inputWrapper) inputWrapper.classList.add('drag-over');
     });
 
-    document.body.addEventListener('dragleave', () => {
-        dragCounter--;
+    document.body.addEventListener('dragleave', (e) => {
+        if (!hasDraggedFiles(e)) return;
+        dragCounter = Math.max(0, dragCounter - 1);
         if (dragCounter === 0) {
             dragOverlay.classList.remove('active');
             if (inputWrapper) inputWrapper.classList.remove('drag-over');
@@ -227,7 +270,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.body.addEventListener('dragover', (e) => {
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'copy';
+        if (hasDraggedFiles(e)) e.dataTransfer.dropEffect = 'copy';
     });
 
     // GLOBAL DROP HANDLER - Skip if target is inside input area to prevent double processing
@@ -412,7 +455,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupClipboardPaste();
     log('[INIT] Clipboard paste handler initialized');
 
-    // Initialize ConversationManager (color, rename, sort)
+    // Initialize the workspace tree and sidebar controls
     if (window.ConversationMgr && typeof window.ConversationMgr.init === 'function') {
         window.ConversationMgr.init();
         log('[INIT] ConversationManager initialized');
@@ -427,7 +470,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Load conversations on page init (so sidebar populates after refresh)
     if (typeof loadConversations === 'function') {
-        await loadConversations();
+        const data = await loadConversations();
+        if (data) await restoreWorkspace(data.conversations);
         log('[INIT] Conversations loaded');
     }
 

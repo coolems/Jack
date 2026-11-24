@@ -47,6 +47,20 @@
 
     async function loadWorkingRoot() {
 
+        // File access is scoped to ONE workspace: without an open workspace there is no
+        // folder to report, and the backend refuses unscoped requests (400 + security
+        // event). The chip fills in once a workspace is activated (_activateWorkingRoot
+        // and the working-root POST both refresh it from the scoped response).
+        if (typeof currentConvId !== 'function' || !currentConvId()) {
+
+            currentWorkingRoot = null;
+
+            updateWorkingRootChip();
+
+            return;
+
+        }
+
         try {
 
             const r = await fetch('/api/working_root');

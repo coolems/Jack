@@ -24,7 +24,7 @@
       "voices": {
         "en": "M1",
         "de": "M2",
-        "ro": "M2"
+        "ro": "F1"
       },
       "speaker": "",
       "openai_model": "gpt-4o-mini-tts",

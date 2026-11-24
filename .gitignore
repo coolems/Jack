@@ -5,10 +5,6 @@
 # (pure-PHP WebSocket relay, protocol v4). It ships with real keys pre-filled in its
 # CONFIG block, so it stays OUT of git - deploy it by copying the file to your host.
 
-# Tests: kept only on the development PC for now (2026-09-12). Excluded so they don't
-# get pushed; to open them up again in the future, remove this line and run `git add tests`.
-tests/
-
 # API keys / credentials (NEVER commit)
 config/.api_keys.json
 

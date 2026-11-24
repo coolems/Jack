@@ -34,6 +34,17 @@ _PROJECT_ROOT = os.path.dirname(_CLIENT_DIR)
 _WORKING_ROOT_CACHE: str | None = None
 
 
+class WorkspaceFolderMissing(RuntimeError):
+    """A workspace's stored folder is gone; the caller must refuse, not substitute."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.path = path
+
+    def __str__(self):
+        return str(self.path)
+
+
 def _project_root() -> str:
     """Project root - valid default for any workspace without its own stored value."""
     return _PROJECT_ROOT if os.path.isdir(_PROJECT_ROOT) else os.getcwd()
@@ -79,6 +90,27 @@ def _write_conversation_working_root(conv_id: str, path: str | None) -> bool:
         return False
 
 
+def _effective_stored_root(stored: str | None, conv_id: str | None = None) -> str | None:
+    """Turn a stored conversations.working_root value into a usable folder, or None.
+
+    None covers every unusable case - no value, blank, or a folder that has since vanished -
+    so the caller decides the fallback. Logging is why conv_id is optional.
+    """
+    if stored is None:
+        return None
+    saved_path = str(stored).strip()
+    if not saved_path:
+        return None
+    resolved = os.path.abspath(saved_path)
+    if not os.path.isdir(resolved):
+        logger.warning(
+            "Stored working root for conversation %s does not exist: %s - falling back to project root",
+            str(conv_id)[:8] if conv_id else "-", resolved,
+        )
+        return None
+    return resolved
+
+
 def get_conversation_working_root(conv_id: str | None) -> str | None:
     """Return the stored working root of one conversation, or None.
 
@@ -103,19 +135,9 @@ def get_conversation_working_root(conv_id: str | None) -> str | None:
         logger.debug(f"Could not read working_root for conversation {conv_id}: {e}")
         return None
 
-    if not row or not row[0]:
+    if not row:
         return None
-    saved_path = str(row[0]).strip()
-    if not saved_path:
-        return None
-    resolved = os.path.abspath(saved_path)
-    if not os.path.isdir(resolved):
-        logger.warning(
-            "Stored working root for conversation %s does not exist: %s - falling back to project root",
-            str(conv_id)[:8], resolved,
-        )
-        return None
-    return resolved
+    return _effective_stored_root(row[0], conv_id)
 
 
 def resolve_working_root_for_conv(conv_id: str | None) -> str:
@@ -126,6 +148,30 @@ def resolve_working_root_for_conv(conv_id: str | None) -> str:
     POST /api/working_root uses to "activate" a workspace's folder.
     """
     return get_conversation_working_root(conv_id) or _project_root()
+
+
+def resolve_working_root_from_row(stored: str | None, conv_id: str | None = None) -> str:
+    """Folder of an ALREADY-AUTHORIZED workspace, from its working_root value in hand.
+
+    No database round-trip (the files router authorizes the workspace and resolves its
+    folder from one query) and no silent substitution: the project root is returned only
+    when the workspace never chose a folder. A stored folder that no longer exists raises
+    WorkspaceFolderMissing, because swapping it for another directory would point deletes,
+    uploads and run-python at files the user never picked.
+
+    Raises:
+        WorkspaceFolderMissing: the stored value is not an existing directory.
+    """
+    if stored is None or not str(stored).strip():
+        return _project_root()
+    resolved = os.path.abspath(str(stored).strip())
+    if not os.path.isdir(resolved):
+        logger.warning(
+            "Stored working root for workspace %s does not exist: %s - refusing to substitute",
+            str(conv_id)[:8] if conv_id else "-", resolved,
+        )
+        raise WorkspaceFolderMissing(resolved)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -159,15 +205,14 @@ def get_working_root() -> str:
 def set_working_root(path: str, conv_id: str | None = None) -> str:
     """Activate *path* as the current working root (UI action).
 
-    Updates the in-memory active value. When *conv_id* is given the value is ALSO
-    persisted onto that conversation's row - that DB row is the per-workspace source of
-    truth; switching back to this workspace later restores exactly this folder.
+    An explicit path is saved when *conv_id* is provided. Opening a workspace without
+    a path only reads its saved setting and updates the active UI folder.
 
     Args:
         path: Directory path (absolute or relative to CWD). Must point at an existing
             directory, unless *conv_id* is given and *path* is empty - then the
             conversation's OWN stored value (or the project root fallback) is activated
-            instead. That is how "open workspace" pins a fresh workspace to its folder.
+            instead, without changing the stored setting.
 
     Returns:
         The active working root after this call.
@@ -187,12 +232,13 @@ def set_working_root(path: str, conv_id: str | None = None) -> str:
     else:
         raise ValueError("Cannot set working root: empty path and no conversation_id")
 
+    if path and str(path).strip() and conv_id:
+        if not _write_conversation_working_root(conv_id, resolved):
+            raise RuntimeError("Could not save the working folder for this workspace")
     _WORKING_ROOT_CACHE = resolved
-    if conv_id:
-        _write_conversation_working_root(conv_id, resolved)
     logger.info(
         "Working root activated%s: %s",
-        f" (persisted for conversation {str(conv_id)[:8]})" if conv_id else "",
+        f" (conversation {str(conv_id)[:8]})" if conv_id else "",
         resolved,
     )
     return resolved

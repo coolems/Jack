@@ -34,6 +34,11 @@ class TestTools:
                 continue
             if filepath.name == '__init__.py':
                 continue
+            # This folder also OWNS the test suite (test_*.py) and its helpers (_*.py).
+            # They are suite members, not tools: importing them here would pull pytest -
+            # and the SERVER `app` tree - into the CLIENT process on every startup.
+            if filepath.name.startswith(('test_', '_')):
+                continue
 
             tool_name = filepath.stem
             module_path = f"tools.test_tools.{tool_name}"

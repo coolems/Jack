@@ -64,6 +64,12 @@ ALL_TOOLS: Dict[str, Any] = {}
 for folder in _discover_tool_folders():
     folder_path = os.path.join(_current_dir, folder)
     for file in os.listdir(folder_path):
+        if file.startswith('test_'):
+            # Suite members, not tools (test_tools/ owns the suite). Importing them here
+            # would pull pytest - and the `app` trees - into every CLIENT/SERVER start.
+            continue
+        if folder == 'test_tools' and file.startswith('_'):
+            continue  # suite helpers (_client_imports.py) - private modules, not tools
         if file.endswith('.py') and file != '__init__.py':
             tool_name = file.replace('.py', '')
             try:

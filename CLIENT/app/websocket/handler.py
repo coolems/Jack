@@ -24,10 +24,10 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.helpers import get_ws_client_ip
 from app.prompts import get_chat_prompt, get_system_prompt
 from app.schemas import WebSocketChatMessage
+from app.workspace_tree import is_workspace_id
 from client_config import load_search_engines
 
-# Only send_error remains: every other frame type (system, content, done, provider/execution
-# errors, ...) is emitted by the ChatBus channel while the turn runs in its background task.
+# Generation frames are emitted by the ChatBus while the turn runs.
 from app.websocket.message_types import send_error
 # Assistant-message persistence is owned by the ChatBus; user messages are still saved here
 # in stage 2 before the turn is submitted.
@@ -133,6 +133,18 @@ def create_websocket_handler(
         authenticated, ws_key, ws_session_id = await authenticate_websocket(websocket, api_keys, email=email_param)
         if not authenticated:
             # Connection already closed by authenticate_websocket
+            return None
+
+        if not is_workspace_id(conv_id):
+            try:
+                await websocket.accept()
+                await send_error(
+                    websocket, "This workspace ID is out of date. Reload the page and reopen the workspace.", code=409
+                )
+                await websocket.close(code=1008)
+            finally:
+                if ws_key:
+                    release_websocket_session(ws_key, session_id=ws_session_id)
             return None
 
         await websocket.accept()
@@ -279,11 +291,23 @@ def create_websocket_handler(
         # agent_mode on their own.
         requires_tools, _tool_types = detect_tool_requirement(user_msg)
         # --- Save user message ---
+        changed_titles = []
         save_user_message(
             db_path, cid, user_msg,
             media_urls=media_files,
             file_contents=file_contents,
+            on_title_changed=changed_titles.append,
         )
+        if changed_titles:
+            frame = {"type": "workspace_title_changed"}
+            channel = bus.channels.get(cid) if bus is not None else None
+            if channel is not None:
+                await channel.emit_frame(frame)
+            else:
+                try:
+                    await ws.send_text(json.dumps(frame))
+                except (RuntimeError, OSError, WebSocketDisconnect):
+                    logger.debug("Could not deliver workspace title notification")
 
         # --- Reload and trim history ---
         ctx["history"] = load_history_from_db(cid)

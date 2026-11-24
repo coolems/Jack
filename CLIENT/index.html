@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261126e">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=workspace-tree-audit">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -21,7 +21,8 @@
 
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
-            <button class="new-chat-btn" onclick="newChat()">
+            <div class="workspace-path" id="workspacePath" title="Drop here to move a workspace to Root">Root</div>
+            <button class="new-chat-btn" title="Create a workspace at Root" onclick="newChat()">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 New Workspace
                 <span style="margin-left: auto; opacity: 0.5; font-size: 12px;">Ctrl K</span>
@@ -929,7 +930,7 @@
     <!-- Load scripts in dependency order -->
     <script src="/static/ui/api-key.js?v=20261124a">
     </script>
-    <script src="/static/ui/app.js?v=workspace-model-2">
+    <script src="/static/ui/app.js?v=workspace-tree">
     </script>
     <script src="/static/ui/license-badge.js?v=20261126a">
     </script>
@@ -940,15 +941,16 @@
     <script src="/static/ui/cycle-rows.js?v=20261115q"></script>
     <script src="/static/ui/cycle-shell.js?v=20261115q"></script>
     <script src="/static/ui/cycle-block.js?v=20261115q"></script>
-    <script src="/static/ui/conversation-manager.js?v=20261116a">
+    <script src="/static/ui/workspace-sidebar-controls.js?v=workspace-tree"></script>
+    <script src="/static/ui/conversation-manager.js?v=workspace-tree-audit">
     </script>
-    <script src="/static/ui/conversation.js?v=workspace-model-2">
+    <script src="/static/ui/conversation.js?v=workspace-tree-audit">
     </script>
     <script src="/static/ui/workspace-view.js?v=workspace-model-2"></script>
-    <script src="/static/ui/chat-socket-pool.js?v=workspace-model-2"></script>
+    <script src="/static/ui/chat-socket-pool.js?v=workspace-tree-audit"></script>
     <script src="/static/ui/websocket.js?v=workspace-model-2">
     </script>
-    <script src="/static/ui/message.js?v=workspace-model-2">
+    <script src="/static/ui/message.js?v=workspace-tree-audit">
     
     </script>
     <script src="/static/ui/setup-progress.js?v=20261116a"></script>

@@ -63,6 +63,8 @@ async function downloadSingle(path) {
 
         url.searchParams.set('t', token);
 
+        applyConvToUrl(url);
+
         const a = document.createElement('a');
 
         a.href = url.toString();
@@ -194,6 +196,8 @@ async function openFileTree(path) {
 
         url.searchParams.set('t', token);
 
+        applyConvToUrl(url);
+
         window.open(url.toString(), '_blank');
 
     } catch (e) {
@@ -268,6 +272,8 @@ async function openFile(filename) {
 
         url.searchParams.set('t', token);
 
+        applyConvToUrl(url);
+
         window.open(url.toString(), '_blank');
 
     } catch (e) {
@@ -296,6 +302,8 @@ async function downloadFile(filename) {
         url.searchParams.set('path', filename);
 
         url.searchParams.set('t', token);
+
+        applyConvToUrl(url);
 
         const a = document.createElement('a');
 

@@ -41,7 +41,13 @@ async function buildAuthedUrl(baseUrl) {
     const m = baseUrl.match(/[?&]path=([^&]*)/);
     if (!m) throw new Error('buildAuthedUrl: baseUrl must carry a path= query param');
     const token = await getMediaToken(decodeURIComponent(m[1]));
-    return baseUrl + '&t=' + encodeURIComponent(token);
+    let url = baseUrl + '&t=' + encodeURIComponent(token);
+    // Anchor/<img>/<iframe> cannot send headers, so scope the download to the active
+    // workspace via a query param (the backend resolves the working_root per conversation).
+    const convId = (typeof window !== 'undefined' && window.COOLEMS && window.COOLEMS.currentConversation)
+        ? window.COOLEMS.currentConversation : '';
+    if (convId) url += '&conversation_id=' + encodeURIComponent(convId);
+    return url;
 }
 
 // Expose for the classic (non-module) scripts in static/ui/files/* - they cannot import.

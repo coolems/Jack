@@ -13,6 +13,8 @@ from .working_root import (
     get_working_root,
     get_conversation_working_root,
     resolve_working_root_for_conv,
+    resolve_working_root_from_row,
+    WorkspaceFolderMissing,
 )
 
 # Backward-compat: ``common.WORKING_ROOT`` attribute access still works via
@@ -62,6 +64,8 @@ __all__ = [
     # working_root
     "get_conversation_working_root",
     "resolve_working_root_for_conv",
+    "resolve_working_root_from_row",
+    "WorkspaceFolderMissing",
     "set_working_root",
     "get_working_root",
     # path_security

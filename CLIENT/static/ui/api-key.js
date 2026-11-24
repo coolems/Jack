@@ -604,11 +604,19 @@ async function saveConnectionMode() {
             if (email) {
                 options.headers.set('X-User-Email', email);
             }
+            const convId = (typeof COOLEMS !== 'undefined' && COOLEMS.currentConversation) ? COOLEMS.currentConversation : '';
+            if (convId) {
+                options.headers.set('X-Conversation-Id', convId);
+            }
         } else if (typeof options.headers === 'object') {
             options.headers['X-API-Key'] = key;
             const email = getStoredEmail();
             if (email) {
                 options.headers['X-User-Email'] = email;
+            }
+            const convId = (typeof COOLEMS !== 'undefined' && COOLEMS.currentConversation) ? COOLEMS.currentConversation : '';
+            if (convId) {
+                options.headers['X-Conversation-Id'] = convId;
             }
         }
 

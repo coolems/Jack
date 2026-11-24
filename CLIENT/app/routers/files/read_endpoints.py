@@ -7,7 +7,7 @@ from typing import Dict
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import FileResponse
 
-from app.utils.common import is_text_file, read_docx_as_text, read_text_file, get_working_root, FILE_MAX_WRITE_BYTES
+from app.utils.common import is_text_file, read_docx_as_text, read_text_file, FILE_MAX_WRITE_BYTES
 from .middleware import _safe_relative_path, _get_working_root_dir, _format_datetime, logger
 
 
@@ -276,10 +276,17 @@ def register_read_endpoints(router: APIRouter):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/api/working-root-info")
-    async def get_working_root_info():
-        """Get the ACTIVE working root - the folder of the workspace currently open in the UI."""
+    async def get_working_root_info(conversation_id: str = Query("", description="Workspace id whose folder to report")):
+        """Working root of the requested workspace (or the active one when no id is given).
+
+        No resolution happens here: the router dependency already authorized this
+        conversation_id and resolved its folder into the request scope, so this endpoint
+        reports that value instead of resolving an id of its own.
+        """
         try:
-            return {"working_root": get_working_root()}
+            return {"working_root": _get_working_root_dir()}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Working root info error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -319,10 +326,16 @@ def register_read_endpoints(router: APIRouter):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/api/working_root")
-    async def get_working_root_endpoint():
-        """Get the ACTIVE working root - the folder of the workspace currently open in the UI."""
+    async def get_working_root_endpoint(conversation_id: str = Query("", description="Workspace id whose folder to report")):
+        """Working root of the requested workspace (or the active one when no id is given).
+
+        Same rule as /api/working-root-info: the request-scoped value the dependency
+        resolved is the answer, so no id is resolved twice.
+        """
         try:
-            return {"working_root": get_working_root()}
+            return {"working_root": _get_working_root_dir()}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Working root GET error: {e}")
             raise HTTPException(status_code=500, detail=str(e))

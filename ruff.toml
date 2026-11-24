@@ -19,8 +19,8 @@
 line-length = 120
 target-version = "py312"
 
-# Lint everything we own, gitignore or not (tests/ is gitignored on the dev PC but
-# still needs checking). Heavy/generated trees are listed explicitly below.
+# Lint everything we own, gitignore or not - the suite in tools/test_tools/ ships in git
+# and is checked like the rest of the tree. Heavy/generated trees are listed below.
 respect-gitignore = false
 # force-exclude: the excludes below also apply when a path is passed explicitly
 # (`ruff check tools/exec_tools/_sandbox_parts`), so the fragments below cannot be

@@ -103,7 +103,8 @@ async def _handle_tools_request(ws, user_info, server_provider):
     # contract, plain chat gets identity only (no tool schema, no planning rules).
     from app.prompts import build_chat_prompt, build_system_prompt
     from app.dna import get_agent
-    dna_text = get_agent().get_identity()
+    # The CLIENT injects its own workspace folder per tool turn.
+    dna_text = get_agent().get_identity(include_working_root=False)
     system_prompt = build_system_prompt(dna_text)
     chat_prompt = build_chat_prompt(dna_text)
 

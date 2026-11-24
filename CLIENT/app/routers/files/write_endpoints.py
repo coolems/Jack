@@ -68,6 +68,8 @@ def register_write_endpoints(router: APIRouter):
             if safe_path is None:
                 raise HTTPException(status_code=400, detail="Invalid path")
             if _is_working_root_base(working_root_dir, safe_path):
+                from app import security_events
+                security_events.record("working_root_delete_blocked", requested=path)
                 raise HTTPException(status_code=400, detail="Refusing to delete the working root itself")
             if not os.path.exists(safe_path):
                 raise HTTPException(status_code=404, detail="Path not found")
@@ -193,30 +195,48 @@ def register_write_endpoints(router: APIRouter):
 
     @router.post("/api/working_root")
     async def set_working_root_endpoint(request: Request, data: Dict):
-        """Activate a working root for a workspace (UI action) - per-workspace, DB-backed.
-        PER-WORKSPACE CONTRACT: the value is persisted onto the calling conversation's row
-        (conversations.working_root) - each workspace keeps its own folder and switching
-        workspaces never clobbers another one. There is no disk file anymore; the in-memory
-        active value mirrors the workspace open in the UI so HTTP file endpoints operate on
-        it.
+        """Activate this workspace's working folder (UI action) - per-workspace, DB-backed.
+        An explicit path updates the workspace setting; no path re-activates its saved one.
+
+        The workspace is ALWAYS the one the router-level dependency authorized: a body
+        conversation_id that disagrees with the request scope is refused (and reported), and
+        a request that carries no scope never gets here at all. Without that rule this
+        endpoint was a way to re-point ARBITRARY workspaces, and - because the old code also
+        moved the process-global folder - to hand another client's files to the next
+        id-less request.
         """
         # No role gate (2026-09-30): changing the working root is a regular UI action available
         # to ANY caller/role at any time - no admin restriction.
 
         try:
-            from app.utils.common import set_working_root as _set_wr, get_working_root as _get_wr
+            from app.utils.common import set_working_root
+            from app.helpers import get_client_ip
+            from app import security_events
+            from .middleware import request_workspace_id
+
+            scope = request_workspace_id()  # authorized for THIS request by the dependency
             new_path = str(data.get("working_root") or "").strip()
-            conv_id = str(data.get("conversation_id") or "").strip() or None
+            claimed = str(data.get("conversation_id") or "").strip()
 
-            if not new_path and not conv_id:
-                return {"success": False, "message": "No path provided"}
+            if claimed and claimed != scope:
+                security_events.record(
+                    "workspace_scope_mismatch",
+                    client_ip=get_client_ip(request),
+                    request_scope=scope or "none",
+                    body_scope=claimed,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail="conversation_id in the body must match the request's workspace scope",
+                )
 
-            _set_wr(new_path, conv_id)  # empty path + conv_id activates the workspace's stored root
-            wr = _get_wr()
-            logger.info(f"Working root activated to: {wr} (conv={str(conv_id)[:8] if conv_id else '-'})")
+            wr = set_working_root(new_path, scope)
+            logger.info(f"Working root activated to: {wr} (conv={str(scope)[:8]})")
 
             return {"success": True, "working_root": wr}
 
+        except HTTPException:
+            raise  # 400/403/404/409 must reach the caller as-is
         except Exception as e:
             logger.error(f"Working root SET error: {e}")
             import traceback

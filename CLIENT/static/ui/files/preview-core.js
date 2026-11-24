@@ -175,7 +175,7 @@ async function legacyPreviewFile(path) {
 
             const _imgToken = await window.getMediaToken(path);
 
-            imgUrl = `/api/download?path=${encodeURIComponent(path)}&t=${encodeURIComponent(_imgToken)}`;
+            imgUrl = withConv(`/api/download?path=${encodeURIComponent(path)}&t=${encodeURIComponent(_imgToken)}`);
 
         } catch (e) {
 
@@ -287,7 +287,7 @@ async function legacyPreviewFile(path) {
 
             const _pdfToken = await window.getMediaToken(path);
 
-            pdfUrl = `/api/download?path=${encodeURIComponent(path)}&inline=true&t=${encodeURIComponent(_pdfToken)}`;
+            pdfUrl = withConv(`/api/download?path=${encodeURIComponent(path)}&inline=true&t=${encodeURIComponent(_pdfToken)}`);
 
         } catch (e) {
 

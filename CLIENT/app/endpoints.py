@@ -84,6 +84,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
 
     from app.routers.conversations import create_conversations_router
     from app.routers.files import create_files_router
+    from app.routers.security import create_security_router
     from app.routers.agent import create_agent_router
     from app.routers.downloads import create_downloads_router
     from app.websocket import create_websocket_handler
@@ -419,6 +420,7 @@ def create_app(db_path: str, provider, model_name: str, api_timeout: int,
 # ===== Include route modules =====
     app.include_router(create_conversations_router(db_path=db_path, model_name=model_name, agent=agent))
     app.include_router(create_files_router())
+    app.include_router(create_security_router())  # /api/security/events (admin review)
     app.include_router(create_downloads_router())  # /api/setup/status (2026-09-21)
     app.include_router(create_agent_router(
         provider=provider,

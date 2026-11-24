@@ -154,8 +154,7 @@ The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeF
 ├── utils/                  # Helper scripts (zzz_init.py, gen_ui_certs.py) + ScreenShot.png
     ├── llama_server/           # Local LLM runtime binaries + models (binaries are NOT in git)
 ├── web_server_relay/       # Optional single-file pure-PHP internet relay (index.php; not part of the standard LAN deployment)
-├── tools/test_tools/       # THE test suite (pytest): run_tests() / python -m pytest tools/test_tools
-└── tests/                  # Throwaway live-service checks (gitignored, not pytest-collectable)
+└── tools/test_tools/       # THE test suite (pytest): run_tests() / python -m pytest tools/test_tools
 ```
 
 ---

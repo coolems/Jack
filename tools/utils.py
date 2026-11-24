@@ -182,9 +182,7 @@ def _project_root_fallback() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _working_root_ctx = contextvars.ContextVar("_current_working_root", default=None)
-# LEGACY FALLBACK (mirrors the user-role store below): last value written process-wide;
-# consulted only when the current asyncio context has no working root of its own.
-_current_working_root: Optional[str] = None
+
 
 def set_current_working_root(path) -> None:
     """Publish *path* as the working root for the CURRENT turn/context (None clears it).
@@ -197,10 +195,19 @@ def set_current_working_root(path) -> None:
     Args:
         path: Absolute directory to use for this turn, or None to clear back to fallback.
     """
-    global _current_working_root
     resolved = os.path.normpath(os.path.abspath(path)) if path else None
     _working_root_ctx.set(resolved)
-    _current_working_root = resolved  # legacy fallback for non-async callers/tests
+
+def get_published_working_root() -> Optional[str]:
+    """Return the working root PUBLISHED for the current context, or None.
+
+    Deliberately has NO fallback: a None result means "no root was published for
+    this turn" and is a different fact from "a root was substituted". Callers
+    that must fail loudly instead of guessing (run_tests root resolution) use
+    this; callers that need a usable default keep using get_working_root().
+    """
+    return _working_root_ctx.get()
+
 
 def get_working_root() -> str:
     """Return the working root for the CURRENT context.
@@ -208,16 +215,13 @@ def get_working_root() -> str:
     Resolution order
       1. The ContextVar of the current task/context - set per turn from the active
          workspace's conversations.working_root DB row (per-workspace isolation).
-      2. Legacy module global (non-async callers / direct test sets).
-      3. Project root fallback - valid default when no workspace value is active yet.
+      2. Project root fallback when no workspace context is active.
 
-    Never raises: a missing working root must not break tool execution.
+    An active workspace never falls back to a different directory.
     """
     ctx_wr = _working_root_ctx.get()
-    if ctx_wr and os.path.isdir(ctx_wr):
+    if ctx_wr is not None:
         return ctx_wr
-    if _current_working_root and os.path.isdir(_current_working_root):
-        return _current_working_root
     fallback = _project_root_fallback()
     logger.debug(f"Working root not set for this context - using project root: {fallback}")
     return fallback

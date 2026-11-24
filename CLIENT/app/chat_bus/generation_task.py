@@ -25,10 +25,8 @@ from app.websocket.message_types import (
 from app.websocket.db_ops import (
     save_assistant_message,
     save_user_message,
-    _sync_conversation_working_root,
 )
 from app.websocket.turn_ops import save_turn_log
-from app.db_manager import get_db_connection, close_db_connection
 from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_config
 from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
 from logic.normal import get_ollama_status_message
@@ -323,17 +321,6 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                 except Exception:
                     pass
                 final_response = ""
-
-                # FIX (2026-08-30): keep the working_root sync on cancel (carried over verbatim)
-                try:
-                    conn = get_db_connection()
-                    try:
-                        _sync_conversation_working_root(conn.cursor(), conv_id)
-                        conn.commit()
-                    finally:
-                        close_db_connection(conn)
-                except Exception as sync_err:
-                    logger.warning(f"[CHATBUS] working_root sync after cancel failed: {sync_err}")
 
                 channel.set_status(ChannelStatus.CANCELLED)
                 await _reject_pending_steers(

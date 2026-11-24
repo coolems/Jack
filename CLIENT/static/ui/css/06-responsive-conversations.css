@@ -179,20 +179,6 @@
     color: var(--text-primary);
 }
 
-/* ===== COLOR DOT INDICATOR ===== */
-.chat-color-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    display: inline-block;
-}
-
-.chat-color-dot-none {
-    background: var(--bg-quaternary);
-    border: 1px solid var(--border);
-}
-
 /* ===== COLOR PICKER POPUP ===== */
 .color-picker-popup {
     display: grid;
@@ -252,3 +238,57 @@
   -webkit-text-security: disc;
 }
 
+
+/* Workspace tree */
+.workspace-path {
+    padding: 5px 7px;
+    margin-bottom: 6px;
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.workspace-list .chat-history-item { padding-inline-start: calc(12px + var(--workspace-indent, 0px)); gap: 5px; }
+.workspace-list .chat-history-item.active { box-shadow: inset 2px 0 var(--accent); }
+.workspace-list .chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.workspace-toggle {
+    flex: 0 0 13px;
+    background: transparent;
+    border: 0;
+    color: var(--text-muted);
+    padding: 0;
+}
+
+button.workspace-toggle { cursor: pointer; }
+.workspace-icon { flex: none; font-size: 12px; }
+.workspace-dragging { opacity: 0.5; }
+.workspace-drop-target { outline: 1px dashed var(--accent); outline-offset: -1px; }
+.workspace-empty { padding: 12px; color: var(--text-muted); font-size: 13px; }
+
+.workspace-context-menu {
+    position: fixed;
+    z-index: 9999;
+    display: grid;
+    gap: 2px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.workspace-context-menu button {
+    padding: 6px 10px;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+
+.workspace-context-menu button:not(:disabled):hover { background: var(--bg-tertiary); }
+.workspace-context-menu button:disabled { opacity: 0.5; cursor: not-allowed; }

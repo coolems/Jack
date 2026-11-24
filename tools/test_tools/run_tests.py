@@ -8,11 +8,13 @@ Usage:
     explicitly target another project root
 PROJECT SCOPING (invariant) Discovery is scoped to the working root set in the CLIENT UI
 the root itself, its immediate parent, then its direct children - and fails loudly when none
-of them holds a suite. It never falls through to the CWD/module path while a working and
-report a green light for code that was never executed. The CWD/module anchors apply only
-when no working root exists (pure local dev / SERVER). Because this tool is delivered to
-CLIENTs and exec'd there, __file__ may be a sentinel, so _resolve_project_root locates the
-root from several anchors instead.
+of them holds a suite. It never falls through to the CWD path while a working root is
+published, and it never derives a root from __file__: when this tool is installed in
+memory on a CLIENT, __file__ is a synthetic path inside the CLIENT tree, and anchoring
+there pointed runs at the wrong tree (2026-11-24 fix). An explicit project_root is
+absolute as given, or relative to the published working root (process CWD only when
+nothing was published). The CWD walk-up applies only when no working root exists
+(pure local dev / SERVER).
 SUITE LAYOUT: 'tests/' (the documented per-project layout) or 'tools/test_tools/'
 (this repo's own suite). A file named test_*.py that defines no test is not a
 suite member, so ./tests/ may hold throwaway live-service scripts safely.
@@ -234,13 +236,11 @@ def _cleanup_test_artifacts():
 
 
 # Candidate suite directories, in priority order (2026-11 review fix A1).
-# 'tests/' is the documented per-project layout. 'tools/test_tools/' is the layout
-# this repo itself ships: Jack's real suite lives there, while ./tests/ holds only
-# throwaway live-service scripts (strata_smoke.py / strata_ctx_check.py) that are
-# gitignored and NOT pytest-collectable. Before this, run_tests() reported
-# "[FAIL] No test target resolved" for Jack's own repo even though 33 tests pass.
-# Both candidates stay scoped to the resolved project root - discovery never climbs
-# out of it, so the 2026-10-06 "wrong tree" path-artifact guard still holds.
+# 'tests/' is the documented per-project layout - what a USER project gets. 'tools/test_tools/'
+# is the layout this repo itself ships: Jack's whole suite lives there and the repo keeps no
+# ./tests/ at all (2026-11-24: that folder was removed - one suite, one place). Both candidates
+# stay scoped to the resolved project root - discovery never climbs out of it, so the
+# 2026-10-06 "wrong tree" path-artifact guard still holds.
 _TEST_DIR_CANDIDATES = ("tests", os.path.join("tools", "test_tools"))
 
 
@@ -248,11 +248,10 @@ def _file_has_collectable_tests(path: str) -> bool:
     """True when *path* actually DEFINES tests (pytest-style ``def test_*`` or a
     ``unittest.TestCase`` subclass).
 
-    A file named test_*.py that defines no test is not a suite member:
-    ./tests/ in this repo holds throwaway live-service scripts
-    (strata_smoke.py, strata_ctx_check.py) that only print + sys.exit, so naming
-    them test_* would make pytest collect them and report rc=5 / import-time
-    failures instead of running the real suite.
+    A file named test_*.py that defines no test is not a suite member. A user project's
+    ./tests/ may hold throwaway live-service scripts that only print + sys.exit, so naming
+    them test_* would make pytest collect them and report rc=5 / import-time failures
+    instead of running the real suite.
     """
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -314,31 +313,39 @@ def _walk_up_for_tests(start: str, max_levels: int = 5) -> Optional[str]:
     return None
 
 
-def _working_root_anchor() -> Optional[str]:
-    """Best-effort read of the system working root (the folder set in the CLIENT UI).
+def _published_working_root() -> Optional[str]:
+    """The working root PUBLISHED for the current turn (the folder set in the CLIENT UI),
+    or None when nothing was published.
 
     Resolution order, first hit wins:
-      a. injected get_working_root global (dynamic loader / sandbox),
-      b. live import from tools.utils (on-disk SERVER process), which resolves the per-turn
-         ContextVar and falls back to the project root.
+      a. injected get_published_working_root global (dynamic loader / sandbox),
+      b. live import from tools.utils (on-disk SERVER process).
 
-    Returns an absolute path when available, else None. Never raises - a missing working root
-    must not break test discovery; the legacy anchors below still apply.
+    Deliberately NOT get_working_root(): that function silently substitutes the
+    project root when no root is published, and on a CLIENT the module lives in
+    memory, so the substitution was a synthetic path inside the CLIENT tree -
+    which is how a run_tests() call once anchored on ...\\CLIENT instead of the
+    user's workspace (2026-11-24). A None result is a fact ("no root published"),
+    not a guess; the CWD walk-up below is the only remaining discovery path.
     """
-    get_wr = globals().get("get_working_root")
-    if callable(get_wr):
+    get_pub = globals().get("get_published_working_root")
+    if callable(get_pub):
         try:
-            wr = os.path.abspath(str(get_wr()))
-            if os.path.isdir(wr):
-                return wr
+            wr = get_pub()
+            if wr:
+                wr = os.path.abspath(str(wr))
+                if os.path.isdir(wr):
+                    return wr
         except Exception:
             pass
 
     try:
-        from tools.utils import get_working_root as _gwr  # type: ignore
-        wr = os.path.abspath(str(_gwr()))
-        if os.path.isdir(wr):
-            return wr
+        from tools.utils import get_published_working_root as _gwr  # type: ignore
+        wr = _gwr()
+        if wr:
+            wr = os.path.abspath(str(wr))
+            if os.path.isdir(wr):
+                return wr
     except Exception:
         pass
 
@@ -346,23 +353,20 @@ def _working_root_anchor() -> Optional[str]:
 
 
 def _running_inside_jack_tree() -> bool:
-    """True when this process is running from inside Jack's own code tree.
+    """True when THIS MODULE was imported from disk inside Jack's own code tree.
 
     Only used in the no-working-root fallback (step 2), where adopting the local
-    tree is legitimate ONLY if the process really lives inside it - not when some
-    unrelated CWD happens to sit under a folder that contains a tests/ directory.
+    tree is legitimate ONLY if the process really lives inside it. The signal is
+    the module's own __file__: a real on-disk path means the interpreter loaded
+    us from the tree (standalone / SERVER). A synthetic __file__ means we are
+    installed in memory (CLIENT sandbox) - there, a CWD that happens to sit
+    under the tree must NOT count: the walk-up would test the repo's own suite
+    for a workspace that never asked for it (2026-11-24).
     """
     try:
-        if os.path.isfile(os.path.abspath(__file__)):
-            return True  # imported from disk -> this IS the tree that ships us
+        return os.path.isfile(os.path.abspath(__file__))
     except Exception:
-        pass
-    cwd = os.getcwd()
-    marker = os.path.join(cwd, "tools", "test_tools")
-    if os.path.isdir(marker):
-        return True
-    parent_marker = os.path.join(os.path.dirname(cwd), "CLIENT", "tools", "test_tools")
-    return os.path.isdir(parent_marker)
+        return False
 
 
 def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str], str, str]:
@@ -373,19 +377,31 @@ def _resolve_project_root(explicit: Optional[str] = None) -> Tuple[Optional[str]
     est_tools' for this repo's own suite).
     """
     # 0) Explicit target wins outright - but never silently re-discover elsewhere.
+    #    Absolute paths are used as given; a relative path resolves against the
+    #    PUBLISHED working root (process CWD only when nothing was published).
+    #    It is never joined to a derived anchor - that is how a relative argument
+    #    once got re-rooted inside the CLIENT tree (2026-11-24).
     if explicit:
-        cand = os.path.abspath(os.path.expanduser(explicit.strip()))
+        raw = os.path.expanduser(explicit.strip())
+        if os.path.isabs(raw):
+            cand = os.path.normpath(raw)
+            base_note = ""
+        else:
+            base = _published_working_root() or os.getcwd()
+            cand = os.path.normpath(os.path.join(base, raw))
+            base_note = f" (resolved against {base})"
         if not os.path.isdir(cand):
-            return None, (f"explicit project_root does not exist or is not a directory: {cand}"), "tests"
+            return None, (f"explicit project_root does not exist or is not a directory: {cand}"
+                          f"{base_note}"), "tests"
         suite = _suite_dir_in(cand)
         if suite:
-            return cand, "explicit project_root argument", suite
+            return cand, f"explicit project_root argument{base_note}", suite
         return None, (f"explicit test-less project has no test suite: neither "
                       f"{os.path.join(cand, 'tests')} nor "
                       f"{os.path.join(cand, 'tools', 'test_tools')} contains test_*.py files"), "tests"
 
     # 1) Working-root anchor: test the live tree inside the configured working root.
-    wr = _working_root_anchor()
+    wr = _published_working_root()
     if wr and os.path.isdir(wr):
         suite = _suite_dir_in(wr)
         if suite:

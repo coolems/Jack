@@ -128,7 +128,32 @@ async function _renderHistory(convId, data) {
 
 
 
-async function newChat() {
+const LAST_WORKSPACE_KEY = 'coolems.lastWorkspace';
+
+function selectWorkspace(id) {
+    // Persist the click before any asynchronous history requests.
+    try {
+        if (id) localStorage.setItem(LAST_WORKSPACE_KEY, id);
+        else localStorage.removeItem(LAST_WORKSPACE_KEY);
+    } catch (e) {
+        console.warn('Could not save workspace selection:', e);
+    }
+    window.ConversationMgr?.select(id);
+}
+
+async function restoreWorkspace(conversations) {
+    let id;
+    try {
+        id = localStorage.getItem(LAST_WORKSPACE_KEY);
+    } catch (e) {
+        console.warn('Could not read workspace selection:', e);
+    }
+    if (!id || isConversationSwitching() || COOLEMS.currentConversation) return;
+    if (conversations.some(conv => conv.id === id)) await loadConversation(id);
+    else selectWorkspace(null);
+}
+
+async function newChat(parentId = null) {
     if (isConversationSwitching()) {
         showNotification('Please wait, switching workspace...', 'warning');
         return;
@@ -141,9 +166,9 @@ async function newChat() {
         const response = await fetch('/api/conversations', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model })
+            body: JSON.stringify({ model, parent_id: parentId })
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error((await response.json()).detail || `HTTP ${response.status}`);
         data = await response.json();
         COOLEMS.convModels[data.id] = data.model;
 
@@ -159,6 +184,7 @@ async function newChat() {
         // the container swap any await window would render them into the OUTGOING DOM.
         WorkspaceViews.suspend(data.id);
         COOLEMS.currentConversation = data.id;
+        selectWorkspace(data.id);
         setModelPicker(workspaceModel(data.id));
 
         // (2026-09-08 multi-chat UI fix) a brand-new chat is NEVER generating: reset the
@@ -190,7 +216,7 @@ async function newChat() {
         // (2026-10-09 per-workspace views) activate the NEW workspace's own folder from its DB row
         // (project-root fallback until the user sets one): chip, file tree and tools all agree
         // from first open - instead of silently keeping the previous workspace's path.
-        await _activateWorkingRoot('', data.id);
+        await _activateWorkingRoot(data.id);
 
         showNotification('New workspace created', 'success');
     } catch (e) {
@@ -198,13 +224,14 @@ async function newChat() {
         // put it back so the user is not left on a blank, suspended workspace.
         if (oldConvId && WorkspaceViews.hasView(oldConvId)) {
             COOLEMS.currentConversation = oldConvId;
+            selectWorkspace(oldConvId);
             WorkspaceViews.restore(oldConvId);
             setModelPicker(workspaceModel(oldConvId));
             ChatSocketPool.ensure(oldConvId);
         }
         if (oldConvId) WorkspaceViews.resume(oldConvId);
         if (data && data.id) WorkspaceViews.resume(data.id);
-        showNotification('Failed to create new workspace', 'error');
+        showNotification(`Failed to create workspace: ${e.message}`, 'error');
         console.error('New workspace error:', e);
     } finally {
         isSwitchingConversation = false;   // (2026-10-09 audit fix) always release the switch lock
@@ -217,6 +244,7 @@ async function deleteConversation(id) {
         return;
     }
 
+    isSwitchingConversation = true;
     try {
         const response = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
         if (response.ok) {
@@ -243,6 +271,7 @@ async function deleteConversation(id) {
 
             if (wasCurrent) {
                 COOLEMS.currentConversation = null;
+                selectWorkspace(null);
                 // (2026-09-08 multi-chat UI fix) no chat selected -> nothing can be generating.
                 COOLEMS.isStreaming = false;
                 COOLEMS.streamingAgentMode = false;
@@ -259,27 +288,29 @@ async function deleteConversation(id) {
             await loadConversations();
             showNotification('Workspace deleted', 'success');
         } else {
-            throw new Error();
+            throw new Error((await response.json()).detail || `HTTP ${response.status}`);
         }
     } catch (e) {
-        showNotification('Failed to delete workspace', 'error');
+        showNotification(`Failed to delete workspace: ${e.message}`, 'error');
         console.error('Delete error:', e);
+    } finally {
+        isSwitchingConversation = false;
     }
 }
 
-/**
- * (2026-10-09 per-workspace views) Activate THIS workspace's own folder from the database.
- * Shared by both switch paths: stored value -> activate; null / fresh workspace -> empty path
- * + conversation_id, and the server resolves this workspace's row or pins it to the project
- * root fallback (each workspace owns its row from first open - no shared global file).
- */
-async function _activateWorkingRoot(path, convId) {
+/** Activate this workspace's current DB setting, not a cached view's path. */
+async function _activateWorkingRoot(convId) {
     if (typeof currentWorkingRoot === 'undefined') return;
     try {
-        const wrRes = await fetch('/api/working_root', {
+        // Query param (not just body): the router dependency reads the scope from the
+        // query param or X-Conversation-Id header, never from the JSON body. On a page
+        // refresh COOLEMS.currentConversation is still null when this fires (the flip
+        // happens later in loadConversation), so the header is empty and the body-only
+        // id would be invisible to the dependency → 400 scope_missing.
+        const wrRes = await fetch('/api/working_root?conversation_id=' + encodeURIComponent(convId), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ working_root: path || '', conversation_id: convId })
+            body: JSON.stringify({ conversation_id: convId })
         });
         const wrData = await wrRes.json();
         if (wrData.success && wrData.working_root !== currentWorkingRoot) {
@@ -317,6 +348,7 @@ async function loadConversation(id) {
 
     const newConvId = id;
     const oldConvId = COOLEMS.currentConversation;
+    selectWorkspace(newConvId);
 
     // (2026-10-09 per-workspace views) Park the OUTGOING workspace's live DOM + streaming
     // state BEFORE anything else: approval cards, in-flight bubbles and running countdowns
@@ -369,8 +401,7 @@ async function loadConversation(id) {
             WorkspaceViews.flushFrames(newConvId);
 
             setModelPicker(workspaceModel(newConvId));
-            await _activateWorkingRoot(_stash.workingRoot || '', newConvId);
-            await loadConversations();                    // sidebar: active class + badges
+            await _activateWorkingRoot(newConvId);
             // (2026-10-09 switch-race fix) outgoing workspace may go back to background - resume its routing.
             if (oldConvId) WorkspaceViews.resume(oldConvId);
 
@@ -400,7 +431,7 @@ async function loadConversation(id) {
             WorkspaceViews.dropFrames(newConvId);
         }
 
-        await _activateWorkingRoot(data.working_root || '', newConvId);
+        await _activateWorkingRoot(newConvId);
 
         // COMPLETELY REBUILD UI from fresh data
         const container = document.getElementById('chatContainer');
@@ -424,9 +455,6 @@ async function loadConversation(id) {
         const hist = await _renderHistory(newConvId, data);
 
         log('Loaded', hist.messages, 'messages for conversation', newConvId, '+', hist.blocks, 'turn block(s)');
-
-        // Refresh conversation list in sidebar
-        await loadConversations();
 
         // RESTORE THIS CHAT'S GENERATION STATE (2026-09-08 multi-chat UI fix): if this chat is
         // actively thinking/generating (or queued), the send button shows its red STOP state.
@@ -498,6 +526,7 @@ async function loadConversation(id) {
         // its (partially rebuilt) history. Otherwise put the outgoing workspace's stashed view
         // back exactly as it was and go on with it.
         const _flipped = (COOLEMS.currentConversation === newConvId);
+        if (!_flipped) selectWorkspace(oldConvId);
         if (!_flipped && oldConvId && WorkspaceViews.hasView(oldConvId)) {
             COOLEMS.currentConversation = oldConvId;
             WorkspaceViews.restore(oldConvId);   // reattach the real node + streaming state
@@ -513,76 +542,17 @@ async function loadConversation(id) {
     }
 }
 
+let workspaceListRequest = 0;
+
 async function loadConversations() {
+    const requestId = ++workspaceListRequest;
     try {
         const mgr = window.ConversationMgr;
-        const sortBy = mgr ? mgr.sortConfig.by : 'created';
-        const sortOrder = mgr ? mgr.sortConfig.order : 'desc';
-        const response = await fetch(`/api/conversations?sort_by=${sortBy}&sort_order=${sortOrder}`);
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
+        const { by, order } = mgr?.sortConfig ?? { by: 'created', order: 'desc' };
+        const response = await fetch(`/api/conversations?sort_by=${by}&sort_order=${order}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-
-        // Update sidebar
-        const historyEl = document.getElementById('chatHistory');
-        if (!historyEl) return data;
-
-        // Use ConversationManager for rendering (supports color, rename, sort)
-        if (window.ConversationMgr) {
-            if (data.sort_by) window.ConversationMgr.sortConfig.by = data.sort_by;
-            if (data.sort_order) window.ConversationMgr.sortConfig.order = data.sort_order;
-            window.ConversationMgr.renderConversations(data.conversations);
-        } else {
-            // Fallback: legacy inline rendering
-            if (data.conversations.length === 0) {
-                historyEl.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px;">No workspaces yet<br><br>Click "New Workspace" to start</div>';
-            } else {
-                historyEl.innerHTML = data.conversations.map(conv => {
-                    const atKind = (typeof ChatSocketPool !== 'undefined') ? (ChatSocketPool.attention[conv.id] || '') : '';
-                    return `
-                    <div class="chat-history-item ${conv.id === COOLEMS.currentConversation ? 'active' : ''}"
-                         data-conv-id="${escapeAttr(conv.id)}"
-                         onclick="loadConversation('${escapeJsAttr(conv.id)}')">
-                        <svg class="chat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                        </svg>
-                        ${typeof ChatSocketPool !== 'undefined'
-                            ? `<span class="chat-status-dot status-${ChatSocketPool.statuses[conv.id] || 'idle'}"></span>`
-                            : ''}
-                        ${atKind ? `<span class="chat-attention-badge attention-${atKind}" title="${atKind === 'dialog' ? 'Waiting for your decision' : 'Task finished in the background'}"></span>` : ''}
-                        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(conv.title)}</span>
-                        <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${escapeJsAttr(conv.id)}')">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="3 6 5 6 21 6"></polyline>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                            </svg>
-                        </button>
-                    </div>
-                `;
-                }).join('');
-            }
-        }
-
-        // Update welcome message
-        const container = document.getElementById('chatContainer');
-        const welcome = document.getElementById('welcome');
-
-        if (data.conversations.length === 0) {
-            if (welcome) {
-                welcome.style.display = 'block';
-            } else if (container && container.children.length === 0) {
-                container.innerHTML = `<div class="welcome" id="welcome">
-                    <h1>COOLEMS</h1>
-                    <p>Start a new workspace to begin</p>
-                </div>`;
-            }
-        } else if (welcome) {
-            welcome.style.display = 'none';
-        }
-
+        if (requestId === workspaceListRequest) mgr?.renderConversations(data.conversations);
         return data;
     } catch (e) {
         logError('Failed to load conversations:', e);

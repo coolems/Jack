@@ -13,11 +13,12 @@ clears children first (app.websocket.turn_ops) - otherwise the FK constraint tur
 delete into a 500 "Failed to delete workspace".
 """
 import json
-import uuid
 from typing import Dict
 from fastapi import APIRouter, Request, HTTPException, Query
 
 from app.helpers import get_client_ip
+from app.workspace_tree import allocate_workspace_id, validate_workspace_parent
+from app.workspace_access import require_workspace_access
 from app.db_manager import get_db_connection, close_db_connection
 from app.websocket.turn_ops import delete_conversation_rows, truncate_turn_logs, load_turn_logs
 import logging
@@ -29,29 +30,14 @@ VALID_COLORS = [
     "red", "orange", "yellow", "green", "blue", "purple", "pink", "gray"
 ]
 
-# Rows with no recorded owner: the schema default and the WebSocket fallback in
-# app/websocket/db_ops._ensure_conversation_exists() both leave ip_address 'unknown'.
-# Such a workspace has no identity to compare against, so it stays reachable - 403-ing
-# it would hide workspaces the CLIENT itself created over the chat socket.
-NO_OWNER = "unknown"
-
 
 def _require_conversation_owner(cursor, conv_id: str, current_ip: str) -> str:
-    """Return the conversation's owner ip, or raise 404 (missing) / 403 (not ours)."""
-    cursor.execute("SELECT ip_address FROM conversations WHERE id = ?", (conv_id,))
-    conv_info = cursor.fetchone()
+    """Return the conversation's owner ip, or raise 404 (missing) / 403 (not ours).
 
-    if not conv_info:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    owner_ip = conv_info[0]
-    if owner_ip and owner_ip != NO_OWNER and owner_ip != current_ip:
-        logger.warning(
-            f"Client {current_ip} denied access to conversation {conv_id} owned by {owner_ip}"
-        )
-        raise HTTPException(status_code=403, detail="This workspace belongs to another client")
-
-    return owner_ip
+    The rule itself lives in app.workspace_access so the file endpoints - which resolve a
+    workspace's FOLDER from an id - enforce exactly the same thing.
+    """
+    return require_workspace_access(cursor, conv_id, current_ip)[0]
 
 
 def create_conversations_router(db_path: str, model_name: str, agent) -> APIRouter:
@@ -66,9 +52,11 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         # currently has in the picker (optional JSON body {"model": "..."}); the global
         # default is only the fallback for legacy callers.
         new_model = model_name
+        parent_id = None
         try:
             body = await request.json()
             if isinstance(body, dict):
+                parent_id = body.get("parent_id")
                 value = body.get("model")
                 candidate = value.strip() if isinstance(value, str) else ""
                 if candidate:
@@ -76,20 +64,23 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         except Exception:
             pass  # no body / not JSON -> default model
 
-        conv_id = str(uuid.uuid4())
         conn = get_db_connection()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
+            conv_id = allocate_workspace_id(cursor)
+            if parent_id is not None:
+                validate_workspace_parent(cursor, conv_id, current_ip, parent_id)
             cursor.execute(
-                "INSERT INTO conversations (id, title, model, ip_address) VALUES (?, ?, ?, ?)",
-                (conv_id, "New Workspace", new_model, current_ip)
+                "INSERT INTO conversations (id, title, model, ip_address, parent_id) VALUES (?, ?, ?, ?, ?)",
+                (conv_id, "New Workspace", new_model, current_ip, parent_id)
             )
             conn.commit()
         finally:
             close_db_connection(conn)
 
         logger.info(f"Created conversation {conv_id} for client {current_ip} (model={new_model})")
-        return {"id": conv_id, "title": "New Workspace", "model": new_model}
+        return {"id": conv_id, "title": "New Workspace", "model": new_model, "parent_id": parent_id}
 
     @router.get("")
     async def list_conversations(
@@ -117,7 +108,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         try:
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT id, title, model, created_at, ip_address, color
+                SELECT id, title, model, created_at, ip_address, color, parent_id
                 FROM conversations
                 WHERE ip_address = ?
                 ORDER BY {order_col} {order_dir}
@@ -136,7 +127,8 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                     "model": row[2],
                     "created_at": row[3],
                     "owner_ip": row[4],
-                    "color": row[5] if len(row) > 5 and row[5] else None,
+                    "color": row[5],
+                    "parent_id": row[6],
                 }
                 for row in rows
             ]
@@ -236,7 +228,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
     async def update_conversation(conv_id: str, data: Dict, request: Request):
         """Update conversation properties.
 
-        Accepts: title, system_prompt, color, model
+        Accepts: title, system_prompt, color, model, parent_id
         - color: one of VALID_COLORS or None to clear
         - model: (2026-12-04 per-workspace model) the model assigned to THIS workspace;
           the UI persists the picker choice here so a workspace switch restores it.
@@ -247,8 +239,18 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         try:
             cursor = conn.cursor()
 
-            _require_conversation_owner(cursor, conv_id, current_ip)
+            if "parent_id" in data:
+                conn.execute("BEGIN IMMEDIATE")
+            owner_ip = _require_conversation_owner(cursor, conv_id, current_ip)
 
+            if "parent_id" in data:
+                parent_id = data["parent_id"]
+                # Unowned legacy workspaces remain reachable by ID, not as members
+                # of a client's private tree. They may still be detached to Root.
+                if parent_id is not None and owner_ip != current_ip:
+                    raise HTTPException(403, "Only owned workspaces can be moved under a parent")
+                validate_workspace_parent(cursor, conv_id, current_ip, parent_id)
+                cursor.execute("UPDATE conversations SET parent_id = ? WHERE id = ?", (parent_id, conv_id))
             if "title" in data:
                 cursor.execute("UPDATE conversations SET title = ? WHERE id = ?", (data["title"], conv_id))
             if "system_prompt" in data:
@@ -280,12 +282,16 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
         conn = get_db_connection()
         try:
-            _require_conversation_owner(conn.cursor(), conv_id, current_ip)
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.cursor()
+            _require_conversation_owner(cursor, conv_id, current_ip)
+            if cursor.execute("SELECT 1 FROM conversations WHERE parent_id = ? LIMIT 1", (conv_id,)).fetchone():
+                raise HTTPException(409, "Cannot delete a workspace that has child workspaces")
 
             # CHILD-FIRST: cycle history and messages reference the conversation row,
             # and foreign keys are ON on every connection - clearing the parent first
             # raises IntegrityError and the workspace can never be deleted.
-            counts = delete_conversation_rows(conn.cursor(), conv_id)
+            counts = delete_conversation_rows(cursor, conv_id)
             conn.commit()
         except HTTPException:
             raise  # 404/403 from the ownership guard must not become a 500

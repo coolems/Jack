@@ -67,10 +67,12 @@ async def agentic_mode(
     
     logger.info("="*60)
 
-    # The system prompt for this turn is the SERVER-delivered text (identity +
-    # tool contract). Only per-turn client state is appended below: MCP notes and
-    # the attached-image context.
-    agent_system = config.system_prompt
+    from app.prompts import with_workspace_working_root
+    from app.utils.common import resolve_working_root_for_conv
+    from tools.utils import set_current_working_root
+
+    turn_root = resolve_working_root_for_conv(config.conversation_id)
+    agent_system = with_workspace_working_root(config.system_prompt, turn_root)
 
     # MCP server instructions join the prompt as DATA, never as policy: an MCP server is an
     # external process or endpoint, so its text may describe its tools but must not override
@@ -163,20 +165,9 @@ RULES:
             channel=getattr(config, "steer_source", None),
         )
 
-    # (2026-10-09) Per-workspace working root: resolve THIS conversation's folder from
-    # the database and publish it to tools.utils for the whole turn. Tools read the
-    # ContextVar (set_current_working_root), so concurrent workspaces each execute
-    # against their OWN folder - no shared file, no cross-workspace bleed. Workspaces
-    # without a stored value fall back to the project root. Cleared in the finally
-    # block below when the turn ends.
-    try:
-        from app.utils.common import resolve_working_root_for_conv
-        from tools.utils import set_current_working_root as _set_wr_ctx
-        _turn_wr = resolve_working_root_for_conv(config.conversation_id)
-        _set_wr_ctx(_turn_wr)
-        logger.info(f"[AGENTIC.DEBUG] Working root for this turn (conv={str(config.conversation_id)[:8]}): {_turn_wr}")
-    except Exception as e:
-        logger.warning(f"[AGENTIC.DEBUG] Per-turn working root resolution failed (tools use fallback): {e}")
+    # The provider and tools share the same DB snapshot from the start of this turn.
+    set_current_working_root(turn_root)
+    logger.info("Working root for turn (conv=%s): %s", config.conversation_id, turn_root)
 
     # Run the ReAct loop
     try:
@@ -202,13 +193,7 @@ RULES:
         logger.error(f"[AGENTIC.DEBUG] agentic_mode() - UNEXPECTED ERROR: {type(e).__name__}: {e}")
         raise
     finally:
-        # (2026-10-09) Clear the per-turn working root so a stale folder can never leak
-        # into the NEXT turn's tool execution.
-        try:
-            from tools.utils import set_current_working_root as _clear_wr_ctx
-            _clear_wr_ctx(None)
-        except Exception:
-            pass
+        set_current_working_root(None)
         # (2026-08-26) Clear the per-turn attachment registry so a stale image can
         # never leak into the NEXT turn's transcription.
         try:

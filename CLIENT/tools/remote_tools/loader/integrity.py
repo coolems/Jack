@@ -9,7 +9,7 @@ it alongside every shared module ('shared_hashes') and tool source
 ('tool_code_response.source_hash'). The CLIENT verifies BEFORE exec/compile:
 
   * a promised hash that does NOT match => the code is REFUSED (fail-closed,
-    logged with 'REFUSING' so tests/guards can detect the enforcement path);
+    logged with 'REFUSING' so a guard test can detect the enforcement path);
   * no promised hash (legacy server)   => tolerated and installed.
 
 Changing the digest or its length here breaks the wire contract: the SERVER computes

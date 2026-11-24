@@ -19,6 +19,13 @@ async function loadTree(path) {
 
     const listEl = document.getElementById('filesList');
 
+    // Files are scoped to ONE workspace: without an open workspace there is no folder to
+    // list, and the backend refuses unscoped file requests (400 + security event).
+    if (typeof currentConvId !== 'function' || !currentConvId()) {
+        if (listEl) listEl.innerHTML = '<div class="files-empty">Open a workspace to browse its files</div>';
+        return;
+    }
+
     try {
 
         const ts = Date.now();

@@ -177,6 +177,12 @@ const ChatSocketPool = {
             try { msg = JSON.parse(e.data); }
             catch (err) { logError('[ChatSocketPool] Parse error:', err); return; }
 
+            if (msg.type === 'workspace_title_changed') {
+                // Read the committed title even if this workspace is in the background.
+                void loadConversations();
+                return;
+            }
+
             // Track status for EVERY frame of this chat (drives the sidebar dot + attention).
             this._trackStatus(convId, msg);
 
@@ -339,7 +345,7 @@ const ChatSocketPool = {
         let dot = item.querySelector('.chat-status-dot');
         if (!dot) {
             dot = document.createElement('span');
-            const anchor = item.querySelector('.chat-color-dot') || item.firstChild;
+            const anchor = item.firstChild;
             item.insertBefore(dot, anchor ? anchor.nextSibling : null);
         }
         dot.className = `chat-status-dot status-${status}`;
@@ -386,7 +392,7 @@ const ChatSocketPool = {
         }
         if (!badge) {
             badge = document.createElement('span');
-            const dot = item.querySelector('.chat-status-dot') || item.querySelector('.chat-color-dot');
+            const dot = item.querySelector('.chat-status-dot');
             const anchor = dot ? dot.nextSibling : null;
             item.insertBefore(badge, anchor);
         }

@@ -1,53 +1,28 @@
 // static/ui/conversation-manager.js
 
-/**
- * ConversationManager - Enhanced sidebar conversation management.
- *
- * Provides:
- *   1. Color assignment (8-color palette) via expandable picker on right-click
- *   2. Inline rename via double-click on conversation title
- *   3. Sort controls: sort by creation time / color / name, ascending or descending
- *
- * Architecture:
- *   - Pure class, no global state pollution
- *   - Communicates with backend via fetch() to /api/conversations/*
- *   - Renders conversation items in #chatHistory
- *   - Sort controls rendered in sidebar-header (injected on init)
- *
- * Color Palette (8 colors):
- *   red, orange, yellow, green, blue, purple, pink, gray
- *
- * Usage:
- *   const manager = new ConversationManager();
- *   manager.init();
- *
- * Dependencies:
- *   - COOLEMS (from app.js)
- *   - loadConversation(), deleteConversation() (from conversation.js)
- */
-
-class ConversationManager {
-
-
-
+/** Workspace tree, sidebar sorting, and workspace actions. */
+class ConversationManager extends WorkspaceSidebarControls {
     /**
      * Create a ConversationManager instance.
      */
     constructor() {
+        super();
         /** @type {{ by: string, order: string }} Current sort state */
         this.sortConfig = { ...ConversationManager.DEFAULT_SORT };
 
         /** @type {HTMLDivElement|null} Reference to #chatHistory */
         this.container = null;
 
-        /** @type {HTMLDivElement|null} Reference to sort controls container */
-        this.sortControls = null;
-
-        /** @type {HTMLElement|null} Active color picker popup */
-        this.activePicker = null;
-
-        /** @type {string|null} Conversation ID currently being renamed */
-        this.renamingId = null;
+        this.byId = new Map();
+        this.children = new Map();
+        this.parentById = new Map();
+        this.rows = new Map();
+        this.collapsed = new Set();
+        this.branches = new Map();
+        this.selectedId = null;
+        this.dragId = null;
+        this.dropTarget = null;
+        this.moving = false;
     }
 
     // ===== INITIALIZATION =====
@@ -58,388 +33,290 @@ class ConversationManager {
      */
     init() {
         this.container = document.getElementById('chatHistory');
+        this.path = document.getElementById('workspacePath');
+        this._bindDropTarget(this.path, null);
+        document.addEventListener('dragend', () => this._endDrag());
+        document.addEventListener('click', (event) => {
+            if (this.menu && !this.menu.contains(event.target)) this._closeMenu();
+            if (this.activePicker && !this.activePicker.contains(event.target)) this._closeColorPicker();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                this._closeMenu(true);
+                this._closeColorPicker();
+            }
+        });
         this._injectSortControls();
         this._bindSortEvents();
         log('[ConversationManager] Initialized');
     }
 
-    /**
-     * Inject sort controls into the sidebar header.
-     * Creates a small toolbar with:
-     *   - Sort-by dropdown (created / color / name)
-     *   - Asc/Desc toggle button
-     */
-    _injectSortControls() {
-        const sidebarHeader = document.querySelector('.sidebar-header');
-        if (!sidebarHeader) {
-            logError('[ConversationManager] sidebar-header not found');
-            return;
-        }
-
-        const sortBar = document.createElement('div');
-        sortBar.className = 'conversation-sort-bar';
-        sortBar.innerHTML = `
-            <select class="sort-select" id="convSortBy" title="Sort workspaces by">
-                <option value="created">📅 Creation Time</option>
-                <option value="color">🎨 Color</option>
-                <option value="name">🔤 Name</option>
-            </select>
-            <button class="sort-order-btn" id="convSortOrder" title="Toggle ascending/descending">
-                ↓ Desc
-            </button>
-        `;
-
-        sidebarHeader.appendChild(sortBar);
-        this.sortControls = sortBar;
-
-        // Set initial values
-        const sortBy = document.getElementById('convSortBy');
-        const sortOrder = document.getElementById('convSortOrder');
-        if (sortBy) sortBy.value = this.sortConfig.by;
-        if (sortOrder) this._updateOrderButton(this.sortConfig.order);
-    }
-
-    /**
-     * Bind sort control change events.
-     */
-    _bindSortEvents() {
-        const sortBy = document.getElementById('convSortBy');
-        const sortOrder = document.getElementById('convSortOrder');
-
-        if (sortBy) {
-            sortBy.addEventListener('change', () => {
-                this.sortConfig.by = sortBy.value;
-                this._reloadConversations();
-            });
-        }
-
-        if (sortOrder) {
-            sortOrder.addEventListener('click', () => {
-                this.sortConfig.order = this.sortConfig.order === 'desc' ? 'asc' : 'desc';
-                this._updateOrderButton(this.sortConfig.order);
-                this._reloadConversations();
-            });
-        }
-    }
-
-    /**
-     * Update the sort order button text/icon.
-     * @param {'asc'|'desc'} order
-     */
-    _updateOrderButton(order) {
-        const btn = document.getElementById('convSortOrder');
-        if (!btn) return;
-        if (order === 'asc') {
-            btn.textContent = '↑ Asc';
-        } else {
-            btn.textContent = '↓ Desc';
-        }
-    }
-
-    // ===== LOADING & RENDERING =====
-
-    /**
-     * Reload conversations from server with current sort config.
-     * Delegates rendering to renderConversations().
-     */
-    async _reloadConversations() {
-
-
-        const url = `/api/conversations?sort_by=${this.sortConfig.by}&sort_order=${this.sortConfig.order}`;
-
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const data = await response.json();
-            this.renderConversations(data.conversations);
-        } catch (e) {
-            logError('[ConversationManager] Failed to reload:', e);
-        }
-    }
-
-    /**
-     * Render conversation items in the sidebar.
-     *
-     * @param {Array} conversations - Array of conversation objects from API
-     */
     renderConversations(conversations) {
-        if (!this.container) return;
-
-        if (conversations.length === 0) {
-            this.container.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-muted); font-size: 13px;">No workspaces yet<br><br>Click "New Workspace" to start</div>';
-            return;
-        }
-
-        this.container.innerHTML = conversations.map(conv => {
-            const isActive = conv.id === COOLEMS.currentConversation;
-            const colorInfo = this._getColorInfo(conv.color);
-            const colorDot = colorInfo
-                ? `<span class="chat-color-dot" style="background:${colorInfo.hex};" title="${colorInfo.label}"></span>`
-                : `<span class="chat-color-dot chat-color-dot-none" title="No color"></span>`;
-
-            // (2026-10-09) attention badge: a background workspace that needs the user's eye.
-            const atKind = (typeof ChatSocketPool !== 'undefined') ? (ChatSocketPool.attention[conv.id] || '') : '';
-
-            return `
-                <div class="chat-history-item ${isActive ? 'active' : ''}"
-                     data-conv-id="${this._escapeAttr(conv.id)}"
-                     data-conv-color="${this._escapeAttr(conv.color || '')}"
-                     onclick="loadConversation('${this._escapeJsAttr(conv.id)}')"
-                     ondblclick="ConversationMgr.startRename('${this._escapeJsAttr(conv.id)}', this)"
-                     oncontextmenu="ConversationMgr.showColorPicker(event, '${this._escapeJsAttr(conv.id)}', this); return false;">
-                    ${colorDot}
-                    ${typeof ChatSocketPool !== 'undefined'
-                        ? `<span class="chat-status-dot status-${ChatSocketPool.statuses[conv.id] || 'idle'}"></span>`
-                        : ''}
-                    ${atKind ? `<span class="chat-attention-badge attention-${atKind}" title="${atKind === 'dialog' ? 'Waiting for your decision' : 'Task finished in the background'}"></span>` : ''}
-                    <svg class="chat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                    </svg>
-                    <span class="chat-title" style="flex:1;overflow:hidden;text-overflow:ellipsis;">${this._escapeHtml(conv.title)}</span>
-                    <button class="chat-delete-btn" onclick="event.stopPropagation();deleteConversation('${this._escapeJsAttr(conv.id)}')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="3 6 5 6 21 6"></polyline>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                        </svg>
-                    </button>
-                </div>
-            `;
-        }).join('');
-    }
-
-    /**
-     * Show the color picker popup for a conversation item.
-     * Right-click context menu with 8 color swatches + "No Color" option.
-     *
-     * @param {MouseEvent} event
-     * @param {string} convId
-     * @param {HTMLElement} itemEl
-     */
-    showColorPicker(event, convId, itemEl) {
-        event.preventDefault();
-        event.stopPropagation();
-
-        // Close any existing picker
+        this._closeMenu();
         this._closeColorPicker();
-
-        const picker = document.createElement('div');
-        picker.className = 'color-picker-popup';
-
-        const currentColor = itemEl.getAttribute('data-conv-color') || '';
-
-        // "No Color" option
-        const noColorBtn = document.createElement('button');
-        noColorBtn.className = `color-swatch ${currentColor === '' ? 'selected' : ''}`;
-        noColorBtn.style.background = 'var(--bg-tertiary)';
-        noColorBtn.style.border = '1px solid var(--border)';
-        noColorBtn.title = 'No Color';
-        noColorBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="3"><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
-        noColorBtn.addEventListener('click', () => {
-            this._setConversationColor(convId, null);
-            this._closeColorPicker();
-        });
-        picker.appendChild(noColorBtn);
-
-        // 8 color swatches
-        for (const color of ConversationManager.COLORS) {
-            const swatch = document.createElement('button');
-            swatch.className = `color-swatch ${currentColor === color.name ? 'selected' : ''}`;
-            swatch.style.background = color.hex;
-            swatch.title = color.label;
-            if (currentColor === color.name) {
-                swatch.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+        this._endDrag();
+        this.container.replaceChildren();
+        this.byId = new Map(conversations.map(conv => [conv.id, conv]));
+        for (const id of this.collapsed) if (!this.byId.has(id)) this.collapsed.delete(id);
+        this.children.clear();
+        this.rows.clear();
+        this.branches.clear();
+        this.parentById = new Map(conversations.map(conv => [
+            conv.id, this.byId.has(conv.parent_id) ? conv.parent_id : null,
+        ]));
+        // Cut one display link per cycle, so every row still reaches Root.
+        const checked = new Set();
+        for (const { id } of conversations) {
+            const path = new Set();
+            for (let node = id; node !== null && !checked.has(node); node = this.parentById.get(node)) {
+                if (path.has(node)) {
+                    this.parentById.set(node, null);
+                    break;
+                }
+                path.add(node);
             }
-            swatch.addEventListener('click', () => {
-                this._setConversationColor(convId, color.name);
-                this._closeColorPicker();
+            for (const node of path) checked.add(node);
+        }
+        for (const conv of conversations) {
+            const parentId = this.parentById.get(conv.id);
+            if (!this.children.has(parentId)) this.children.set(parentId, []);
+            this.children.get(parentId).push(conv);
+        }
+        this._renderBranch(null, this.container, 1);
+        if (!conversations.length) {
+            const empty = document.createElement('p');
+            empty.className = 'workspace-empty';
+            empty.textContent = 'No workspaces yet. Click New Workspace to start.';
+            this.container.append(empty);
+        }
+        this.select(this.selectedId);
+    }
+
+    _renderBranch(parentId, container, depth) {
+        for (const conv of this.children.get(parentId) || []) {
+            const hasChildren = this.children.has(conv.id);
+            const row = document.createElement('div');
+            row.className = 'chat-history-item';
+            row.dataset.convId = conv.id;
+            row.dataset.convColor = conv.color || '';
+            row.style.setProperty('--workspace-indent', `${(depth - 1) * 14}px`);
+            row.tabIndex = 0;
+            row.draggable = true;
+            this.rows.set(conv.id, row);
+
+            const toggle = document.createElement(hasChildren ? 'button' : 'span');
+            toggle.className = 'workspace-toggle';
+            row.append(toggle);
+
+            const status = document.createElement('span');
+            status.className = `chat-status-dot status-${ChatSocketPool.statuses[conv.id] || 'idle'}`;
+            row.append(status);
+            const attention = ChatSocketPool.attention[conv.id];
+            if (attention) {
+                const badge = document.createElement('span');
+                badge.className = `chat-attention-badge attention-${attention}`;
+                badge.title = attention === 'dialog' ? 'Waiting for your decision' : 'Task finished in the background';
+                row.append(badge);
+            }
+
+            const icon = document.createElement('span');
+            icon.className = 'workspace-icon';
+            icon.textContent = hasChildren ? '📁' : '◻';
+            icon.setAttribute('aria-hidden', 'true');
+            const title = document.createElement('span');
+            title.className = 'chat-title';
+            title.textContent = conv.title;
+            title.title = conv.title;
+            const color = this._getColorInfo(conv.color);
+            if (color) title.style.color = color.hex;
+            row.append(icon, title);
+            row.addEventListener('click', (event) => {
+                if (!event.target.closest('button, input')) loadConversation(conv.id);
             });
-            picker.appendChild(swatch);
-        }
-
-        picker.appendChild(document.createTextNode(''));
-
-        // Position near the item
-        const rect = itemEl.getBoundingClientRect();
-        picker.style.position = 'fixed';
-        picker.style.left = `${rect.right + 4}px`;
-        picker.style.top = `${rect.top}px`;
-        picker.style.zIndex = '9999';
-
-        document.body.appendChild(picker);
-        this.activePicker = picker;
-
-        // Close on outside click
-        const closeHandler = (e) => {
-            if (!picker.contains(e.target)) {
+            title.addEventListener('dblclick', () => this.startRename(conv.id, row));
+            row.addEventListener('contextmenu', (event) => {
+                if (!event.target.closest('input')) this._showMenu(event, row, conv.id, depth, hasChildren);
+            });
+            row.addEventListener('keydown', (event) => {
+                if (event.target !== row) return;
+                if (event.key === 'Enter') loadConversation(conv.id);
+                if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                    this._showMenu(event, row, conv.id, depth, hasChildren);
+                }
+            });
+            row.addEventListener('dragstart', (event) => {
+                if (event.target !== row || this.moving || row.querySelector('input')) {
+                    event.preventDefault();
+                    return;
+                }
+                this._closeMenu();
                 this._closeColorPicker();
-                document.removeEventListener('click', closeHandler);
-            }
-        };
-        setTimeout(() => document.addEventListener('click', closeHandler), 0);
-    }
+                this.dragId = conv.id;
+                event.dataTransfer.setData('application/x-workspace-id', conv.id);
+                event.dataTransfer.effectAllowed = 'move';
+                row.classList.add('workspace-dragging');
+            });
+            this._bindDropTarget(row, conv.id);
+            container.append(row);
 
-    /**
-     * Close the active color picker popup.
-     */
-    _closeColorPicker() {
-        if (this.activePicker) {
-            this.activePicker.remove();
-            this.activePicker = null;
+            if (hasChildren) {
+                const group = document.createElement('div');
+                toggle.type = 'button';
+                this.branches.set(conv.id, { group, toggle });
+                toggle.addEventListener('click', () => {
+                    if (this.collapsed.has(conv.id)) this.collapsed.delete(conv.id);
+                    else this.collapsed.add(conv.id);
+                    this._syncBranch(conv.id);
+                });
+                this._syncBranch(conv.id);
+                this._renderBranch(conv.id, group, depth + 1);
+                container.append(group);
+            }
         }
     }
 
-    /**
-     * Set a conversation's color via API.
-     * @param {string} convId
-     * @param {string|null} colorName
-     */
-    async _setConversationColor(convId, colorName) {
+    _syncBranch(id) {
+        const { group, toggle } = this.branches.get(id);
+        group.hidden = this.collapsed.has(id);
+        toggle.textContent = group.hidden ? '▸' : '▾';
+        toggle.setAttribute('aria-expanded', String(!group.hidden));
+        toggle.setAttribute('aria-label', `${group.hidden ? 'Expand' : 'Collapse'} ${this.byId.get(id).title}`);
+    }
+
+    select(id) {
+        this.rows.get(this.selectedId)?.classList.remove('active');
+        this.selectedId = id;
+        this.rows.get(id)?.classList.add('active');
+        const path = [];
+        for (let node = this.byId.get(id); node; node = this.byId.get(this.parentById.get(node.id))) {
+            path.unshift(node);
+        }
+        for (const ancestor of path.slice(0, -1)) {
+            if (this.collapsed.delete(ancestor.id)) this._syncBranch(ancestor.id);
+        }
+        this.path.textContent = ['Root', ...path.map(node => node.title)].join(' / ');
+        this.path.title = `${this.path.textContent} — drop here to move to Root`;
+    }
+
+    _closeMenu(restoreFocus = false) {
+        if (!this.menu) return;
+        this.menu.remove();
+        this.menu = null;
+        if (restoreFocus) this.menuRow.focus();
+        this.menuRow = null;
+    }
+
+    _showMenu(event, row, id, depth, hasChildren) {
+        event.preventDefault();
+        this._closeMenu();
+        this._closeColorPicker();
+        const menu = document.createElement('div');
+        menu.className = 'workspace-context-menu';
+        const actions = [
+            ['Create workspace', depth >= ConversationManager.MAX_DEPTH, 'Maximum depth is three levels', () => newChat(id)],
+            ['Copy workspace ID', false, '', async () => {
+                try {
+                    await copyTextToClipboard(id);
+                    showNotification('Workspace ID copied', 'success');
+                } catch (e) {
+                    showNotification('Failed to copy workspace ID', 'error');
+                }
+            }],
+            ['Set workspace color', false, '', (clickEvent) => this.showColorPicker(clickEvent, id, row)],
+            ['Delete', hasChildren, 'Delete or move child workspaces first', () => deleteConversation(id)],
+        ];
+        for (const [label, disabled, reason, action] of actions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = label;
+            button.disabled = disabled;
+            if (disabled) button.title = reason;
+            button.addEventListener('click', (clickEvent) => {
+                this._closeMenu(true);
+                action(clickEvent);
+            });
+            menu.append(button);
+        }
+        document.body.append(menu);
+        const rect = row.getBoundingClientRect();
+        menu.style.left = `${Math.max(0, Math.min(event.clientX || rect.left, window.innerWidth - menu.offsetWidth))}px`;
+        menu.style.top = `${Math.max(0, Math.min(event.clientY || rect.bottom, window.innerHeight - menu.offsetHeight))}px`;
+        this.menu = menu;
+        this.menuRow = row;
+        menu.querySelector('button:not(:disabled)')?.focus();
+    }
+
+    _canDrop(parentId) {
+        if (!this.dragId || this.moving || this.byId.get(this.dragId)?.parent_id === parentId) return false;
+        let depth = 0;
+        for (let id = parentId; id !== null; id = this.parentById.get(id) ?? null) {
+            if (id === this.dragId) return false;
+            depth++;
+        }
+        const height = id => (this.children.get(id) || []).reduce(
+            (max, child) => Math.max(max, 1 + height(child.id)), 1
+        );
+        return depth + height(this.dragId) <= ConversationManager.MAX_DEPTH;
+    }
+
+    _bindDropTarget(element, parentId) {
+        element.addEventListener('dragover', (event) => {
+            if (!this.dragId) return;
+            event.stopPropagation();
+            if (!this._canDrop(parentId)) {
+                event.dataTransfer.dropEffect = 'none';
+                return;
+            }
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            this.dropTarget?.classList.remove('workspace-drop-target');
+            this.dropTarget = element;
+            element.classList.add('workspace-drop-target');
+        });
+        element.addEventListener('dragleave', (event) => {
+            if (!element.contains(event.relatedTarget)) element.classList.remove('workspace-drop-target');
+        });
+        element.addEventListener('drop', (event) => {
+            if (!this.dragId) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const id = this.dragId;
+            const allowed = this._canDrop(parentId);
+            this._endDrag();
+            if (allowed) this._moveWorkspace(id, parentId);
+        });
+    }
+
+    _endDrag() {
+        this.rows.get(this.dragId)?.classList.remove('workspace-dragging');
+        this.dropTarget?.classList.remove('workspace-drop-target');
+        this.dragId = this.dropTarget = null;
+    }
+
+    async _moveWorkspace(id, parentId) {
+        this.moving = true;
         try {
-            const response = await fetch(`/api/conversations/${convId}/update`, {
+            const response = await fetch(`/api/conversations/${encodeURIComponent(id)}/update`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ color: colorName }),
+                body: JSON.stringify({ parent_id: parentId }),
             });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            // Reload to refresh list
-            this._reloadConversations();
+            if (!response.ok) throw new Error((await response.json()).detail || `HTTP ${response.status}`);
+            if (parentId !== null) this.collapsed.delete(parentId);
+            await this._reloadConversations();
         } catch (e) {
-            logError('[ConversationManager] Failed to set color:', e);
-            showNotification('Failed to set color', 'error');
+            showNotification(`Failed to move workspace: ${e.message}`, 'error');
+        } finally {
+            this.moving = false;
         }
-    }
-
-    /**
-     * Start inline rename for a conversation item.
-     * Double-click triggers an input field overlay.
-     *
-     * @param {string} convId
-     * @param {HTMLElement} itemEl
-     */
-    startRename(convId, itemEl) {
-        const titleSpan = itemEl.querySelector('.chat-title');
-        if (!titleSpan) return;
-
-        const currentTitle = titleSpan.textContent;
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = currentTitle;
-        input.className = 'chat-rename-input';
-        input.style.cssText = `
-            flex: 1; overflow: hidden; background: var(--bg-tertiary);
-            border: 1px solid var(--accent); border-radius: 4px;
-            color: var(--text-primary); font-size: 14px; padding: 2px 4px;
-            outline: none; width: 120px;
-        `;
-
-        titleSpan.replaceWith(input);
-        input.focus();
-        input.select();
-
-        const finishRename = async () => {
-            const newTitle = input.value.trim() || 'New Workspace';
-            if (newTitle !== currentTitle) {
-                try {
-                    await fetch(`/api/conversations/${convId}/update`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ title: newTitle }),
-                    });
-                } catch (e) {
-                    logError('[ConversationManager] Failed to rename:', e);
-                }
-            }
-            this._reloadConversations();
-        };
-
-        input.addEventListener('blur', finishRename);
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') input.blur();
-            if (e.key === 'Escape') {
-                input.value = currentTitle;
-                input.blur();
-            }
-        });
-    }
-
-    // ===== HELPERS =====
-
-    /**
-     * Get color info object by name.
-     * @param {string|null} colorName
-     * @returns {{name: string, hex: string, label: string}|null}
-     */
-    _getColorInfo(colorName) {
-        if (!colorName) return null;
-        return ConversationManager.COLORS.find(c => c.name === colorName) || null;
-    }
-
-    /**
-     * Escape HTML for safe rendering.
-     * @param {string} text
-     * @returns {string}
-     */
-    _escapeHtml(text) {
-        if (typeof escapeHtml === 'function') return escapeHtml(text);
-        const d = document.createElement('div');
-        d.textContent = text;
-        return d.innerHTML;
-    }
-
-    /**
-     * Escape a value used INSIDE an HTML attribute value (delegates to app.js).
-     * @param {*} text
-     * @returns {string}
-     */
-    _escapeAttr(text) {
-        if (typeof window.escapeAttr === 'function') return window.escapeAttr(text);
-        return this._escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
-
-    /**
-     * Escape a value interpolated into a single-quoted inline-handler argument
-     * (delegates to app.js).
-     * @param {*} text
-     * @returns {string}
-     */
-    _escapeJsAttr(text) {
-        if (typeof window.escapeJsAttr === 'function') return window.escapeJsAttr(text);
-        return String(text == null ? '' : text)
-            .replace(/\\/g, '\\\\')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/`/g, '&#96;')
-            .replace(/'/g, "\\'")
-            .replace(/\n/g, '\\n')
-            .replace(/\r/g, '\\r')
-            .replace(/\t/g, '\\t');
     }
 }
 
-// Predefined 8-color palette with CSS variables and hex values.
-// (ES6-safe: assigned on the class object instead of ES2022 static class fields, so this
-// file parses as a classic script in every browser target.) Each entry has:
-//   - name:   key used in DB and API
-//   - hex:    hex color for rendering
-//   - label:  human-readable label
-ConversationManager.COLORS = [
-    { name: "red",    hex: "#ef4444", label: "Red" },
-    { name: "orange", hex: "#f97316", label: "Orange" },
-    { name: "yellow", hex: "#eab308", label: "Yellow" },
-    { name: "green",  hex: "#22c55e", label: "Green" },
-    { name: "blue",   hex: "#3b82f6", label: "Blue" },
-    { name: "purple", hex: "#a855f7", label: "Purple" },
-    { name: "pink",   hex: "#ec4899", label: "Pink" },
-    { name: "gray",   hex: "#6b7280", label: "Gray" }
-];
-
-// Sort configuration defaults.
+ConversationManager.MAX_DEPTH = 3;
 ConversationManager.DEFAULT_SORT = { by: "created", order: "desc" };
 
 
 // ===== GLOBAL INSTANCE =====
-// Exposed as window.ConversationMgr for inline event handlers in rendered HTML.
+// Used by workspace creation, selection, and startup.
 window.ConversationMgr = new ConversationManager();
 window.ConversationManager = ConversationManager;
