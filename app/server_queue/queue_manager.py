@@ -159,14 +159,14 @@ class RequestQueue:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._grace_sec
 
-        def _closed() -> bool:
-            return bool(getattr(req.sink, "is_closed", False))
-
         async with self._cond:
-            while len(self._by_model.get(key, ())) >= self._max_pending:
-                if req.is_cancelled() or _closed():
-                    return EnqueueResult(False, "cancelled while waiting for queue space",
+            while True:
+                # Check on every wake-up, even when capacity has just become available.
+                if req.is_cancelled() or getattr(req.sink, "is_closed", False):
+                    return EnqueueResult(False, "request cancelled or connection closed",
                                          model_key=key)
+                if len(self._by_model.get(key, ())) < self._max_pending:
+                    break
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     self._stats["total_rejected"] += 1

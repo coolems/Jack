@@ -3,6 +3,8 @@
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -93,3 +95,41 @@ def test_different_targets_or_clients_are_not_coalesced(events):
     events.record("workspace_unknown", client_ip="10.0.0.9", workspace="ccccddd")
     events.record("workspace_unknown", client_ip="10.0.0.8", workspace="aaaabbb")
     assert len(events.recent(10)) == 3
+
+
+def test_concurrent_records_never_lose_or_tear_a_line(events, monkeypatch):
+    """Evidence must survive a burst from several threads: one line per event, all parseable.
+
+    An append's file offset is not atomic between handles, so unserialised writers to the
+    same JSONL file overwrite and interleave each other. ``open`` is slowed here to widen
+    that window, which turns the race into a guaranteed overlap instead of a lucky one.
+    """
+    real_open = open
+
+    def slow_open(*args, **kwargs):
+        handle = real_open(*args, **kwargs)
+        time.sleep(0.001)  # lets a competing writer open the same file mid-append
+        return handle
+
+    monkeypatch.setattr("builtins.open", slow_open)
+    monkeypatch.setattr(events, "MAX_FILE_BYTES", 10 ** 9)  # rotation must not muddy the count
+    threads, per_thread = 8, 12
+    barrier = threading.Barrier(threads)  # every round starts with all writers in the window
+
+    def worker(index):
+        for i in range(per_thread):
+            barrier.wait()
+            events.record("path_escape", workspace=f"t{index}-{i}", requested="../etc/passwd")
+
+    workers = [threading.Thread(target=worker, args=(n,)) for n in range(threads)]
+    for worker_thread in workers:
+        worker_thread.start()
+    for worker_thread in workers:
+        worker_thread.join()
+
+    lines = Path(events.event_file()).read_text(encoding="utf-8").splitlines()
+    assert len(lines) == threads * per_thread
+    assert {json.loads(line)["workspace"] for line in lines} == {
+        f"t{n}-{i}" for n in range(threads) for i in range(per_thread)
+    }
+    assert events.summary()["total"] == threads * per_thread

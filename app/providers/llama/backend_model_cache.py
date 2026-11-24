@@ -49,7 +49,7 @@ def _read() -> dict:
     try:
         with open(_cache_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -125,11 +125,9 @@ def remember(registry) -> bool:
     if not isinstance(cached, dict):
         cached = {}
 
-    merged: dict = {}
-    for identity, entry in cached.items():
-        merged[identity] = fresh.get(identity, entry) if isinstance(entry, dict) else entry
-    for identity, entry in fresh.items():
-        merged.setdefault(identity, entry)
+    merged = {identity: entry for identity, entry in cached.items()
+              if isinstance(entry, dict)}
+    merged.update(fresh)
 
     if merged == cached:
         return False
@@ -165,20 +163,26 @@ def remembered_models() -> list:
             "busy": 0,
             "local": local,
         }
-        for m in entry.get("models", []):
+        models = entry.get("models")
+        if not isinstance(models, list):
+            continue
+        for m in models:
             if not isinstance(m, dict):
                 continue
             key = m.get("model_key")
-            if not key:
+            if not isinstance(key, str) or not key:
                 continue
+            label = m.get("label")
+            aliases = m.get("aliases")
             out.append({
-                "name": m.get("label") or key,
+                "name": label if isinstance(label, str) and label else key,
                 "size": 0,
                 "folder": None,
                 "on_disk": False,
                 "loaded": False,
                 "model_key": key,
-                "aliases": sorted(m.get("aliases") or []),
+                "aliases": sorted(a for a in aliases if isinstance(a, str))
+                if isinstance(aliases, list) else [],
                 "served_by": [dict(served_by)],
                 "offline": True,
             })

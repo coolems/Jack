@@ -174,18 +174,7 @@ class ChatChannel:
 
         Never raises - a dead subscriber is dropped silently. The raw JSON string is buffered
         so replay is byte-identical."""
-        text = json.dumps(frame)
-        self.last_activity = time.time()
-        live = [ws for ws in list(self.subscribers)]
-        if not live:
-            self._buffer.append(text)
-            return
-        for ws in live:
-            try:
-                await ws.send_text(text)
-            except Exception:
-                # dead subscriber — drop it; the channel keeps working for the rest
-                self.subscribers.discard(ws)
+        await self.emit_raw(json.dumps(frame))
 
     def buffered_frames(self, limit: int = 0) -> list[str]:
         """Tail of the background buffer (limit=0 → all). For re-attach replay."""
@@ -197,15 +186,16 @@ class ChatChannel:
 
     async def emit_raw(self, text: str) -> None:
         """Route a pre-serialized frame (non-JSON or opaque payloads)."""
-        live = [ws for ws in list(self.subscribers)]
-        if not live:
-            self._buffer.append(text)
-            return
-        for ws in live:
+        self.last_activity = time.time()
+        delivered = False
+        for ws in list(self.subscribers):
             try:
                 await ws.send_text(text)
+                delivered = True
             except Exception:
                 self.subscribers.discard(ws)
+        if not delivered:
+            self._buffer.append(text)
 
     async def record_runtime(self, entity_kind: str, entity_id: str, **data) -> None:
         """Record one runtime entity of THIS chat: an ask_user_question card.

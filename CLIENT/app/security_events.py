@@ -42,6 +42,11 @@ KEEP_EVENTS = 500
 _events: "deque[dict]" = deque(maxlen=KEEP_EVENTS)
 _counts: Counter = Counter()
 _lock = threading.Lock()
+# Serialises the JSONL append only, and is separate from _lock on purpose: concurrent
+# appends to one file lose and tear lines (the OS append offset is not atomic between
+# handles), while a slow disk write must not block the ring reads that serve the admin
+# endpoint. Two independently locked regions, never nested in reverse order.
+_write_lock = threading.Lock()
 
 # Identical caller mistakes arrive in bursts: the UI chat-status poll, a file panel that
 # retries an image, a background refresh - all hitting the same refusal every couple of
@@ -125,7 +130,8 @@ def record(kind: str, **fields) -> dict:
             return event
         with _lock:
             _events.append(event)
-        _write(event)
+        with _write_lock:
+            _write(event)
         logger.warning(f"SECURITY {event['kind']}: {detail}")
     except Exception as exc:
         logger.error(f"Security event reporting failed: {exc}")

@@ -89,6 +89,7 @@ class WorkerPool:
             "busy": False,
             "retire": False,
             "model_key": backend.model_key,
+            "backend": backend,
             "task": None,
         }
         task = asyncio.create_task(
@@ -111,13 +112,20 @@ class WorkerPool:
         """Match the worker count/model of every backend to its CURRENT /props values."""
         # Drop finished tasks from the bookkeeping list (retired workers accumulate).
         self._tasks = [t for t in self._tasks if not t.done()]
-        for key, backend in self._registry.backends.items():
+        backends = self._registry.backends
+        for key in self._workers.keys() - backends.keys():
+            for state in self._workers.pop(key):
+                self._retire(state)
+            self._next_slot.pop(key, None)
+
+        for key, backend in backends.items():
             states = [s for s in self._workers.get(key, []) if not s["task"].done()]
             self._workers[key] = states
 
-            # Model changed under us (node restarted with another model): respawn all.
-            if states and any(s["model_key"] != backend.model_key for s in states):
-                logger.info("[WORKERS] %s model changed to '%s' - respawning its workers",
+            # Workers capture a backend object; a rediscovered endpoint may reuse its key.
+            if any(s["backend"] is not backend or s["model_key"] != backend.model_key
+                   for s in states):
+                logger.info("[WORKERS] %s backend or model changed (%s) - respawning its workers",
                             backend.label, backend.model_key or "?")
                 for s in states:
                     self._retire(s)
