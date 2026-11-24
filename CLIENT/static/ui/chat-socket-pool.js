@@ -76,7 +76,11 @@ const ChatSocketPool = {
             this._touch(convId);
             // Legacy alias: keep COOLEMS.ws pointing at the CURRENT chat's socket even when
             // the pooled socket is reused (a switch-back must not leave it on another chat).
-            if (COOLEMS.currentConversation === convId) COOLEMS.ws = existing.ws;
+            if (COOLEMS.currentConversation === convId) {
+                COOLEMS.ws = existing.ws;
+                const open = existing.ws.readyState === WebSocket.OPEN;
+                updateConnectionStatus(open ? 'connected' : 'connecting', open ? 'Connected' : 'Connecting...');
+            }
             return existing.ws;
         }
 
@@ -154,7 +158,7 @@ const ChatSocketPool = {
             ws = new WebSocket(wsUrl);
         } catch (e) {
             logError('[ChatSocketPool] WS create failed:', e);
-            updateConnectionStatus('error', 'Error');
+            if (COOLEMS.currentConversation === convId) updateConnectionStatus('error', 'Error');
             return null;
         }
 
@@ -163,15 +167,22 @@ const ChatSocketPool = {
         this._touch(convId);
 
         // Keep the legacy global alias pointing at the CURRENT chat's socket.
-        if (COOLEMS.currentConversation === convId) COOLEMS.ws = ws;
+        if (COOLEMS.currentConversation === convId) {
+            COOLEMS.ws = ws;
+            updateConnectionStatus('connecting', 'Connecting...');
+        }
 
         ws.onopen = () => {
+            if (this.sockets[convId] !== entry) return;
             entry.reconnecting = false;
-            updateConnectionStatus('connected', 'Connected');
+            if (COOLEMS.currentConversation === convId) {
+                updateConnectionStatus('connected', 'Connected');
+            }
             this._updatePill();
         };
 
         ws.onmessage = (e) => {
+            if (this.sockets[convId] !== entry) return;
             let msg;
             try { msg = JSON.parse(e.data); }
             catch (err) { logError('[ChatSocketPool] Parse error:', err); return; }
@@ -205,7 +216,7 @@ const ChatSocketPool = {
         };
 
         ws.onerror = () => {
-            if (COOLEMS.currentConversation === convId) {
+            if (this.sockets[convId] === entry && COOLEMS.currentConversation === convId) {
                 // No toast: the header pill is the single source of truth for transport
                 // health. onclose follows immediately and starts the (indefinite)
                 // per-chat reconnect loop.
@@ -214,48 +225,43 @@ const ChatSocketPool = {
         };
 
         // Unexpected close -> per-chat reconnect on a fixed 3 s cadence (scoped to THIS chat).
-        ws.onclose = (e) => this._onClose(convId, e);
+        ws.onclose = (e) => this._onClose(convId, entry, e);
 
         this._updatePill();
         return ws;
     },
 
-    _onClose(convId, e) {
-        const entry = this.sockets[convId];
-        if (!entry || !this.sockets[convId]) return;   // deliberate close() removed it first
+    _onClose(convId, entry, e) {
+        if (this.sockets[convId] !== entry) return;
 
         log(`[ChatSocketPool] Chat ${convId} socket closed. Code: ${e.code}, wasClean: ${e.wasClean}`);
 
+        // A deliberate local close removes the entry first. Clean server shutdowns
+        // still need a reconnect, except when the server explicitly rejected the client.
+        const rejected = [1008, 4001, 4003].includes(e.code);
         if (COOLEMS.currentConversation === convId) {
-            updateConnectionStatus('connecting', 'Reconnecting...');
+            updateConnectionStatus(rejected ? 'disconnected' : 'connecting',
+                                   rejected ? 'Disconnected' : 'Reconnecting...');
             setButtonState(false);
         }
-
-        // Normal closure from a deliberate close — nothing to do.
-        if (e.code === 1000 || e.code === 1001) return;
-
-        // Per-chat reconnect on a fixed 3 s cadence, INDEFINITELY while the UI is open: the entry
-        // stays in this.sockets until the user deliberately closes the chat or the page,
-        // so the loop simply keeps retrying. The in-flight flag lives on the ENTRY, not
-        // in a global: two background sockets closing near-simultaneously must never
-        // block each other's reconnect (the last shared-state hazard of the old
-        // single-socket design).
-        if (!e.wasClean && !entry.reconnecting) {
-            entry.reconnecting = true;
-            // Fixed 3 s cadence, no backoff — retries continue while the UI is open.
-            updateConnectionStatus('connecting', 'Reconnecting...');
-            setTimeout(() => {
-                // Only reconnect if the socket was not replaced in the meantime.
-                const cur = this.sockets[convId];
-                if (cur && cur.ws === entry.ws) {
-                    delete this.sockets[convId];
-                    this._touch(convId);
-                    this._create(convId);
-                } else {
-                    entry.reconnecting = false;   // replaced or deliberately closed in the meantime
-                }
-            }, 3000);
+        if (rejected) {
+            delete this.sockets[convId];
+            this.order = this.order.filter(id => id !== convId);
+            if (COOLEMS.ws === entry.ws) COOLEMS.ws = null;
+            this._updatePill();
+            return;
         }
+
+        if (entry.reconnecting) return;
+        entry.reconnecting = true;
+        setTimeout(() => {
+            if (this.sockets[convId] !== entry) return;
+            // Keep retrying if construction fails, but never resurrect a replaced entry.
+            if (!this._create(convId)) {
+                entry.reconnecting = false;
+                this._onClose(convId, entry, e);
+            }
+        }, 3000);
     },
 
     // ===== Status tracking (dots + eviction safety) ==================================
@@ -443,7 +449,6 @@ const ChatSocketPool = {
  * other chat's socket (that was exactly the bug this refactor fixes).
  */
 function connectWebSocket(convId) {
-    updateConnectionStatus('connecting', 'Connecting...');
     ChatSocketPool.ensure(convId);
 }
 

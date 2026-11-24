@@ -166,3 +166,44 @@ def test_frame_is_buffered_only_if_no_subscriber_received_it(raw):
             assert channel.buffered_frames() == [text]
 
         asyncio.run(scenario())
+
+
+def test_worker_capacity_can_shrink_and_recover_while_busy():
+    async def scenario():
+        node = SimpleNamespace(key=("endpoint",), model_key="model", capacity=2,
+                               healthy=True, ctx_per_slot=1, label="endpoint",
+                               instance=SimpleNamespace(name="endpoint"))
+        queue = RequestQueue()
+        pool = WorkerPool(SimpleNamespace(backends={node.key: node}), queue)
+        entered = asyncio.Queue()
+        finish = asyncio.Event()
+
+        async def execute(backend, req):
+            entered.put_nowait(req)
+            await finish.wait()
+
+        pool._execute = execute
+        pool.start()
+        try:
+            for owner in ("first", "second"):
+                await queue.enqueue(request(owner))
+                await asyncio.wait_for(entered.get(), 1)
+            states = list(pool._workers[node.key])
+            node.capacity = 1
+            pool.reconcile()
+            assert [state["retire"] for state in states] == [False, True]
+            node.capacity = 2
+            pool.reconcile()
+            assert pool._workers[node.key] == states
+            assert all(not state["retire"] for state in states)
+            # Both slots must serve new work without waiting for another watchdog pass.
+            finish.set()
+            await asyncio.sleep(0)
+            finish.clear()
+            for owner in ("third", "fourth"):
+                await queue.enqueue(request(owner))
+                await asyncio.wait_for(entered.get(), 1)
+        finally:
+            await pool.stop()
+
+    asyncio.run(scenario())

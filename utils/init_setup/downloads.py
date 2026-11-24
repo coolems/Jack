@@ -1,5 +1,6 @@
 """Download engine - resumable streaming with progress + size verification."""
 
+import http.client
 import os
 import re
 import ssl
@@ -10,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from contextlib import closing
 
 from .errors import InitError
 from .ui import human, ok, warn
@@ -38,8 +40,12 @@ def _http_get(url: str, resume_from: int = 0) -> tuple[int, int | None, object]:
         resp = urllib.request.urlopen(req, timeout=120)
     except urllib.error.HTTPError as e:
         return e.code, None, e
-    total = resp.headers.get("Content-Length")
-    return resp.status, int(total) if total else None, resp
+    try:
+        total = resp.headers.get("Content-Length")
+        return resp.status, int(total) if total is not None else None, resp
+    except ValueError as e:
+        resp.close()
+        raise OSError("Invalid Content-Length") from e
 
 
 def _root_cause(e: Exception):
@@ -174,45 +180,61 @@ def download_file(url: str, dest_path: str, expected_size: int | None = None, la
             _handle_net_error(e, label, part, attempts)
             continue
 
-        if status == 206:                       # resumed OK
-            mode = "ab"
-            got = have
-            size = (total or 0) + have          # Content-Length on 206 is the REMAINDER
-        elif status == 416 and expected_size is not None and have >= expected_size:
-            # Server says "nothing left to send" - our .part is already complete.
-            os.replace(part, dest_path)
-            ok(f"{label}: partial file was already complete ({human(have)}) - finalized")
-            return
-        elif status == 200:                     # fresh start (or server ignored Range)
-            mode = "wb"                         # truncates any stale .part - correct restart
-            got = 0
-            size = total
-        else:
-            raise InitError(f"{label}: HTTP {status} from server - cannot download")
-
-        last_draw = 0.0
         try:
-            with open(part, mode) as f:
-                while True:
-                    chunk = resp.read(1 << 20)   # 1 MiB
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    got += len(chunk)
-                    now = time.time()
-                    if is_tty and (now - last_draw > 0.3 or (size and got >= size)):
-                        last_draw = now
-                        if size:
-                            pct = 100.0 * got / size
-                            spd = got / max(now - t0, 0.001)
-                            eta_s = (size - got) / max(spd, 1)
-                            print(f"\r  [DL] {label[:34]:<34} {pct:5.1f}%  "
-                                  f"{human(got)}/{human(size)}  {human(spd)}/s  ETA {int(eta_s//60):d}:{int(eta_s%60):02d}",
-                                  end="", flush=True)
-                        else:
-                            print(f"\r  [DL] {label[:34]:<34} {human(got)}  "
-                                  f"{human(got / max(now - t0, 0.001))}/s", end="", flush=True)
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            with closing(resp):
+                range_header = resp.headers.get("Content-Range", "")
+                if status == 416 and have:
+                    if expected_size == have and range_header == f"bytes */{have}":
+                        os.replace(part, dest_path)
+                        ok(f"{label}: partial file was already complete ({human(have)}) - finalized")
+                        return
+                    os.remove(part)
+                    raise OSError("Server rejected saved download offset; restarting")
+                if status == 206:
+                    match = re.fullmatch(r"bytes ([0-9]+)-([0-9]+)/([0-9]+)", range_header)
+                    start, end, size = map(int, match.groups()) if match else (-1, -1, -1)
+                    if (not have or start != have or not start <= end < size
+                            or (total is not None and total != end - start + 1)
+                            or (expected_size is not None and size != expected_size)):
+                        if have:
+                            os.remove(part)
+                        raise OSError("Invalid Content-Range; restarting download")
+                    mode, got = "ab", have
+                    response_end = end + 1
+                elif status == 200:
+                    mode, got, size = "wb", 0, total
+                    response_end = total if total is not None else expected_size
+                else:
+                    raise InitError(f"{label}: HTTP {status} from server - cannot download")
+
+                last_draw = 0.0
+                with open(part, mode) as f:
+                    while True:
+                        chunk = resp.read(1 << 20)   # 1 MiB
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                        now = time.time()
+                        if is_tty and (now - last_draw > 0.3 or (size and got >= size)):
+                            last_draw = now
+                            if size:
+                                pct = 100.0 * got / size
+                                spd = got / max(now - t0, 0.001)
+                                eta_s = (size - got) / max(spd, 1)
+                                print(f"\r  [DL] {label[:34]:<34} {pct:5.1f}%  "
+                                      f"{human(got)}/{human(size)}  {human(spd)}/s  ETA {int(eta_s//60):d}:{int(eta_s%60):02d}",
+                                      end="", flush=True)
+                            else:
+                                print(f"\r  [DL] {label[:34]:<34} {human(got)}  "
+                                      f"{human(got / max(now - t0, 0.001))}/s", end="", flush=True)
+                if response_end is not None and got > response_end:
+                    os.remove(part)
+                    raise OSError("Response exceeded its advertised size; restarting download")
+                if (response_end is not None and got < response_end
+                        or size is not None and got < size):
+                    raise OSError("Response ended before the download was complete")
+        except (OSError, http.client.HTTPException) as e:
             _handle_net_error(e, label, part, attempts)
             continue
 
@@ -220,7 +242,7 @@ def download_file(url: str, dest_path: str, expected_size: int | None = None, la
             print()
 
         final_size = os.path.getsize(part)
-        if size and final_size != size:
+        if size is not None and final_size != size:
             raise InitError(f"{label}: size mismatch after download ({human(final_size)} of {human(size)})")
         if expected_size is not None and final_size != expected_size:
             raise InitError(

@@ -132,7 +132,13 @@ class WorkerPool:
                 states = []
                 self._workers[key] = []
 
+            # A busy worker can be kept if capacity returns before it finishes.
+            # Idle retirees already had cancel() called and cannot be reused.
+            states = [s for s in states if not s["retire"] or s["busy"]]
+            self._workers[key] = states
             want = max(1, int(backend.capacity))
+            for s in states[:want]:
+                s["retire"] = False
             if len(states) < want:
                 for _ in range(want - len(states)):
                     self._spawn_worker(backend)
@@ -158,10 +164,10 @@ class WorkerPool:
                 break
 
             req: ChatRequest = await self._queue.get(backend.model_key)
-            req.backend = backend.label
-            req.context_window = int(backend.ctx_per_slot or CONTEXT_WINDOW_TOKENS)
             state["busy"] = True
             try:
+                req.backend = backend.label
+                req.context_window = int(backend.ctx_per_slot or CONTEXT_WINDOW_TOKENS)
                 await self._execute(backend, req)
             except asyncio.CancelledError:
                 raise

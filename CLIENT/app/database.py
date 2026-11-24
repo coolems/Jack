@@ -6,7 +6,6 @@ ip_address, color, parent_id). All connections go through app.db_manager
 (WAL mode, busy timeout, foreign keys enabled).
 """
 
-import sqlite3
 import logging
 
 from client_config import MODEL_NAME
@@ -51,11 +50,7 @@ def init_db(db_path: str):
     """Initialize the database with required tables."""
     logger.info("Initializing database...")
 
-    # Initialize db_manager first (sets WAL mode and safe defaults)
-    try:
-        init_db_manager(db_path)
-    except Exception:
-        pass  # Already initialized - continue with existing connection
+    init_db_manager(db_path)
 
     conn = get_db_connection()
     try:
@@ -75,6 +70,7 @@ def init_db(db_path: str):
                     system_prompt TEXT DEFAULT 'You are an AI assistant.',
                     ip_address TEXT DEFAULT 'unknown',
                     working_root TEXT DEFAULT NULL,
+                    color TEXT DEFAULT NULL,
                     parent_id TEXT REFERENCES conversations(id) ON DELETE RESTRICT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -122,6 +118,9 @@ def init_db(db_path: str):
             if "working_root" not in conv_cols:
                 cursor.execute("ALTER TABLE conversations ADD COLUMN working_root TEXT DEFAULT NULL")
                 logger.info("Added working_root column to conversations")
+            if "color" not in conv_cols:
+                cursor.execute("ALTER TABLE conversations ADD COLUMN color TEXT DEFAULT NULL")
+                logger.info("Added color column to conversations")
             # Cycle history for pre-existing databases (added 2026-12-04).
             _create_turn_log_table(cursor)
             if "parent_id" not in conv_cols:
@@ -135,37 +134,6 @@ def init_db(db_path: str):
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
-        raise
-    finally:
-        conn.close()
-
-# ---- Conversation color & sort support (added 2025-07-12) ----
-
-def migrate_conversation_colors(db_path: str):
-    """Migration: Add optional 'color' column to conversations table.
-
-    The color column stores one of 8 predefined color names (e.g. 'red', 'blue').
-    NULL means no color assigned (default / transparent).
-
-    Safe to call on existing databases - uses ALTER TABLE with exception handling.
-    """
-    # Ensure db_manager is initialized
-    try:
-        init_db_manager(db_path)
-    except Exception:
-        pass  # Already initialized
-
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        try:
-            cursor.execute("ALTER TABLE conversations ADD COLUMN color TEXT DEFAULT NULL")
-            logger.info("Added 'color' column to conversations table")
-        except sqlite3.OperationalError:
-            logger.info("'color' column already exists in conversations")
-        conn.commit()
-    except Exception as e:
-        logger.error(f"Color migration failed: {e}")
         raise
     finally:
         conn.close()

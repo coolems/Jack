@@ -69,7 +69,7 @@ import utils.history_manager  # noqa: F401 -- side-effect import (must precede t
 
 from app.browser import WebInteract
 from app.logging_config import setup_logging
-from app.database import init_db, migrate_conversation_colors
+from app.database import init_db
 from app.endpoints import create_app
 from app.initialization_client import init_provider_and_app, resolve_provider_and_url
 
@@ -113,7 +113,6 @@ if _created_configs:
 # ===== Database Setup =====
 ensure_database_file(DB_PATH)  # parent dir exists (file itself is created by init_db)
 init_db(DB_PATH)
-migrate_conversation_colors(DB_PATH)
 
 # Cycle-history rows left by an older build (deleted workspace, FK enforcement off)
 # are not owned by any workspace but are still readable by the history API.
