@@ -116,7 +116,6 @@ window.COOLEMS = {
     streamingAgentMode: false,
     wsReconnectAttempts: 0,
     filesPanelOpen: false,
-    MAX_RECONNECT_ATTEMPTS: 3,
     streamingBuffer: '',
     autoScrollEnabled: true,
     userScrolledUp: false,

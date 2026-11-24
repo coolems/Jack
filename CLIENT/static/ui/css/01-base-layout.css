@@ -221,7 +221,12 @@ body {
 }
 
 .connection-status.connected { color: #22c55e; }
-.connection-status.connecting { color: #f59e0b; }
+/* (2026-11-26) reconnecting = loud: red background + white text so the state is
+   visible at a glance. Reverts to the normal chip automatically on 'connected'. */
+.connection-status.connecting {
+    color: #ffffff;
+    background: var(--danger);
+}
 .connection-status.error { color: #ef4444; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 

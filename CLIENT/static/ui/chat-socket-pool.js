@@ -5,13 +5,13 @@
  * was closed and reopened on every chat switch (which killed the previous chat's session),
  * each conversation owns its OWN WebSocket in a small map:
  *
- *     convId -> { ws, reconnectAttempts }
+ *     convId -> { ws, reconnecting }
  *
  *  - Switching chats NEVER closes another chat's socket — its generation keeps streaming.
  *  - LRU cap: at most ChatSocketPool.maxOpen sockets stay open; the least-recently-used
  *    IDLE one is closed when a new chat opens (its frames keep buffering server-side).
  *    A chat that is generating/queued is NEVER evicted — closing it would kill the session.
- *  - Per-chat reconnect with backoff, scoped to that conversation only.
+ *  - Per-chat reconnect on a fixed 3 s cadence, scoped to that conversation only.
  *  - Background frames: while you are viewing chat B, frames arriving on chat A's socket
  *    are NOT rendered (they belong to A's view) — they only update A's status dot, so the
  *    sidebar shows what is happening in every chat at once.
@@ -24,7 +24,7 @@
 
 // ===== Pool state =====
 const ChatSocketPool = {
-    sockets: {},          // convId -> { ws, reconnectAttempts }
+    sockets: {},          // convId -> { ws, reconnecting }
     statuses: {},         // convId -> 'idle' | 'queued' | 'generating' (drives dots + eviction safety)
     // (2026-10-23 live steering) convId -> bool: whether that chat's current/last turn is
     // agentic and therefore accepts a mid-run steering message. Reported by chat_status.
@@ -158,7 +158,7 @@ const ChatSocketPool = {
             return null;
         }
 
-        const entry = { ws, reconnectAttempts: 0, reconnecting: false };
+        const entry = { ws, reconnecting: false };
         this.sockets[convId] = entry;
         this._touch(convId);
 
@@ -166,7 +166,6 @@ const ChatSocketPool = {
         if (COOLEMS.currentConversation === convId) COOLEMS.ws = ws;
 
         ws.onopen = () => {
-            entry.reconnectAttempts = 0;
             entry.reconnecting = false;
             updateConnectionStatus('connected', 'Connected');
             this._updatePill();
@@ -207,12 +206,14 @@ const ChatSocketPool = {
 
         ws.onerror = () => {
             if (COOLEMS.currentConversation === convId) {
-                updateConnectionStatus('error', 'Error');
-                showNotification('Connection error', 'error');
+                // No toast: the header pill is the single source of truth for transport
+                // health. onclose follows immediately and starts the (indefinite)
+                // per-chat reconnect loop.
+                updateConnectionStatus('connecting', 'Reconnecting...');
             }
         };
 
-        // Unexpected close -> per-chat reconnect with backoff (scoped to THIS chat).
+        // Unexpected close -> per-chat reconnect on a fixed 3 s cadence (scoped to THIS chat).
         ws.onclose = (e) => this._onClose(convId, e);
 
         this._updatePill();
@@ -226,21 +227,23 @@ const ChatSocketPool = {
         log(`[ChatSocketPool] Chat ${convId} socket closed. Code: ${e.code}, wasClean: ${e.wasClean}`);
 
         if (COOLEMS.currentConversation === convId) {
-            updateConnectionStatus('', 'Disconnected');
+            updateConnectionStatus('connecting', 'Reconnecting...');
             setButtonState(false);
         }
 
         // Normal closure from a deliberate close — nothing to do.
         if (e.code === 1000 || e.code === 1001) return;
 
-        // Per-chat reconnect with backoff. The in-flight flag lives on the ENTRY, not in a
-        // global: two background sockets closing near-simultaneously must never block each
-        // other's reconnect (the last shared-state hazard of the old single-socket design).
-        if (!e.wasClean && !entry.reconnecting && entry.reconnectAttempts < COOLEMS.MAX_RECONNECT_ATTEMPTS) {
+        // Per-chat reconnect on a fixed 3 s cadence, INDEFINITELY while the UI is open: the entry
+        // stays in this.sockets until the user deliberately closes the chat or the page,
+        // so the loop simply keeps retrying. The in-flight flag lives on the ENTRY, not
+        // in a global: two background sockets closing near-simultaneously must never
+        // block each other's reconnect (the last shared-state hazard of the old
+        // single-socket design).
+        if (!e.wasClean && !entry.reconnecting) {
             entry.reconnecting = true;
-            entry.reconnectAttempts++;
-            const delay = 2000 * entry.reconnectAttempts;
-            updateConnectionStatus('connecting', `Reconnecting (${entry.reconnectAttempts}/${COOLEMS.MAX_RECONNECT_ATTEMPTS})...`);
+            // Fixed 3 s cadence, no backoff — retries continue while the UI is open.
+            updateConnectionStatus('connecting', 'Reconnecting...');
             setTimeout(() => {
                 // Only reconnect if the socket was not replaced in the meantime.
                 const cur = this.sockets[convId];
@@ -251,10 +254,7 @@ const ChatSocketPool = {
                 } else {
                     entry.reconnecting = false;   // replaced or deliberately closed in the meantime
                 }
-            }, delay);
-        } else if (!e.wasClean && entry.reconnectAttempts >= COOLEMS.MAX_RECONNECT_ATTEMPTS) {
-            showNotification('Connection lost. Please refresh the page.', 'error');
-            updateConnectionStatus('error', 'Failed');
+            }, 3000);
         }
     },
 
