@@ -30,7 +30,7 @@ const ChatSocketPool = {
     // agentic and therefore accepts a mid-run steering message. Reported by chat_status.
     agentModes: {},
     order: [],            // LRU order: least recently used at index 0
-    maxOpen: 10,          // Idle eviction target; live sockets are never evicted.
+    maxOpen: 30,          // Idle eviction target; live sockets are never evicted.
     // (2026-06-17 idle close) a BACKGROUND chat whose turn just ended gets this much grace
     // before its socket is closed. Any activity (new frames, switch-back) cancels the timer.
     idleCloseMs: 5 * 60 * 1000,
@@ -495,8 +495,6 @@ const ChatSocketPool = {
         if (generating || queued) {
             suffix = ` · ${generating} gen`;
             if (queued) suffix += ` · ${queued} queued`;
-        } else if (Object.keys(this.sockets).length > 1) {
-            suffix = ` · ${Object.keys(this.sockets).length} workspaces live`;
         }
         span.textContent = text + suffix;
     },
