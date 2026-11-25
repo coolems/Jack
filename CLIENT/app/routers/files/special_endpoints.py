@@ -85,6 +85,55 @@ def register_special_endpoints(router: APIRouter):
             logger.error(f"Open folder error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.post("/api/reveal")
+    async def reveal_in_explorer(path: str = Query("", description="Relative path inside working_root folder")):
+        """Open the OS file manager with one file/folder of the workspace SELECTED.
+
+        Used by the Files panel's right-click menu ("Show in explorer").
+
+        SERVER-side limitation gate: revealing starts the desktop file manager (explorer /
+        open / xdg-open), which is a child-process execution surface - same gate as
+        /api/open-folder and /api/run-file.
+
+        Containment: the target is resolved with _safe_relative_path(), so only paths INSIDE
+        the authorized workspace folder can be revealed, and the item must exist.
+
+        Why not os.startfile(): on Windows startfile() EXECUTES a file (.bat/.exe/...), which
+        is exactly the surface /api/open-folder refuses. explorer.exe /select,<path> only
+        highlights the item in its parent window - the path stays data, never a command.
+        """
+        try:
+            import subprocess as subproc
+            allowed, reason = is_subprocess_allowed()
+            if not allowed:
+                raise HTTPException(status_code=403, detail=reason)
+            working_root_dir = _get_working_root_dir()
+            safe_path = _safe_relative_path(working_root_dir, path) if path else working_root_dir
+            if safe_path is None:
+                raise HTTPException(status_code=400, detail="Invalid path")
+            if not os.path.exists(safe_path):
+                raise HTTPException(status_code=404, detail="Path not found")
+            if sys.platform == "win32":
+                # '/select,<path>' is ONE argv element and the path is quoted by
+                # CreateProcess - no shell parses it, so spaces and ',' inside the name are
+                # preserved (explorer splits on the FIRST comma only).
+                explorer = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "explorer.exe")
+                if not os.path.isfile(explorer):
+                    explorer = "explorer.exe"
+                subproc.Popen([explorer, "/select," + safe_path])
+            elif sys.platform == "darwin":
+                subproc.Popen(["open", "-R", safe_path])
+            else:
+                # xdg-open has no "select" mode: open the containing folder instead.
+                folder = safe_path if os.path.isdir(safe_path) else os.path.dirname(safe_path)
+                subproc.Popen(["xdg-open", folder])
+            return {"status": "revealed", "path": path or "."}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Reveal in explorer error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
     @router.post("/api/run-file")
     async def run_file(data: Dict):
         """Run a Python file. GUI apps (pygame, tkinter) launch in new terminal window.

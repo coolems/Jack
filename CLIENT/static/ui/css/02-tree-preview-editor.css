@@ -40,11 +40,13 @@
 .breadcrumb-item.active:hover { background: transparent; }
 .breadcrumb-sep { color: var(--text-muted); font-size: 14px; user-select: none; }
 
-.tree-item { margin-bottom: 2px; border-radius: 6px; transition: all 0.15s; }
+.tree-item { margin-bottom: 1px; border-radius: 6px; transition: all 0.15s; }
 .tree-item-main {
     display: flex;
     align-items: center;
-    padding: 6px 8px;
+    /* Row metrics (2026-11-25): padding 3px + 21px content + 1px row gap = 28px row
+       pitch, which is 20% tighter than the previous 6px/2px (= 35px). */
+    padding: 3px 8px;
     border-radius: 6px;
     cursor: pointer;
     gap: 6px;
@@ -59,14 +61,30 @@
 
 .tree-item-actions {
         /* 2026-10-11: moved from a separate row below the item onto the same line,
-           in front of the name (inside .tree-item-main). Still invisible until hover. */
+           in front of the name (inside .tree-item-main). Still invisible until hover.
+           2026-11-25 (indent fix): this strip is a FIXED-WIDTH slot, not an auto-width
+           box. It is only hidden with opacity, so its real width still pushes the arrow,
+           icon and name to the right - and that width differed per row: .py / .html rows
+           carry one extra button (run / open), so code.py started 28px further in than
+           README.md. Slot = widest possible row (open-or-run + download + delete +
+           checkbox) = 3x24px button + 14px checkbox + 3x4px gap = 98px; the content is
+           right-aligned inside it, so every row of a level shares one content offset and
+           the checkbox/delete/download buttons line up in columns. */
         display: flex;
         align-items: center;
+        justify-content: flex-end;
         gap: 4px;
-        flex-shrink: 0;
+        flex: 0 0 auto;
+        width: 98px;
+        /* Only the controls themselves take the mouse. Rows that carry fewer buttons leave
+           part of the slot empty, and an empty strip must not swallow the click that would
+           otherwise select the row - the strip stops propagation for its children. */
+        pointer-events: none;
         opacity: 0;
         transition: opacity 0.15s;
     }
+
+.tree-item-actions > * { pointer-events: auto; }
 
 /* 2026-10-11 (fix): reveal actions ONLY for the exact row whose OWN main line is under
        the mouse. The child-combinator chain (> .tree-item-main > .tree-item-actions) stops
@@ -99,9 +117,13 @@
 .tree-folder > .tree-item-main { font-weight: 500; }
 .tree-file > .tree-item-main { font-weight: 400; }
 
+/* Selected row ring. outline (not border) so the ring adds NO layout box: a border grew
+   the row by 2px, which nudged the arrow/icon/name of that one row out of line and made
+   the row pitch jump. outline-offset -1px keeps the ring on the same pixels as before. */
 .tree-item-main:has(> .tree-item-actions > .tree-checkbox:checked) {
     background: rgba(59, 130, 246, 0.1);
-    border: 1px solid rgba(59, 130, 246, 0.3);
+    outline: 1px solid rgba(59, 130, 246, 0.3);
+    outline-offset: -1px;
 }
 
 #downloadSelectedBtn {
@@ -115,12 +137,16 @@
 
 #downloadSelectedBtn:hover { background: var(--accent-hover); }
 
-/* ===== DRAG TO PROMPT ===== */
-.tree-file-draggable { cursor: grab; }
-.tree-file-draggable:active { cursor: grabbing; }
+/* ===== DRAG TO MOVE / DRAG TO PROMPT ===== */
+/* Both row kinds are draggable: a file goes onto another folder or onto the prompt,
+   a folder onto another folder (its subtree travels with it). */
+.tree-file-draggable, .tree-folder-draggable { cursor: grab; }
+.tree-file-draggable:active, .tree-folder-draggable:active { cursor: grabbing; }
 .tree-drag-hint { font-size: 14px; color: var(--text-muted); opacity: 0; transition: opacity 0.2s; margin-left: 2px; user-select: none; }
-.tree-file:hover .tree-drag-hint { opacity: 0.6; }
-.tree-file:hover .tree-drag-hint:hover { opacity: 1; color: var(--accent); }
+/* Only the row whose OWN main line is hovered reveals its hint (child-combinator chain),
+   so hovering a folder does not light the hints of everything nested inside it. */
+.tree-item:hover > .tree-item-main > .tree-drag-hint { opacity: 0.6; }
+.tree-item:hover > .tree-item-main > .tree-drag-hint:hover { opacity: 1; color: var(--accent); }
 
 .tree-folder.drag-target > .tree-item-main {
     background: rgba(59, 130, 246, 0.15) !important;
@@ -129,6 +155,36 @@
 }
 
 .tree-folder.drag-target > .tree-item-main > .tree-icon { filter: brightness(1.3); }
+
+/* Inline rename (file-actions.js): the row's name span is swapped for this input, so the
+   row keeps its height and the name keeps its place. Same look as the sidebar's rename. */
+.file-rename-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    padding: 1px 4px;
+    outline: none;
+}
+
+.file-rename-input:focus {
+    border-color: var(--accent-hover);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+/* The row being dragged for a move is dimmed, like a workspace row in the sidebar. */
+.tree-item.file-move-source { opacity: 0.5; }
+
+/* Dropping an internal row drag on the empty area of the list moves it to the workspace
+   root - there is no row to highlight there, so the list itself shows the target. */
+.files-list.root-move-target {
+    outline: 1px dashed rgba(59, 130, 246, 0.6);
+    outline-offset: -3px;
+    background: rgba(59, 130, 246, 0.06);
+}
 
 /* ===== PREVIEW PANEL ===== */
 .preview-panel {

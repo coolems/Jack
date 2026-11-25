@@ -29,9 +29,20 @@ function renderTreeItems(items, currentPath) {
 
         if (item.type === 'folder') {
 
+            // 2026-11-30: a folder row is DRAGGABLE as well. Without draggable + ondragstart
+            // the browser never starts a drag at all, so dropping a folder onto another
+            // folder produced NO drag events ("drag to move is dead"), while the same
+            // gesture on a file already worked. The whole subtree travels with the folder
+            // (POST /api/move -> shutil.move).
             html += `<div class="tree-item tree-folder" data-path="${escapeAttr(itemPath)}">`;
 
-            html += `<div class="tree-item-main" onclick="toggleFolder('${escapeJsAttr(itemPath)}')">`;
+            html += `<div class="tree-item-main tree-folder-draggable" draggable="true" `;
+
+            html += `onclick="toggleFolder('${escapeJsAttr(itemPath)}')" `;
+
+            html += `ondragstart="handleFileDragStart(event, '${escapeJsAttr(itemPath)}', '${escapeJsAttr(item.name)}')" `;
+
+            html += `title="Drag to move, click to open">`;
 
             // 2026-10-11: actions come FIRST on the line; the expand triangle sits
             // right next to the name (after the actions). Invisible until hover.
@@ -54,6 +65,8 @@ function renderTreeItems(items, currentPath) {
 
             html += `<span class="tree-meta">folder</span>`;
 
+            html += `<span class="tree-drag-hint" title="Drag to move">⠿</span>`;
+
             html += `</div></div>`;
 
         } else {
@@ -70,7 +83,7 @@ function renderTreeItems(items, currentPath) {
 
             html += `ondragstart="handleFileDragStart(event, '${escapeJsAttr(itemPath)}', '${escapeJsAttr(item.name)}')" `;
 
-            html += `title="Drag to prompt or click to preview">`;
+            html += `title="Drag to move (or onto the prompt), click to preview">`;
 
             // 2026-10-11: actions come FIRST on the line; the (empty) arrow slot
             // keeps file icons aligned with folder rows. Invisible until hover.

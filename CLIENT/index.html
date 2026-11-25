@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>COOLEMS - AI Agent Interface</title>
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20270129a">
+    <!-- Cache-bust contract: this ?v= must be bumped whenever ANY module imported by
+         styles.css changes - the browser caches this URL, so a bumped @import inside
+         styles.css is never fetched while this query string stays the same. -->
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261128a">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -1009,15 +1012,26 @@
     <script src="/static/ui/files/files-state.js?v=20260918a"></script>
     <script src="/static/ui/files/file-upload.js?v=20260918a"></script>
     <script src="/static/ui/files/tree-view.js?v=20270129a"></script>
-    <script src="/static/ui/files/tree-render-items.js?v=20270129a"></script>
-    <script src="/static/ui/files/tree-render-children.js?v=20270129a"></script>
-    <script src="/static/ui/files/tree-actions.js?v=20261005a"></script>
+    <script src="/static/ui/files/tree-render-items.js?v=20270131a"></script>
+    <script src="/static/ui/files/tree-render-children.js?v=20270131a"></script>
+    <script src="/static/ui/files/tree-actions.js?v=20261129a"></script>
     <script src="/static/ui/files/preview-core.js?v=20261116a"></script>
     <script src="/static/ui/files/preview-edit.js?v=20260918a"></script>
     <script src="/static/ui/files/file-chips.js?v=20261116a"></script>
-    <script src="/static/ui/files/drop-to-folder.js?v=20260918a"></script>
+    <!-- Move / Rename (2026-11-29): drag a row onto a folder (or the empty list = root) to
+         move it, "Rename" / "Move to folder..." in the row menu, double click the name to
+         rename. Loaded BEFORE drop-to-folder.js and file-context-menu.js - both call into
+         it - and after tree-view.js (fileTreeRow). -->
+    <script src="/static/ui/files/file-actions.js?v=20270131a"></script>
+    <script src="/static/ui/files/drop-to-folder.js?v=20270131a"></script>
     <script src="/static/ui/files/run-python.js?v=20260918a"></script>
     <script src="/static/ui/files/working-root-chip.js?v=20260918a"></script>
+    <!-- Row context menu (2026-11-28, extended 2026-11-29): right click on ANY Files panel
+         row -> Rename / Move to folder... / Copy name / Copy full path / Show in explorer.
+         Delegated on #filesList, so re-renders and expanded folders are covered. After
+         working-root-chip.js (full path needs currentWorkingRoot) and file-actions.js,
+         before files-panel.js. -->
+    <script src="/static/ui/files/file-context-menu.js?v=20261129a"></script>
     <!-- File tools sync: reveals the file the running tool works on (without changing the
          folder shown) + refreshes the panel after a write/delete/move/rename. Before
          files-panel.js, after tree-view.js. -->

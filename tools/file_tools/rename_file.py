@@ -4,7 +4,7 @@ __tool_description__ = {
     "type": "function",
     "function": {
         "name": "rename_file",
-        "description": "Rename a file.",
+        "description": "Rename a file or a folder in place.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -15,11 +15,11 @@ __tool_description__ = {
                 },
                 "old_filename": {
                     "type": "string",
-                    "description": "Current bare file name, no slashes."
+                    "description": "Current bare file or folder name, no slashes."
                 },
                 "new_filename": {
                     "type": "string",
-                    "description": "New bare file name, no slashes."
+                    "description": "New bare file or folder name, no slashes."
                 }
             },
             "required": ["old_filename", "new_filename"]
@@ -37,8 +37,9 @@ logger = logging.getLogger("COOLEMS.Tools.Files")
 
 
 def rename_file(old_filename: str, new_filename: str, path: str = "") -> str:
-    """SECURITY RULE - CRITICAL:
-        * old_filename / new_filename = JUST THE FILE NAME only (e.g. 'old.py' -> 'new.py'). NO slashes allowed!
+    """Rename a file or a FOLDER in place (a folder keeps its whole subtree).
+    SECURITY RULE - CRITICAL:
+        * old_filename / new_filename = JUST THE NAME only (e.g. 'old.py' -> 'new.py'). NO slashes allowed!
         * path = DIRECTORY ONLY where the file lives (e.g. 'local_ai/config')
         * To rename 'local_ai/CLIENT/client_config/old.py':  old_filename='old.py', new_filename='new.py', path='local_ai/CLIENT/client_config'
     All paths are locked inside working_root. Path traversal via '..' is blocked.

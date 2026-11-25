@@ -15,6 +15,14 @@ from .middleware import _safe_relative_path, _is_working_root_base, _get_working
 
 from app.keys import is_subprocess_allowed  # SERVER-delivered subprocess limitation gate (2026-10-01)
 
+# Windows device names cannot be used as a file or folder name (with or without an
+# extension): 'nul.txt' still addresses the NUL device.
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def register_write_endpoints(router: APIRouter):
     """Register all POST/DELETE file modification endpoints on the given router."""
@@ -102,6 +110,137 @@ def register_write_endpoints(router: APIRouter):
             raise
         except Exception as e:
             logger.error(f"Delete working root file error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/api/move")
+    async def move_item(data: Dict):
+        """Move a file or a folder (recursively) to another folder of the workspace.
+
+        Used by the Files panel: dragging a row onto a folder, and the row menu's
+        "Move to folder...". Body: {"source": "a/b.txt", "destination_path": "c"} where
+        destination_path is a DIRECTORY ('' = the workspace root).
+
+        Refused (400/404/409) instead of guessed:
+          * a blank source, or a source that resolves to the workspace root itself
+            (moving the root into the root would delete the workspace),
+          * a destination outside the workspace, or one that is not a folder,
+          * a folder moved into itself or into one of its own subfolders,
+          * an existing target (this endpoint never overwrites - a move that silently
+            replaced a file would lose data),
+          * a source that does not exist.
+
+        shutil.move() is used, so a folder arrives with its whole subtree, and a move
+        across drives degrades to copy+delete instead of failing.
+        """
+        try:
+            source = str(data.get("source") or "").strip()
+            destination = str(data.get("destination_path") or "").strip()
+            if not source:
+                raise HTTPException(status_code=400, detail="Missing source")
+            working_root_dir = _get_working_root_dir()
+            safe_source = _safe_relative_path(working_root_dir, source)
+            if safe_source is None:
+                raise HTTPException(status_code=400, detail="Invalid source path")
+            if _is_working_root_base(working_root_dir, safe_source):
+                from app import security_events
+                security_events.record("working_root_move_blocked", requested=source)
+                raise HTTPException(status_code=400, detail="Refusing to move the working root itself")
+            if not os.path.exists(safe_source):
+                raise HTTPException(status_code=404, detail="Source not found")
+
+            safe_dest_dir = _safe_relative_path(working_root_dir, destination) if destination else working_root_dir
+            if safe_dest_dir is None:
+                raise HTTPException(status_code=400, detail="Invalid destination path")
+            if not os.path.isdir(safe_dest_dir):
+                raise HTTPException(status_code=400, detail="Destination is not a folder")
+
+            # A folder can never be moved inside itself: the destination would be
+            # destroyed together with the source it now lives in.
+            source_real = os.path.normcase(os.path.realpath(safe_source))
+            dest_real = os.path.normcase(os.path.realpath(safe_dest_dir))
+            if os.path.isdir(safe_source) and (dest_real == source_real
+                                               or dest_real.startswith(source_real + os.sep)):
+                raise HTTPException(status_code=400, detail="Cannot move a folder into itself")
+
+            target = os.path.join(safe_dest_dir, os.path.basename(safe_source))
+            if os.path.normcase(os.path.realpath(target)) == source_real:
+                raise HTTPException(status_code=400, detail="Source is already in that folder")
+            if os.path.exists(target):
+                raise HTTPException(status_code=409, detail=f"'{os.path.basename(target)}' already exists there")
+
+            # Blocking filesystem work off the event loop (a big folder move must not
+            # freeze every other HTTP endpoint, same rule as the run-* endpoints).
+            await asyncio.to_thread(shutil.move, safe_source, target)
+            rel_target = os.path.relpath(target, working_root_dir).replace(os.sep, "/")
+            logger.info(f"Moved {source} -> {rel_target}")
+            return {"status": "moved", "path": rel_target}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Move error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post("/api/rename")
+    async def rename_item(data: Dict):
+        """Rename a file or a folder in place (the row menu's "Rename").
+
+        Body: {"path": "a/b.txt", "new_name": "c.txt"}. The new name is a BARE name: it
+        may not contain a separator, may not be '.'/'..' and may not be a reserved
+        Windows device name, so a rename can never walk out of its folder. An existing
+        target is refused (no overwrite). Only the case of a name may change on a
+        case-insensitive filesystem - the old and new path are the same file there, so
+        that case is allowed explicitly.
+        """
+        try:
+            path = str(data.get("path") or "").strip()
+            new_name = str(data.get("new_name") or "").strip()
+            if not path:
+                raise HTTPException(status_code=400, detail="Missing path")
+            if not new_name:
+                raise HTTPException(status_code=400, detail="Missing new_name")
+            if "/" in new_name or "\\" in new_name or new_name in (".", ".."):
+                raise HTTPException(status_code=400, detail="A name must not contain a path separator")
+            if new_name != os.path.basename(new_name):
+                raise HTTPException(status_code=400, detail="A name must not contain a path separator")
+            if sys.platform == "win32":
+                stem = new_name.split(".")[0].strip().upper()
+                if stem in _WINDOWS_RESERVED_NAMES:
+                    raise HTTPException(status_code=400, detail=f"'{new_name}' is a reserved Windows name")
+
+            working_root_dir = _get_working_root_dir()
+            safe_path = _safe_relative_path(working_root_dir, path)
+            if safe_path is None:
+                raise HTTPException(status_code=400, detail="Invalid path")
+            if _is_working_root_base(working_root_dir, safe_path):
+                raise HTTPException(status_code=400, detail="Refusing to rename the working root itself")
+            if not os.path.exists(safe_path):
+                raise HTTPException(status_code=404, detail="Path not found")
+
+            target = os.path.join(os.path.dirname(safe_path), new_name)
+            # Containment for the RESULT too: a name that resolves elsewhere (a symlink
+            # inside the folder, an odd drive-relative spelling) is refused.
+            if _safe_relative_path(working_root_dir, os.path.relpath(target, working_root_dir)) is None:
+                raise HTTPException(status_code=400, detail="Invalid new name")
+            same_file = os.path.normcase(os.path.realpath(target)) == os.path.normcase(os.path.realpath(safe_path))
+            if not same_file and os.path.exists(target):
+                raise HTTPException(status_code=409, detail=f"'{new_name}' already exists")
+
+            if not same_file:
+                await asyncio.to_thread(os.rename, safe_path, target)
+            elif os.path.basename(safe_path) != new_name:
+                # Case-only rename on a case-insensitive filesystem: the target "exists"
+                # because it IS the source. Go through a temporary name so the change is
+                # actually applied instead of being a no-op.
+                temp = safe_path + ".renaming"
+                await asyncio.to_thread(os.rename, safe_path, temp)
+                await asyncio.to_thread(os.rename, temp, target)
+            rel_target = os.path.relpath(target, working_root_dir).replace(os.sep, "/")
+            logger.info(f"Renamed {path} -> {rel_target}")
+            return {"status": "renamed", "path": rel_target}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Rename error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/api/upload-to-folder")

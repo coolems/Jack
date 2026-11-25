@@ -7,7 +7,8 @@
  *        insert_lines / move_file / rename_file) REVEALS its file in the Files panel:
  *        the folders on the way are expanded and the file row is marked. The panel's
  *        own folder (currentTreePath) is NEVER changed by the jump - the list the user
- *        is looking at stays the list the user is looking at.
+ *        is looking at stays the list the user is looking at. A move / rename reveals
+ *        the DESTINATION, once the call has finished.
  * OFF -> the panel never moves on its own.
  *
  * INDEPENDENT of the toggle: a tool that WRITES / DELETES / MOVES / RENAMES a file makes
@@ -28,6 +29,10 @@ const FILE_TOOLS_SYNC_START_TOOLS = ['read_file', 'write_file', 'edit_file', 'in
 const FILE_TOOLS_TREE_CHANGING_TOOLS = [
     'write_file', 'edit_file', 'insert_lines', 'delete_file', 'move_file', 'rename_file',
 ];
+
+// Tools whose call is ABOUT one workspace file, so the panel can reveal it. A move /
+// rename reveals the DESTINATION (that is where the file is after the call).
+const FILE_TOOLS_JUMP_TOOLS = FILE_TOOLS_SYNC_START_TOOLS.concat(['move_file', 'rename_file']);
 
 // CSS class marking the row the panel jumped to (see 02-tree-preview-editor.css).
 const FILE_TOOLS_SYNC_ROW_CLASS = 'tool-sync-target';
@@ -91,7 +96,8 @@ async function jumpFilePanelToFile(path, request) {
     const revision = filesTreeRevision;
     const isCurrent = () => request.isCurrent() && revision === filesTreeRevision;
     if (!isCurrent()) return;
-    let row = fileTreeRow(file, '.tree-file');
+    // A folder target (a moved / renamed folder) is revealed itself, not a file row.
+    let row = fileTreeRow(file, '.tree-file') || fileTreeRow(file, '.tree-folder');
     if (!row) {
         const folders = (base ? file.slice(base.length + 1) : file).split('/').slice(0, -1);
         if (!folders.length) return;
@@ -100,7 +106,7 @@ async function jumpFilePanelToFile(path, request) {
         try {
             const items = await fetchFileTreeItems(parent, request.conversation);
             const name = file.slice(parent.length + 1);
-            if (!isCurrent() || !items.some(item => item.name === name && item.type === 'file')) return;
+            if (!isCurrent() || !items.some(item => item.name === name)) return;
         } catch (_) {
             return;
         }
@@ -109,7 +115,7 @@ async function jumpFilePanelToFile(path, request) {
             folder = folder ? folder + '/' + name : name;
             if (!isCurrent() || !await expandFileTreeFolder(folder, isCurrent)) return;
         }
-        row = fileTreeRow(file, '.tree-file');
+        row = fileTreeRow(file, '.tree-file') || fileTreeRow(file, '.tree-folder');
     }
     if (!row || !isCurrent()) return;
     clearFileToolsSyncHighlight();
@@ -139,7 +145,10 @@ function fileToolJumpRequest(conversation) {
 }
 
 function fileToolsSyncOnToolStart(data, convId, isReplay) {
-    if (!data || isReplay || !ownsFileToolFrame(convId) || !FILE_TOOLS_SYNC_START_TOOLS.includes(data.tool)) return;
+    if (!data || isReplay || !ownsFileToolFrame(convId) || !FILE_TOOLS_JUMP_TOOLS.includes(data.tool)) return;
+    // A move / rename is only meaningful once it happened: those jump on tool_end, where
+    // the file is already at its new place (a start frame would point at the old one).
+    if (data.tool === 'move_file' || data.tool === 'rename_file') return;
     const request = fileToolJumpRequest(convId);
     if (request) void jumpFilePanelToFile(data.sync_file, request);
 }

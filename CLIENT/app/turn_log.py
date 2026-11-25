@@ -152,7 +152,8 @@ def tool_file(name: str, args: Any) -> str:
     act on a single file (python_exec, grep, list_files, ...).
 
     move_file / rename_file report the DESTINATION: after the call that is where the file
-    is, and the Files panel shows the file at its current place.
+    is, and the Files panel shows the file at its current place. A folder works the same
+    way - the panel reveals the folder that was moved or renamed.
     """
     if not isinstance(args, dict):
         return ""

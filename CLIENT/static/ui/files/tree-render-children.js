@@ -23,9 +23,17 @@ function renderChildrenItems(items, parentPath) {
 
         if (item.type === 'folder') {
 
+            // 2026-11-30: nested folder rows are draggable too - see tree-render-items.js.
+            // Without draggable + ondragstart the browser starts no drag for a folder row.
             html += `<div class="tree-item tree-folder" data-path="${escapeAttr(itemPath)}">`;
 
-            html += `<div class="tree-item-main" onclick="toggleFolder('${escapeJsAttr(itemPath)}')">`;
+            html += `<div class="tree-item-main tree-folder-draggable" draggable="true" `;
+
+            html += `onclick="toggleFolder('${escapeJsAttr(itemPath)}')" `;
+
+            html += `ondragstart="handleFileDragStart(event, '${escapeJsAttr(itemPath)}', '${escapeJsAttr(item.name)}')" `;
+
+            html += `title="Drag to move, click to open">`;
 
             // 2026-10-11: actions come FIRST on the line; the expand triangle sits
             // right next to the name (after the actions). Invisible until hover.
@@ -47,6 +55,8 @@ function renderChildrenItems(items, parentPath) {
             html += `<span class="tree-name">${escapeHtml(item.name)}</span>`;
 
             html += `<span class="tree-meta">folder</span>`;
+
+            html += `<span class="tree-drag-hint" title="Drag to move">⠿</span>`;
 
             html += `</div></div>`;
 

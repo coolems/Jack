@@ -363,7 +363,10 @@ function handleFileDragStart(event, filePath, fileName) {
 
         event.dataTransfer.setData('text/plain', JSON.stringify({filePath, fileName}));
 
-    event.dataTransfer.effectAllowed = 'copy';
+    // 2026-11-29: a row of this panel can now be MOVED onto a folder row (drop-to-folder.js).
+    // 'copyMove' instead of 'copy' so the cursor shows both intents; dropping on the prompt
+    // still adds the file to the message (file-upload.js reads the same payload).
+    event.dataTransfer.effectAllowed = 'copyMove';
 
     event.dataTransfer.setData('coolems-file-drag', 'true');
 
