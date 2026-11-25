@@ -224,7 +224,58 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             logger.debug(f"Conversation status lookup failed for {conv_id}: {e}")
 
         return {"status": status, "queue_position": queue_position, "agent_mode": agent_mode}
-    
+
+    # (2026-11-28 workspace activity bar) "/live" is ONE path segment, so it can never be
+    # confused with the "/{conv_id}/..." routes above/below.
+    @router.get("/live")
+    async def list_live_conversations(request: Request):
+        """Live sessions of THIS client's workspaces right now.
+
+        The sidebar's activity bar has to know that a task is still running even for a
+        workspace this browser never opened (page reload, LRU-closed socket) - the client-side
+        socket pool only knows what it has actually seen. Reads the ChatBus channel states and
+        intersects them with the caller's own workspace ids, so nothing leaks between clients.
+
+        Only queued/generating sessions are reported, plus "needs_attention" for a turn parked
+        on an unanswered consent card (the UI cannot re-render that card from the DB).
+        """
+        current_ip = get_client_ip(request)
+
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM conversations WHERE ip_address = ?", (current_ip,))
+            owned = {row[0] for row in cursor.fetchall()}
+        finally:
+            close_db_connection(conn)
+
+        live = []
+        try:
+            from app.chat_bus import get_chat_bus
+            bus = get_chat_bus()
+            if bus is not None and owned:
+                for conv_id, channel in list(bus.channels.items()):
+                    if conv_id not in owned:
+                        continue
+                    status = getattr(getattr(channel, "status", None), "value", "idle")
+                    if status not in ("queued", "generating"):
+                        continue
+                    pending = getattr(channel, "exec_approval", None)
+                    try:
+                        needs_attention = bool(pending.pending_requests())
+                    except Exception:  # pragma: no cover - defensive, never break the bar
+                        needs_attention = False
+                    live.append({
+                        "id": conv_id,
+                        "status": status,
+                        "queue_position": int(getattr(channel, "queue_position", 0) or 0),
+                        "needs_attention": needs_attention,
+                    })
+        except Exception as e:  # pragma: no cover - bus must never break the sidebar bar
+            logger.debug(f"Live workspace lookup failed: {e}")
+
+        return {"live": live}
+
     @router.post("/{conv_id}/seen")
     async def mark_conversation_seen(conv_id: str, request: Request):
         """Reset the finished-unread flag for a workspace (the user opened it).

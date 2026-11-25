@@ -90,6 +90,9 @@ class ConversationManager extends WorkspaceSidebarControls {
             this.container.append(empty);
         }
         this.select(this.selectedId);
+        // (2026-11-28 activity bar) finished/unread flags arrive with this render, so the
+        // sidebar bar re-resolves its green group from the same data the rows use.
+        if (typeof refreshWorkspaceActivityBar === 'function') refreshWorkspaceActivityBar();
     }
 
     _renderBranch(parentId, container, depth) {
@@ -227,6 +230,11 @@ class ConversationManager extends WorkspaceSidebarControls {
         if (conv) conv.unread_finished = 0;
         this.rows.get(id)?.classList.remove('workspace-finished');
         ChatSocketPool.clearAttention(id);
+        // (2026-11-28 activity bar) opening a workspace also acknowledges a dialog the SERVER
+        // still reports for it, otherwise the bar's orange state would re-light after the visit.
+        if (typeof WorkspaceActivityBar !== 'undefined' && WorkspaceActivityBar.mounted) {
+            WorkspaceActivityBar.acknowledge(id);
+        }
         // Fire-and-forget server clear; a failed POST never breaks the UI and the next
         // reload re-syncs from the DB flag.
         fetch(`/api/conversations/${encodeURIComponent(id)}/seen`, { method: 'POST' })

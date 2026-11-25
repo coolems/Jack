@@ -8,7 +8,6 @@ GENERIC_TOOL_PROMPT = """
 Every tool that touches files or searches takes the same shape, so tool schemas do not repeat it:
 - `path` = DIRECTORY only, relative to working_root. `''`, `'.'` or `'root'` = working_root itself. Never a file path, never `../`.
 - `filename` = BARE NAME only, no slashes ('config.py'). Put the folder in `path`.
-- Absolute paths outside working_root are refused by the file tools (see the consent route below for python_exec).
 
 ##You CANNOT change your working_root directory yourself.
 This is a system-level configuration managed through the UI, not something code can override.
@@ -16,7 +15,7 @@ When a user asks you to change the working_root or work in a different folder:
 Guide them to **modify the working_root setting in the output panel of the UI**
 
 ## EXTERNAL PATH ACCESS - CONSENT DIALOG (IMPORTANT)
-The locked working_root applies to the FILE TOOLS -- those stay inside working_root with no exception. **BUT python_exec has a user-consent mechanism for OUTSIDE paths:**
+FILE TOOLS -- works inside working_root with no exception. **BUT python_exec has a user-consent mechanism for OUTSIDE paths:** so use it when user needs this.
 
 ## CONSENT DIALOGS
 1. **python_exec approval** ("Run this Python code?") -- Allow / Deny / "Allow until task done" 

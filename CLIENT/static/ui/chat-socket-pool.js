@@ -406,6 +406,8 @@ const ChatSocketPool = {
         // Transition INTO idle (turn just ended) arms the countdown; any active state cancels it.
         if (st === 'idle') this._startIdleTimer(convId);
         else this._cancelIdleTimer(convId);
+        // (2026-11-28 activity bar) every status change repaints the sidebar activity bar.
+        if (typeof refreshWorkspaceActivityBar === 'function') refreshWorkspaceActivityBar();
     },
 
     /** Update one chat's sidebar status dot directly (also used by the stop button). */
@@ -441,6 +443,8 @@ const ChatSocketPool = {
         // workspace (markSeen -> clearAttention), so there is no expiry timer. The badge and the
         // .workspace-finished glow live until clearAttention() removes them.
         this._setAttentionBadge(convId, kind);
+        // (2026-11-28 activity bar) a dialog/completion marker repaints the sidebar bar too.
+        if (typeof refreshWorkspaceActivityBar === 'function') refreshWorkspaceActivityBar();
     },
 
     /** Clear a workspace's attention state (visited / answered). */
@@ -448,6 +452,8 @@ const ChatSocketPool = {
         if (!this.attention[convId]) return;
         delete this.attention[convId];
         this._setAttentionBadge(convId, null);
+        // (2026-11-28 activity bar) the marker is gone -> the bar drops this workspace.
+        if (typeof refreshWorkspaceActivityBar === 'function') refreshWorkspaceActivityBar();
     },
 
     /** Update one workspace's sidebar attention badge + finished glow element only. */
@@ -504,6 +510,7 @@ const ChatSocketPool = {
         this.attention = {};
         this.pendingCards = {};
         COOLEMS.ws = null;
+        if (typeof refreshWorkspaceActivityBar === 'function') refreshWorkspaceActivityBar();
     },
 };
 
