@@ -104,6 +104,13 @@ class ConversationManager extends WorkspaceSidebarControls {
             row.draggable = true;
             this.rows.set(conv.id, row);
 
+            // (2026-11-24) persistent "finished & unread" glow: the row stays highlighted
+            // until the user opens it (markSeen). Driven by the server flag, and live by the
+            // non-expiring 'done' attention marker when the turn ended this session.
+            if (conv.unread_finished || ChatSocketPool.attention[conv.id] === 'done') {
+                row.classList.add('workspace-finished');
+            }
+
             const toggle = document.createElement(hasChildren ? 'button' : 'span');
             toggle.className = 'workspace-toggle';
             row.append(toggle);
@@ -111,7 +118,11 @@ class ConversationManager extends WorkspaceSidebarControls {
             const status = document.createElement('span');
             status.className = `chat-status-dot status-${ChatSocketPool.statuses[conv.id] || 'idle'}`;
             row.append(status);
-            const attention = ChatSocketPool.attention[conv.id];
+            // (2026-11-25 audit) a finished-but-unread workspace must show the green 'done'
+            // badge after a reload too, not just the glow - the DB flag drives BOTH, so the
+            // post-restart row looks identical to a live background completion. A live 'dialog'
+            // always wins over the persisted 'done' flag.
+            const attention = ChatSocketPool.attention[conv.id] || (conv.unread_finished ? 'done' : null);
             if (attention) {
                 const badge = document.createElement('span');
                 badge.className = `chat-attention-badge attention-${attention}`;
@@ -131,7 +142,10 @@ class ConversationManager extends WorkspaceSidebarControls {
             if (color) title.style.color = color.hex;
             row.append(icon, title);
             row.addEventListener('click', (event) => {
-                if (!event.target.closest('button, input')) loadConversation(conv.id);
+                if (!event.target.closest('button, input')) {
+                    this.markSeen(conv.id);
+                    loadConversation(conv.id);
+                }
             });
             title.addEventListener('dblclick', () => this.startRename(conv.id, row));
             row.addEventListener('contextmenu', (event) => {
@@ -139,7 +153,10 @@ class ConversationManager extends WorkspaceSidebarControls {
             });
             row.addEventListener('keydown', (event) => {
                 if (event.target !== row) return;
-                if (event.key === 'Enter') loadConversation(conv.id);
+                if (event.key === 'Enter') {
+                    this.markSeen(conv.id);
+                    loadConversation(conv.id);
+                }
                 if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
                     this._showMenu(event, row, conv.id, depth, hasChildren);
                 }
@@ -196,6 +213,24 @@ class ConversationManager extends WorkspaceSidebarControls {
         }
         this.path.textContent = ['Root', ...path.map(node => node.title)].join(' / ');
         this.path.title = `${this.path.textContent} — drop here to move to Root`;
+    }
+
+    /**
+     * Mark a workspace as seen: clear its finished-unread flag locally and on the server,
+     * and drop the sidebar glow/badge. Only an explicit user action (row click / Enter) or
+     * a live terminal frame for the CURRENT workspace reaches this, so the glow is never
+     * cleared by background auto-restores.
+     */
+    markSeen(id) {
+        if (!id) return;
+        const conv = this.byId.get(id);
+        if (conv) conv.unread_finished = 0;
+        this.rows.get(id)?.classList.remove('workspace-finished');
+        ChatSocketPool.clearAttention(id);
+        // Fire-and-forget server clear; a failed POST never breaks the UI and the next
+        // reload re-syncs from the DB flag.
+        fetch(`/api/conversations/${encodeURIComponent(id)}/seen`, { method: 'POST' })
+            .catch(() => { /* local clear already happened */ });
     }
 
     _closeMenu(restoreFocus = false) {

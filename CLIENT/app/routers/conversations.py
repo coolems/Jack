@@ -108,7 +108,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
         try:
             cursor = conn.cursor()
             cursor.execute(f"""
-                SELECT id, title, model, created_at, ip_address, color, parent_id
+                SELECT id, title, model, created_at, ip_address, color, parent_id, unread_finished
                 FROM conversations
                 WHERE ip_address = ?
                 ORDER BY {order_col} {order_dir}
@@ -129,6 +129,7 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
                     "owner_ip": row[4],
                     "color": row[5],
                     "parent_id": row[6],
+                    "unread_finished": bool(row[7]),
                 }
                 for row in rows
             ]
@@ -224,6 +225,32 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
         return {"status": status, "queue_position": queue_position, "agent_mode": agent_mode}
     
+    @router.post("/{conv_id}/seen")
+    async def mark_conversation_seen(conv_id: str, request: Request):
+        """Reset the finished-unread flag for a workspace (the user opened it).
+
+        This is the ONLY thing that clears the sidebar glow: it runs from an explicit
+        click/Enter on the workspace row, so a reload keeps the glow until the user has
+        actually looked. Idempotent - a repeated click is harmless. Ownership-guarded like
+        every other per-conversation route (404 unknown / 403 not ours).
+        """
+        current_ip = get_client_ip(request)
+
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            _require_conversation_owner(cursor, conv_id, current_ip)
+            cursor.execute(
+                "UPDATE conversations SET unread_finished = 0 WHERE id = ?",
+                (conv_id,),
+            )
+            conn.commit()
+        finally:
+            close_db_connection(conn)
+
+        logger.info(f"Client {current_ip} marked conversation {conv_id} seen")
+        return {"status": "seen"}
+
     @router.post("/{conv_id}/update")
     async def update_conversation(conv_id: str, data: Dict, request: Request):
         """Update conversation properties.

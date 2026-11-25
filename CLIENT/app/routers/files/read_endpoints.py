@@ -19,7 +19,8 @@ def register_read_endpoints(router: APIRouter):
     """Register all GET/read-only file endpoints on the given router."""
 
     @router.get("/api/tree")
-    async def list_tree(path: str = Query("", description="Relative path inside working_root folder")):
+    async def list_tree(path: str = Query("", description="Relative path inside working_root folder"),
+                        shallow: bool = False):
         """Return a tree listing for a given path inside the working_root folder."""
         try:
             working_root_dir = _get_working_root_dir()
@@ -53,7 +54,7 @@ def register_read_endpoints(router: APIRouter):
                     "size": stat.st_size if not is_dir else 0,
                     "modified": _format_datetime(stat.st_mtime),
                 }
-                if is_dir:
+                if is_dir and not shallow:
                     try:
                         item["items"] = []
                         for sub in os.listdir(full):

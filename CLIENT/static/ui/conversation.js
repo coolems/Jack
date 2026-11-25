@@ -211,6 +211,7 @@ async function newChat(parentId = null) {
 
         // (2026-10-09 switch-race fix) outgoing workspace is now a background chat - resume its routing.
         if (oldConvId) WorkspaceViews.resume(oldConvId);
+        if (oldConvId) ChatSocketPool.parkIdle(oldConvId);   // idle-close countdown for the backgrounded chat
         WorkspaceViews.resume(data.id);
 
         // (2026-10-09 per-workspace views) activate the NEW workspace's own folder from its DB row
@@ -404,6 +405,7 @@ async function loadConversation(id) {
             await _activateWorkingRoot(newConvId);
             // (2026-10-09 switch-race fix) outgoing workspace may go back to background - resume its routing.
             if (oldConvId) WorkspaceViews.resume(oldConvId);
+            if (oldConvId) ChatSocketPool.parkIdle(oldConvId);   // idle-close countdown for the backgrounded chat
 
             isSwitchingConversation = false;
             log('Fast-restored workspace view:', newConvId);
@@ -512,6 +514,7 @@ async function loadConversation(id) {
 
         // (2026-10-09 switch-race fix) outgoing workspace may go back to background - resume its routing.
         if (oldConvId) WorkspaceViews.resume(oldConvId);
+        if (oldConvId) ChatSocketPool.parkIdle(oldConvId);   // idle-close countdown for the backgrounded chat
 
         isSwitchingConversation = false;
 

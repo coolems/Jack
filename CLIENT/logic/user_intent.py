@@ -6,12 +6,11 @@ the task early. The loop injects one of the two headers below so the model canno
 which one it got - that distinction is what makes "tell me the current time" mid-review
 continue the review instead of ending it.
 
-This module owns ONLY the classification + the header text. react_loop.py applies the
-result (injection, deferral of a premature completion, the resume notice).
+The loop injects the header alongside the user message; completion follows the
+normal rules once the model has seen that message.
 """
 
 import re
-from typing import List, Tuple
 
 #: Injected before an interjection: answer it, then keep working.
 STEER_INTERJECTION_HEADER = (
@@ -76,46 +75,3 @@ def is_explicit_stop(text: str) -> bool:
 def steer_header_for(text: str) -> str:
     """The header that must precede this steering message."""
     return STEER_STOP_HEADER if is_explicit_stop(text) else STEER_INTERJECTION_HEADER
-
-
-def classify_steers(texts: List[str]) -> Tuple[bool, bool]:
-    """(has_interjection, has_stop) for one drained batch.
-
-    A batch holding BOTH still reports both: the loop only pushes a premature completion
-    back when the batch was pure interjection, so a stop request is honoured.
-    """
-    interjection = False
-    stop = False
-    for text in texts or []:
-        if is_explicit_stop(text):
-            stop = True
-        else:
-            interjection = True
-    return interjection, stop
-
-
-class SteerOutcome(int):
-    """How many steers were injected, plus what they meant.
-
-    Subclasses int so every existing `if n:` / `n == 2` call site keeps working while the
-    loop can also ask `outcome.interjection` / `outcome.stop`.
-    """
-
-    def __new__(cls, count: int, interjection: bool = False, stop: bool = False):
-        obj = super().__new__(cls, int(count or 0))
-        obj.interjection = bool(interjection)
-        obj.stop = bool(stop)
-        return obj
-
-
-def interjection_resume_notice(applied: int, total: int) -> str:
-    """The notice the loop sends when it deferred a premature completion.
-
-    It names the ratio (answered vs asked) so the user sees the job stayed open, and
-    tells the model plainly not to close the task.
-    """
-    return (
-        f"Answered {int(applied)}/{int(total)} mid-run message(s) - that was not a stop "
-        "request, so the task stayed open. Continue the original task now; Do NOT stop "
-        "or write the completion marker until the original task is finished."
-    )

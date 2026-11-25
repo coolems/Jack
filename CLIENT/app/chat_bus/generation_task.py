@@ -27,6 +27,7 @@ from app.websocket.db_ops import (
     save_user_message,
 )
 from app.websocket.turn_ops import save_turn_log
+from app.workspace_finished import mark_workspace_finished
 from logic import normal_mode, agentic_mode, build_normal_config, build_agentic_config
 from logic.base_mode import SessionTimer  # (2026-08-23) active-time session timer (pauses on user menus)
 from logic.normal import get_ollama_status_message
@@ -347,6 +348,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                 except Exception as e:
                     logger.debug(f"[CHATBUS] error frames not delivered (UI may be gone): {e}")
                 final_response = status_msg
+                mark_workspace_finished(conv_id)
                 channel.set_status(ChannelStatus.ERROR)
 
         except Exception as e:
@@ -356,6 +358,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
                 await send_execution_fail(sink, -1, type(e).__name__, str(e))
             except Exception:
                 pass
+            mark_workspace_finished(conv_id)
             channel.set_status(ChannelStatus.ERROR)
 
         # --- persist the assistant answer (the bus guarantees this even when nobody was looking) ---
@@ -400,6 +403,7 @@ async def run_generation_turn(channel, channel_ws: ChannelWebSocket, *, db_path:
         # the open block on 'done', so cycle_end must arrive first.
         await _close_cycle(final_response or "", stopped=False)
 
+        mark_workspace_finished(conv_id)
         channel.set_status(ChannelStatus.DONE)
         try:
             await send_done(sink)

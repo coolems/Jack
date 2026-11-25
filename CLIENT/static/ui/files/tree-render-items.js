@@ -29,10 +29,6 @@ function renderTreeItems(items, currentPath) {
 
         if (item.type === 'folder') {
 
-            const isExpanded = expandedFolders.has(itemPath);
-
-            const arrow = isExpanded ? '▼' : '▶';
-
             html += `<div class="tree-item tree-folder" data-path="${escapeAttr(itemPath)}">`;
 
             html += `<div class="tree-item-main" onclick="toggleFolder('${escapeJsAttr(itemPath)}')">`;
@@ -50,7 +46,7 @@ function renderTreeItems(items, currentPath) {
 
             html += `</div>`;
 
-            html += `<span class="tree-arrow">${arrow}</span>`;
+            html += `<span class="tree-arrow">▶</span>`;
 
             html += `<span class="tree-icon">📁</span>`;
 
@@ -59,28 +55,6 @@ function renderTreeItems(items, currentPath) {
             html += `<span class="tree-meta">folder</span>`;
 
             html += `</div></div>`;
-
-
-
-            // Render children if expanded and available
-
-            if (isExpanded && item.items && item.items.length > 0) {
-
-                html += `<div class="tree-children" data-parent="${escapeAttr(itemPath)}">`;
-
-                html += renderChildrenItems(item.items, itemPath);
-
-                html += `</div>`;
-
-            } else if (isExpanded && (!item.items || item.items.length === 0)) {
-
-                html += `<div class="tree-children" data-parent="${escapeAttr(itemPath)}">`;
-
-                html += `<div class="tree-empty-children">Empty folder</div>`;
-
-                html += `</div>`;
-
-            }
 
         } else {
 

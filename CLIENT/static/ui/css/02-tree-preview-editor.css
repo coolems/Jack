@@ -9,12 +9,14 @@
     border-bottom: 1px solid var(--border);
     font-size: 12px;
     color: var(--text-secondary);
-    display: none !important;
+    display: none;
     align-items: center;
     gap: 4px;
     flex-wrap: wrap;
     min-height: 0px;
 }
+
+.tree-breadcrumbs:has(.breadcrumb-sep) { display: flex; }
 
 .breadcrumb-item {
     cursor: pointer;
@@ -94,10 +96,10 @@
 .tree-children { padding-left: 20px; }
 .tree-loading { padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic; }
 .tree-empty-children { padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic; }
-.tree-folder .tree-item-main { font-weight: 500; }
-.tree-file .tree-item-main { font-weight: 400; }
+.tree-folder > .tree-item-main { font-weight: 500; }
+.tree-file > .tree-item-main { font-weight: 400; }
 
-.tree-item:has(.tree-checkbox:checked) .tree-item-main {
+.tree-item-main:has(> .tree-item-actions > .tree-checkbox:checked) {
     background: rgba(59, 130, 246, 0.1);
     border: 1px solid rgba(59, 130, 246, 0.3);
 }
@@ -120,13 +122,13 @@
 .tree-file:hover .tree-drag-hint { opacity: 0.6; }
 .tree-file:hover .tree-drag-hint:hover { opacity: 1; color: var(--accent); }
 
-.tree-folder.drag-target .tree-item-main {
+.tree-folder.drag-target > .tree-item-main {
     background: rgba(59, 130, 246, 0.15) !important;
     border: 1px dashed rgba(59, 130, 246, 0.6) !important;
     box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
 }
 
-.tree-folder.drag-target .tree-icon { filter: brightness(1.3); }
+.tree-folder.drag-target > .tree-item-main > .tree-icon { filter: brightness(1.3); }
 
 /* ===== PREVIEW PANEL ===== */
 .preview-panel {
@@ -435,6 +437,15 @@
 .tree-file.previewed .tree-item-main {
     background: rgba(59, 130, 246, 0.15);
 }
+
+/* "File tools sync" (2026-11-27): the row the Files panel revealed because a file tool
+   in the running loop works on it. Uses the child combinator so the highlight never
+   leaks into the nested rows of the folder the row sits in. */
+.tree-item.tool-sync-target > .tree-item-main {
+    background: rgba(59, 130, 246, 0.28);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+.tree-item.tool-sync-target > .tree-item-main .tree-name { font-weight: 600; }
     /* =====================================================================
        Image metadata card (ADDED 2026-09-18)
        Rich info row under a previewed image: size on disk, resolution, EXIF

@@ -31,6 +31,10 @@ const ChatSocketPool = {
     agentModes: {},
     order: [],            // LRU order: least recently used at index 0
     maxOpen: 10,          // Idle eviction target; live sockets are never evicted.
+    // (2026-06-17 idle close) a BACKGROUND chat whose turn just ended gets this much grace
+    // before its socket is closed. Any activity (new frames, switch-back) cancels the timer.
+    idleCloseMs: 5 * 60 * 1000,
+    idleTimers: {},       // convId -> timeout handle
 
     // ===== Sidebar attention markers (2026-10-09) ==================================
     // Orthogonal to session status: a chat can be 'generating' AND waiting on a dialog.
@@ -38,7 +42,6 @@ const ChatSocketPool = {
     //              URL consent): BLINKS until answered or the user visits that workspace.
     //   'done'   - a background workspace just finished its task: green flash for ~30 s.
     attention: {},        // convId -> 'dialog' | 'done'
-    _attentionTimers: {}, // convId -> setTimeout handle for the temporary 'done' flash
 
     // (2026-11-15 consent-card lifetime) convId -> Set of request_ids whose card is still
     // unanswered. A chat parked on a consent card is LIVE WORK: the turn is blocked on that
@@ -74,6 +77,7 @@ const ChatSocketPool = {
         if (existing && (existing.ws.readyState === WebSocket.OPEN ||
                          existing.ws.readyState === WebSocket.CONNECTING)) {
             this._touch(convId);
+            this._cancelIdleTimer(convId);   // user switched back — the socket is needed again
             // Legacy alias: keep COOLEMS.ws pointing at the CURRENT chat's socket even when
             // the pooled socket is reused (a switch-back must not leave it on another chat).
             if (COOLEMS.currentConversation === convId) {
@@ -101,6 +105,7 @@ const ChatSocketPool = {
         if (!entry) return;
         delete this.sockets[convId];
         this.order = this.order.filter(id => id !== convId);
+        this._cancelIdleTimer(convId);
 
         // Null every handler BEFORE closing: _onClose() also guards on sockets[convId],
         // so a late close event can never trigger a reconnect for a deliberate close.
@@ -132,6 +137,46 @@ const ChatSocketPool = {
     _touch(convId) {
         this.order = this.order.filter(id => id !== convId);
         this.order.push(convId);   // most recently used at the end
+    },
+
+    // ===== Idle-close countdown (2026-06-17) ========================================
+    // A BACKGROUND chat whose turn just finished (status -> 'idle') is parked: its socket
+    // is closed after idleCloseMs UNLESS something re-activates it first (a new frame, or
+    // the user switching back). The current chat is never timed out.
+
+    /** Arm the countdown for one background chat (no-op if it is the current chat). */
+    _startIdleTimer(convId) {
+        this._cancelIdleTimer(convId);
+        if (convId === COOLEMS.currentConversation) return;
+        this.idleTimers[convId] = setTimeout(() => {
+            delete this.idleTimers[convId];
+            // Re-check at fire time: the chat may have come back to life in the meantime.
+            const st = this.statuses[convId];
+            if (convId === COOLEMS.currentConversation) return;
+            if (st === 'generating' || st === 'queued' || pendingChatSends.has(convId)) return;
+            if (this.hasPendingCard(convId)) return;
+            log(`[ChatSocketPool] Idle close: chat ${convId} quiet for ${this.idleCloseMs / 1000}s, closing socket`);
+            this.close(convId, true);
+        }, this.idleCloseMs);
+    },
+
+    /** Cancel the countdown (activity on this chat — frame arrived or user switched back). */
+    _cancelIdleTimer(convId) {
+        if (this.idleTimers[convId]) {
+            clearTimeout(this.idleTimers[convId]);
+            delete this.idleTimers[convId];
+        }
+    },
+
+    /**
+     * Call when a chat goes to the BACKGROUND (workspace switch). If it is already idle its
+     * countdown starts NOW; if it is still generating, _setStatus() arms it later at the
+     * done -> idle transition. No-op while the chat is still current.
+     */
+    parkIdle(convId) {
+        if (!convId || convId === COOLEMS.currentConversation) return;
+        this._cancelIdleTimer(convId);
+        if ((this.statuses[convId] || 'idle') === 'idle') this._startIdleTimer(convId);
     },
 
     /** Oldest socket that is safe to evict: not current, NOT generating/queued, no pending card. */
@@ -286,7 +331,7 @@ const ChatSocketPool = {
 
         // (2026-10-09 attention markers) A BACKGROUND workspace needs the user's eye:
         //  * a decision card appeared -> blinking 'dialog' badge until answered/visited;
-        //  * a real turn just ended   -> temporary green 'done' flash (~30 s);
+        //  * a real turn just ended   -> persistent green 'done' glow until visited;
         //  * generating frames resume after a dialog -> clear it (answered or auto-fired).
         if (convId !== COOLEMS.currentConversation) {
             const prev = this.statuses[convId] || 'idle';
@@ -304,16 +349,29 @@ const ChatSocketPool = {
             }
         }
 
+        // (2026-11-24 persistent "finished" flag) when the CURRENT workspace's turn ends while
+        // the user is watching, clear the finished-unread flag immediately - they have seen it.
+        // (Background workspaces are handled above: setAttention('done') glows them until a click.)
+        if (convId === COOLEMS.currentConversation &&
+            (t === 'done' || t === 'error' || t === 'cancelled' ||
+             t === 'provider_error' || t === 'execution_fail')) {
+            if (typeof ConversationMgr !== 'undefined' && typeof ConversationMgr.markSeen === 'function') {
+                ConversationMgr.markSeen(convId);
+            }
+        }
+
         // (2026-09-08 multi-chat UI fix) AUTHORITATIVE frame: the server sends it right after
         // replaying a chat's buffered tail on re-attach. It carries the channel's real state,
         // so switching back to a generating/queued chat restores its dot even when no frames
         // are currently flowing (and clears it when the turn finished while away).
         if (t === 'chat_status') {
             const st2 = ['idle', 'queued', 'generating'].includes(msg.status) ? msg.status : 'idle';
-            if (st2 !== this.statuses[convId]) {
-                this.statuses[convId] = st2;
-                this._setDot(convId, st2);
-            }
+            this._setStatus(convId, st2);
+            // (2026-06-17 idle close) re-attach safety net: _setStatus only arms the countdown
+            // on a TRANSITION into idle, so a reconnect whose replay says "still idle" (status
+            // unchanged) would leave the socket open with no timer. parkIdle re-arms it for any
+            // background chat and no-ops for the current one.
+            if (st2 === 'idle') this.parkIdle(convId);
             // (2026-10-23 live steering) remember whether this chat's turn can be steered.
             if (msg.agent_mode !== undefined) this.agentModes[convId] = !!msg.agent_mode;
             return;
@@ -325,22 +383,36 @@ const ChatSocketPool = {
                  t === 'tool_end' || t === 'image_generated' || t === 'recovery_warning' ||
                  t === 'token_stats') st = 'generating';   // queue_start = the turn actually began
         else if (t === 'done' || t === 'error' || t === 'cancelled' ||
-                 t === 'provider_error' || t === 'ollama_error' || t === 'execution_fail' ||
-                 t === 'cycle_end') st = 'idle';
+                 t === 'provider_error' || t === 'ollama_error' || t === 'execution_fail') st = 'idle';
+        else if (t === 'cycle_end') {
+            // (2026-11-24 root-cause fix) cycle_end settles the loop-history block RIGHT BEFORE
+            // 'done'. It must NOT flip a COMPLETED turn to idle early, or the background 'done'
+            // attention guard (prev === 'generating'/'queued') would miss the finish and the
+            // workspace would never glow. A STOPPED cycle is terminal: flip to idle now so the
+            // 'done' that follows does NOT glow (stop/cancel never glows).
+            const stopped = !!(msg.payload && msg.payload.final && msg.payload.final.stopped);
+            if (stopped) st = 'idle';
+        }
         // system frames keep the current state.
 
-        if (st !== this.statuses[convId]) {
-            this.statuses[convId] = st;
-            this._setDot(convId, st);
-        }
+        this._setStatus(convId, st);
+    },
+
+    /** Set a chat's status, refresh its dot, and manage the idle-close countdown. */
+    _setStatus(convId, st) {
+        if (st === this.statuses[convId]) return;
+        this.statuses[convId] = st;
+        this._setDot(convId, st);
+        // Transition INTO idle (turn just ended) arms the countdown; any active state cancels it.
+        if (st === 'idle') this._startIdleTimer(convId);
+        else this._cancelIdleTimer(convId);
     },
 
     /** Update one chat's sidebar status dot directly (also used by the stop button). */
     updateChatStatus(convId, status) {
         const known = ['idle', 'queued', 'generating'];
         if (!status || !known.includes(status)) return;   // unknown — ignore
-        this.statuses[convId] = status;
-        this._setDot(convId, status);
+        this._setStatus(convId, status);
     },
 
     _setDot(convId, status) {
@@ -362,31 +434,23 @@ const ChatSocketPool = {
     /** Set a workspace's attention state ('dialog' | 'done') and update its sidebar badge. */
     setAttention(convId, kind) {
         if (!convId || !kind) return;
-        // A fresh dialog always wins over an old completion flash (and does not re-arm its timer).
+        // A fresh dialog always wins over an old completion glow (and does not re-arm it).
         if (this.attention[convId] === 'done' && kind !== 'dialog') return;
         this.attention[convId] = kind;
-        // The 'done' flash expires on its own so the sidebar stays quiet. Scheduled at STATE level (not in
-        // _setAttentionBadge): when a turn ends while the sidebar item is not rendered yet, the badge will
-        // appear on the next render but must still expire by itself.
-        const timer = this._attentionTimers[convId];
-        if (timer) { clearTimeout(timer); delete this._attentionTimers[convId]; }
-        if (kind === 'done') {
-            this._attentionTimers[convId] = setTimeout(() => this.clearAttention(convId), 30000);
-        }
-
+        // (2026-11-24) the 'done' marker is now PERSISTENT: it stays until the user visits the
+        // workspace (markSeen -> clearAttention), so there is no expiry timer. The badge and the
+        // .workspace-finished glow live until clearAttention() removes them.
         this._setAttentionBadge(convId, kind);
     },
 
-    /** Clear a workspace's attention state (visited / answered / expired). */
+    /** Clear a workspace's attention state (visited / answered). */
     clearAttention(convId) {
         if (!this.attention[convId]) return;
         delete this.attention[convId];
-        const timer = this._attentionTimers[convId];
-        if (timer) { clearTimeout(timer); delete this._attentionTimers[convId]; }
         this._setAttentionBadge(convId, null);
     },
 
-    /** Update one workspace's sidebar attention badge element only (timers live in set/clearAttention). */
+    /** Update one workspace's sidebar attention badge + finished glow element only. */
     _setAttentionBadge(convId, kind) {
         const item = document.querySelector(`.chat-history-item[data-conv-id="${convId}"]`);
         if (!item) return;   // sidebar not rendered yet — badge is added on next render
@@ -394,6 +458,7 @@ const ChatSocketPool = {
         let badge = item.querySelector('.chat-attention-badge');
         if (kind === null) {
             if (badge) badge.remove();
+            item.classList.remove('workspace-finished');
             return;
         }
         if (!badge) {
@@ -403,6 +468,8 @@ const ChatSocketPool = {
             item.insertBefore(badge, anchor);
         }
         badge.className = `chat-attention-badge attention-${kind}`;
+        // Only a finished turn glows; a pending dialog is a blink, not a completion.
+        item.classList.toggle('workspace-finished', kind === 'done');
     },
 
     /** Aggregate pill: appends "· N gen · M queued" to the connection status text. */
@@ -431,11 +498,9 @@ const ChatSocketPool = {
     /** Close everything (page unload / hard reset). */
     closeAll() {
         for (const id of Object.keys(this.sockets)) this.close(id, true);
+        this.idleTimers = {};
         if (typeof WorkspaceViews !== 'undefined') WorkspaceViews.clearAll();
-        // Clean slate: drop attention state + pending done-flash timers with the rest.
-        for (const id of Object.keys(this._attentionTimers)) {
-            clearTimeout(this._attentionTimers[id]); delete this._attentionTimers[id];
-        }
+        // Clean slate: drop in-memory attention state (the DB flag persists and re-glows on reload).
         this.attention = {};
         this.pendingCards = {};
         COOLEMS.ws = null;

@@ -89,6 +89,31 @@ _ARG_TARGET_FIELD = {
     "write_file": "filename",
 }
 
+#: File tools whose call is ABOUT one workspace file, so the Files panel can follow it
+#: ("File tools sync"). Deliberately NOT part of _ARG_TARGET_FIELD: that dict decides what
+#: the row line shows, and read_file/delete_file/insert_lines keep their current row look.
+_FILE_TOOL_ARG = {
+    "read_file": "filename",
+    "write_file": "filename",
+    "edit_file": "filename",
+    "insert_lines": "filename",
+    "delete_file": "filename",
+}
+
+
+def _file_identity(filename: Any, path: Any) -> str:
+    """``path`` + ``filename`` folded into one workspace-relative path ("" when no name).
+
+    `path` is folded in so a file in a subfolder reads as `config/config.py`, not a bare
+    name that could match a file anywhere in the workspace."""
+    name = str(filename or "").strip()
+    if not name:
+        return ""
+    folder = str(path or "").strip()
+    if folder and folder not in (".", "root"):
+        return f"{folder}/{name}"
+    return name
+
 
 def format_args(name: str, args: Any) -> str:
     """Readable text for a tool's INPUT frame.
@@ -113,21 +138,33 @@ def format_args(name: str, args: Any) -> str:
 
 
 def tool_target(name: str, args: Any) -> str:
-    """The file a tool call acts on, shown on the tool's row line ("" when it has none).
-
-    `path` is folded in so a file in a subfolder reads as `config/config.py`, not a bare
-    name that could match a file anywhere in the workspace.
-    """
+    """The file a tool call acts on, shown on the tool's row line ("" when it has none)."""
     field = _ARG_TARGET_FIELD.get(name)
     if field is None or not isinstance(args, dict):
         return ""
-    filename = str(args.get(field) or "").strip()
-    if not filename:
+    return _file_identity(args.get(field), args.get("path"))
+
+
+def tool_file(name: str, args: Any) -> str:
+    """The workspace file a FILE TOOL works on, for the Files panel's sync jump.
+
+    Sent as `sync_file` on the tool_start / tool_end frames. "" for every tool that does not
+    act on a single file (python_exec, grep, list_files, ...).
+
+    move_file / rename_file report the DESTINATION: after the call that is where the file
+    is, and the Files panel shows the file at its current place.
+    """
+    if not isinstance(args, dict):
         return ""
-    path = str(args.get("path") or "").strip()
-    if path and path not in (".", "root"):
-        return f"{path}/{filename}"
-    return filename
+    if name == "move_file":
+        return _file_identity(args.get("new_filename") or args.get("source_filename"),
+                              args.get("destination_path"))
+    if name == "rename_file":
+        return _file_identity(args.get("new_filename"), args.get("path"))
+    field = _FILE_TOOL_ARG.get(name)
+    if field is None:
+        return ""
+    return _file_identity(args.get(field), args.get("path"))
 
 # Marker for a consent card that is on screen but not answered yet.
 PENDING_DECISION = "pending"

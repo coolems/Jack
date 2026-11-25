@@ -657,6 +657,13 @@ function handleWebSocketMessage(data, ownerConvId) {
     if (data.type === 'tool_start') {
         // (2026-11-26) voice: a tool ran in this turn -> auto-speak must skip it.
         if (typeof VoiceUI !== 'undefined') VoiceUI.onToolStart(convId);
+        // (2026-11-27) Files panel "File tools sync": while the toggle is on, the panel
+        // reveals (expands + marks) the file this call works on - it never switches the
+        // folder being shown (frames carry `sync_file`). Replayed frames of an older turn
+        // are skipped - only live calls move the panel.
+        if (typeof fileToolsSyncOnToolStart === 'function') {
+            fileToolsSyncOnToolStart(data, convId, !!(st && st.inReplay));
+        }
         // Tool row + the live last-tool strip (live timer, input 5 / output 4). The strip
         // appears with the FIRST running tool of the turn and is removed once the final
         // answer starts being delivered (cycle_final / settle).
@@ -666,6 +673,13 @@ function handleWebSocketMessage(data, ownerConvId) {
     }
 
     if (data.type === 'tool_end') {
+        // (2026-11-27) Files panel: a write/delete/move/rename re-reads the SHOWN folder so
+        // the change is visible (toggle-independent); with "File tools sync" on the panel
+        // then reveals the file the call worked on. Replayed frames are skipped - nothing
+        // changed now.
+        if (typeof fileToolsSyncOnToolEnd === 'function') {
+            fileToolsSyncOnToolEnd(data, convId, !!(st && st.inReplay));
+        }
         const block = _cycleTarget(convId, data);
         if (block) {
             const out = String(data.output || '');

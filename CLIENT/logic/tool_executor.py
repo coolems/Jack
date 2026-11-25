@@ -17,10 +17,15 @@ from typing import Dict, Any
 from client_config import MODEL_NAME, AGENTIC_TOOL_OUTPUT_MAX_CHARS
 from app.providers import BaseProvider
 # The loop-history frames format a tool's input for the UI (app.turn_log.format_args) and
-# carry the file identity for the tool's row line (tool_target). Imported at module level:
+# carry the file identity for the tool's row line (tool_target) plus the workspace file the
+# Files panel reveals ("File tools sync", tool_file). Imported at module level:
 # the tool_end frame on the ERROR path is sent even in silent mode, where the tool_start
 # block that used to import it never runs.
-from app.turn_log import format_args as _fmt_args, tool_target as _fmt_target
+from app.turn_log import (
+    format_args as _fmt_args,
+    tool_target as _fmt_target,
+    tool_file as _fmt_file,
+)
 
 
 logger = logging.getLogger("COOLEMS.Logic.ToolExecutor")
@@ -492,11 +497,15 @@ class ToolExecutor:
             # multi-line payload (edit_file / write_file / python_exec) keeps its real lines
             # and indentation instead of str(dict) - one glued line with literal \n in it.
             # `target` is the file identity for the strip's info line ("" for other tools).
+            # `sync_file` is the workspace file a FILE TOOL works on: with "File tools sync"
+            # on, the Files panel reveals that file (expands + marks it) in the folder the
+            # user is already showing; it never switches the shown folder.
             await websocket.send_text(json.dumps({
                 "type": "tool_start",
                 "tool": tool_name,
                 "input": _fmt_args(tool_name, tool_args),
                 "target": _fmt_target(tool_name, tool_args),
+                "sync_file": _fmt_file(tool_name, tool_args),
                 "call_id": call_id,
                 # Wall-clock start of THIS call - the UI ticks the per-tool timer from it,
                 # so the duration shown is the real execution time, not a frame arrival time.
@@ -618,6 +627,8 @@ class ToolExecutor:
                 # text as tool_start, so the input frame shows real lines, not an empty frame.
                 "input": _fmt_args(tool_name, tool_args),
                 "target": _fmt_target(tool_name, tool_args),
+                "sync_file": _fmt_file(tool_name, tool_args),
+                "success": not result_is_error(result_str),
                 "call_id": call_id,
                 "duration_ms": round((time.time() - exec_start) * 1000.0, 1),
                 "conv_id": conversation_id or "",
@@ -638,6 +649,8 @@ class ToolExecutor:
                 # frame gets the formatted text (real lines + indentation) here too.
                 "input": _fmt_args(tool_name, tool_args),
                 "target": _fmt_target(tool_name, tool_args),
+                "sync_file": _fmt_file(tool_name, tool_args),
+                "success": not result_is_error(result_str),
                 "call_id": call_id,
                 "duration_ms": round((time.time() - exec_start) * 1000.0, 1),
                 "conv_id": conversation_id or "",

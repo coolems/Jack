@@ -72,6 +72,7 @@ def init_db(db_path: str):
                     working_root TEXT DEFAULT NULL,
                     color TEXT DEFAULT NULL,
                     parent_id TEXT REFERENCES conversations(id) ON DELETE RESTRICT,
+                    unread_finished INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -128,6 +129,14 @@ def init_db(db_path: str):
                     "ALTER TABLE conversations ADD COLUMN parent_id TEXT "
                     "REFERENCES conversations(id) ON DELETE RESTRICT"
                 )
+            # (2026-11-24) persistent "finished & unread" flag: the sidebar glows a
+            # workspace whose task ended until the user opens it. Legacy rows default to 0
+            # (no surprise glow after upgrading).
+            if "unread_finished" not in conv_cols:
+                cursor.execute(
+                    "ALTER TABLE conversations ADD COLUMN unread_finished INTEGER NOT NULL DEFAULT 0"
+                )
+                logger.info("Added unread_finished column to conversations")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id)")
         migrate_workspace_ids(cursor)
         conn.commit()

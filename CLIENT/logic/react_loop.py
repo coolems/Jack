@@ -76,16 +76,9 @@ logger = logging.getLogger("COOLEMS.Logic.ReactLoop")
 # The header is chosen by intent (logic.user_intent):
 #   * interjection ("tell me the current time")  -> answer it, then CONTINUE the task
 #   * explicit stop ("stop the review")          -> end the task
-# A mid-run question must never close the job, so a completion marker written right after
-# answering one is DEFERRED (see _interjection_pending handling below) unless the same batch
-# also asked for a stop.
+# Once delivered, the steering header is sufficient; do not veto a valid final answer.
 # ============================================================
-from .user_intent import (
-    SteerOutcome,
-    classify_steers,
-    interjection_resume_notice,
-    steer_header_for,
-)
+from .user_intent import steer_header_for
 
 TOOL_SKIPPED_FOR_STEER = (
     "NOT EXECUTED: the user sent a steering message while this tool call was pending, so it was "
@@ -144,7 +137,7 @@ def _has_pending_steers(config: Any) -> bool:
         return False
 
 
-async def _apply_pending_steers(config: Any, messages: List[Dict]) -> SteerOutcome:
+async def _apply_pending_steers(config: Any, messages: List[Dict]) -> int:
     """Drain queued steering messages and append them to *messages* as user turns.
     Ordering contract: callers that are about to inject after a streamed assistant answer
     must append that assistant message FIRST, then call this helper - so the steer is the
@@ -153,17 +146,16 @@ async def _apply_pending_steers(config: Any, messages: List[Dict]) -> SteerOutco
     source = getattr(config, "steer_source", None)
     drain = getattr(source, "drain_steer", None)
     if not callable(drain):
-        return SteerOutcome(0)
+        return 0
     try:
         items = drain() or []
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"[STEER] Could not drain steering queue: {e}")
-        return SteerOutcome(0)
+        return 0
 
     callback = getattr(config, "on_steer_applied", None)
     cycle = getattr(config, "cycle", None)
     applied = 0
-    texts: List[str] = []
     seen_ids: set = set()
 
     for item in items:
@@ -206,7 +198,6 @@ async def _apply_pending_steers(config: Any, messages: List[Dict]) -> SteerOutco
         header = steer_header_for(text)
         messages.append({"role": "user", "content": f"{header}\n\n{text}"})
         applied += 1
-        texts.append(text)
 
         # turn_id rides on the ack so the UI can route it into the RUNNING turn's
         # loop-history block (steering is never a chat-level message).
@@ -232,8 +223,7 @@ async def _apply_pending_steers(config: Any, messages: List[Dict]) -> SteerOutco
         logger.info(f"[STEER] Applied steering message {steer_id} at loop boundary "
                     f"(chars={len(text)}, total_applied_now={applied})")
 
-    interjection, stop = classify_steers(texts)
-    return SteerOutcome(applied, interjection=interjection, stop=stop)
+    return applied
 
 
 def _append_skipped_tool_results(messages: List[Dict], tool_calls: List[Dict], start_idx: int) -> int:
@@ -337,11 +327,6 @@ async def run_react_loop(
             await coro
         except Exception as e:  # pragma: no cover - defensive
             logger.debug(f"[AGENTIC.DEBUG] react_loop - cycle recorder failed: {e}")
-
-    # True while a mid-run QUESTION (not a stop request) was injected and its answer has
-    # not been settled yet. A completion marker written while this is set is DEFERRED: the
-    # job stays open until the original task is finished.
-    interjection_pending = False
 
     final_response = ""
     ai_response = ""
@@ -480,16 +465,6 @@ async def run_react_loop(
                 consecutive_thinking_count = 0
                 logger.info(f"[AGENTIC.DEBUG] react_loop - injected {_steers_applied} live "
                             f"steering message(s) before provider call")
-                # INTERJECTION RULE: a pure mid-run QUESTION does not end the job.
-                # Tell the model plainly (in-context) that the task stayed open, so a later
-                # 'TASK DONE' cannot be justified by having answered only the question. A
-                # batch that also contains an explicit stop is NOT treated this way.
-                if _steers_applied.interjection and not _steers_applied.stop:
-                    interjection_pending = True
-                    messages.append({"role": "user", "content": interjection_resume_notice(
-                        int(_steers_applied), int(_steers_applied))})
-                    logger.info("[AGENTIC.DEBUG] react_loop - interjection recorded: completion "
-                                "marker is DEFERRED until the original task finishes")
 
             # TOOL SCHEMA REFRESH: the schema was built once per turn
             # by the websocket handler, so an MCP server enabled + connected AFTER the turn
@@ -1137,45 +1112,6 @@ async def run_react_loop(
                         continue
 
                 if "Agentic AI: TASK DONE" in ai_response:
-                    # INTERJECTION RULE: a mid-run QUESTION was answered but the ORIGINAL
-                    # task is not finished, so this marker is a premature completion. Keep the
-                    # answer in context (the model must see what it wrote), push the job back
-                    # with an explicit continue instruction, and do NOT persist it as done. A
-                    # batch that also asked to stop is honoured above (interjection is only
-                    # set for pure questions).
-                    if interjection_pending:
-                        interjection_pending = False
-                        if messages and messages[-1].get("role") == "assistant":
-                            messages[-1]["content"] = (messages[-1].get("content") or "") + "\n\n" + ai_response
-                            invalidate_message_tokens(messages[-1])
-                        else:
-                            messages.append({"role": "assistant", "content": ai_response})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "[SYSTEM NOTICE] You answered the mid-run message, but that was NOT a stop "
-                                "request. Do NOT end the task here - continue the ORIGINAL task from where "
-                                "you left it and only write 'Agentic AI: TASK DONE' when that task is "
-                                "genuinely finished."
-                            ),
-                        })
-                        logger.warning(
-                            "[AGENTIC.DEBUG] react_loop - completion DEFERRED: the task stayed open after "
-                            "a mid-run question (not a stop request)"
-                        )
-                        consecutive_thinking_count = 0
-                        if config.websocket:
-                            try:
-                                await config.websocket.send_text(json.dumps({
-                                    "type": "system",
-                                    "content": interjection_resume_notice(1, 1),
-                                }))
-                            except Exception:
-                                pass  # UI gone - the deferral still happened
-                        await _rec(cycle.feedback(interjection_resume_notice(1, 1)) if cycle else None)
-                        tool_iteration += 1
-                        continue
-
                     # TASK COMPLETE - build final response from ALL accumulated thinking + this last message
                     temp_thinking.append(ai_response)
 
@@ -1197,15 +1133,6 @@ async def run_react_loop(
                 else:
                     # Increment consecutive thinking counter
                     consecutive_thinking_count += 1
-
-                    # INTERJECTION RULE: a marker-free turn after a mid-run question is REAL
-                    # continued work, so the deferral window closes - the next 'TASK DONE' is
-                    # a genuine completion of the original task.
-                    if interjection_pending:
-                        interjection_pending = False
-                        logger.debug("[AGENTIC.DEBUG] react_loop - interjection settled: the model "
-                                     "continued the original task (marker-free turn)")
-
 
                     logger.debug(f"[AGENTIC.DEBUG] react_loop - Consecutive thinking count: {consecutive_thinking_count}")
 
