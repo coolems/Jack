@@ -249,17 +249,28 @@ p:last-child { margin-bottom: 0; }
 .ollama-error h3 { color: var(--danger); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
 .ollama-error code { background: var(--bg-primary); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
 
-/* ===== SCROLL INDICATOR ===== */
+/* ===== SCROLL INDICATOR =====
+   (2026-11-26 user request) The jump-to-bottom button must always sit on the LOWER RIGHT of the
+   CONVERSATION frame, never on top of the Files/Preview panel. The element therefore lives
+   inside .main (a positioned flex child of body, so the panels shrink it instead of covering
+   it) and is positioned against that frame:
+     - `right` below is measured from the frame's own right edge;
+     - `bottom` is written by scroll.js positionScrollIndicator() as the prompt-frame height
+       + 12px, so it stays clear of the input area while the textarea / file chips grow.
+   120px is only the pre-JS fallback value. */
 .scroll-indicator {
-    position: fixed;
+    position: absolute;
     bottom: 120px;
-    right: 30px;
+    right: 24px;
     z-index: 1000;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 8px;
+    pointer-events: none;      /* only the button/badge are clickable, never the empty box */
 }
+
+.scroll-indicator > * { pointer-events: auto; }
 
 .scroll-indicator button {
     background: var(--accent);

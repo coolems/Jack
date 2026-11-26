@@ -407,6 +407,11 @@ async function loadConversation(id) {
             if (oldConvId) WorkspaceViews.resume(oldConvId);
             if (oldConvId) ChatSocketPool.parkIdle(oldConvId);   // idle-close countdown for the backgrounded chat
 
+            // (2026-11-26 user request) the workspace opens at the END of its conversation: the
+            // stashed node came back at its old scroll position, so jump to the last message
+            // (and stay there while late images/turn blocks settle).
+            scrollToConversationEnd();
+
             isSwitchingConversation = false;
             log('Fast-restored workspace view:', newConvId);
             return;
@@ -511,6 +516,9 @@ async function loadConversation(id) {
         // streaming bubble on top of the DB history. With a fresh handshake the queue is empty
         // — those frames come as server replay instead, and _inReplay guards them.
         WorkspaceViews.flushFrames(newConvId);
+
+        // (2026-11-26 user request) a workspace always opens at the END of its conversation.
+        scrollToConversationEnd();
 
         // (2026-10-09 switch-race fix) outgoing workspace may go back to background - resume its routing.
         if (oldConvId) WorkspaceViews.resume(oldConvId);

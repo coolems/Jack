@@ -7,7 +7,7 @@
     <!-- Cache-bust contract: this ?v= must be bumped whenever ANY module imported by
          styles.css changes - the browser caches this URL, so a bumped @import inside
          styles.css is never fetched while this query string stays the same. -->
-    <link rel="stylesheet" href="/static/ui/styles.css?v=20261128b">
+    <link rel="stylesheet" href="/static/ui/styles.css?v=20261126c">
     <!-- jsdiff library for proper diff calculations -->
     <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 </head>
@@ -142,6 +142,20 @@
                     </button>
                 </div>
             </div>
+        </div>
+
+        <!-- (2026-11-26 user request) Jump-to-bottom indicator lives INSIDE .main (the conversation
+             frame) so it is always pinned to the LOWER RIGHT of that frame - opening the Files or
+             Preview panel (flex siblings of .main) can never make it overlap them. Absolute
+             position + the bottom offset (kept above the prompt frame) come from scroll.js
+             positionScrollIndicator(); styles: css/05-input-modals-code.css. -->
+        <div id="scrollIndicator" class="scroll-indicator" style="display: none;">
+            <div class="generating-badge">⚡ Generating response...</div>
+            <button onclick="scrollToBottomAndResume()">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+            </button>
         </div>
     </main>
 
@@ -937,15 +951,6 @@
 
     </div>
 
-    <div id="scrollIndicator" class="scroll-indicator" style="display: none;">
-        <div class="generating-badge">⚡ Generating response...</div>
-        <button onclick="scrollToBottomAndResume()">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-        </button>
-    </div>
-
     <!-- Load scripts in dependency order -->
     <script src="/static/ui/api-key.js?v=20261124a">
     </script>
@@ -953,7 +958,7 @@
     </script>
     <script src="/static/ui/license-badge.js?v=20261126a">
     </script>
-    <script src="/static/ui/scroll.js?v=20260830a">
+    <script src="/static/ui/scroll.js?v=20261126a">
     </script>
     <!-- Loop-history UI (2026-11-08): rows -> shell -> block, loaded before the
          modules that call into them (conversation.js / websocket.js / message.js). -->
@@ -963,7 +968,7 @@
     <script src="/static/ui/workspace-sidebar-controls.js?v=workspace-tree"></script>
     <script src="/static/ui/conversation-manager.js?v=workspace-finished">
     </script>
-    <script src="/static/ui/conversation.js?v=workspace-tree-audit">
+    <script src="/static/ui/conversation.js?v=workspace-end-scroll">
     </script>
     <script src="/static/ui/workspace-view.js?v=workspace-model-2"></script>
     <script src="/static/ui/chat-socket-pool.js?v=activity-bar"></script>

@@ -18,7 +18,10 @@
     .preview-panel:not(.collapsed) { transform: translateX(0); width: 320px; }
     .preview-panel.collapsed { transform: translateX(100%); }
     .message-content { max-width: calc(100% - 50px); }
-    .scroll-indicator { bottom: 100px; right: 16px; }
+    /* (2026-11-26) the indicator is pinned inside .main now; its `bottom` is JS-driven, so only
+       the horizontal offset and the size need narrowing here. z-index stays under the overlay
+       panels (99/100) so an open panel on a narrow screen is never covered by the button. */
+    .scroll-indicator { bottom: 100px; right: 16px; z-index: 98; }
     .scroll-indicator button { width: 40px; height: 40px; }
     
     /* Narrow screens: the clock line is dropped (as the header used to do); the license
