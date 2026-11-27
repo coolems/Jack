@@ -1,6 +1,6 @@
 # Model Folder: Qwen3.8-27B MTP (Multi-Token Prediction)
 
-This folder is the **default model location** for this server (`llama_server/models/`).
+This folder is the **default model location** for this server (`providers/llama/models/`).
 Drop the model files described below **directly into THIS folder** (flat, no subfolders —
 the scanner only reads `*.gguf` one level deep).
 
@@ -84,7 +84,7 @@ qwen38-27b-mtp/
 ## Requirements / notes
 
 - llama.cpp build must support `--spec-type draft-mtp` (MTP merged May 2026, PR #22673;
-  repo requires b10419+). The bundled `llama_server/` binaries are recent enough.
+  repo requires b10419+). The bundled `providers/llama/` binaries are recent enough.
 - Recommended runtime settings for this model: `--spec-draft-n-max 2` is the publisher's
   tested value (our config uses 4 — fine, but drop to 2 if acceptance rate looks low in logs).
 - VRAM: Q4_K_M + KV cache fits a 24 GB GPU with ~98K–130K context (measured on RTX 4090:

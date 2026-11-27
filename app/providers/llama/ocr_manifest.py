@@ -4,7 +4,7 @@ Lists the files a CLIENT needs to run OCR locally — llama-server.exe + its fla
 the GLM-OCR model + mmproj — so the SERVER can provision them to clients that lack them.
 
 Each entry is ``{name, size, sha256}`` where *name* is a posix path RELATIVE to the
-server's ``llama_server/`` root (e.g. ``models/glm_ocr/GLM-OCR.Q4_K_M.gguf``). sha256 is
+server's ``providers/llama/`` root (e.g. ``models/glm_ocr/GLM-OCR.Q4_K_M.gguf``). sha256 is
 computed lazily and cached (the files are large and stable); it is recomputed only when a
 file's size or mtime changes.
 """
@@ -16,7 +16,7 @@ import os
 
 logger = logging.getLogger("COOLEMS.Provider.Llama.OCRManifest")
 
-# The vision model + projector live in this subfolder of llama_server/models/.
+# The vision model + projector live in this subfolder of providers/llama/models/.
 OCR_MODEL_SUBDIR = "glm_ocr"
 
 # name -> (size, sha256, mtime_ns)
@@ -24,9 +24,9 @@ _cache: dict = {}
 
 
 def llama_server_root() -> str:
-    """Absolute path of the SERVER's llama_server/ directory."""
-    from .path_utils import _resolve_server_root
-    return os.path.join(_resolve_server_root(), "llama_server")
+    """Absolute path of the SERVER's llama.cpp runtime home (providers/llama/)."""
+    from .path_utils import _get_llama_home
+    return _get_llama_home()
 
 
 def _sha256_of(path: str) -> str:
@@ -58,7 +58,7 @@ def _entry_for(name: str, abspath: str):
 
 
 def build_ocr_manifest() -> list:
-    """The full list of files a client OCR instance needs (relative to llama_server/)."""
+    """The full list of files a client OCR instance needs (relative to providers/llama/)."""
     root = llama_server_root()
     entries = []
 
@@ -81,7 +81,7 @@ def resolve_ocr_file(name: str):
     """Absolute server path for a manifest *name*, or None when outside the allowed set.
 
     Safety: only names that appear in the manifest resolve, and the result is required to
-    stay under the llama_server/ root (no path traversal).
+    stay under the providers/llama/ root (no path traversal).
     """
     if not name or not isinstance(name, str):
         return None

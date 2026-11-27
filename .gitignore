@@ -113,26 +113,28 @@ certs/*
 *.p12
 *.pfx
 
-# llama_server: ignore everything EXCEPT the download documentation file and the
-# models folder tree. The folder is filled with large pre-built binaries (~1.3 GB of
-# DLLs/exes from a llama.cpp Windows CUDA release) - see "download llama_server files.md"
-# inside it for where to get them and how to lay them out on disk.
-llama_server/*
-!llama_server/download llama_server files.md
-!llama_server/models/
+# providers/ (2026-11): every local inference runtime bundle, one folder each -
+#   providers/llama/  llama.cpp (llama-server.exe + DLLs + models/)
+# Their binaries and weights are large pre-built/third-party artifacts, so everything
+# is ignored EXCEPT the documentation and the per-model readme files. git cannot
+# re-include a file whose parent directory is ignored, so each level is kept open.
+providers/*/bin/
+providers/*/downloads/
+providers/*/*.log
+providers/llama/*
+!providers/llama/*.md
+!providers/llama/models/
 
-# llama_server/models: ignore EVERYTHING inside (model weights, projectors, temp
-# downloads...) at every level EXCEPT readme files.
-# NOTE: git cannot re-include a file whose parent directory is ignored, so the
-# subdirectories are explicitly kept open per level. Covers models/<name>/... one
+# providers/*/models: ignore EVERYTHING inside (model weights, projectors, temp
+# downloads...) at every level EXCEPT readme files. Covers models/<name>/... one
 # level deep (the layout used by path_utils._get_default_models_dir()).
-llama_server/models/*
-!llama_server/models/[Rr][Ee][Aa][Dd][Mm][Ee].md
-!llama_server/models/[Rr][Ee][Aa][Dd][Mm][Ee].txt
-!llama_server/models/*/
-llama_server/models/*/*
-!llama_server/models/*/[Rr][Ee][Aa][Dd][Mm][Ee].md
-!llama_server/models/*/[Rr][Ee][Aa][Dd][Mm][Ee].txt
+providers/*/models/*
+!providers/*/models/[Rr][Ee][Aa][Dd][Mm][Ee].md
+!providers/*/models/[Rr][Ee][Aa][Dd][Mm][Ee].txt
+!providers/*/models/*/
+providers/*/models/*/*
+!providers/*/models/*/[Rr][Ee][Aa][Dd][Mm][Ee].md
+!providers/*/models/*/[Rr][Ee][Aa][Dd][Mm][Ee].txt
 
 # python_exec scratch space (2026-09-18): every temp file created by executed
 # code lands here -- the folder itself stays tracked via .gitkeep, its contents never.
@@ -159,9 +161,9 @@ CLIENT/.temp/*
 config/llama_node.json
 config/.llama_node_state.json
 
-# CLIENT-local OCR runtime (2026-12): the whole CLIENT/llama_server/ folder is
+# CLIENT-local OCR runtime (2026-12): the whole CLIENT/providers/llama/ folder is
 # machine-local - the SERVER pushes every file there (llama-server.exe, DLLs,
 # GLM-OCR model, mmproj) over the secure client link on first use (see
 # CLIENT/app/providers/coolems_client/ocr_files.py). Never commit; it is
 # re-provisioned automatically on any other PC.
-CLIENT/llama_server/
+CLIENT/providers/

@@ -1,6 +1,6 @@
 # Model Folder: DeepSeek-R1-0528 (high-value reasoning model)
 
-Second example folder in the default models location (`llama_server/models/`).
+Second example folder in the default models location (`providers/llama/models/`).
 Drop the downloaded parts **directly into THIS folder** (flat, no subfolders —
 the scanner only reads `*.gguf` one level deep).
 
@@ -66,7 +66,7 @@ deepseek-r1-0528/
   put the `mmproj-*.gguf` in this same folder and it gets wired via `--mmproj` automatically.
 - ⚠️ This folder must be reachable by the server: either add its full path to
   `allowed_models_folders` in `config/profiles.json`, or note that files placed directly in
-  `llama_server/models/` are always scanned. (This subfolder works if added there.)
+  `providers/llama/models/` are always scanned. (This subfolder works if added there.)
 
 ## Requirements / notes
 

@@ -153,7 +153,7 @@ class LlamaProvider(BaseProvider):
 
     # ---- get_models_list ----
     async def get_models_list(self) -> List[Dict]:
-        """All models on disk (llama_server/models/*.gguf): name, size, on_disk, loaded.
+        """All models on disk (providers/llama/models/*.gguf): name, size, on_disk, loaded.
 
         Disk scan runs off-loop; the /v1/models probe uses the shared httpx pool.
         """

@@ -11,7 +11,7 @@ The SERVER provisions the llama files this CLIENT needs to run OCR locally
          - files it already holds, verified            -> it replies ocr_file_skip;
          - files missing / different / unverified      -> it replies ocr_file_ready.
     4. The SERVER streams only the "ready" files, one by one (ocr_file_chunk frames +
-       ocr_file_done); each file lands in <CLIENT>/llama_server/ (mirroring the SERVER
+       ocr_file_done); each file lands in <CLIENT>/providers/llama/ (mirroring the SERVER
        layout), is size + sha256 verified, and the client reports the result back
        (ocr_file_ack ok=true/false) so the SERVER can resend that file or move on.
 
@@ -52,10 +52,10 @@ class _FatalServerAbort(Exception):
 
 
 def client_llama_root() -> str:
-    """Absolute path of <CLIENT>/llama_server/ (the local OCR llama home, relative to CLIENT)."""
+    """Absolute path of <CLIENT>/providers/llama/ (the local OCR llama home, relative to CLIENT)."""
     here = os.path.dirname(os.path.abspath(__file__))          # .../coolems_client
     client_root = os.path.dirname(os.path.dirname(os.path.dirname(here)))  # CLIENT
-    return os.path.join(client_root, "llama_server")
+    return os.path.join(client_root, "providers", "llama")
 
 
 def _sha256_of(path: str) -> str:
@@ -114,7 +114,7 @@ def _remove_stale(root: str, manifest_names: set) -> int:
                 except OSError as e:
                     logger.warning("[OCRFiles] could not remove stale %s: %s", name, e)
     while True:
-        # drop now-empty subdirectories (llama_server/ itself is kept)
+        # drop now-empty subdirectories (providers/llama/ itself is kept)
         empty = []
         for dirpath, dirnames, _filenames in os.walk(root, topdown=False):
             if dirpath != root and not os.listdir(dirpath):

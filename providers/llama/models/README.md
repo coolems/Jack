@@ -1,6 +1,6 @@
-# llama_server/models — Model Folders & Vision (mmproj) Rule
+# providers/llama/models — Model Folders & Vision (mmproj) Rule
 
-This is the **default model location** for this server (`llama_server/models/`).
+This is the **default model location** for this server (`providers/llama/models/`).
 Each subfolder holds ONE model. Drop files **directly into the model's own folder**,
 flat, no nested subfolders — the scanner only reads `*.gguf` one level deep per folder.
 
@@ -20,7 +20,7 @@ Search order for a given model file:
      or prefix style `GLM-OCR.mmproj-Q8_0.gguf` next to `GLM-OCR.Q4_K_M.gguf`).
    - Then *generic* match: filename starts with `mmproj-` / `mmproj.` and contains only a
      quant tag (e.g. `mmproj-F16.gguf`, `mmproj-F32.gguf`). Priority: F16 > F32.
-2. Default dir (`llama_server/models/`) — dedicated matches only, as a fallback.
+2. Default dir (`providers/llama/models/`) — dedicated matches only, as a fallback.
 
 Found → server starts llama-server with `--mmproj <file>`. Not found → `--mmproj-auto`
 (llama.cpp guesses; usually finds nothing = **no vision**).

@@ -1,7 +1,7 @@
 """Client-local OCR: run a dedicated llama-server (GLM-OCR + mmproj) on THIS machine.
 
 The CLIENT runs OCR locally instead of delegating to the SERVER. This module owns the
-dedicated llama-server process: find the files under <CLIENT>/llama_server/, launch on a
+dedicated llama-server process: find the files under <CLIENT>/providers/llama/, launch on a
 side port, health-check, transcribe, and shut down. Lifecycle is strictly
 start -> use -> stop when done: the provider calls shutdown_local_ocr_server() after every
 transcription (the exit hook is only a safety net for abnormal termination).
@@ -100,7 +100,7 @@ def _find_llama_exe():
 
 
 def _find_model_and_mmproj():
-    """Return (model_path, mmproj_path) from <CLIENT>/llama_server/models/glm_ocr/."""
+    """Return (model_path, mmproj_path) from <CLIENT>/providers/llama/models/glm_ocr/."""
     model_dir = os.path.join(client_llama_root(), "models", OCR_MODEL_SUBDIR)
     if not os.path.isdir(model_dir):
         return None, None
@@ -159,9 +159,9 @@ def ensure_local_ocr_server():
     exe = _find_llama_exe()
     model, mmproj = _find_model_and_mmproj()
     if not exe:
-        return False, "llama-server.exe not found under CLIENT/llama_server/ (provision it from the SERVER)"
+        return False, "llama-server.exe not found under CLIENT/providers/llama/ (provision it from the SERVER)"
     if not model or not mmproj:
-        return False, "GLM-OCR model + mmproj not found under CLIENT/llama_server/models/glm_ocr/"
+        return False, "GLM-OCR model + mmproj not found under CLIENT/providers/llama/models/glm_ocr/"
 
     # Clear a stale process before relaunching on the same port.
     with _lock:
@@ -202,7 +202,7 @@ def ensure_local_ocr_server():
         if proc.poll() is not None:
             if logf:
                 logf.close()
-            return False, f"llama-server exited early with code {proc.returncode} (see CLIENT/llama_server/ocr_server.log)"
+            return False, f"llama-server exited early with code {proc.returncode} (see CLIENT/providers/llama/ocr_server.log)"
         if _is_healthy(OCR_SERVER_PORT):
             with _lock:
                 _process = proc

@@ -123,7 +123,7 @@ def build_notices():
 
     # llama.cpp runtime binaries (not a pip dep — shipped/downloaded separately)
     lines += [
-        "llama.cpp (runtime binaries, llama_server/)",
+        "llama.cpp (runtime binaries, providers/llama/)",
         "  License: MIT",
         "  Copyright holder: Georgi Gerganov and contributors",
         "  Note: when distributing the pre-built Windows CUDA binaries, keep their copyright",

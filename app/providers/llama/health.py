@@ -59,7 +59,7 @@ def _get_all_model_folders() -> list:
     """Local model scan dirs.
 
     Profiles authorize by filename, so the scan path lives in path_utils:
-    llama_server/models (flat + one subfolder deep), config.LLAMA_MODEL_DIRS and the
+    providers/llama/models (flat + one subfolder deep), config.LLAMA_MODEL_DIRS and the
     folder of the persisted .last_model_loaded.json.
     """
     from .path_utils import _get_model_scan_dirs

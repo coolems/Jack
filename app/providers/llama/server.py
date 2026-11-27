@@ -40,6 +40,7 @@ _last_loaded_model_full_path: Optional[str] = None  # Track full path of last lo
 
 from .path_utils import (
     _resolve_server_root,
+    _get_llama_home,
     _get_default_models_dir,
     _resolve_model_path,
 )
@@ -109,6 +110,7 @@ __all__ = [
     "expected_flag_signatures",
     # Internal helpers (kept for backward compat with tests)
     "_resolve_server_root",
+    "_get_llama_home",
     "_get_default_models_dir",
     "_resolve_model_path",
     "_build_server_cmd",
@@ -403,9 +405,8 @@ async def start_server(api_url: str, host: str = None, port: int = None,
             logger.error(f"[ATTACH] Port {port or LLAMA_SERVER_PORT} still occupied after kill - cannot relaunch")
             return False
 
-    # Find llama-server.exe
-    root_dir = _resolve_server_root()
-    llama_server_exe = os.path.join(root_dir, "llama_server", "llama-server.exe")
+    # Find llama-server.exe (providers/llama/llama-server.exe)
+    llama_server_exe = os.path.join(_get_llama_home(), "llama-server.exe")
 
     if not os.path.exists(llama_server_exe):
         logger.error(f"llama-server.exe not found at {llama_server_exe}")

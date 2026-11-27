@@ -17,7 +17,7 @@ def _wait_for_manual_llama(exe: str) -> None:
     while not os.path.exists(exe):
         wait = ask("Waiting for you... when llama-server.exe is in place press Enter to check (or 'q' to quit)", default="")
         if wait.lower() == "q":
-            raise InitError("Aborted - put llama-server.exe into llama_server/ and re-run init (it will then skip this step).")
+            raise InitError("Aborted - put llama-server.exe into providers/llama/ and re-run init (it will then skip this step).")
         time.sleep(1)
     ok(f"Found {exe}")
 
@@ -35,7 +35,7 @@ def _manual_instructions(gpu_mode: bool) -> None:
     else:
         info(f"   Pick the CPU asset, e.g.: {LLAMA_ZIP_CPU}")
         need_cudart_hint = ""
-    info("Then extract the zip contents FLAT into:  llama_server\\")
+    info("Then extract the zip contents FLAT into:  providers\\llama\\")
     info("   (so llama-server.exe sits DIRECTLY in that folder - no subfolder).")
     if need_cudart_hint:
         warn(need_cudart_hint)
@@ -45,10 +45,10 @@ def _manual_instructions(gpu_mode: bool) -> None:
 
 def install_llama_libs(gpu_name: str | None) -> None:
     root = ROOT
-    ls_dir = os.path.join(root, "llama_server")
+    ls_dir = os.path.join(root, "providers", "llama")
     exe = os.path.join(ls_dir, "llama-server.exe")
     if os.path.exists(exe):
-        ok(f"llama-server.exe already present in llama_server/ - nothing to do "
+        ok(f"llama-server.exe already present in providers/llama/ - nothing to do "
            f"(you can manually upgrade it later: https://github.com/ggml-org/llama.cpp/releases)")
         return
 
@@ -90,7 +90,7 @@ def install_llama_libs(gpu_name: str | None) -> None:
         ) from e
 
     n = extract_flat(zip_path, ls_dir)
-    ok(f"Extracted {n} files into llama_server/ (flat layout)")
+    ok(f"Extracted {n} files into providers/llama/ (flat layout)")
     try:
         os.remove(zip_path)                      # reclaim the ~1.3 GB zip now that it is extracted
     except OSError:
@@ -106,7 +106,7 @@ def install_llama_libs(gpu_name: str | None) -> None:
             cudart_zip = os.path.join(temp_dir, "cudart-llama-bin-win-cuda-12.4-x64.zip")
             download_file(CUDART_ZIP_124, cudart_zip, expected_size=CUDART_ZIP_SIZE, label="cudart 12.4")
             n2 = extract_flat(cudart_zip, ls_dir)
-            ok(f"Extracted {n2} CUDA runtime files into llama_server/")
+            ok(f"Extracted {n2} CUDA runtime files into providers/llama/")
             try:
                 os.remove(cudart_zip)
             except OSError:

@@ -17,7 +17,7 @@ HF_OCR_REPO = "ggml-org/GLM-OCR-GGUF"
 HF_MMPROJ_FILE = "mmproj-F16.gguf"
 MMPROJ_SIZE = 927_607_488
 
-LLAMA_BUILD = "b10441"   # PINNED build this codebase is written against (see llama_server/ docs)
+LLAMA_BUILD = "b10441"   # PINNED build this codebase is written against (see providers/llama/ docs)
 GH_RELEASE_BASE = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_BUILD}"
 # NOTE (verified 2026-09-19 via the GitHub releases API): the Windows CUDA asset is
 # versioned per CUDA toolkit - b10441 ships "cuda-12.4", NOT a bare "cuda" name (that one 404s).

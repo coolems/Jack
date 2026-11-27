@@ -364,10 +364,12 @@ def _resolve_model(cfg: dict) -> str:
 def _build_cmd(cfg: dict, model_path: str) -> list:
     from .server import _find_mmproj_file, _is_mtp_model
 
-    exe = os.path.join(_root(), "llama_server", "llama-server.exe")
+    from .path_utils import _get_llama_home
+
+    exe = os.path.join(_get_llama_home(), "llama-server.exe")
     if not os.path.exists(exe):
         raise RuntimeError(
-            f"llama-server.exe not found at {exe}. Copy the llama_server/ folder from the "
+            f"llama-server.exe not found at {exe}. Copy the providers/llama/ folder from the "
             f"main machine (it is gitignored, ~1.3 GB) or run ZZZ_initial_init.bat here."
         )
     mmproj = _find_mmproj_file(model_path)

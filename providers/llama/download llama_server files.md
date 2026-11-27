@@ -1,11 +1,11 @@
 # Download llama_server files — Where to go, what to grab, where to put it
 
-This folder (`local_ai/llama_server/`) is **excluded from git** (see `.gitignore`).
+This folder (`providers/llama/`) is **excluded from git** (see `.gitignore`).
 Everything in here must be downloaded manually on each machine. This file is the only
 thing committed — it tells you exactly how to rebuild the folder.
 
 The COOLEMS server auto-starts `llama-server.exe` from this folder
-(`app/providers/llama/server.py`) and looks for models in `llama_server/models/` by default.
+(`app/providers/llama/server.py`) and looks for models in `providers/llama/models/` by default.
 
 ---
 
@@ -38,7 +38,7 @@ still supports the flags in `config/config.py` (`--flash-attn`, `--cache-type-k/
 Extract the zip contents **directly into this folder**, so the layout is flat:
 
 ```
-local_ai/llama_server/
+providers/llama/
 ├── download llama_server files.md   ← this file (the only git-tracked one)
 ├── llama-server.exe                 ← server.py expects EXACTLY this path/name
 ├── llama-common.dll
@@ -51,7 +51,7 @@ local_ai/llama_server/
 
 Rules:
 - Do **not** extract into a nested subfolder — `server.py` hard-codes
-  `<root>/llama_server/llama-server.exe`.
+  `<root>/providers/llama/llama-server.exe`.
 - All DLLs must sit next to the exe (flat layout).
 - Create an empty `models/` folder even before you download a model.
 
@@ -62,7 +62,7 @@ Default config (`config/config.py`): `MODEL_NAME = "huihui_ai/Qwen3.6-abliterate
 
 - **Where:** Hugging Face → https://huggingface.co/huihui_ai (or the repo named in your
   profile's `allowed_models_folders`). Download a GGUF quant that fits your VRAM.
-- **Where to put it:** `local_ai/llama_server/models/<file>.gguf` (default dir, scanned by
+- **Where to put it:** `providers/llama/models/<file>.gguf` (default dir, scanned by
   `path_utils.py` / `model_discovery.py`). You can also point role profiles at other folders
   via `allowed_models_folders` in `profiles.json`.
 - If the model is an MTP variant ("MTP" in the filename), `server.py` auto-enables
@@ -73,7 +73,7 @@ Default config (`config/config.py`): `MODEL_NAME = "huihui_ai/Qwen3.6-abliterate
 ## 5. Verify the setup
 
 ```bat
-cd local_ai\llama_server
+cd providers\llama
 .\llama-server.exe --version
 ```
 

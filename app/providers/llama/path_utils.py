@@ -15,18 +15,26 @@ from typing import Optional
 logger = logging.getLogger("COOLEMS.Provider.Llama.Server")
 
 
-def _resolve_server_root() -> str:
-    """Resolve the actual server root directory.
+# Runtime bundles live in <root>/providers/<name>/ (2026-11 providers/ layout):
+#   providers/llama/  llama.cpp binaries (flat) + models/  - the local llama backend
+PROVIDERS_DIRNAME = "providers"
+LLAMA_PROVIDER_DIRNAME = "llama"
 
-    Walks up from this file until it finds a folder containing llama_server/.
+
+def _resolve_server_root() -> str:
+    """Resolve the SERVER repo root - the folder holding providers/llama AND code.py.
+
+    Walks up from this file until it finds both markers. code.py is the second marker on
+    purpose: this module lives in app/providers/llama/, so an app/ directory also contains
+    a providers/llama path and matching on the bundle alone would stop one level too early.
     Works whether running from ROOT or CLIENT subfolder.
     Falls back to 4x dirname as last resort.
     """
     my_dir = os.path.dirname(os.path.abspath(__file__))
     current = my_dir
     while True:
-        candidate = os.path.join(current, "llama_server")
-        if os.path.isdir(candidate):
+        candidate = os.path.join(current, PROVIDERS_DIRNAME, LLAMA_PROVIDER_DIRNAME)
+        if os.path.isdir(candidate) and os.path.isfile(os.path.join(current, "code.py")):
             return current  # Found it - this is the server root
         parent = os.path.dirname(current)
         if parent == current:  # Hit filesystem root
@@ -36,10 +44,14 @@ def _resolve_server_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(my_dir))))
 
 
+def _get_llama_home() -> str:
+    """Absolute path of providers/llama - llama.cpp runtime home (llama-server.exe + DLLs + models/)."""
+    return os.path.join(_resolve_server_root(), PROVIDERS_DIRNAME, LLAMA_PROVIDER_DIRNAME)
+
+
 def _get_default_models_dir() -> str:
-    """Get the default models directory (llama_server/models)."""
-    root_dir = _resolve_server_root()
-    return os.path.join(root_dir, "llama_server", "models")
+    """Get the default models directory (providers/llama/models)."""
+    return os.path.join(_get_llama_home(), "models")
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +85,7 @@ def _collect_all_gguf(allowed_folders, default_dir):
     """Return list of full paths to .gguf files across all scan dirs + default dir.
 
      Scans each root BOTH flat and one subfolder deep, because the init
-    script downloads a model into ``llama_server/models/<model-name>/``. mmproj
+    script downloads a model into ``providers/llama/models/<model-name>/``. mmproj
     (vision projector) files are excluded. Order is deterministic: roots in insertion
     order, filenames sorted.
     """
@@ -103,7 +115,7 @@ def _get_model_scan_dirs():
     """Directories scanned for local .gguf models, in priority order.
 
     Profiles authorize by filename, so the scanner owns the search path:
-      1. llama_server/models (one subfolder level is scanned)
+      1. providers/llama/models (one subfolder level is scanned)
       2. config.LLAMA_MODEL_DIRS (optional absolute paths, per machine)
       3. the folder of the model in config/.last_model_loaded.json, so a model kept
          outside the repo still boots and is listed

@@ -73,7 +73,7 @@ def _find_mmproj_file(model_file: str) -> str:
 
     Searches in this order:
     1. The model's own folder (for external folder models with bundled mmproj)
-    2. Default models directory (llama_server/models/)
+    2. Default models directory (providers/llama/models/)
 
     Returns empty string if no mmproj found (server uses --mmproj-auto).
 

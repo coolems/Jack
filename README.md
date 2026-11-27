@@ -72,7 +72,6 @@ SERVER serves that client the OCR files over the same secure link - see below.)
   - `"dynamic"` (2026-11) → all four fleet files merged into ONE registry (`llama_servers.json` + `strata_servers.json` + `deepseek_servers.json` + `openai_servers.json`). The picker lists every model any configured endpoint serves in a single dropdown, and a model whose nodes are all down is shown **grayed/disabled** ("— no node") instead of disappearing — the last-known models are remembered in `config/.backend_models_cache.json` so they survive a restart. Chat routing stays per-backend; the local llama engine remains the disk-scan primary (and the source folder for client-local OCR files).
   `python code.py provider=strata` / `provider=deepseek` / `provider=openai` is shorthand for `SERVER_BACKEND="strata"` / `"deepseek"` / `"openai"` (the CLI arg wins over the config value).
 - **CLIENT** (`CLIENT/code_client.py`) — where all intelligence lives. Can be relocated on another machine and configured to connect to server. It hosts the web UI, the ChatBus background sessions, the agentic loop and every tool execution (files, browser via CDP/Playwright, Python exec, OCR, image generation). All LLM requests are routed through the SERVER; direct LLM access from the client is blocked by design. The one exception is **client-local OCR**: `transcribe_image` runs its own llama-server on the client's loopback (see [Client-local OCR](#client-local-ocr-transcribe_image)) — the SERVER only *serves the files*, it never runs the OCR inference.
-- **llama_server** — llama.cpp runtime with pre-downloaded model weights (see `llama_server/download llama_server files.md` for where to get the binaries and how to lay them out). Local instances run on the SERVER machine; remote ones run wherever you put a GPU. The SERVER's `llama_server/` folder is also the **source for client-local OCR**: whatever binaries + model + mmproj it contains there are exactly what gets pushed to clients that have the OCR right.
 
 This split keeps secrets and heavy state on one side, makes the relay trivially auditable, lets any laptop on your LAN drive a machine that owns the GPUs, and scales horizontally by editing one JSON file.
 
@@ -82,15 +81,15 @@ OCR transcription does **not** run on the SERVER. Every `transcribe_image` call 
 
 **How a `transcribe_image` call works:**
 
-1. **Provisioning (first use only, or after files change).** The client sends one bare `ocr_provision_request` over a fresh authenticated WebSocket. The SERVER — which first checks the client's role has the OCR right (see below) — answers with `ocr_provision_manifest`: the full list of files it holds in its `llama_server/` folder (`llama-server.exe`, the flat DLLs, the GLM-OCR `.gguf`, the mmproj), each with size + SHA-256.
-2. **The client decides per file.** It compares the manifest with its own `CLIENT/llama_server/` folder (relative path — works on any PC): files the SERVER no longer lists are **deleted**; files already held and hash-verified get an `ocr_file_skip`; missing or different files get an `ocr_file_ready`.
+1. **Provisioning (first use only, or after files change).** The client sends one bare `ocr_provision_request` over a fresh authenticated WebSocket. The SERVER — which first checks the client's role has the OCR right (see below) — answers with `ocr_provision_manifest`: the full list of files it holds in its `providers/llama/` folder (`llama-server.exe`, the flat DLLs, the GLM-OCR `.gguf`, the mmproj), each with size + SHA-256.
+2. **The client decides per file.** It compares the manifest with its own `CLIENT/providers/llama/` folder (relative path — works on any PC): files the SERVER no longer lists are **deleted**; files already held and hash-verified get an `ocr_file_skip`; missing or different files get an `ocr_file_ready`.
 3. **The SERVER pushes, one file at a time.** Only the "ready" files are streamed (`ocr_file_chunk` frames, 2 MiB raw each, base64 in JSON, until `ocr_file_done`). The client writes each to a `.part` file, checks size + SHA-256, then atomically renames it into place.
 4. **Per-file ack.** After every file the client replies `ocr_file_ack {ok: true|false}` — on failure the SERVER re-sends that file (max 3 resends), otherwise it moves to the next. The session ends with `ocr_provision_done`.
-5. **Local run.** The client launches `CLIENT/llama_server/llama-server.exe` with the model + mmproj on `127.0.0.1:5010`, waits for `/health` (window sized to the model size at ~4 MiB/s + buffer), POSTs the image to `/v1/chat/completions` (prompt `Text Recognition:`, temperature 0), then terminates the server in a `finally` — never left warm.
+5. **Local run.** The client launches `CLIENT/providers/llama/llama-server.exe` with the model + mmproj on `127.0.0.1:5010`, waits for `/health` (window sized to the model size at ~4 MiB/s + buffer), POSTs the image to `/v1/chat/completions` (prompt `Text Recognition:`, temperature 0), then terminates the server in a `finally` — never left warm.
 
-The files **stay on the client** in `CLIENT/llama_server/` (gitignored, machine-local) and are reused forever; a file is only re-verified when its size or mtime changes, so repeat transcriptions start almost immediately. In relay mode the whole session rides the shared brain↔relay socket, tagged with a per-session `session_id` so the client's own chat frames (and other clients') are parked and replayed, never swallowed; authorization is resolved against the relayed client's own key, fail-closed.
+The files **stay on the client** in `CLIENT/providers/llama/` (gitignored, machine-local) and are reused forever; a file is only re-verified when its size or mtime changes, so repeat transcriptions start almost immediately. In relay mode the whole session rides the shared brain↔relay socket, tagged with a per-session `session_id` so the client's own chat frames (and other clients') are parked and replayed, never swallowed; authorization is resolved against the relayed client's own key, fail-closed.
 
-**Enabling it** — per role in `config/profiles.json`: a non-empty `ocr_model` (absolute path to the OCR model folder on the SERVER, e.g. `C:\...\llama_server\models\glm_ocr`) grants that role `transcribe_image`; empty/`null` = refused, fail-closed, on both direct and relay transports. The SERVER serves the files from that folder to the client; the client runs them locally.
+**Enabling it** — per role in `config/profiles.json`: a non-empty `ocr_model` (absolute path to the OCR model folder on the SERVER, e.g. `C:\...\providers\llama\models\glm_ocr`) grants that role `transcribe_image`; empty/`null` = refused, fail-closed, on both direct and relay transports. The SERVER serves the files from that folder to the client; the client runs them locally.
 
 ## Security Model
 
@@ -145,14 +144,15 @@ The reference hardware for Jack is the **base line: 64 GB RAM with an NVIDIA GeF
 │   ├── code_client.py      # CLIENT entry point (UI + agent + tools)
 │   ├── index.html          # Web UI
 │   ├── app/chat_bus/       # Per-chat background sessions (parallel generation)
-│   ├── llama_server/       # ← CLIENT-local OCR runtime (gitignored; machine-local) - pushed by the
+│   ├── providers/llama/    # ← CLIENT-local OCR runtime (gitignored; machine-local) - pushed by the
 │   │                       #   SERVER on first transcribe_image use: llama-server.exe, DLLs, GLM-OCR
 │   │                       #   model + mmproj; runs on 127.0.0.1:5010, started/stopped per call
 │   └── config/             # Per-machine client settings (gitignored; seeded from .example files)
 │       ├── .api_client_keys.json  # ← bookkeeping ONLY (email + date) - the real key is never stored here
 │       └── settings.json          # ← which SERVER address(es) to connect to
 ├── utils/                  # Helper scripts (zzz_init.py, gen_ui_certs.py) + ScreenShot.png
-    ├── llama_server/           # Local LLM runtime binaries + models (binaries are NOT in git)
+    ├── providers/              # One folder per local inference runtime (not in git)
+    │   └── llama/              #   llama.cpp binaries + models/ (spawned by the SERVER)
 ├── web_server_relay/       # Optional single-file pure-PHP internet relay (index.php; not part of the standard LAN deployment)
 └── tools/test_tools/       # THE test suite (pytest): run_tests() / python -m pytest tools/test_tools
 ```
@@ -180,7 +180,7 @@ On Windows, just **double-click `ZZZ_initial_init.bat`** at the repo root. It ch
 Python 3.12+ (and tells you where to get it if not), then runs `utils/zzz_init.py`, which in one go:
 
 - detects your NVIDIA GPU and recommends a Qwen3.8-27B quant that fits its VRAM (you can override);
-- downloads the model from HuggingFace (resumable, size-verified) into `llama_server/models/<quant>/`;
+- downloads the model from HuggingFace (resumable, size-verified) into `providers/llama/models/<quant>/`;
 - the model files ship with the **MTP** head baked in, so MTP speculative decoding (>2x speedup)
   auto-enables at server start (detected from the GGUF header - no extra file or rename needed);
 - optionally downloads the GLM-OCR model (the SERVER's source folder for client-local `transcribe_image` — see [Client-local OCR](#client-local-ocr-transcribe_image));
@@ -199,16 +199,16 @@ manual steps below describe what that script does, for reference / non-Windows m
 ### Step 1 — Install prerequisites & get the model binaries
 
 1. Clone the repo and install Python 3.12+ (the launchers create their venv from `py -3.12`).
-2. Get the `llama_server` binaries — follow **`llama_server/download llama_server files.md`** (~1.3 GB of llama.cpp Windows CUDA release; not shipped in git).
-3. Put your model weights into **one folder per model** under `llama_server/models/`, e.g.:
+2. Get the `providers/llama` binaries — follow **`providers/llama/download llama_server files.md`** (~1.3 GB of llama.cpp Windows CUDA release; not shipped in git).
+3. Put your model weights into **one folder per model** under `providers/llama/models/`, e.g.:
 
    ```
-   llama_server/models/qwen38-27b-q6_k/Dirk-Qwen3.8-27B-UD-Q6_K.gguf
+   providers/llama/models/qwen38-27b-q6_k/Dirk-Qwen3.8-27B-UD-Q6_K.gguf
    ```
 
-   The *folder* is the model identity — profiles in step 3 reference these folders by absolute path. (Optional: a separate OCR model folder, e.g. `llama_server/models/glm_ocr/`, is what the SERVER pushes to clients that have the `ocr_model` right — see [Client-local OCR](#client-local-ocr-transcribe_image).)
+   The *folder* is the model identity — profiles in step 3 reference these folders by absolute path. (Optional: a separate OCR model folder, e.g. `providers/llama/models/glm_ocr/`, is what the SERVER pushes to clients that have the `ocr_model` right — see [Client-local OCR](#client-local-ocr-transcribe_image).)
 
-   **Any GGUF works.** Drop any `.gguf` file under `llama_server/models/` (flat or one subfolder deep), add its filename to a profile's `allowed_models`, and start a node with it (the brain's local node or a `ZZZ_LLAMA_NODE.bat` machine). **No model switching**: the model is chosen when the node starts, and requests are routed to the node that serves it.
+   **Any GGUF works.** Drop any `.gguf` file under `providers/llama/models/` (flat or one subfolder deep), add its filename to a profile's `allowed_models`, and start a node with it (the brain's local node or a `ZZZ_LLAMA_NODE.bat` machine). **No model switching**: the model is chosen when the node starts, and requests are routed to the node that serves it.
 
 ### Step 2 — Create your API keys (SERVER side)
 
@@ -282,7 +282,6 @@ Profiles live in **`config/profiles.json`**: one JSON object per role name. The 
 
 ### Step 4 — Start the SERVER (relay only)
 
-The SERVER is headless — no UI, no tools. It authenticates clients and relays them to the local LLM engine chosen by `config.SERVER_BACKEND` (`"strata"` by default → `config/strata_servers.json`; `"llama"` → `config/llama_servers.json`).
 
 **Windows:** double-click **`ZZZ_SERVER.bat`** from the repo root (or run it from a terminal):
 
@@ -364,7 +363,7 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
 
 ### Step 7 — Connect a remote CLIENT (optional): server on a powerful workstation, client on any laptop
 
-**The entire `CLIENT/` folder is self-contained — no installation step.** You can copy it to any other machine on your LAN and run it there as-is. The typical setup: SERVER + llama_server on a **powerful GPU workstation**, CLIENT on **any laptop**. The laptop needs no GPU, no VRAM and no model files — every LLM request flows through the relay to the workstation's local model; the laptop only runs the UI, the agent loop and the tools.
+**The entire `CLIENT/` folder is self-contained — no installation step.** You can copy it to any other machine on your LAN and run it there as-is. The typical setup: SERVER + providers/llama on a **powerful GPU workstation**, CLIENT on **any laptop**. The laptop needs no GPU, no VRAM and no model files — every LLM request flows through the relay to the workstation's local model; the laptop only runs the UI, the agent loop and the tools.
 
 1. On the **workstation** (SERVER side): start headless with `ZZZ_SERVER.bat` and allow **TCP port 8080** in its firewall.
 2. On the **laptop**: copy the entire `CLIENT/` folder from the repo (USB stick, network share, or just clone the whole repo — either works). Before copying you may delete `venv/`, `logs/` and optionally `chat_history.db` — the launcher recreates a fresh local venv on first run and re-creates everything else it needs. Then run **`CLIENT\ZZZ_CLIENT.bat`**: it auto-creates `CLIENT/venv`, installs deps + Chromium, frees port 8000 and starts `code_client.py`.
@@ -376,7 +375,6 @@ This is what makes the UI actually work with your CLIENT process and SERVER. Do 
 
 The SERVER routes each request to a node that serves the requested model. A node is any machine running `llama-server`; the SERVER never starts/stops remote nodes. The node launcher lives in **`utils/start_llama_node/`** (`ZZZ_LLAMA_NODE.bat` + `llama_node.py`) — it is the admin path for configuring and starting ANY node you like. Regular users don't touch it: init writes default local-node settings to `config/llama_node.json`, and `ZZZ_SERVER.bat` auto-starts that node when nothing is running on its port (see below).
 
-1. **On the GPU machine:** clone/copy the repo, bring the `llama_server/` binaries (gitignored, ~1.3 GB) and the model `.gguf` — put it under `llama_server/models/` (the scanner also looks one subfolder deep) or set an absolute path in the node config.
 2. Double-click **`utils\start_llama_node\ZZZ_LLAMA_NODE.bat`** → **2) Configure this machine**. The wizard asks for node name, port, **concurrency (`--parallel` slots)**, context per slot and model (plus whether the SERVER may auto-start it), then writes `config/llama_node.json`:
    - `default` — 1 slot, full context (same as the brain's local node)
    - `h200` — 2 slots, full context per slot
@@ -403,7 +401,7 @@ Notes:
 - **Local auto-start (regular users).** Init writes default settings for this machine's local node into `config/llama_node.json` (`127.0.0.1:<LLAMA_SERVER_PORT>`, the model init downloaded, slots by GPU tier — 2 on ≥28 GB VRAM else 1 — and ctx/slot = your tier's context). At boot, for every LOCAL entry in `config/llama_servers.json` whose port matches that file: a healthy matching node is **attached**, otherwise the SERVER **spawns** it detached with those settings. Set `"auto_start": false` in `llama_node.json` to make the SERVER probe-only (you start the node by hand). No `llama_node.json` at all → the legacy default spawn, exactly as before.
 - A full model group waits up to 5 s for a slot; then the client gets a retryable *"Resend request in a min as server is full"* (the rate-limit token is refunded).
 - **Firewall:** restrict the node's port to the SERVER's IP. `llama-server` itself has **no authentication** — the SERVER's API keys protect clients, not the raw node port.
-- If the brain's own model lives outside `llama_server/models`, the scanner also includes the folder recorded in `.last_model_loaded.json`; otherwise add the folder to `LLAMA_MODEL_DIRS` in `config/config.py`.
+- If the brain's own model lives outside `providers/llama/models`, the scanner also includes the folder recorded in `.last_model_loaded.json`; otherwise add the folder to `LLAMA_MODEL_DIRS` in `config/config.py`.
 - Invalid entries in `llama_servers.json` (missing host, bad port, duplicate `host:port`) are skipped/deduped with a logged warning.
 
 ## Troubleshooting
@@ -414,7 +412,7 @@ Notes:
 | SERVER log shows *sent empty API key -- rejecting* on every client retry | The CLIENT has no key yet (fresh machine, no key in `CLIENT/client_config/.api_client_keys.json`): open the CLIENT UI → Settings and set the key. The next bootstrap attempt authenticates automatically; the SERVER rejection is correct behavior |
 | Connect says *Your data can't be validated* / 401 | The key isn't found or inactive on the SERVER: check `config/.api_keys.json` for an exact match and `"is_active": true`; check `logs/coolems.log` on the SERVER for the rejection reason |
 | *"Authentication failed or no valid profile"* | The key's `role` has no matching entry in `config/profiles.json` — add the profile (step 3) or fix the role name; both files hot-reload, just retry Connect |
-| Model selector empty / model missing | Non-admin profiles must list the model **filename** in `allowed_models` (and the SERVER must see the file under `llama_server/models/`, `LLAMA_MODEL_DIRS`, or the persisted model folder). A model served only by a remote node appears once that node is healthy. |
+| Model selector empty / model missing | Non-admin profiles must list the model **filename** in `allowed_models` (and the SERVER must see the file under `providers/llama/models/`, `LLAMA_MODEL_DIRS`, or the persisted model folder). A model served only by a remote node appears once that node is healthy. |
 | CLIENT can't reach SERVER at all | Wrong address or firewall: verify the Server Address field (shows *Active* vs *Saved*), confirm port 8080 is open, and remember a changed address needs a CLIENT restart. `CLIENT/client_config/settings.json` is authoritative |
 | A remote backend shows DOWN in the fleet table | The llama-server on that machine isn't running or its firewall blocks the probe: run `utils\start_llama_node\ZZZ_LLAMA_NODE.bat status` there. The SERVER only attaches, never starts remote nodes (it auto-starts ONLY local nodes matching `config/llama_node.json`) |
 | Chat sits at *queued* for a long time | All slots of **that model group** are busy. It starts when one frees (FIFO); add a node for that model or raise its `concurrency` (step 8) |

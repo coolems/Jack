@@ -30,7 +30,7 @@ def main() -> int:
     print(f"   Repo root: {ROOT}")
     print(line("="))
 
-    if not os.path.isdir(os.path.join(ROOT, "llama_server")) or \
+    if not os.path.isdir(os.path.join(ROOT, "providers", "llama")) or \
        not os.path.isfile(os.path.join(ROOT, "config", "config.py")):
         raise InitError("This does not look like the COOLEMS repo root. Run ZZZ_initial_init.bat from the cloned repo.")
 
@@ -75,7 +75,7 @@ def main() -> int:
 
         need = ((q_size if download_now else 0) + (MMPROJ_SIZE if mmproj_now else 0)
                 + sum(s for _f, s in OCR_FILES if want_ocr))
-        need = int(need * 1.25) + (1_500_000_000 if not os.path.exists(os.path.join(ROOT, "llama_server", "llama-server.exe")) else 0)
+        need = int(need * 1.25) + (1_500_000_000 if not os.path.exists(os.path.join(ROOT, "providers", "llama", "llama-server.exe")) else 0)
         free = shutil.disk_usage(ROOT).free
         if free < need:
             raise InitError(
@@ -104,8 +104,8 @@ def main() -> int:
             "want_ocr": want_ocr,
             "download_now": download_now,
             "mmproj_now": mmproj_now,
-            "models_root": os.path.join(ROOT, "llama_server", "models"),
-            "model_folder": os.path.join(ROOT, "llama_server", "models", f"qwen38-27b-{q_label.lower()}"),
+            "models_root": os.path.join(ROOT, "providers", "llama", "models"),
+            "model_folder": os.path.join(ROOT, "providers", "llama", "models", f"qwen38-27b-{q_label.lower()}"),
         }
         download_model_files(ctx)
 
@@ -124,7 +124,7 @@ def main() -> int:
         # ---- FINAL REPORT ---------------------------------------------------------
         header("INIT COMPLETE")
         print()
-        ok(f"llama.cpp {LLAMA_BUILD}:      llama_server\\llama-server.exe")
+        ok(f"llama.cpp {LLAMA_BUILD}:      providers\\llama\\llama-server.exe")
         rg_exe = os.path.join(ROOT, "CLIENT", "tools", "runtimes", RG_RUNTIME_NAME, "rg.exe")
         if os.path.isfile(rg_exe):
             ok(f"ripgrep (search tools):   {rg_exe}")

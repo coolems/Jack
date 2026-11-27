@@ -34,7 +34,7 @@ exclude = [
     ".git",
     ".temp",
     "__pycache__",
-    "llama_server",
+    "providers",
     "CLIENT/tools/runtimes",
     # Provenance fragments: each _part_NN is a slice of _sandbox_bootstrap.py kept
     # for audit/attribution and is NOT valid standalone Python (module-level code

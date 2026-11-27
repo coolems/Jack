@@ -31,7 +31,7 @@ MAX_OUTPUT_BYTES = 20_000_000   # raw stdout ceiling before parsing
 # gitignores them (venv, model weights, client runtimes), but --no-ignore would still read
 # them - ~24 GB of GGUF/DLL churn. Negated as rg globs.
 HEAVY_GLOBS = ["**/venv/**", "**/.venv/**", "**/node_modules/**", "**/.git/**",
-               "**/llama_server/models/**", "**/runtimes/**", "**/__pycache__/**"]
+               "**/providers/*/models/**", "**/runtimes/**", "**/__pycache__/**"]
 VCS_GLOBS = ["**/.git", "**/.git/**"]
 
 

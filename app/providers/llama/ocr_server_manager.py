@@ -211,11 +211,10 @@ def _popen_ocr(model_file: str, mmproj_file: str) -> Optional[subprocess.Popen]:
 
     Runs via asyncio.to_thread() (Popen + pipe-drainer setup). Returns None when
     llama-server.exe is missing."""
-    from .path_utils import _resolve_server_root
+    from .path_utils import _get_llama_home
     from .process_mgmt import _start_pipe_drainers
 
-    root_dir = _resolve_server_root()
-    llama_server_exe = os.path.join(root_dir, "llama_server", "llama-server.exe")
+    llama_server_exe = os.path.join(_get_llama_home(), "llama-server.exe")
     if not os.path.exists(llama_server_exe):
         logger.error(f"[OCRSRV] llama-server.exe not found at {llama_server_exe}")
         return None
