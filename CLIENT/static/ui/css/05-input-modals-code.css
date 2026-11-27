@@ -170,6 +170,62 @@ textarea {
 /* Sticky top bar: even when a long pane scrolls inside the fixed box, the header row never moves. */
 .modal-header { padding: 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; background: var(--bg-secondary); z-index: 5; flex-shrink: 0; }
 .modal-body { padding: 20px; }
+
+/* ===== WORKSPACE INFO NOTE (2026-11-27, user request) =====
+   "Edit workspace info" in the sidebar row menu. Reuses the .modal shell, but the box is
+   COMPACT and only as tall as the note needs (capped), because this dialog holds one text
+   field - the settings box's fixed 86vh would leave a wall of empty space.
+   The workspace being edited is printed under the heading: the text alone never says which
+   workspace it will be saved to. */
+.workspace-note-modal .modal-content {
+    width: min(94%, 640px);
+    height: auto;
+    max-height: min(86vh, 660px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.workspace-note-heading { min-width: 0; }
+.workspace-note-heading h2 { margin: 0; font-size: 16px; }
+.workspace-note-target { margin: 4px 0 0; font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; min-width: 0; }
+.workspace-note-target-name { color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-note-target-id { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; opacity: 0.7; flex-shrink: 0; }
+.workspace-note-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; flex: 1; }
+.workspace-note-label { font-size: 13px; color: var(--text-secondary); }
+.workspace-note-input {
+    flex: 1;
+    min-height: 220px;
+    max-height: 46vh;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+    outline: none;
+}
+.workspace-note-input:focus { border-color: var(--accent); }
+.workspace-note-footer { display: flex; align-items: center; gap: 10px; }
+.workspace-note-state { font-size: 12px; color: var(--text-secondary); }
+.workspace-note-count { font-size: 12px; color: var(--text-secondary); opacity: 0.75; font-variant-numeric: tabular-nums; margin-right: auto; }
+.workspace-note-count.over { color: var(--danger); opacity: 1; }
+.workspace-note-btn {
+    padding: 6px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+}
+.workspace-note-btn:hover:not(:disabled) { background: var(--bg-secondary); }
+.workspace-note-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.workspace-note-btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.workspace-note-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
 .form-group { margin-bottom: 20px; }
 .form-group label { display: block; margin-bottom: 8px; font-size: 14px; color: var(--text-secondary); }
 .form-group textarea { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-height: 100px; color: var(--text-primary); width: 100%; font-family: inherit; }

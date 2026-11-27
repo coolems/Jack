@@ -266,6 +266,9 @@ class ConversationManager extends WorkspaceSidebarControls {
                 }
             }],
             ['Set workspace color', false, '', (clickEvent) => this.showColorPicker(clickEvent, id, row)],
+            // (2026-11-27, user request) the note is stored in the workspace's own DB row
+            // (conversations.workspace_note), so it is saved and deleted with the workspace.
+            ['Edit workspace info', false, '', () => WorkspaceNote.open(id)],
             ['Delete', hasChildren, 'Delete or move child workspaces first', () => deleteConversation(id)],
         ];
         for (const [label, disabled, reason, action] of actions) {

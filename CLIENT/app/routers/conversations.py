@@ -30,6 +30,11 @@ VALID_COLORS = [
     "red", "orange", "yellow", "green", "blue", "purple", "pink", "gray"
 ]
 
+# Upper bound for the free-text workspace info note (conversations.workspace_note).
+# The note is a single review/memory blob a human reads in a modal, not a document store;
+# the cap keeps one oversized paste from bloating the workspace row.
+NOTE_MAX_CHARS = 20000
+
 
 def _require_conversation_owner(cursor, conv_id: str, current_ip: str) -> str:
     """Return the conversation's owner ip, or raise 404 (missing) / 403 (not ours).
@@ -301,6 +306,72 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
 
         logger.info(f"Client {current_ip} marked conversation {conv_id} seen")
         return {"status": "seen"}
+
+    # ===== WORKSPACE INFO NOTE (2026-11-27, user request) =====
+    # Free-text note a user keeps for ONE workspace ("Edit workspace info" in the sidebar
+    # row menu). Stored in conversations.workspace_note, i.e. inside the workspace's own
+    # entry: saving it needs no extra record, and deleting the workspace removes it with the
+    # row (turn_ops.delete_conversation_rows deletes turn_log -> messages -> conversations).
+    @router.get("/{conv_id}/note")
+    async def get_workspace_note(conv_id: str, request: Request):
+        """Read this workspace's info note together with its CURRENT title.
+
+        The title travels back with the note so the editor can show which workspace it is
+        about to write to - a modal that only displayed text could be saved onto the wrong
+        row. A never-edited (NULL) note reads as "", so the editor opens blank.
+        Ownership-guarded like every other per-workspace route (404 unknown / 403 not ours).
+        """
+        current_ip = get_client_ip(request)
+
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            _require_conversation_owner(cursor, conv_id, current_ip)
+            row = cursor.execute(
+                "SELECT title, workspace_note FROM conversations WHERE id = ?", (conv_id,)
+            ).fetchone()
+        finally:
+            close_db_connection(conn)
+
+        return {
+            "id": conv_id,
+            "title": (row[0] if row else None) or "New Workspace",
+            "note": (row[1] if row else None) or "",
+        }
+
+    @router.post("/{conv_id}/note")
+    async def save_workspace_note(conv_id: str, data: Dict, request: Request):
+        """Overwrite this workspace's info note with the whole submitted text.
+
+        An empty string clears the note (the column goes back to ''). The text is limited to
+        NOTE_MAX_CHARS and must be a string - anything else is refused BEFORE the write, so a
+        malformed body can never blank a note the user still has.
+        """
+        current_ip = get_client_ip(request)
+        note = data.get("note")
+        if not isinstance(note, str):
+            raise HTTPException(status_code=422, detail="note must be a string")
+        if len(note) > NOTE_MAX_CHARS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Workspace info is limited to {NOTE_MAX_CHARS} characters",
+            )
+
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            _require_conversation_owner(cursor, conv_id, current_ip)
+            cursor.execute(
+                "UPDATE conversations SET workspace_note = ? WHERE id = ?", (note, conv_id)
+            )
+            conn.commit()
+        finally:
+            close_db_connection(conn)
+
+        logger.info(
+            f"Client {current_ip} saved workspace info for {conv_id} ({len(note)} chars)"
+        )
+        return {"status": "saved", "length": len(note)}
 
     @router.post("/{conv_id}/update")
     async def update_conversation(conv_id: str, data: Dict, request: Request):

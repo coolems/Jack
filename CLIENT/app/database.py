@@ -2,8 +2,8 @@
 
 Creates the conversations/messages tables on first run (anchored to
 config.DB_PATH) and applies additive column migrations (file_contents,
-ip_address, color, parent_id). All connections go through app.db_manager
-(WAL mode, busy timeout, foreign keys enabled).
+ip_address, color, parent_id, workspace_note). All connections go through
+app.db_manager (WAL mode, busy timeout, foreign keys enabled).
 """
 
 import logging
@@ -73,6 +73,7 @@ def init_db(db_path: str):
                     color TEXT DEFAULT NULL,
                     parent_id TEXT REFERENCES conversations(id) ON DELETE RESTRICT,
                     unread_finished INTEGER NOT NULL DEFAULT 0,
+                    workspace_note TEXT DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -137,6 +138,13 @@ def init_db(db_path: str):
                     "ALTER TABLE conversations ADD COLUMN unread_finished INTEGER NOT NULL DEFAULT 0"
                 )
                 logger.info("Added unread_finished column to conversations")
+            # (2026-11-27, user request) free-text "workspace info" note. It is a column of the
+            # workspace ROW on purpose: the note is then deleted together with the workspace by
+            # the plain DELETE in turn_ops.delete_conversation_rows - no child row to orphan.
+            # Legacy rows stay NULL (the UI reads NULL as an empty note).
+            if "workspace_note" not in conv_cols:
+                cursor.execute("ALTER TABLE conversations ADD COLUMN workspace_note TEXT DEFAULT NULL")
+                logger.info("Added workspace_note column to conversations")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id)")
         migrate_workspace_ids(cursor)
         conn.commit()
