@@ -36,6 +36,24 @@ VALID_COLORS = [
 NOTE_MAX_CHARS = 20000
 
 
+def _parent_working_root(cursor, parent_id: str):
+    """The working root a workspace created from *parent_id* inherits.
+
+    Read from the parent's own row inside the creation transaction (the parent id was already
+    validated as a workspace of this client by validate_workspace_parent). The value is copied,
+    not linked: later changing the parent's folder must not silently re-point existing children.
+    NULL / blank stays NULL, so a parent without its own folder hands its child the same
+    project-root fallback it resolves to itself.
+    """
+    row = cursor.execute(
+        "SELECT working_root FROM conversations WHERE id = ?", (parent_id,)
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    value = str(row[0]).strip()
+    return value or None
+
+
 def _require_conversation_owner(cursor, conv_id: str, current_ip: str) -> str:
     """Return the conversation's owner ip, or raise 404 (missing) / 403 (not ours).
 
@@ -76,16 +94,25 @@ def create_conversations_router(db_path: str, model_name: str, agent) -> APIRout
             conv_id = allocate_workspace_id(cursor)
             if parent_id is not None:
                 validate_workspace_parent(cursor, conv_id, current_ip, parent_id)
+            # (2026-11-27, user request) a workspace created FROM another workspace starts in the
+            # SAME folder: it inherits the parent's working root instead of the project-root
+            # default. Read in this transaction so the copy matches the tree the child was born in.
+            inherited_root = _parent_working_root(cursor, parent_id) if parent_id is not None else None
             cursor.execute(
-                "INSERT INTO conversations (id, title, model, ip_address, parent_id) VALUES (?, ?, ?, ?, ?)",
-                (conv_id, "New Workspace", new_model, current_ip, parent_id)
+                "INSERT INTO conversations (id, title, model, ip_address, parent_id, working_root) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (conv_id, "New Workspace", new_model, current_ip, parent_id, inherited_root)
             )
             conn.commit()
         finally:
             close_db_connection(conn)
 
-        logger.info(f"Created conversation {conv_id} for client {current_ip} (model={new_model})")
-        return {"id": conv_id, "title": "New Workspace", "model": new_model, "parent_id": parent_id}
+        logger.info(
+            f"Created conversation {conv_id} for client {current_ip} (model={new_model})"
+            + (f" inheriting working root of {parent_id}: {inherited_root}" if inherited_root else "")
+        )
+        return {"id": conv_id, "title": "New Workspace", "model": new_model,
+                "parent_id": parent_id, "working_root": inherited_root}
 
     @router.get("")
     async def list_conversations(
