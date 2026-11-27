@@ -10,17 +10,25 @@
        prompt frame, so resizing can never let the prompt visually cover it -
        the frame simply stays on top where they meet. */
     position: relative; padding: 24px; background: var(--bg-primary); border-top: 1px solid var(--border); flex-shrink: 0;
+    /* Width of the info strip (clock + statistics + wordmark + license) on the left.
+       305px is the statistics window: the widest realistic line, "128K ctx | 12.3K sent |
+       102.4K left | \u26A1 128.5 t/s (est)", is 282px of text at 12.5px inside a 305px pill,
+       so the line keeps one row (was 295px; +10px on request). margin-left below
+       is this same value, so the frame always starts 12px after the strip - never a
+       centred offset with dead air in front of it, and it narrows instead of covering it.
+       css/01-base-layout.css sizes .input-info from this same variable; the <=768px
+       override lives in css/06-responsive-conversations.css. */
+    --info-strip: 305px;
 }
 
 .input-wrapper {
     position: relative; z-index: 1;    /* (2026-10-15) prompt frame on top of the license layer */
-    /* (2026-10-15) keeps its original 800px centered size at normal widths. When the window
-       shrinks, it stops growing into the reserved info strip (clock + license) in the
-       bottom-left: max() picks the centred offset while there is room; once that would
-       cross the strip, the frame pins to the right of it and narrows instead. The strip is
-       232px wide (12px inset + 220px content) so nothing ever sits under the frame. */
-    max-width: min(800px, calc(100% - 232px));
-    margin-left: max(232px, calc((100% - 800px) / 2));
+    /* Pinned to the right of the info strip: margin-left IS the strip width, so the frame
+       sits 12px after the widest thing in the strip at every window width (no centring air).
+       It keeps its 800px size while there is room and narrows instead of ever covering the
+       strip. */
+    max-width: min(800px, calc(100% - var(--info-strip)));
+    margin-left: var(--info-strip);
     margin-right: auto;
     background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: 12px; padding: 12px;

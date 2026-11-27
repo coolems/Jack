@@ -25,10 +25,33 @@ function updateAgentUI() {
  *   levels declared by the template -> none / low / medium / high (mapped server-side)
  *   toggle only                     -> none / medium
  *   no knob, capability unknown     -> "Think: n/a" (nothing is sent)
- * Default is 'none'; the choice is persisted like agentMode.
+ * Default is THINK_DEFAULT ('medium') for every workspace that never got a level; only a
+ * level the user picked with the chip is persisted (coolems_thinking + the
+ * coolems_thinking_set flag), so a value parked by the capability check below never turns
+ * into the default of the next workspace.
+ *
+ * This file owns the whole feature: THINK_DEFAULT, startThinkingLevel() (which level the
+ * workspace WANTS) and updateThinkingUI() (which level is SENT). Until a capability is
+ * known nothing is sent - '' is the SERVER's "no instruction" value, which every provider
+ * reads as "the model's own default" (NOT "off") - so a request cannot carry a thinking
+ * level that was never checked against the model.
  * =================================================================== */
 const THINK_LEVELS = ['none', 'low', 'medium', 'high'];
 const THINK_LABELS = { none: 'Think: off', low: 'Think: low', medium: 'Think: medium', high: 'Think: high' };
+/* Level a workspace starts at when the user never picked one. */
+const THINK_DEFAULT = 'medium';
+/** Level this workspace WANTS: the user's own pick, else THINK_DEFAULT.
+ *
+ * coolems_thinking_set is what marks a real pick - a level that an older build (or the
+ * capability check) parked in coolems_thinking is not a choice.
+ */
+function startThinkingLevel() {
+    try {
+        const picked = localStorage.getItem('coolems_thinking_set') === '1';
+        const v = (localStorage.getItem('coolems_thinking') || '').toLowerCase();
+        return (picked && THINK_LEVELS.includes(v)) ? v : THINK_DEFAULT;
+    } catch (e) { return THINK_DEFAULT; }
+}
 /* Shown when there is nothing to switch. The chip must say WHY, because the fallback is
    silent by design: ThinkingPolicy sends NO thinking keys when it cannot figure out the
    model's controls (a strict GGUF template raises on an undeclared variable, which would
@@ -36,9 +59,21 @@ const THINK_LABELS = { none: 'Think: off', low: 'Think: low', medium: 'Think: me
 const THINK_NA_LABEL = 'Think: n/a';
 const THINK_NA_UNKNOWN = 'Thinking capability not discovered yet for this model - no thinking keys are sent, the model keeps its own default.';
 const THINK_NA_NONE = 'This model exposes no thinking control - no thinking keys are sent, the model keeps its own default.';
+const THINK_NA_PENDING = 'Still loading the model catalog - nothing is sent yet, so the model keeps its own default until the capabilities arrive.';
+const THINK_NA_NO_CATALOG = 'The model catalog could not be loaded - no thinking instruction is sent and the model keeps its own default. It is retried on the next fleet status push (or a page reload).';
 
+/* Whether the catalog ever described the models in this page: 'pending' (first paint, request
+   in flight), 'loaded' (loadModels() parsed it) or 'failed' (never arrived). It only picks the
+   WORDING of "Think: n/a" - every one of those states sends nothing - but they are different
+   faults and a user reading the tooltip deserves the right one. */
+let thinkingCatalogState = 'pending';
+
+/** Store a level the USER picked (the flag is what makes it survive as a choice). */
 function persistThinking() {
-    try { localStorage.setItem('coolems_thinking', COOLEMS.enableThinking || 'none'); } catch (e) {}
+    try {
+        localStorage.setItem('coolems_thinking', COOLEMS.thinkingDesired || THINK_DEFAULT);
+        localStorage.setItem('coolems_thinking_set', '1');
+    } catch (e) {}
 }
 
 /** Capability description of the model currently selected in the picker. */
@@ -52,7 +87,7 @@ function thinkingCapsForSelected() {
 /** Levels the selected model offers. Always starts with 'none' when it can be disabled. */
 function availableThinkingLevels() {
     const caps = thinkingCapsForSelected();
-    if (!caps) return ['none'];                 // no catalog info yet -> send nothing
+    if (!caps) return ['none'];                 // capability unknown -> chip is n/a, nothing is sent
     const levels = (caps.levels || []).filter(l => THINK_LEVELS.includes(l));
     return levels.length ? levels : ['none'];
 }
@@ -65,7 +100,10 @@ function thinkingAvailable() {
 /** Why there is nothing to switch - the tooltip/notification text. */
 function thinkingUnavailableReason() {
     const caps = thinkingCapsForSelected();
-    if (!caps) return THINK_NA_UNKNOWN;
+    if (!caps) {
+        if (thinkingCatalogState === 'pending') return THINK_NA_PENDING;
+        return thinkingCatalogState === 'loaded' ? THINK_NA_UNKNOWN : THINK_NA_NO_CATALOG;
+    }
     if (caps.hint) return caps.hint;
     return THINK_NA_NONE;
 }
@@ -77,9 +115,21 @@ function updateThinkingUI() {
     if (!btn) return;
     const levels = availableThinkingLevels();
     const caps = thinkingCapsForSelected();
-    // A stored level the new model cannot honor drops back to 'none' - never send a value
-    // that its template would reject (that is an HTTP 400 on every request).
-    if (!levels.includes(COOLEMS.enableThinking)) { COOLEMS.enableThinking = 'none'; persistThinking(); }
+    // Resolve the wish once per workspace: the user's own pick, else THINK_DEFAULT.
+    const want = COOLEMS.thinkingDesired = COOLEMS.thinkingDesired || startThinkingLevel();
+    // Send only a level this model honors: the wished level when offered, else the default
+    // when offered, else off. thinkingDesired is left alone - the model's limits must never
+    // erase the user's choice (or the 'medium' a fresh workspace starts with), so switching
+    // to a model that can think brings it back.
+    // DECIDED (unknown capability): send NOTHING (''), which every provider reads as "the
+    // model keeps its own default". That is not the same as "off", and '' is chosen over a
+    // 'none' stand-in on purpose: OpenAI's policy drops 'none' (thinking_body -> {}), so
+    // 'none' would mean exactly what '' means there, while on DeepSeek/llama it would
+    // silently disable the reasoning of a model the user may have picked FOR it. The chip
+    // says which happens ("Think: n/a" - the model keeps its own default) and the next
+    // fleet_status push (websocket.js) fills the caps and repaints this same function.
+    COOLEMS.enableThinking = !caps ? ''
+        : (levels.includes(want) ? want : (levels.includes(THINK_DEFAULT) ? THINK_DEFAULT : 'none'));
 
     const na = levels.length <= 1 && (!caps || !caps.supported);
     const off = COOLEMS.enableThinking === 'none';
@@ -116,7 +166,8 @@ function cycleThinking() {
         return;
     }
     const i = levels.indexOf(COOLEMS.enableThinking);
-    COOLEMS.enableThinking = levels[(i + 1) % levels.length];
+    COOLEMS.thinkingDesired = levels[(i + 1) % levels.length];
+    COOLEMS.enableThinking = COOLEMS.thinkingDesired;
     persistThinking();
     updateThinkingUI();
 }
@@ -251,6 +302,9 @@ function refreshBalanceThrottled(force) {
 /**
  * Load ALL models from disk (llama_server/models/*.gguf)
  * Shows currently loaded model with indicator
+ *
+ * Returns true when the catalog was read (thinkingCaps filled, chip repainted), false when
+ * the fetch/parse failed - the caller then knows the Think chip is in its "n/a" fallback.
  */
 async function loadModels() {
     try {
@@ -287,6 +341,7 @@ async function loadModels() {
         // the levels that model honors.
         COOLEMS.thinkingCaps = {};
         models.forEach(m => { if (m && m.name) COOLEMS.thinkingCaps[m.name] = m.thinking || null; });
+        thinkingCatalogState = 'loaded';
         sel.replaceChildren(...models.map(m => {
             const option = document.createElement('option');
             option.value = m.name;
@@ -298,7 +353,7 @@ async function loadModels() {
         }));
         if (COOLEMS.currentConversation) {
             setModelPicker(workspaceModel(COOLEMS.currentConversation));
-            return;
+            return true;
         }
         if (defaultModel) sel.value = defaultModel;
 
@@ -308,9 +363,16 @@ async function loadModels() {
         if (typeof updateThinkingUI === 'function') updateThinkingUI();
         // (2026-11 balance chip) the loaded model may have changed - refresh the chip.
         refreshBalanceThrottled(true);
+        return true;
 
     } catch (e) { 
+        // The catalog did not arrive. thinkingCaps is left exactly as it was (it is only
+        // replaced after a successful parse), and so is a 'loaded' state: a failed RELOAD still
+        // lets a known model be described, while a page that never got a catalog says so.
+        // Either way the chip sends nothing ('' = the model's own default, never a guessed off).
+        if (thinkingCatalogState !== 'loaded') thinkingCatalogState = 'failed';
         logError('Failed to load models:', e); 
+        return false;
     }
 }
 

@@ -497,6 +497,8 @@ const ChatSocketPool = {
             if (queued) suffix += ` · ${queued} queued`;
         }
         span.textContent = text + suffix;
+        // The visible label can be truncated on the clock's line; hover shows the whole thing.
+        el.title = text + suffix;
     },
 
     /** Close everything (page unload / hard reset). */

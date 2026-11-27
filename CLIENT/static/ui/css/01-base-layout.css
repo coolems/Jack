@@ -209,13 +209,14 @@ body {
 .header-left {
     display: flex;
     align-items: center;
-    gap: 16px;
 }
-
 
 .header-actions { display: flex; gap: 12px; align-items: center; }
 
-/* ===== CONNECTION STATUS ===== */
+/* ===== CONNECTION STATUS =====
+   (2026-11-30) The chip lives in the input info strip, on the clock's line; the strip-scoped
+   sizing/truncation rules are in the .input-info section below. Colours stay here because the
+   state classes are set by updateConnectionStatus(). */
 .connection-status {
     display: flex; align-items: center; gap: 6px;
     font-size: 12px; color: var(--text-secondary);
@@ -362,15 +363,38 @@ body {
        prompt frame. The strip spans the frame's height: the clock pins to the TOP
        (top: 24px = the prompt frame's top edge, so the two lines up) and the license
        lines stay at the BOTTOM (bottom: 8px), with space-between keeping them apart.
-       Plain text, no borders; the prompt frame is untouched. The box is wider than the
-       reserved strip (232px in css/05) so the license lines keep their old readable
-       width; the frame simply paints over the part of the strip it reaches. */
+       Plain text, no borders; the prompt frame is untouched. The box IS the width the
+       prompt frame reserves (--info-strip in css/05), so the token line and the license
+       lines keep their full width without ever reaching the frame. */
     .input-info {
         position: absolute; left: 12px; top: 24px; bottom: 8px; z-index: 0;
         display: flex; flex-direction: column; align-items: flex-start;
         justify-content: space-between; gap: 6px;
-        width: 320px;          /* license sub-line width; clock chip sizes to its own text */
-        max-width: 45%;
+        /* The strip starts 12px left of the frame's own content edge, so its width must
+           equal the reserve exactly for the frame to end up 12px after the widest line. */
+        width: var(--info-strip, 305px);
+        max-width: var(--info-strip, 305px);
+    }
+
+    /* (2026-11-30 user request) The connection status chip moved out of the header and now
+       CONTINUES the clock's line. The row is exactly the strip's width: the clock keeps its
+       natural size (flex: 0 0 auto) and the chip only ever gets the space that is left, so it
+       can never push the prompt frame or spill over it. A label that does not fit is
+       ellipsised INSIDE the chip - the untruncated text is the chip's title, so hovering
+       shows all of it. */
+    .input-info-row {
+        display: flex; align-items: center; gap: 6px;
+        width: 100%; max-width: 100%; min-width: 0;
+    }
+    .input-info-row .current-time-display { flex: 0 0 auto; }
+    .input-info-row .connection-status {
+        flex: 0 1 auto; min-width: 0; max-width: 100%;
+        font-size: 12px; padding: 3px 8px; gap: 5px;
+        white-space: nowrap; overflow: hidden;
+    }
+    .input-info-row .connection-status .status-dot { flex-shrink: 0; }
+    .input-info-row .connection-status span {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
 
     /* The clock is sized to match the license lines (12px) and clipped rather than
@@ -380,6 +404,54 @@ body {
         font-size: 12px; padding: 3px 8px; gap: 5px;
     }
     .input-info .current-time-display svg { width: 12px; height: 12px; }
+
+    /* (2026-11-27 user request) The token/context statistics pill lives in THIS strip now,
+       right under the clock, and the "COOLEMS Jack" wordmark closes the group under the
+       stats. Clock + stats + logo share one top group so the strip's space-between still
+       pins the license lines to the bottom edge.
+       The pill is a flex row that stays on ONE line: its widest realistic line measures
+       282px inside the 289px of usable pill width, so the prompt frame never has to make
+       room for it. */
+    .input-info-top {
+        display: flex; flex-direction: column; align-items: flex-start;
+        gap: 6px; width: 100%; max-width: 100%;
+    }
+    /* (2026-11-30) The icon in front of the statistics is gone, so the line starts at the
+       pill's own left padding - the same 8px margin the wordmark uses. The pill is a notch
+       bigger than the clock in type (12.5px vs 12px) and is the strip PLUS 2px wide: that
+       gives the line 289px of single-line room (305px strip - 16px padding + 2px), and the
+       2px come out of the 12px gap in front of the prompt frame, which does not move.
+       websocket.js prints the speed as "\u26A1 128.5 t/s" (no space after the bolt, t/s
+       instead of tok/s) which is what buys the width: the ordinary line is 248px and the
+       widest realistic one, "128K ctx | 12.3K sent | 102.4K left | \u26A1 128.5 t/s (est)",
+       is 282px, so it keeps one row. */
+    .input-info .history-status-display {
+        width: calc(100% + 2px); max-width: calc(100% + 2px);
+        font-size: 12.5px; padding: 3px 8px;
+        flex-wrap: nowrap; line-height: 1.35;
+    }
+    /* The whole line must stay readable - speed included. Nothing is ever clamped mid-word
+       (the old 2-line clamp used to eat the speed tail). Only a synthetic set outgrows the
+       289px: a 1M context filled to the last kilotoken while the speed is estimated,
+       "1023.5K ctx | 1021.9K sent | 1.6K left | \u26A1 128.5 t/s (est)" at 294.6px; it wraps
+       onto a second row inside the pill instead of being cut. */
+    .input-info-top .history-status-display #historyStatusText {
+        min-width: 0;
+        /* Last resort only: a value set longer than the pill wraps onto a second row
+           inside it rather than being clipped mid-word. */
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    /* (2026-11-27 user request) The wordmark moved out of the header into this strip,
+       directly under the statistics. 33.6px is 20% over the previous 28px: "COOLEMS Jack"
+       measures ~268px + 16px padding, so it fits inside the strip (289px) and never
+       reaches the prompt frame. It ellipsises rather than spilling if the strip ever gets
+       narrower than the text. */
+    .input-info-top .logo {
+        max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+        font-size: 33.6px; letter-spacing: 2px; line-height: 1.05; padding: 0 8px;
+    }
 
     /* ===== LICENSE BADGE ===== */
     .license-badge {

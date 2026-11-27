@@ -34,7 +34,6 @@
     white-space: nowrap;
 }
 
-.history-status-display svg { opacity: 0.5; flex-shrink: 0; }
 .history-status-display #historyStatusText { font-variant-numeric: tabular-nums; }
 
 /* ===== CHAT MESSAGES ===== */

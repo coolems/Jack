@@ -34,6 +34,9 @@ function updateConnectionStatus(status, message) {
     el.className = 'connection-status ' + status;
     const span = el.querySelector('span');
     if (span) span.textContent = message;
+    // The chip only gets the room left on the clock's line, so a long label is ellipsised;
+    // the title always holds the untruncated text for hover.
+    el.title = message;
 
     // Also update the status in COOLEMS state for debugging
     COOLEMS.connectionStatus = status;
@@ -72,7 +75,7 @@ function _updateSteerUi(streaming) {
     if (input) {
         input.placeholder = canSteer
             ? 'Steer the running task… (Enter to send · Shift+Enter for a new line)'
-            : 'Message COOLEMS...';
+            : 'Message Jack...';
     }
 }
 
@@ -257,7 +260,7 @@ function updateHistoryStatusBar(data) {
 
     // Add speed if available and positive
     if (speed !== null && speed !== undefined && !isNaN(speed) && speed > 0) {
-        text += ` | ⚡ ${speed.toFixed(1)} tok/s`;
+        text += ` | ⚡${speed.toFixed(1)} t/s`;
         COOLEMS.lastGenerationSpeed = speed;
     } else if (generatedTokens > 0) {
         // Calculate approximate speed if we have generated tokens and time
@@ -265,7 +268,7 @@ function updateHistoryStatusBar(data) {
         const totalDuration = data.total_duration;
         if (totalDuration && totalDuration > 0 && generatedTokens > 0) {
             const approxSpeed = (generatedTokens / totalDuration).toFixed(1);
-            text += ` | ⚡ ${approxSpeed} tok/s (est)`;
+            text += ` | ⚡${approxSpeed} t/s (est)`;
         }
     }
 

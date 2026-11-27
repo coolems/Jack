@@ -24,14 +24,17 @@
     .scroll-indicator { bottom: 100px; right: 16px; z-index: 98; }
     .scroll-indicator button { width: 40px; height: 40px; }
     
-    /* Narrow screens: the clock line is dropped (as the header used to do); the license
-       lines stay in the bottom-left strip, whose reserved width shrinks with it. */
+    /* Narrow screens: the clock itself is dropped; the license lines stay in the bottom-left
+       strip, whose reserved width shrinks with it. (2026-11-30) The connection status chip
+       that now shares the clock's line KEEPS showing here - it is the only connection
+       indicator left in the UI, and it fits the narrower strip on its own (the row simply
+       loses its clock and the chip is ellipsised if a label ever outgrows it). */
     .input-info .current-time-display { display: none; }
-    .input-info { width: auto; }
-    .input-wrapper {
-        max-width: min(800px, calc(100% - 180px));
-        margin-left: max(180px, calc((100% - 800px) / 2));
-    }
+    /* Narrow screens: the strip shrinks with the layout. The token pill is hidden here,
+       so 232px only has to fit the 24px wordmark; css/01 and css/05 both derive their
+       sizes from --info-strip, so this is the only number to change. */
+    .input-info-top .logo { font-size: 24px; letter-spacing: 1.8px; }
+    .input-container { --info-strip: 232px; }
     .history-status-display { display: none; }
     .diff-panel-header { font-size: 10px; padding: 6px 8px; }
     .diff-line-number { width: 35px; font-size: 10px; }

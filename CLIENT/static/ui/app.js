@@ -93,18 +93,27 @@ window.COOLEMS = {
     selectedFiles: [],
     // Persisted in localStorage (see persistAgentMode in ui-controls.js)
     agentMode: (function () { try { return localStorage.getItem('coolems_agent_mode') === '1'; } catch (e) { return false; } })(),
-    // Thinking level, not a boolean: 'none' | 'low' | 'medium' | 'high'. Default 'none',
-    // persisted like agentMode. Only levels the selected model offers are selectable:
+    // Thinking level, not a boolean: '' | 'none' | 'low' | 'medium' | 'high'. Both fields
+    // start EMPTY on purpose - nothing about thinking may be asserted before the model's
+    // capability is known (ui-controls.js owns the whole feature: startThinkingLevel() is
+    // the default/carry-over resolver, updateThinkingUI() the only writer). updateThinkingUI
+    // runs on first paint, before the model catalog is fetched.
+    //   thinkingDesired - what this workspace should use; '' until resolved, then the user's
+    //                     pick or THINK_DEFAULT ('medium'), and only the chip's click changes it.
+    //   enableThinking  - the level actually SENT, always one the selected model offers, and
+    //                     '' while that is still unknown: the SERVER reads '' as "no
+    //                     instruction" (schemas.normalize_thinking) and sends no thinking keys,
+    //                     which every provider turns into "the model's own default" - NOT
+    //                     "off". (Decision, not an accident: 'none' is no safe stand-in, see
+    //                     updateThinkingUI().) A model that cannot honor the wish parks this
+    //                     at 'none'/'medium' without touching thinkingDesired, so switching to
+    //                     a model that can think again brings the wish back instead of
+    //                     staying off.
     // COOLEMS.thinkingCaps is filled by loadModels() from the SERVER catalog, which
-    // discovered them from the model's chat template (app/providers/llama/thinking.py).
-    // An unsupported stored level falls back to 'none' when the model changes, so a value
-    // its template would reject is never sent.
-    enableThinking: (function () {
-        try {
-            const v = (localStorage.getItem('coolems_thinking') || 'none').toLowerCase();
-            return ['none', 'low', 'medium', 'high'].includes(v) ? v : 'none';
-        } catch (e) { return 'none'; }
-    })(),
+    // discovered the levels from the model's chat template (app/providers/llama/thinking.py),
+    // so a value its template would reject is never sent (that is an HTTP 400 per request).
+    enableThinking: '',
+    thinkingDesired: '',
     // model_key -> capability description from the SERVER catalog ({levels, supported,...})
     thinkingCaps: {},
     // Last confirmed assignment for each workspace opened in this tab.
@@ -460,11 +469,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         log('[INIT] ConversationManager initialized');
     }
 
-    await loadModels();
+    // Paint the Think chip before the catalog request, so its state is real from the first
+    // frame: with no capability known it shows "Think: n/a" and enableThinking stays '' (send
+    // nothing) instead of naming a level nobody has checked. loadModels() repaints once the
+    // capabilities are known.
+    if (typeof updateThinkingUI === 'function') updateThinkingUI();
+    const catalogLoaded = await loadModels();
     if (typeof loadTree === 'function') loadTree();
     initScrollDetection();
     if (typeof updateAgentUI === 'function') updateAgentUI(); // sync header toggle with persisted state
-    if (typeof updateThinkingUI === 'function') updateThinkingUI(); // sync thinking chip with the persisted level + model caps
+    // Second paint: NOT a recovery from a failed catalog. With no catalog the caps are still
+    // empty, so this produces the same "n/a" state as the first paint - the chip and the wire
+    // agree on that ('' = the model's own default, never a guessed 'off'), and repeating the
+    // call merely covers the paths where loadModels() returns WITHOUT painting (missing
+    // picker, thrown error). Real recovery is the fleet_status push in websocket.js: it
+    // refills thinkingCaps and repaints (or re-runs loadModels when models are unknown).
+    if (typeof updateThinkingUI === 'function') updateThinkingUI();
+    if (!catalogLoaded) {
+        logError('Model catalog unavailable: the Think chip stays "n/a" and sends no thinking '
+            + 'instruction (the model keeps its own default) until a fleet status push arrives.');
+    }
     checkOllamaStatus();
 
     // Load conversations on page init (so sidebar populates after refresh)
